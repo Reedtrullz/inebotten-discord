@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get commits since last tag
+        LAST_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+        if [ -z "$LAST_TAG" ]; then
+          COMMITS=$(git log --pretty=format:"- %s" --no-merges)
+        else
+          COMMITS=$(git log --pretty=format:"- %s" --no-merges ${LAST_TAG}..HEAD)
+        fi
+        
+        # Categorize commits
+        FEATURES=$(echo "$COMMITS" | grep -E "^[[:space:]]*- (feat|add|new)" || true)
+        FIXES=$(echo "$COMMITS" | grep -E "^[[:space:]]*- (fix|bugfix|hotfix)" || true)
+        DOCS=$(echo "$COMMITS" | grep -E "^[[:space:]]*- (docs|doc)" || true)
+        OTHER=$(echo "$COMMITS" | grep -vE "^[[:space:]]*- (feat|add|new|fix|bugfix|hotfix|docs|doc)" || true)
+        
+        echo "BODY<<EOF" >> $GITHUB_OUTPUT
+        echo "## What's Changed" >> $GITHUB_OUTPUT
+        
+        if [ -n "$FEATURES" ]; then
+          echo "" >> $GITHUB_OUTPUT
+          echo "### ✨ Features" >> $GITHUB_OUTPUT
+          echo "$FEATURES" >> $GITHUB_OUTPUT
+        fi
+        
+        if [ -n "$FIXES" ]; then
+          echo "" >> $GITHUB_OUTPUT
+          echo "### 🐛 Bug Fixes" >> $GITHUB_OUTPUT
+          echo "$FIXES" >> $GITHUB_OUTPUT
+        fi
+        
+        if [ -n "$DOCS" ]; then
+          echo "" >> $GITHUB_OUTPUT
+          echo "### 📚 Documentation" >> $GITHUB_OUTPUT
+          echo "$DOCS" >> $GITHUB_OUTPUT
+        fi
+        
+        if [ -n "$OTHER" ]; then
+          echo "" >> $GITHUB_OUTPUT
+          echo "### Other Changes" >> $GITHUB_OUTPUT
+          echo "$OTHER" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "" >> $GITHUB_OUTPUT
+        echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${{ steps.get_version.outputs.VERSION }}" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Release ${{ steps.get_version.outputs.VERSION }}
+        body: ${{ steps.changelog.outputs.BODY }}
+        draft: false
+        prerelease: ${{ contains(steps.get_version.outputs.VERSION, 'alpha') || contains(steps.get_version.outputs.VERSION, 'beta') || contains(steps.get_version.outputs.VERSION, 'rc') }}
+        generate_release_notes: true

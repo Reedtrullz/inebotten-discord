@@ -1,5 +1,10 @@
 # Inebotten Discord Bot
 
+[![CI](https://github.com/Reedtrullz/inebotten-discord/actions/workflows/ci.yml/badge.svg)](https://github.com/Reedtrullz/inebotten-discord/actions)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Discord](https://img.shields.io/badge/discord-selfbot-5865F2?logo=discord)](https://discord.com)
+
 > Din personlige norske Discord-kalenderbot med AI-personlighet
 
 ## Hva er Inebotten?
