@@ -28,7 +28,7 @@ PORT = int(os.getenv('HERMES_BRIDGE_PORT', '3000'))
 
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = "qwen3.5-9b-claude-opus-reasoning"  # Qwen 3.5 9B Claude Opus reasoning distilled
+LM_STUDIO_MODEL = "qwen3.5-9b-claude-4.6-opus-reasoning-distilled@q4_k_m"  # Exact model ID from LM Studio
 
 # Model-specific settings
 MODEL_CONFIG = {
@@ -55,7 +55,7 @@ MODEL_CONFIG = {
         "presence_penalty": 0.1,
         "stop": ["Hei again", "Hi ", "Hello ", "English"],  # Stop if it switches to English
     },
-            "qwen3.5-9b-claude-opus-reasoning": {
+            "qwen3.5-9b-claude-4.6-opus-reasoning-distilled@q4_k_m": {
         "temperature": 0.5,  # Lower for focused responses
         "max_tokens": 120,   # Keep it concise
         "top_p": 0.8,
@@ -207,7 +207,7 @@ class HermesBridgeServer:
         # Gemma 2 2B is small but works well
         is_gemma_2b = "gemma-2" in LM_STUDIO_MODEL.lower() and "2b" in LM_STUDIO_MODEL.lower()
         # Reasoning/thinking models need special handling
-        is_reasoning_model = any(x in LM_STUDIO_MODEL.lower() for x in ["reasoning", "thinking", "opus"])
+        is_reasoning_model = any(x in LM_STUDIO_MODEL.lower() for x in ["reasoning", "thinking", "opus", "claude"])
         
         # Use custom system prompt if provided (but truncate for problematic small models)
         # Note: Qwen and Gemma 2 2B handle long prompts well even when small
