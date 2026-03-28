@@ -362,40 +362,72 @@ class NaturalLanguageParser:
         return result
     
     def _has_time_indicator(self, content):
-        """Check if content has any time/date indicators"""
+        """
+        Check if content has strong time/date indicators that suggest a calendar command.
+        
+        This method is conservative - it requires multiple indicators OR explicit
+        calendar keywords to avoid misinterpreting casual conversation.
+        """
         content_lower = content.lower()
         
-        # Check for date words
-        for word in self.date_words:
-            if word in content_lower:
-                return True
+        # Strong indicators that almost certainly mean calendar command
+        strong_indicators = 0
         
-        # Check for day names
-        for day in self.days:
-            if day in content_lower:
-                return True
+        # 1. Explicit calendar keywords (very strong signal)
+        calendar_keywords = [
+            'møte', 'meeting', 'treff', 'avtale', 'appointment',
+            'arrangement', 'event', 'fest', 'party', 'selskap',
+            'kurs', 'seminar', 'konferanse', 'workshop',
+            'legetime', 'tannlege', 'hårtime', 'time', 'appointment',
+            'konfirmasjon', 'bryllup', 'bursdag', 'jubileum',
+            'frist', 'deadline', 'innlevering', 'eksamen',
+            'trening', 'økt', 'øvelse', 'prøve', 'øving',
+        ]
+        for keyword in calendar_keywords:
+            if keyword in content_lower:
+                strong_indicators += 2  # Calendar keywords are strong signals
         
-        # Check for time words
-        for word in self.time_words:
-            if word in content_lower:
-                return True
+        # 2. Task indicators (husk, jeg må, etc.)
+        for indicator in self.task_indicators:
+            if indicator in content_lower:
+                strong_indicators += 2
         
-        # Check for DD.MM.YYYY or DD.MM patterns
-        if re.search(r'\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?', content):
-            return True
-        
-        # Check for "kl" or "klokken" with time
+        # 3. Explicit time patterns (kl 14, 14:00)
         if re.search(r'(?:kl\.?|klokken)\s*\d{1,2}', content_lower):
-            return True
-        
-        # Check for HH:MM format
+            strong_indicators += 2
         if re.search(r'\b\d{1,2}:\d{2}\b', content):
-            return True
+            strong_indicators += 2
         
-        # Check for recurrence patterns (these indicate an event too)
+        # 4. Numeric dates (DD.MM.YYYY or DD.MM)
+        if re.search(r'\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?', content):
+            strong_indicators += 2
+        
+        # 5. Recurrence patterns (hver uke, etc.)
         for pattern in self.recurrence_patterns:
             if pattern in content_lower:
-                return True
+                strong_indicators += 2
+        
+        # If we have strong indicators, it's likely a calendar command
+        if strong_indicators >= 2:
+            return True
+        
+        # Weak indicators (date words like "i dag", "i morgen")
+        # These alone are NOT enough - they're too common in conversation
+        weak_indicators = 0
+        
+        for word in self.date_words:
+            if word in content_lower:
+                weak_indicators += 1
+        
+        for day in self.days:
+            if day in content_lower:
+                weak_indicators += 1
+        
+        # Only accept weak indicators if we have multiple AND the message is short
+        # (short messages with date words are more likely to be calendar commands)
+        word_count = len(content.split())
+        if weak_indicators >= 1 and word_count <= 5:
+            return True
         
         return False
     
