@@ -63,6 +63,15 @@ MODEL_CONFIG = {
         "presence_penalty": 0.1,
         "stop": ["Hei again", "Hi ", "Hello ", "English", "Looking at", "In the examples"],
     },
+    "qwen3.5-9b-claude-4.6-opus-reasoning-distilled": {
+        # Alias without quantization suffix
+        "temperature": 0.5,
+        "max_tokens": 120,
+        "top_p": 0.8,
+        "frequency_penalty": 0.2,
+        "presence_penalty": 0.1,
+        "stop": ["Hei again", "Hi ", "Hello ", "English", "Looking at", "In the examples"],
+    },
             "qwen3-4b-thinking": {
         "temperature": 0.6,
         "max_tokens": 150,
@@ -317,7 +326,18 @@ class HermesBridgeServer:
                 )
 
         # Get model-specific settings
-        config = MODEL_CONFIG.get(LM_STUDIO_MODEL, MODEL_CONFIG["llama-3.2-3b"])
+        config = MODEL_CONFIG.get(LM_STUDIO_MODEL)
+        if not config:
+            # Try with just the base name (without @q4_k_m)
+            base_name = LM_STUDIO_MODEL.split('@')[0]
+            config = MODEL_CONFIG.get(base_name)
+            logger.info(f"Using base config for {base_name}")
+        
+        if not config:
+            config = MODEL_CONFIG["llama-3.2-3b"]
+            logger.warning(f"No specific config for {LM_STUDIO_MODEL}, using defaults")
+        
+        logger.info(f"Using model config: temp={config.get('temperature')}, max_tokens={config.get('max_tokens')}")
         
         payload = {
             "model": LM_STUDIO_MODEL,
