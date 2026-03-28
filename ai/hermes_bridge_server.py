@@ -411,6 +411,10 @@ class HermesBridgeServer:
                                 r"^K$",  # Just "K"
                                 r"^En nisse$",  # Incomplete
                                 r"^Fortell meg en vits!$",  # Echo
+                                r"^The question/task:",  # Question echo
+                                r"^@inebotten",  # Echoing mention
+                                r"^Hva kan du gjøre\?",  # Echo
+                                r"^Hvordan går det\?",  # Echo
                             ]
                             
                             import re
@@ -447,6 +451,15 @@ class HermesBridgeServer:
                             return text[:150] if text else ""
                         
                         content = clean_thinking_response(content)
+                        
+                        # Check if response is still bad after cleaning
+                        bad_patterns = ["The user", "This is", "My reasoning", "I should", 
+                                       "The question", "@inebotten Hvem", "@inebotten Hva"]
+                        is_still_bad = any(p in content for p in bad_patterns)
+                        
+                        if is_still_bad:
+                            logger.warning(f"Response still bad after cleaning: {content[:50]}...")
+                            return "(Prøv å spørre på en annen måte)"
                         
                         logger.info(f"LM Studio generated {len(content)} chars (reasoning: {len(reasoning)} chars)")
                         if content:
