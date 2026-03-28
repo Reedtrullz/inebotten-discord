@@ -28,7 +28,25 @@ PORT = int(os.getenv('HERMES_BRIDGE_PORT', '3000'))
 
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = "gemma-3-4b"  # Default model
+LM_STUDIO_MODEL = "llama-3.2-3b"  # Now using Llama 3.2 3B for better Norwegian
+
+# Model-specific settings
+MODEL_CONFIG = {
+    "llama-3.2-3b": {
+        "temperature": 0.75,  # Slightly lower for more focused responses
+        "max_tokens": 400,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,  # Slight penalty to avoid repetition
+        "presence_penalty": 0.1,
+    },
+    "gemma-3-4b": {
+        "temperature": 0.8,
+        "max_tokens": 500,
+        "top_p": 0.95,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0,
+    }
+}
 
 # Fun response templates (fallback when LM Studio unavailable)
 RESPONSES = {
@@ -151,14 +169,20 @@ class HermesBridgeServer:
                 f"Du pratar med {author_name}."
             )
 
+        # Get model-specific settings
+        config = MODEL_CONFIG.get(LM_STUDIO_MODEL, MODEL_CONFIG["llama-3.2-3b"])
+        
         payload = {
             "model": LM_STUDIO_MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message}
             ],
-            "temperature": 0.7,
-            "max_tokens": 500,
+            "temperature": config["temperature"],
+            "max_tokens": config["max_tokens"],
+            "top_p": config["top_p"],
+            "frequency_penalty": config.get("frequency_penalty", 0.0),
+            "presence_penalty": config.get("presence_penalty", 0.0),
             "stream": False
         }
 
