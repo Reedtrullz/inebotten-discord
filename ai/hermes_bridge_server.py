@@ -47,12 +47,13 @@ MODEL_CONFIG = {
         "frequency_penalty": 0.1,
         "presence_penalty": 0.1,
     },
-    "qwen-2.5-7b": {
-        "temperature": 0.75,
-        "max_tokens": 250,
-        "top_p": 0.9,
-        "frequency_penalty": 0.1,
+            "qwen-2.5-7b": {
+        "temperature": 0.6,  # Lower for more consistency
+        "max_tokens": 150,   # Shorter to prevent rambling
+        "top_p": 0.85,
+        "frequency_penalty": 0.2,  # Penalty for English words
         "presence_penalty": 0.1,
+        "stop": ["Hei again", "Hi ", "Hello ", "English"],  # Stop if it switches to English
     },
     "gemma-2-2b": {
         "temperature": 0.7,
@@ -220,15 +221,20 @@ class HermesBridgeServer:
         else:
             # Default prompt based on model
             if is_qwen:
-                # Qwen handles Norwegian excellently - can use normal prompt
+                # Qwen prompt - clear and simple
                 system_prompt = (
-                    f"Du er Inebotten (Ine), en vennlig norsk Discord-assistent. "
-                    f"I dag er det {weekday} {today}. "
-                    f"Du snakker med {author_name}. "
-                    "Du svarer ALLTID på norsk (bokmål eller nynorsk). "
-                    "Aldri bruk engelsk. "
-                    "Du er hjelpsom, varm og litt humoristisk. "
-                    "Hold svarene naturlige og vennlige."
+                    f"Du er Ine. "
+                    f"Dato: {today}. "
+                    "EKSEMPLER:\n"
+                    "Bruker: Hei!\n"
+                    "Svar: Hei! 👋 Hvordan går det?\n\n"
+                    "Bruker: Hvordan har du det?\n"
+                    "Svar: Det går bra! 😊 Hva med deg?\n\n"
+                    "REGLER:\n"
+                    "- ALLTID norsk\n"
+                    "- Aldri engelske ord\n"
+                    "- Korte svar (maks 2 setninger)\n"
+                    "- Vennlig tone"
                 )
             elif is_gemma_2b:
                 # Gemma 2 2B works well for Norwegian
@@ -289,6 +295,10 @@ class HermesBridgeServer:
         # Add repeat penalty for small models (helps with language consistency)
         if "repeat_penalty" in config:
             payload["repeat_penalty"] = config["repeat_penalty"]
+        
+        # Add stop sequences if defined
+        if "stop" in config:
+            payload["stop"] = config["stop"]
 
         try:
             logger.info(f"Sending request to LM Studio with {len(payload['messages'])} messages")
