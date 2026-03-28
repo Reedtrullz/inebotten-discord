@@ -391,8 +391,35 @@ class HermesBridgeServer:
                             if not content and lines:
                                 content = lines[-1].strip()
                         
-                        # Import and use response cleaner
-                        from ai.response_cleaner import clean_thinking_response
+                        # Import and use response cleaner (same directory)
+                        try:
+                            from response_cleaner import clean_thinking_response
+                        except ImportError:
+                            # Fallback inline cleaner
+                            def clean_thinking_response(text):
+                                if not text:
+                                    return ""
+                                # Simple filter - remove common thinking patterns
+                                thinking_starts = [
+                                    "Looking at", "In the examples", "According to",
+                                    "Based on", "I should", "I need to", "So I",
+                                    "Wait", "How about", "Hmm", "Let me", "I think",
+                                    "Alternatively", "This means", "The assistant",
+                                    "First,", "Then", "But", "Actually", "Maybe",
+                                    "Perhaps", "En nisse",  # incomplete phrases
+                                ]
+                                lines = text.split('\n')
+                                for line in reversed(lines):
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    if any(line.startswith(t) for t in thinking_starts):
+                                        continue
+                                    if len(line.split()) < 2:  # Too short
+                                        continue
+                                    return line
+                                return text[:100] if text else ""
+                        
                         content = clean_thinking_response(content)
                         
                         logger.info(f"LM Studio generated {len(content)} chars (reasoning: {len(reasoning)} chars)")
