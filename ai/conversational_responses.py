@@ -7,7 +7,7 @@ Makes Inebotten feel like a chat homie, not a bot
 import random
 from datetime import datetime
 from cal_system.norwegian_calendar import get_todays_info, get_moon_phase, get_sunrise_sunset
-from ai.personality import get_personality
+from ai.personality import get_personality, get_greeting, get_signoff
 
 
 class ConversationalResponseGenerator:
