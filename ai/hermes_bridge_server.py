@@ -40,12 +40,40 @@ MODEL_CONFIG = {
         "presence_penalty": 0.2,
         "repeat_penalty": 1.3,  # Penalize repetition
     },
+    "qwen-2.5-4b": {
+        "temperature": 0.7,  # Qwen handles Norwegian well at normal temps
+        "max_tokens": 200,   # Can handle longer responses
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1,
+    },
+    "qwen-2.5-7b": {
+        "temperature": 0.75,
+        "max_tokens": 250,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1,
+    },
+    "gemma-2-2b": {
+        "temperature": 0.7,
+        "max_tokens": 150,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1,
+    },
     "gemma-3-4b": {
         "temperature": 0.8,
         "max_tokens": 500,
         "top_p": 0.95,
         "frequency_penalty": 0.0,
         "presence_penalty": 0.0,
+    },
+    "mistral-7b": {
+        "temperature": 0.75,
+        "max_tokens": 300,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.1,
     }
 }
 
@@ -157,11 +185,18 @@ class HermesBridgeServer:
         
         # Check which model we're using
         is_small_model = "3.2" in LM_STUDIO_MODEL or "3b" in LM_STUDIO_MODEL.lower()
+        # Qwen models handle Norwegian well even when small
+        is_qwen = "qwen" in LM_STUDIO_MODEL.lower()
+        # Gemma 2 2B is small but works well
+        is_gemma_2b = "gemma-2" in LM_STUDIO_MODEL.lower() and "2b" in LM_STUDIO_MODEL.lower()
         
-        # Use custom system prompt if provided (but truncate for small models)
+        # Use custom system prompt if provided (but truncate for problematic small models)
+        # Note: Qwen and Gemma 2 2B handle long prompts well even when small
+        needs_simplification = is_small_model and not is_qwen and not is_gemma_2b
+        
         if custom_system_prompt:
-            if is_small_model and len(custom_system_prompt) > 800:
-                # For small models, use simplified prompt
+            if needs_simplification and len(custom_system_prompt) > 800:
+                # For problematic small models (like Llama 3.2), use simplified prompt
                 logger.info(f"Custom prompt too long ({len(custom_system_prompt)} chars), using simplified for small model")
                 system_prompt = (
                     f"Du er Ine. Snakk norsk. "
@@ -183,9 +218,29 @@ class HermesBridgeServer:
                 system_prompt = custom_system_prompt
                 logger.info(f"Using custom system prompt ({len(custom_system_prompt)} chars)")
         else:
-            # Default prompt based on model size
-            if is_small_model:
-                # SIMPLIFIED for Llama 3.2 3B - Ultra clear Norwegian
+            # Default prompt based on model
+            if is_qwen:
+                # Qwen handles Norwegian excellently - can use normal prompt
+                system_prompt = (
+                    f"Du er Inebotten (Ine), en vennlig norsk Discord-assistent. "
+                    f"I dag er det {weekday} {today}. "
+                    f"Du snakker med {author_name}. "
+                    "Du svarer ALLTID på norsk (bokmål eller nynorsk). "
+                    "Aldri bruk engelsk. "
+                    "Du er hjelpsom, varm og litt humoristisk. "
+                    "Hold svarene naturlige og vennlige."
+                )
+            elif is_gemma_2b:
+                # Gemma 2 2B works well for Norwegian
+                system_prompt = (
+                    f"Du er Ine, en norsk Discord-venn. "
+                    f"I dag er det {today}. "
+                    f"Snakker med {author_name}. "
+                    "Svar på norsk. Vær vennlig og hjelpsom. "
+                    "Hold det kort og naturlig."
+                )
+            elif is_small_model:
+                # SIMPLIFIED for problematic small models (Llama 3.2)
                 system_prompt = (
                     f"Du er Ine. Snakk norsk. "
                     f"I dag er {today}. "
