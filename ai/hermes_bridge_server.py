@@ -342,39 +342,9 @@ class HermesBridgeServer:
                             if not content and lines:
                                 content = lines[-1].strip()
                         
-                        # Clean up thinking patterns from content
-                        thinking_patterns = [
-                            "Looking at", "In the examples", "In the",
-                            "The rules say", "According to", "Based on",
-                            "The assistant", "I should", "I need to",
-                            "Alternatively", "This means", "So the",
-                            "So I should", "Wait", "How about",
-                            "I think", "Let me", "Hmm", "A:",
-                        ]
-                        
-                        # Check if response starts with thinking pattern
-                        needs_cleaning = any(content.startswith(p) for p in thinking_patterns)
-                        
-                        if needs_cleaning:
-                            lines = content.split('\n')
-                            for line in lines:
-                                line = line.strip()
-                                # Skip empty and thinking lines
-                                if not line:
-                                    continue
-                                if any(line.startswith(p) for p in thinking_patterns):
-                                    continue
-                                # Found actual response
-                                content = line
-                                break
-                            
-                            # If still nothing, try to extract from quoted text
-                            if not content or any(content.startswith(p) for p in thinking_patterns):
-                                import re
-                                # Look for quoted text like "Jeg er Ine..."
-                                quotes = re.findall(r'"([^"]*)"', content)
-                                if quotes:
-                                    content = quotes[-1]  # Use last quote
+                        # Import and use response cleaner
+                        from ai.response_cleaner import clean_thinking_response
+                        content = clean_thinking_response(content)
                         
                         logger.info(f"LM Studio generated {len(content)} chars (reasoning: {len(reasoning)} chars)")
                         if content:
