@@ -1,80 +1,344 @@
-# Google Calendar Integration for Inebotten
+# Google Calendar Oppsett
 
-Botten kan nå integrere med Google Calendar! Dette lar deg:
-- Se kommende arrangementer fra Google Calendar
-- Synkronisere lokale arrangementer til Google Calendar
+> Steg-for-steg guide for å koble Inebotten til Google Calendar
 
-## Kommandoer
+---
 
-| Kommando | Beskrivelse |
-|----------|-------------|
-| `@inebotten google calendar` | Vis kommende arrangementer fra Google Calendar |
-| `@inebotten gcal` | Kortversjon av over |
-| `@inebotten sync til google` | Sync alle lokale arrangementer til Google Calendar |
+## 📋 Innholdsfortegnelse
 
-## Oppsett (Engangssak)
+1. [Oversikt](#oversikt)
+2. [Forutsetninger](#forutsetninger)
+3. [Steg 1: Google Cloud Console](#steg-1-google-cloud-console)
+4. [Steg 2: OAuth-oppsett](#steg-2-oauth-oppsett)
+5. [Steg 3: Autentisering](#steg-3-autentisering)
+6. [Steg 4: Testing](#steg-4-testing)
+7. [Dele Kalenderen](#dele-kalenderen)
+8. [Feilsøking](#feilsøking)
 
-For å koble boten til Google Calendar må du sette opp OAuth:
+---
 
-### Steg 1: Google Cloud Console
+## Oversikt
 
-1. Gå til https://console.cloud.google.com/apis/credentials
-2. Opprett et nytt prosjekt (eller bruk eksisterende)
-3. Klikk **"Enable APIs and Services"**
-4. Søk etter og aktiver:
-   - **Google Calendar API**
-5. Gå til **Credentials** → **Create Credentials** → **OAuth 2.0 Client ID**
-6. Velg **Application type: Desktop app**
-7. Klikk **Create**, deretter **Download JSON**
+Med Google Calendar-integrasjon kan Inebotten:
 
-### Steg 2: Autentisering
+- 📅 **Vise** kommende arrangementer fra Google Calendar
+- 🔄 **Synkronisere** lokale arrangementer til Google Calendar
+- 📌 **Se status** - 📅 for synkronisert, 📌 for kun lokalt
+- ✏️ **Oppdatere** arrangementer begge veier
 
-Kjør setup-scriptet fra Hermes:
+---
+
+## Forutsetninger
+
+- Google-konto
+- Tilgang til [Google Cloud Console](https://console.cloud.google.com)
+- Inebotten installert og kjørende
+
+---
+
+## Steg 1: Google Cloud Console
+
+### 1.1 Opprett Prosjekt
+
+1. Gå til [Google Cloud Console](https://console.cloud.google.com)
+2. Klikk prosjekt-velgeren øverst:
+   ```
+   ┌─────────────────────────────┐
+   │  🔽 Velg et prosjekt        │
+   └─────────────────────────────┘
+   ```
+3. Klikk **"Nytt prosjekt"**
+4. Gi prosjektet et navn, f.eks. `inebotten-calendar`
+5. Klikk **"Opprett"**
+
+### 1.2 Aktiver API
+
+1. Gå til **"APIer og tjenester"** > **"Bibliotek"**
+2. Søk etter **"Google Calendar API"**
+3. Klikk på den og trykk **"Aktiver"**
+
+   ```
+   ┌────────────────────────────────────┐
+   │  ✅ Google Calendar API            │
+   │     Status: AKTIVERES              │
+   └────────────────────────────────────┘
+   ```
+
+---
+
+## Steg 2: OAuth-oppsett
+
+### 2.1 Lag OAuth-bruker
+
+1. Gå til **"APIer og tjenester"** > **"OAuth-brukere"**
+2. Klikk **"+ OPPRETT BRUKER"**
+3. Velg **"Eksternt"** (hvis du vil dele med venner)
+   - Eller "Internt" for kun personlig bruk
+
+   ```
+   ┌─────────────────────────────────────┐
+   │  Brukertype:                        │
+   │  ○ Internt  ●Eksternt               │
+   │                                     │
+   │  [Fortsett]                         │
+   └─────────────────────────────────────┘
+   ```
+
+4. Fyll ut app-informasjon:
+   - **App-navn:** `Inebotten Calendar`
+   - **Brukerstøtte-e-post:** (din e-post)
+   - **App-logo:** (valgfritt)
+   - **Domene:** (kan være tomt)
+   - **Utviklerkontakt:** (din e-post)
+
+5. Klikk **"Lagre og fortsett"**
+
+### 2.2 Legg til Scopes
+
+1. Klikk **"Legg til eller fjern scopes"**
+2. Søk etter **"Calendar"**
+3. Velg:
+   - ✅ `.../auth/calendar` - "Se, rediger, dele og slette alle kalendere"
+   - ✅ `.../auth/calendar.events` - "Se, redigere, slette kalenderarrangementer"
+
+   ```
+   ┌────────────────────────────────────────┐
+   │  ✅ /auth/calendar                     │
+   │  ✅ /auth/calendar.events              │
+   │                                        │
+   │  [Oppdater]                            │
+   └────────────────────────────────────────┘
+   ```
+
+4. Klikk **"Oppdater"** og deretter **"Lagre og fortsett"**
+
+### 2.3 Legg til Testbrukere
+
+1. Under **"Testbrukere"**, klikk **"+ LEGG TIL BRUKERE"**
+2. Legg til din e-postadresse
+3. Klikk **"Lagre og fortsett"**
+
+### 2.4 Opprett Credentials
+
+1. Gå til **"APIer og tjenester"** > **"Credentials"**
+2. Klikk **"+ OPPRETT CREDENTIALS"** > **"OAuth client ID"**
+3. Velg **"Applikasjonstype: Desktop-app"**
+4. Gi den et navn: `Inebotten Desktop`
+5. Klikk **"Opprett"**
+6. Klikk **"Last ned JSON"** i popup-vinduet
+
+   ```
+   ┌─────────────────────────────────────┐
+   │  ✅ OAuth-client opprettet          │
+   │                                     │
+   │  [LAST NED JSON]                   │
+   └─────────────────────────────────────┘
+   ```
+
+7. Lagre filen som `client_secret.json` i `~/.hermes/discord/data/`
+
+---
+
+## Steg 3: Autentisering
+
+### 3.1 Kjør Setup-skript
 
 ```bash
-python ~/.hermes/skills/productivity/google-workspace/scripts/setup.py --client-secret /path/to/client_secret.json
+cd ~/.hermes/discord
+python3 utils/sync_calendar_to_gcal.py --setup
 ```
 
-Deretter får du en URL å åpne i nettleseren:
+### 3.2 Godkjenn i Nettleser
+
+1. Skriptet vil vise en URL:
+   ```
+   ===========================================
+   Åpne denne URLen i nettleseren:
+   
+   https://accounts.google.com/o/oauth2/auth?...
+   
+   Godkjenn tilgang og kopier redirect-URLen
+   ===========================================
+   ```
+
+2. **Åpne URLen** i nettleseren
+3. **Logg inn** med Google-kontoen som har kalenderen
+4. **Godkjenn** tilgangen:
+   ```
+   ┌─────────────────────────────────────┐
+   │  Inebotten Calendar ønsker å:       │
+   │                                     │
+   │  ✅ Se kalenderne dine              │
+   │  ✅ Administrere kalenderne dine    │
+   │                                     │
+   │  [Tillat]                           │
+   └─────────────────────────────────────┘
+   ```
+
+5. Du vil bli redirected til `localhost` (feilside er normalt!)
+6. **Kopier hele URLen** fra adressefeltet
+   - Ser ut som: `http://localhost/?code=4/0Ab...&scope=...`
+
+### 3.3 Fullfør Autentisering
+
+1. Lim inn URLen i terminalen når du blir spurt:
+   ```
+   Lim inn redirect-URLen: http://localhost/?code=4/0Ab...
+   ```
+
+2. Skriptet vil bekrefte:
+   ```
+   ✅ Autentisering vellykket!
+   Token lagret i: ~/.gcal_token.pickle
+   ```
+
+---
+
+## Steg 4: Testing
+
+### 4.1 Verifiser Oppsett
 
 ```bash
-python ~/.hermes/skills/productivity/google-workspace/scripts/setup.py --auth-url
+python3 utils/sync_calendar_to_gcal.py --check
 ```
 
-1. Åpne URLen i nettleseren
-2. Logg inn med Google-kontoen som har kalenderen du vil dele
-3. Godkjenn tilgangen
-4. Kopier URLen du blir redirectet til (viser kanskje feilside, det er normalt)
-5. Fullfør med:
-
-```bash
-python ~/.hermes/skills/productivity/google-workspace/scripts/setup.py --auth-code "KLE_INN_URLEN_HER"
+Forventet output:
+```
+✅ Google Calendar autentisering: OK
+📅 Kalender tilgjengelig: Ja
+🔄 Siste sync: Aldri
 ```
 
-### Steg 3: Verifiser
+### 4.2 Test i Discord
 
-```bash
-python ~/.hermes/skills/productivity/google-workspace/scripts/setup.py --check
-```
+1. Start botten:
+   ```bash
+   python3 run_both.py
+   ```
 
-Skal vise: `AUTHENTICATED`
+2. I Discord, skriv:
+   ```
+   @inebotten google calendar
+   ```
 
-## Passkeys
+3. Botten skal vise:
+   ```
+   📅 Kommende arrangementer:
+   
+   1. 📅 Møte med Ola - 25.03 kl 14:00
+      └─ [Åpne i Google Calendar](link)
+   ```
 
-Du nevnte at du bruker passkey for Google. Dette skal funke fint med OAuth - du logger inn på vanlig måte i nettleseren under autentiseringssteget.
+### 4.3 Test Synkronisering
 
-## Deling med venner
+1. Legg til et arrangement:
+   ```
+   @inebotten test-møte i morgen kl 10
+   ```
+
+2. Sync til Google:
+   ```
+   @inebotten sync til google
+   ```
+
+3. Sjekk i [Google Calendar](https://calendar.google.com)
+   - Arrangementet skal vises der!
+
+---
+
+## Dele Kalenderen
+
+### Med Venner
 
 Hvis kalenderen skal deles med venner:
-1. I Google Calendar, klikk på "My calendars" → din kalender → "Settings and sharing"
-2. Under "Share with specific people", legg til vennenes Gmail-adresser
-3. Velg passende rettigheter ("See all event details" eller "Make changes to events")
 
-## Tester
+1. Gå til [Google Calendar](https://calendar.google.com)
+2. Finn **"Mine kalendere"** på venstre side
+3. Hold musen over din kalender → klikk **⋮** → **"Innstillinger og deling"**
+4. Under **"Del med bestemte personer"**:
+   - Klikk **"+ Legg til personer"**
+   - Skriv inn vennens Gmail-adresse
+   - Velg rettigheter:
+     - **"Se alle eventdetaljer"** - kan se alt
+     - **"Gjøre endringer på events"** - kan redigere
+   - Klikk **"Send"**
 
-Etter oppsett, test med:
+   ```
+   ┌─────────────────────────────────────┐
+   │  Del med: venn@example.com          │
+   │  Rettigheter: Se alle detaljer      │
+   │                                     │
+   │  [✉️ Send invitasjon]               │
+   └─────────────────────────────────────┘
+   ```
+
+### Offentlig Tilgang
+
+⚠️ **Advarsel:** Dette gjør kalenderen synlig for alle!
+
+1. I kalender-innstillinger, under **"Tilgang tillatt for"**
+2. Sjekk **"Gjør tilgjengelig for offentligheten"**
+3. Velg **"Se kun ledig/opptatt (skjul detaljer)"** eller **"Se alle eventdetaljer"**
+
+---
+
+## Feilsøking
+
+### Vanlige Problemer
+
+| Problem | Årsak | Løsning |
+|---------|-------|---------|
+| "Uautorisert" | Token utløpt | Kjør setup på nytt |
+| "Invalid client" | Feil client_secret | Sjekk at riktig JSON er lastet ned |
+| "Access denied" | Ikke testbruker | Legg til e-post i testbrukere |
+| "Scope insufficient" | Manglende tillatelser | Sjekk at calendar-scopes er valgt |
+| "localhost refused" | Normalt! | Kopier URLen likevel |
+| Kalender vises ikke | Feil konto | Sjekk at du logget inn med riktig Google-konto |
+
+### Nullstill Autentisering
+
+```bash
+# Slett token
+rm ~/.gcal_token.pickle
+
+# Kjør setup på nytt
+python3 utils/sync_calendar_to_gcal.py --setup
 ```
-@inebotten google calendar
+
+### Sjekk Token
+
+```python
+python3 -c "
+import pickle
+with open('~/.gcal_token.pickle', 'rb') as f:
+    creds = pickle.load(f)
+    print(f'Valid: {creds.valid}')
+    print(f'Expired: {creds.expired}')
+    print(f'Scopes: {creds.scopes}')
+"
 ```
 
-Boten skal da vise kommende arrangementer fra din Google Calendar.
+### Debug Logging
+
+Legg til i din kode:
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
+
+---
+
+## Sikkerhetsnotater
+
+- 🔐 **Token lagres lokalt** i `~/.gcal_token.pickle` (kryptert)
+- 🔐 **Ikke del token-filen** - gir full tilgang til kalenderen
+- 🔐 **Bruk .gitignore** - token-filen skal aldri committes
+- 🔐 **Regelmessig rotasjon** - slett og opprett nytt token årlig
+
+---
+
+<p align="center">
+  <a href="DOCUMENTATION.md">📖 Dokumentasjon</a> &nbsp;•&nbsp;
+  <a href="QUICK_REFERENCE.md">📋 Hurtigreferanse</a> &nbsp;•&nbsp;
+  <a href="../README.md">⬅️ Tilbake til README</a>
+</p>

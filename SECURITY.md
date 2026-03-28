@@ -1,65 +1,260 @@
-# Security Policy
+# Sikkerhetspolicy
 
-## Supported Versions
+> Hvordan vi håndterer sikkerhet i Inebotten-prosjektet
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 2.x     | :white_check_mark: |
-| 1.x     | :x:                |
+---
 
-## Reporting a Vulnerability
+## 📋 Innholdsfortegnelse
 
-If you discover a security vulnerability in this Discord selfbot, please follow these steps:
+1. [Støttede Versjoner](#støttede-versjoner)
+2. [Rapportere Sårbarheter](#rapportere-sårbarheter)
+3. [Sikkerhetshensyn for Brukere](#sikkerhetshensyn-for-brukere)
+4. [Best Practices](#best-practices)
+5. [Token-lekkasje](#token-lekkasje)
+6. [Sikkerhetsfeatures](#sikkerhetsfeatures)
 
-1. **DO NOT** open a public issue on GitHub
-2. Email the maintainer directly at: [your-email@example.com]
-3. Include:
-   - Description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Suggested fix (if any)
+---
 
-## Security Considerations for Users
+## Støttede Versjoner
 
-### ⚠️ Important Warnings
+| Versjon | Støttet | Status |
+|---------|---------|--------|
+| 2.x | ✅ | Aktiv utvikling |
+| 1.x | ❌ | Ikke lenger støttet |
 
-**Discord selfbots are against Discord's Terms of Service.** Using this software may result in:
-- Account termination
-- IP bans
-- Loss of data
+Vi gir sikkerhetsoppdateringer kun for den nyeste major-versjonen.
 
-Use at your own risk. This project is for educational purposes.
+---
 
-### Best Practices
+## Rapportere Sårbarheter
 
-1. **Use a dedicated account** - Never run a selfbot on your main Discord account
-2. **Keep tokens secret** - Never share or commit your Discord token
-3. **Conservative rate limits** - Keep `MAX_MSGS_PER_SEC` low (default: 5)
-4. **Only respond when mentioned** - The bot is configured to only reply when @mentioned
-5. **Monitor logs** - Watch for unusual activity or rate limit warnings
-6. **Keep updated** - Pull security updates regularly
+### ⚠️ Viktig
 
-### What NOT to Commit
+**Ikke rapporter sikkerhetsproblemer i offentlige issues!**
 
-Never commit these files to git:
-- `.env` (contains Discord token)
-- `data/tokens.json`
-- `data/user_memory.json`
-- Any Google client secrets
-- Log files containing message content
+Dette gir angripere tid til å utnytte problemet før det er fikset.
 
-### Reporting Token Leaks
+### Hvordan rapportere
 
-If you accidentally committed a Discord token:
-1. Reset your Discord password immediately
-2. This will invalidate the old token
-3. Get a new token and update your `.env` file
-4. Rewrite git history to remove the token: `git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch .env' HEAD`
+1. **Send e-post til:** [your-email@example.com]
+2. **Emne:** `[SECURITY] Kort beskrivelse`
+3. **Innhold:**
+   - Beskrivelse av sårbarheten
+   - Hvordan gjenskape (hvis mulig)
+   - Potensiell innvirkning
+   - Forslag til fiks (hvis du har)
 
-## Security Features
+### Hva som skjer
 
-This selfbot includes:
-- Rate limiting to avoid detection
-- No message logging of other users
-- Only responds when explicitly mentioned
-- Conservative defaults for all limits
+1. **0-48 timer** - Vi bekrefter mottak
+2. **1 uke** - Vi vurderer alvorlighetsgrad
+3. **2-4 uker** - Vi utvikler fiks (avhengig av kompleksitet)
+4. **Før release** - Vi koordinerer offentliggjøring
+5. **Etter release** - Du får kreditering (hvis ønsket)
+
+---
+
+## Sikkerhetshensyn for Brukere
+
+### ⚠️ Vigtig Advarsel
+
+**Discord selfbots er mot [Discord's Terms of Service](https://discord.com/terms).**
+
+Bruk av denne programvaren kan resultere i:
+- ❌ Konto-terminering
+- ❌ IP-ban
+- ❌ Tap av data
+
+**Bruk på egen risiko.**
+
+### Anbefalinger for Trygg Bruk
+
+#### 1. Bruk Dedikert Konto
+
+**Aldri** kjør selfbot på din hoved-Discord-konto!
+
+```
+❌ Galt: Din personlige konto
+✅ Riktig: Separat konto kun for botten
+```
+
+#### 2. Hold Tokens Hemmelig
+
+Tokens er som passord - aldri del dem!
+
+```bash
+# ✅ Riktig - i .env-fil
+DISCORD_TOKEN=MTQ3ND...your_token
+
+# ❌ Galt - i koden
+discord_token = "MTQ3ND..."
+```
+
+#### 3. Konservative Rate Limits
+
+Standardinnstillinger er konservative:
+
+```env
+# .env
+MAX_MSGS_PER_SEC=5      # Maks 5 meldinger per sekund
+DAILY_QUOTA=10000       # Maks 10 000 meldinger per dag
+SAFE_INTERVAL=1         # Minst 1 sekund mellom meldinger
+```
+
+**Ikke øke disse!**
+
+#### 4. Kun Svar Ved Mention
+
+Botten er konfigurert til å kun respondere når @inebotten blir nevnt:
+
+```python
+# I message_monitor.py
+def is_mention(self, message):
+    """Sjekk om meldingen mentioner botten."""
+    return self.user.mentioned_in(message)
+```
+
+Dette reduserer synlighet og risiko.
+
+#### 5. Overvåk Logger
+
+Se etter uvanlig aktivitet:
+
+```bash
+# Kjør med logging
+tail -f ~/.hermes/discord/bot.log | grep -i "error\|warning\|rate"
+```
+
+#### 6. Hold Oppdatert
+
+```bash
+# Sjekk for oppdateringer daglig
+git pull origin master
+
+# Les changelog før oppdatering
+git log --oneline -5
+```
+
+---
+
+## Best Practices
+
+### Fil-beskyttelse
+
+```bash
+# Disse skal ALDRI committes til git
+.env                    # Discord token
+.env.local             # Lokale overrides
+data/tokens.json       # Bruker-tokens
+data/user_memory.json  # Personlig data
+data/calendar.json     # Personlig data
+data/client_secret*.json  # Google credentials
+*.log                  # Loggfiler
+```
+
+Alle disse er allerede i `.gitignore`.
+
+### Miljø-variabler
+
+```bash
+# ✅ Riktig
+export DISCORD_TOKEN="your-token"
+python3 run_both.py
+
+# ❌ Galt
+discord_token="your-token" python3 run_both.py  # Vises i shell history
+```
+
+### Nettverk
+
+- **Bridge kjører kun på localhost** (127.0.0.1:3000)
+- **Ingen ekstern tilgang** til AI-endepunktet
+- **Discord-token sendes kun til Discord's API**
+
+---
+
+## Token-lekkasje
+
+### Hvis du ved et uhell committet en token:
+
+#### Steg 1: Roter Token Umiddelbart
+
+1. Gå til [Discord Developer Portal](https://discord.com/developers/applications)
+2. Eller endre passord (hvis user token) - dette invaliderer token
+
+#### Steg 2: Fjern Fra Git History
+
+```bash
+# Installer git-filter-repo (bedre enn filter-branch)
+pip install git-filter-repo
+
+# Fjern filen fra all historie
+git filter-repo --path .env --invert-paths
+
+# Force-push (ADVARSEL: dette endrer historie!)
+git push origin --force --all
+```
+
+#### Steg 3: Sjekk for Lekkasje
+
+```bash
+# Sjekk om token finnes i historie
+git log --all --full-history -- .env
+
+# Søk etter token-mønster
+git rev-list --all | xargs git grep -l "MTQ3N"
+```
+
+### Hvis token ble lekket offentlig:
+
+1. **Roter token umiddelbart** (se over)
+2. **Informer brukere** hvis de bruker samme token
+3. **Overvåk konto** for uvanlig aktivitet
+4. **Rapporter til oss** hvis det var sentral token
+
+---
+
+## Sikkerhetsfeatures
+
+### Implementert
+
+| Feature | Beskrivelse |
+|---------|-------------|
+| Rate Limiting | Maks 5 msg/sek, 10k/dag |
+| Mention-only | Svarer kun ved @inebotten |
+| Local-only Bridge | Kun localhost:3000 |
+| Token Redaction | Tokens fjernes fra logger |
+| JSON Storage | Ingen skylagring av data |
+| OAuth for GCal | Ingen passord lagret |
+
+### CI-sikkerhet
+
+Vår CI sjekker automatisk:
+
+- Hardkodede tokens (GitHub secret scanning)
+- Sårbarheter i dependencies (Dependabot)
+- `.env` filer i commits
+
+---
+
+## Kontakt
+
+### Sikkerhetsproblemer
+
+📧 **E-post:** [your-email@example.com]  
+🔒 **PGP:** [hvis tilgjengelig]
+
+### Andre spørsmål
+
+- 💬 [GitHub Discussions](../../discussions)
+- 🐛 [GitHub Issues](../../issues) (ikke for sikkerhet!)
+
+---
+
+<p align="center">
+Sikkerhet er et felles ansvar. Takk for at du hjelper oss å holde Inebotten trygg!
+</p>
+
+<p align="center">
+  <a href="README.md">⬅️ Tilbake til README</a>
+</p>

@@ -1,55 +1,148 @@
-# Inebotten Discord Bot - Complete Documentation
+# Inebotten - Komplett Dokumentasjon
 
-## Overview
+> Omfattende dokumentasjon for utviklere og avanserte brukere
 
-**Inebotten** is a feature-rich Norwegian Discord selfbot that combines AI-powered conversations with practical utilities like calendar management, weather, polls, and more. It uses a bridge architecture to connect to LM Studio (running locally or remotely) for AI responses while maintaining local functionality for reliability.
+---
 
-## Architecture
+## 📋 Innholdsfortegnelse
+
+1. [Oversikt](#oversikt)
+2. [Systemarkitektur](#systemarkitektur)
+3. [Komponenter](#komponenter)
+4. [Datastrøm](#datastrøm)
+5. [Kalendersystem](#kalendersystem)
+6. [Personlighetssystem](#personlighetssystem)
+7. [Features](#features)
+8. [Konfigurasjon](#konfigurasjon)
+9. [Utvikling](#utvikling)
+10. [Feilsøking](#feilsøking)
+
+---
+
+## Oversikt
+
+**Inebotten** er en feature-rik norsk Discord selfbot som kombinerer AI-drevne samtaler med praktiske verktøy. Arkitekturen er modulær og designet for:
+
+- **Pålitelighet** - Lokale fallbacks når AI er utilgjengelig
+- **Skalerbarhet** - Enkel å utvide med nye features
+- **Personalisering** - Husker brukere og tilpasser seg
+- **Naturlig språk** - Ingen rigid kommando-struktur
+
+### Teknisk Stack
+
+| Komponent | Teknologi |
+|-----------|-----------|
+| Språk | Python 3.10+ |
+| Discord API | discord.py |
+| AI Backend | LM Studio (gemma-3-4b) |
+| Bridge | aiohttp HTTP server |
+| Lagring | JSON-filer |
+| Vær API | MET.no (gratis, norsk) |
+| Kalender | Google Calendar API |
+
+---
+
+## Systemarkitektur
+
+### Høynivå Arkitektur
 
 ```
-┌─────────────────┐     HTTP      ┌──────────────────┐     HTTP      ┌─────────────────┐
-│   Discord       │◄─────────────►│  Hermes Bridge   │◄─────────────►│  LM Studio      │
-│   Selfbot       │               │  Server          │               │  (gemma-3-4b)   │
-│   (Python)      │               │  (Port 3000)     │               │  (Port 1234)    │
-└─────────────────┘               └──────────────────┘               └─────────────────┘
-         │
-         ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                         Local Components (No AI Required)                            │
-├─────────────────────────────────────────────────────────────────────────────────────┤
-│  • Calendar Manager (events + reminders unified)                                     │
-│  • Google Calendar Sync                                                             │
-│  • Natural Language Parser                                                          │
-│  • User Memory & Personality System                                                 │
-│  • Weather API (MET.no)                                                             │
-│  • Norwegian Calendar (holidays, flag days)                                         │
-│  • Polls, Countdowns, Watchlists, Crypto, etc.                                      │
+│                                   BRUKERGRENSESNITT                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
+│  │   Discord    │  │   Google     │  │   LM Studio  │  │    MET.no    │              │
+│  │   (Chat)     │  │  Calendar    │  │    (AI)      │  │   (Vær)      │              │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
+└─────────┼─────────────────┼─────────────────┼─────────────────┼──────────────────────┘
+          │                 │                 │                 │
+          ▼                 ▼                 ▼                 ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                      BOT LAG                                         │
+│  ┌───────────────────────────────────────────────────────────────────────────────┐   │
+│  │                         Message Monitor (message_monitor.py)                   │   │
+│  │                         ─────────────────────────────────                      │   │
+│  │  • Mention-deteksjon    • Kommandoruting    • AI-fallback                    │   │
+│  └───────────────────────────────────────────────────────────────────────────────┘   │
+│                                         │                                            │
+│                    ┌────────────────────┼────────────────────┐                        │
+│                    ▼                    ▼                    ▼                        │
+│         ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐               │
+│         │  Natural Lang   │  │  Personality    │  │  Feature        │               │
+│         │  Parser         │  │  System         │  │  Handlers       │               │
+│         └─────────────────┘  └─────────────────┘  └─────────────────┘               │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+┌─────────────────────────────────────────▼────────────────────────────────────────────┐
+│                                      DATA LAG                                        │
+│                                                                                      │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐                  │
+│   │  Calendar Store  │  │   User Memory    │  │   GCal Cache     │                  │
+│   │  (JSON)          │  │   (JSON)         │  │   (OAuth)        │                  │
+│   └──────────────────┘  └──────────────────┘  └──────────────────┘                  │
+│                                                                                      │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Core Components
+### Meldingsflyt
+
+```
+┌─────────┐     ┌─────────────┐     ┌─────────────────┐     ┌──────────────┐
+│  Bruker │────▶│   Discord   │────▶│  Message Monitor │────▶│  Kommando-   │
+│  Input  │     │   Gateway   │     │  (process_msg)  │     │  Deteksjon   │
+└─────────┘     └─────────────┘     └─────────────────┘     └──────┬───────┘
+                                                                   │
+              ┌────────────────────────────────────────────────────┼──────────────┐
+              │                                                    │              │
+        ┌─────▼──────┐  ┌──────────┐  ┌──────────┐         ┌─────▼──────┐  ┌──▼──────┐
+        │   Intent   │  │ Natural  │  │ Kalender │         │   Andre    │  │   AI    │
+        │   Sjekk    │  │ Språk    │  │ Kommando │         │  Kommando  │  │  Chat   │
+        └─────┬──────┘  └────┬─────┘  └────┬─────┘         └─────┬──────┘  └────┬────┘
+              │              │             │                     │            │
+              └──────────────┴─────────────┴─────────────────────┘            │
+                              │                                              │
+                    ┌─────────▼──────────┐                      ┌───────────▼──────────┐
+                    │  Calendar Manager  │                      │   AI Response Flow   │
+                    │  • Legg til/slett  │                      │   • Bygg kontekst    │
+                    │  • Fullfør         │                      │   • Kall bridge      │
+                    │  • Sync til GCal   │                      │   • Returner svar    │
+                    └─────────┬──────────┘                      └───────────┬──────────┘
+                              │                                            │
+                    ┌─────────▼──────────┐                      ┌───────────▼──────────┐
+                    │   JSON Lagring     │                      │   LM Studio (gemma)  │
+                    │  (data/calendar.   │                      │   eller lokal fallback│
+                    │       json)        │                      │                      │
+                    └────────────────────┘                      └──────────────────────┘
+```
+
+---
+
+## Komponenter
 
 ### 1. Entry Points
 
-| File | Purpose | Usage |
-|------|---------|-------|
-| `run_both.py` | Starts bridge + selfbot together | `python3 run_both.py` |
-| `selfbot_runner.py` | Selfbot only (bridge must run) | `python3 selfbot_runner.py` |
-| `hermes_bridge_server.py` | Bridge only | `python3 hermes_bridge_server.py` |
+| Fil | Formål | Bruk |
+|-----|--------|------|
+| `run_both.py` | Starter bridge + selfbot samtidig | `python3 run_both.py` |
+| `selfbot_runner.py` | Kun selfbot (bridge må kjøre) | `python3 selfbot_runner.py` |
+| `hermes_bridge_server.py` | Kun bridge | `python3 hermes_bridge_server.py` |
 
 ### 2. Bridge Layer (`hermes_bridge_server.py`)
 
-**Purpose:** HTTP bridge between Discord bot and LM Studio
+**Formål:** HTTP-bro mellom Discord-bot og LM Studio
 
 **Endpoints:**
-- `GET /api/chat?data={payload}` - Main AI endpoint
-- `GET /health` - Health check
 
-**Fallback Behavior:**
-- If LM Studio unavailable, uses local response templates
-- Maintains basic functionality without AI
+| Endpoint | Metode | Beskrivelse |
+|----------|--------|-------------|
+| `/api/chat` | GET | Hoved-AI-endpoint. Tar `data`-parameter med JSON-payload |
+| `/health` | GET | Health check, returnerer status |
 
-**System Prompt (Current):**
+**Fallback-oppførsel:**
+- Hvis LM Studio er utilgjengelig, brukes lokale responssjablonger
+- Grunnleggende funksjonalitet opprettholdes uten AI
+
+**System Prompt:**
+
 ```
 Du er 'inebotten', ein vennleg Discord-kalenderbot.
 I dag er det {weekday} {today}.
@@ -60,38 +153,41 @@ Hald svara korte (under 300 ord) og vennlege.
 Du pratar med {author_name}.
 ```
 
-**Note:** The bridge currently uses a hardcoded prompt. The bot sends a personalized `system_prompt` but the bridge ignores it.
-
 ### 3. Message Monitor (`message_monitor.py`)
 
-**Purpose:** Core message handling and command routing (1,240 lines)
+**Formål:** Kjernen i meldingshåndtering og kommando-ruting (~1200 linjer)
 
-**Key Methods:**
-- `is_mention()` - Detects @inebotten mentions
-- `process_message()` - Main processing pipeline
-- `_send_response()` - AI/conversational responses
-- `_handle_calendar_*()` - Calendar commands
+**Nøkkelmetoder:**
 
-**Command Priority:**
-1. Natural language calendar parser
-2. Specific command matchers (countdown, poll, etc.)
-3. AI fallback for general chat
+| Metode | Beskrivelse |
+|--------|-------------|
+| `is_mention()` | Detekterer @inebotten-mentions |
+| `process_message()` | Hovedprosesseringsrørledning |
+| `_send_response()` | AI-/samtalerespons |
+| `_handle_calendar_*()` | Kalenderkommandoer |
 
-### 4. Calendar System
+**Kommandoprioritet:**
 
-#### Unified Calendar Manager (`calendar_manager.py`)
+1. Naturlig språk kalender-parser
+2. Spesifikke kommandomatchere (nedtelling, avstemning, etc.)
+3. AI-fallback for generell chat
 
-**Replaces:** Separate event_manager and reminder_manager
+### 4. Kalendersystem
 
-**Storage:** `~/.hermes/discord/data/calendar.json`
+#### 4.1 Unified Calendar Manager (`calendar_manager.py`)
+
+**Erstatter:** Separate event_manager og reminder_manager
+
+**Lagring:** `~/.hermes/discord/data/calendar.json`
 
 **Features:**
-- Events + reminders in one system
-- Recurring items (weekly, biweekly, monthly, yearly)
-- Completion tracking
-- Google Calendar sync support
+- Events + påminnelser i ett system
+- Gjentagende elementer (ukentlig, annenhver uke, månedlig, årlig)
+- Fullføringssporing
+- Google Calendar sync-støtte
 
-**Data Model:**
+**Datamodell:**
+
 ```json
 {
   "guild_id": [
@@ -114,227 +210,195 @@ Du pratar med {author_name}.
 }
 ```
 
-#### Natural Language Parser (`natural_language_parser.py`)
+#### 4.2 Natural Language Parser (`natural_language_parser.py`)
 
-**Purpose:** Parse Norwegian text into calendar items
+**Formål:** Parse norsk tekst til kalender-elementer
 
-**Supported Patterns:**
-```
-"@inebotten møte i morgen kl 14"           → Event tomorrow 14:00
-"@inebotten husk å ringe mamma på lørdag"  → Task on Saturday
-"@inebotten RBK-kamp 12.04 kl 18:30"       → Specific date/time
-"@inebotten lunsj med Ola hver fredag kl 12" → Recurring weekly
-"@inebotten test imårra kl 13:37"          → Dialect support (imårra)
-```
+**Støttede mønstre:**
 
-**Date Parsing:**
-- Explicit: `25.03.2026`, `25/03/2026`
-- Relative: `i dag`, `i morgen`/`imorgen`/`imårra`, `i overmorgen`
-- Weekdays: `på mandag`, `neste tirsdag`
+| Input | Resultat |
+|-------|----------|
+| `@inebotten møte i morgen kl 14` | Event i morgen 14:00 |
+| `@inebotten husk å ringe mamma på lørdag` | Påminnelse på lørdag |
+| `@inebotten RBK-kamp 12.04 kl 18:30` | Spesifikk dato/tid |
+| `@inebotten lunsj med Ola hver fredag kl 12` | Gjentagende ukentlig |
+| `@inebotten test imårra kl 13:37` | Dialektstøtte (imårra) |
 
-**Recurrence:**
-- Keywords: `hver uke`, `hver måned`, `hvert år`, `annenhver uke`
-- Day specification: `hver mandag`, `hver lørdag kl 10`
+**Datoparsing:**
+- Eksplisitt: `25.03.2026`, `25/03/2026`
+- Relativt: `i dag`, `i morgen`/`imorgen`/`imårra`, `i overmorgen`
+- Ukedager: `på mandag`, `neste tirsdag`
 
-#### Google Calendar Integration (`google_calendar_manager.py`)
+**Gjentagelse:**
+- Nøkkelord: `hver uke`, `hver måned`, `hvert år`, `annenhver uke`
+- Dags-spesifikasjon: `hver mandag`, `hver lørdag kl 10`
 
-**Purpose:** Two-way sync with Google Calendar
+#### 4.3 Google Calendar Integration (`google_calendar_manager.py`)
 
-**OAuth Flow:**
-1. User runs `sync_calendar_to_gcal.py`
-2. Opens browser to Google OAuth
-3. Grants calendar access
-4. Token saved to `~/.gcal_token.pickle`
+**Formål:** To-veis sync med Google Calendar
 
-**Sync Behavior:**
-- Creates events in GCal when added via bot
-- Stores GCal event ID for future updates
-- Shows 📅 indicator for synced items
-- Shows 📌 for local-only items
+**OAuth Flyt:**
+1. Bruker kjører `sync_calendar_to_gcal.py`
+2. Åpner nettleser for Google OAuth
+3. Godkjenner kalender-tilgang
+4. Token lagres i `~/.gcal_token.pickle`
 
-**Status Indicators:**
-- 📅 = Synced to Google Calendar
-- 📌 = Local only
-- ✓ = Completed
+**Sync-oppførsel:**
+- Oppretter events i GCal når lagt til via bot
+- Lagrer GCal event-ID for fremtidige oppdateringer
+- Viser 📅 indikator for synkroniserte elementer
+- Viser 📌 for kun lokale elementer
 
-### 5. Personality System (New)
+### 5. Personlighetssystem
 
-#### User Memory (`user_memory.py`)
+#### 5.1 User Memory (`user_memory.py`)
 
-**Storage:** `~/.hermes/discord/data/user_memory.json`
+**Lagring:** `~/.hermes/discord/data/user_memory.json`
 
-**Tracked Data:**
-- Username, location
-- Interests (auto-extracted)
-- Last topics discussed
-- Conversation count
-- Preferences (formality, humor style, dialect usage)
-- Last interaction timestamp
+**Sporingsdata:**
+
+| Felt | Beskrivelse |
+|------|-------------|
+| `username` | Discord visningsnavn |
+| `location` | Brukerens lokasjon |
+| `interests` | Automatisk ekstraherte interesser |
+| `last_topics` | Nylige samtaleemner |
+| `conversation_count` | Totalt antall interaksjoner |
+| `last_interaction` | ISO-tidsstempel |
+| `preferences` | {formality, humor_style, use_dialect} |
 
 **Features:**
-- Personalized greetings ("Hei Rune! Lenge siden sist - 3 dager!")
-- Days-since-last-chat tracking
-- Interest-based conversation starters
+- Personlige hilsener ("Hei Rune! Lenge siden sist - 3 dager!")
+- Dager-siden-sist-chat sporing
+- Interesse-baserte samtalestartere
 
-#### Conversation Context (`conversation_context.py`)
+#### 5.2 Conversation Context (`conversation_context.py`)
 
-**Purpose:** Maintains conversation threads and detects intent
+**Formål:** Vedlikeholder samtaletråder og detekterer intensjon
 
-**Intent Detection:**
-```python
-# Small talk (don't show dashboard)
-"Hei!", "Hvordan går det?", "Hva synes du om RBK?"
+**Intent-deteksjon:**
 
-# Dashboard requests (show weather/calendar)
-"Hva er været?", "Vis meg kalenderen", "Hva skjer i dag?"
-```
+| Type | Eksempler |
+|------|-----------|
+| Small talk (ikke vis dashboard) | "Hei!", "Hvordan går det?", "Hva synes du om RBK?" |
+| Dashboard-forespørsler | "Hva er været?", "Vis meg kalenderen", "Hva skjer i dag?" |
 
-**Conversation History:**
-- Stores last 10 messages per channel
-- Expires after 30 minutes of inactivity
-- Provides context to AI for coherent conversations
+**Samtalehistorikk:**
+- Lagrer siste 10 meldinger per kanal
+- Utløper etter 30 minutter inaktivitet
+- Gir kontekst til AI for koherente samtaler
 
-#### Personality Config (`personality_config.py`)
+#### 5.3 Personality Config (`personality_config.py`)
 
-**Character Profile:**
-- Name: Inebotten
-- Personality: Laid-back, humorous Norwegian
-- Traits: Uses dialect (imårra, serr), football opinions (RBK)
-- Style: Helpful but not pushy, not robotic
+**Karakterprofil:**
+
+| Egenskap | Beskrivelse |
+|----------|-------------|
+| Navn | Inebotten |
+| Personlighet | Avslappet, humoristisk nordmann |
+| Trekk | Bruker dialekt (imårra, serr), fotballmeninger (RBK) |
+| Stil | Hjelpsom men ikke påtrengende, ikke robotaktig |
 
 **DO:**
-- Vary greetings
-- Reference past conversations
-- Use humor and personality
-- Show you remember the user
+- Varier hilsener
+- Referer til tidligere samtaler
+- Bruk humor og personlighet
+- Vis at du husker brukeren
 
 **DON'T:**
-- Start with weather unless asked
-- List calendar without being asked
-- Be robotic or overly helpful
-- Use "As an AI..." phrases
+- Start med vær med mindre spurt
+- List opp kalender uten å bli spurt
+- Vær robotaktig eller over-hjelpsom
+- Bruk "Som en AI..." fraser
 
-### 6. Other Features
+### 6. Andre Features
 
-| Feature | Manager File | Commands |
-|---------|--------------|----------|
-| **Polls** | `poll_manager.py` | `@inebotten avstemning Tittel? Alternativ 1, Alternativ 2` |
-| **Countdowns** | `countdown_manager.py` | `@inebotten nedtelling til [dato]` |
+| Feature | Fil | Kommando |
+|---------|-----|----------|
+| **Avstemninger** | `poll_manager.py` | `@inebotten avstemning Tittel? Alt1, Alt2` |
+| **Nedtellinger** | `countdown_manager.py` | `@inebotten nedtelling til [dato]` |
 | **Watchlist** | `watchlist_manager.py` | `@inebotten watchlist add [symbol]` |
-| **Crypto Prices** | `crypto_manager.py` | `@inebotten pris BTC` |
-| **Horoscope** | `horoscope_manager.py` | `@inebotten horoskop [sign]` |
-| **Calculator** | `calculator_manager.py` | `@inebotten kalk 2+2*3` |
-| **Quotes** | `quote_manager.py` | `@inebotten sitat` |
-| **Word of Day** | `word_of_day.py` | `@inebotten dagens ord` |
-| **Compliments** | `compliments_manager.py` | `@inebotten kompliment` |
-| **URL Shortener** | `url_shortener.py` | `@inebotten shorten [url]` |
-| **Daily Digest** | `daily_digest_manager.py` | Auto-scheduled morning summary |
+| **Krypto** | `crypto_manager.py` | `@inebotten pris BTC` |
+| **Horoskop** | `horoscope_manager.py` | `@inebotten horoskop [stjernetegn]` |
+| **Kalkulator** | `calculator_manager.py` | `@inebotten kalk 2+2*3` |
+| **Sitater** | `quote_manager.py` | `@inebotten sitat` |
+| **Dagens ord** | `word_of_day.py` | `@inebotten dagens ord` |
+| **Komplimenter** | `compliments_manager.py` | `@inebotten kompliment` |
+| **URL-forkorter** | `url_shortener.py` | `@inebotten shorten [url]` |
+| **Nordlys** | `aurora_forecast.py` | `@inebotten nordlys` |
 
-### 7. Utility Components
+### 7. Utility-komponenter
 
-| File | Purpose |
-|------|---------|
-| `weather_api.py` | MET.no API integration (Norwegian weather) |
-| `norwegian_calendar.py` | Holidays, flag days, name days |
-| `localization.py` | Norwegian translations and formatting |
+| Fil | Formål |
+|-----|--------|
+| `weather_api.py` | MET.no API-integrasjon (norsk vær) |
+| `norwegian_calendar.py` | Helligdager, flaggdager, navnedager |
+| `localization.py` | Norske oversettelser og formatering |
 | `rate_limiter.py` | Discord API rate limiting |
-| `response_generator.py` | Fallback response generation |
+| `response_generator.py` | Fallback-responsgenerering |
 
-## Data Flow Examples
+---
 
-### Adding a Calendar Event (Natural Language)
+## Datastrøm
+
+### Legge til Kalender-event (Naturlig Språk)
 
 ```
-User: @inebotten møte med Ola i morgen kl 14
+Bruker: @inebotten møte med Ola i morgen kl 14
 
-1. message_monitor detects mention
-2. natural_language_parser.parse_event() extracts:
+1. message_monitor detekterer mention
+2. natural_language_parser.parse_event() ekstraherer:
    - title: "møte med Ola"
-   - date: tomorrow (calculated)
+   - date: tomorrow (kalkulert)
    - time: "14:00"
-3. calendar_manager.add_item() saves to JSON
-4. If GCal enabled: google_calendar_manager.sync_to_gcal()
-5. Bot replies: "Lagt til: Møte med Ola - [date] kl. 14:00"
+3. calendar_manager.add_item() lagrer til JSON
+4. Hvis GCal aktivert: google_calendar_manager.sync_to_gcal()
+5. Bot svarer: "Lagt til: Møte med Ola - [dato] kl. 14:00"
 ```
 
-### Small Talk Response (AI)
+### Small Talk Respons (AI)
 
 ```
-User: @inebotten Hei! Hvordan går det?
+Bruker: @inebotten Hei! Hvordan går det?
 
-1. message_monitor detects mention
+1. message_monitor detekterer mention
 2. conversation_context.is_small_talk() = True
-3. user_memory.update_last_interaction() records topic
-4. Build personalized system_prompt with user context
-5. hermes_connector.generate_response() sends to bridge
-6. Bridge forwards to LM Studio (gemma-3-4b)
-7. Bot replies with AI-generated, personality-infused response
+3. user_memory.update_last_interaction() registrerer emne
+4. Bygg personlig system_prompt med brukerkontekst
+5. hermes_connector.generate_response() sender til bridge
+6. Bridge videresender til LM Studio (gemma-3-4b)
+7. Bot svarer med AI-generert, personlighetsinfusert respons
 ```
 
-### Calendar View
+### Kalendervisning
 
 ```
-User: @inebotten kalender
+Bruker: @inebotten kalender
 
-1. message_monitor._handle_calendar_list() called
-2. calendar_manager.get_upcoming() fetches items
-3. Format with status indicators (📅📌✓)
-4. Show Google Calendar sync links if enabled
-5. Bot replies with formatted list + "ferdig [nummer]" help
+1. message_monitor._handle_calendar_list() kalles
+2. calendar_manager.get_upcoming() henter elementer
+3. Formater med statusindikatorer (📅📌✓)
+4. Vis Google Calendar sync-lenker hvis aktivert
+5. Bot svarer med formatert liste + "ferdig [nummer]" hjelp
 ```
 
-### Completing an Item
+---
+
+## Kalendersystem
+
+### Kommandoer
 
 ```
-User: @inebotten ferdig 2
-
-1. message_monitor._handle_complete_item() extracts number
-2. calendar_manager.complete_item() marks as complete
-3. If recurring: calculates next occurrence
-4. If GCal synced: updates event in Google Calendar
-5. Bot replies: "✓ Fullført: [title]" (+ next date if recurring)
+@inebotten kalender                      # List alle kommende elementer
+@inebotten kalender 7                    # List neste 7 dager
+@inebotten møte [tittel] [dato] [tid]    # Legg til event
+@inebotten husk [tittel] [dato]          # Legg til task/påminnelse
+@inebotten ferdig [nummer]               # Marker element som fullført
+@inebotten slett [nummer]                # Slett element
+@inebotten sync                          # Sync til Google Calendar
 ```
 
-## Configuration
-
-### Environment Variables
-
-```bash
-# Bridge Configuration
-HERMES_BRIDGE_HOST=127.0.0.1
-HERMES_BRIDGE_PORT=3000
-
-# Discord Token (in .env file)
-DISCORD_TOKEN=your_token_here
-
-# Google Calendar (OAuth credentials)
-# Stored in ~/.gcal_credentials.json after first run
-```
-
-### File Locations
-
-| File | Location | Purpose |
-|------|----------|---------|
-| Calendar Data | `~/.hermes/discord/data/calendar.json` | Events & reminders |
-| User Memory | `~/.hermes/discord/data/user_memory.json` | User preferences |
-| GCal Token | `~/.gcal_token.pickle` | Google OAuth token |
-| GCal Credentials | `~/.gcal_credentials.json` | Google OAuth credentials |
-
-## Usage Examples
-
-### Calendar Commands
-
-```
-@inebotten kalender                      # List all upcoming items
-@inebotten kalender 7                    # List next 7 days
-@inebotten møte [tittel] [dato] [tid]    # Add event
-@inebotten husk [tittel] [dato]          # Add task/reminder
-@inebotten ferdig [nummer]               # Mark item as complete
-@inebotten slett [nummer]                # Delete item
-@inebotten sync                          # Sync to Google Calendar
-```
-
-### Natural Language (No Command Structure)
+### Naturlig Språk (Ingen Kommandostruktur)
 
 ```
 @inebotten lunsj med teamet på fredag kl 12
@@ -344,66 +408,142 @@ DISCORD_TOKEN=your_token_here
 @inebotten bursdag til mamma 15.05 hvert år
 ```
 
-### Utility Commands
+### Utility-kommandoer
 
 ```
-@inebotten vær                          # Current weather
-@inebotten været i Oslo                 # Weather for location
-@inebotten avstemning Pizza eller burger?  # Create poll
-@inebotten stem 1                        # Vote on poll
-@inebotten nedtelling til 17. mai       # Start countdown
-@inebotten dagens ord                    # Norwegian word of day
-@inebotten horoskop væren                # Daily horoscope
-@inebotten pris BTC                      # Crypto price
-@inebotten kalk (100 * 1.25) / 2         # Calculator
+@inebotten vær                          # Nåværende vær
+@inebotten været i Oslo                 # Vær for lokasjon
+@inebotten avstemning Pizza eller burger?  # Lag avstemning
+@inebotten stem 1                        # Stem på avstemning
+@inebotten nedtelling til 17. mai       # Start nedtelling
+@inebotten dagens ord                    # Norsk ord for dagen
+@inebotten horoskop væren                # Dagens horoskop
+@inebotten pris BTC                      # Kryptopris
+@inebotten kalk (100 * 1.25) / 2         # Kalkulator
 ```
-
-## Architecture Strengths
-
-1. **Modular Design:** Each feature is self-contained
-2. **Graceful Degradation:** Works without AI (local fallbacks)
-3. **Unified Calendar:** Single system for events + reminders
-4. **Natural Language:** No rigid command syntax
-5. **Google Integration:** Syncs with real calendar
-6. **Personality System:** Context-aware, personalized responses
-
-## Known Limitations
-
-1. **Bridge System Prompt:** The bridge ignores the bot's personalized system_prompt
-2. **Selfbot Nature:** Requires user token (not bot token), against Discord ToS for production
-3. **No Persistent AI Memory:** AI doesn't remember across restarts (but user_memory.json does)
-4. **Single Guild Focus:** Some features work best with one Discord server
-
-## Future Enhancements
-
-- Fix bridge to use bot's personalized system_prompt
-- Add more Norwegian dialect support
-- Image generation integration
-- Voice message support
-- Multi-language support (Swedish, Danish)
-- Web dashboard for calendar management
-
-## Development
-
-### Running Tests
-
-```bash
-python3 test_selfbot.py              # Basic tests
-python3 test_selfbot_comprehensive.py # Full test suite
-python3 -m py_compile *.py           # Syntax check all files
-```
-
-### Adding New Features
-
-1. Create `feature_manager.py` with command parsing
-2. Add to `message_monitor.py` imports and initialization
-3. Add command matcher in `process_message()`
-4. Add handler method `_handle_feature_command()`
-5. Update this documentation
 
 ---
 
-**Version:** 2.0 (March 2026)  
-**Primary Language:** Norwegian (Bokmål/Nynorsk)  
-**AI Model:** gemma-3-4b via LM Studio  
-**Maintainer:** reedtrullz
+## Konfigurasjon
+
+### Miljøvariabler
+
+```bash
+# Bridge-konfigurasjon
+HERMES_BRIDGE_HOST=127.0.0.1
+HERMES_BRIDGE_PORT=3000
+
+# Discord Token (i .env-fil)
+DISCORD_TOKEN=***
+
+# Google Calendar (OAuth-credentials)
+# Lagret i ~/.gcal_credentials.json etter første kjøring
+```
+
+### Filplasseringer
+
+| Fil | Plassering | Formål |
+|-----|------------|--------|
+| Kalenderdata | `~/.hermes/discord/data/calendar.json` | Events & påminnelser |
+| Brukerminne | `~/.hermes/discord/data/user_memory.json` | Brukerpreferanser |
+| GCal Token | `~/.gcal_token.pickle` | Google OAuth token |
+| GCal Credentials | `~/.gcal_credentials.json` | Google OAuth credentials |
+
+---
+
+## Utvikling
+
+### Kjøre Tester
+
+```bash
+python3 tests/test_selfbot.py              # Basis-tester
+python3 tests/test_selfbot_comprehensive.py # Full test-suite
+python3 -m py_compile *.py                 # Syntaks-sjekk alle filer
+```
+
+### Legge til Nye Features
+
+Se [DEVELOPMENT.md](DEVELOPMENT.md) for komplett guide.
+
+Kortversjon:
+
+1. Lag `feature_manager.py` med kommandoparsing
+2. Legg til i `message_monitor.py` imports og initialisering
+3. Legg til kommandomatcher i `process_message()`
+4. Legg til handler-metode `_handle_feature_command()`
+5. Oppdater denne dokumentasjonen
+
+---
+
+## Arkitekturstyrker
+
+1. **Modulær Design** - Hver feature er selvstendig
+2. **Graceful Degradation** - Fungerer uten AI (lokale fallbacks)
+3. **Enhetlig Kalender** - Ett system for events + påminnelser
+4. **Naturlig Språk** - Ingen rigid kommando-syntaks
+5. **Google Integrasjon** - Syncer med ekte kalender
+6. **Personlighetssystem** - Kontekstbevisst, personlig tilpasset
+
+---
+
+## Kjente Begrensninger
+
+1. **Bridge System Prompt** - Broen ignorerer botens personlige system_prompt
+2. **Selfbot Nature** - Krever user token (ikke bot token), mot Discord ToS for produksjon
+3. **Ingen Persistent AI-minne** - AI husker ikke på tvers av omstarter (men user_memory.json gjør)
+4. **Single Guild Fokus** - Noen features fungerer best med én Discord-server
+
+---
+
+## Fremtidige Forbedringer
+
+- [ ] Fiks bridge til å bruke botens personlige system_prompt
+- [ ] Mer norsk dialekt-støtte
+- [ ] Bildegenererings-integrasjon
+- [ ] Stemme-melding-støtte
+- [ ] Flerspråklig støtte (Svensk, Dansk)
+- [ ] Web dashboard for kalenderhåndtering
+
+---
+
+## Feilsøking
+
+### Vanlige Problemer
+
+| Problem | Årsak | Løsning |
+|---------|-------|---------|
+| Botten svarer ikke | Bridge eller selfbot ikke kjørende | Sjekk `run_both.py` output |
+| AI svarer ikke | LM Studio ikke tilgjengelig | Start LM Studio på Windows |
+| "Invalid token" | Token utløpt | Hent ny token fra Discord DevTools |
+| GCal sync feiler | OAuth utløpt | Kjør sync-skript på nytt |
+| "Fant ikke nummer" | Feil nummer i kalender | Bruk `@inebotten kalender` først |
+
+### Debug Logging
+
+Legg til i koden:
+```python
+print(f"[DEBUG] variable={value}")
+```
+
+### Sjekk Lagring
+
+```bash
+# Vis lagrede data
+cat ~/.hermes/discord/data/calendar.json | python3 -m json.tool
+```
+
+---
+
+<p align="center">
+  <b>Versjon:</b> 2.0 (Mars 2026) &nbsp;|&nbsp;
+  <b>Hovedspråk:</b> Norsk (Bokmål/Nynorsk) &nbsp;|&nbsp;
+  <b>AI-modell:</b> gemma-3-4b via LM Studio &nbsp;|&nbsp;
+  <b>Maintainer:</b> reedtrullz
+</p>
+
+<p align="center">
+  <a href="QUICK_REFERENCE.md">📖 Hurtigreferanse</a> &nbsp;•&nbsp;
+  <a href="ARCHITECTURE.md">🏗️ Arkitektur</a> &nbsp;•&nbsp;
+  <a href="DEVELOPMENT.md">💻 Utvikling</a> &nbsp;•&nbsp;
+  <a href="../README.md">⬅️ Tilbake til README</a>
+</p>

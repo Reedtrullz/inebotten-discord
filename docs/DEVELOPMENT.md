@@ -1,100 +1,205 @@
-# Inebotten Development Guide
+# Inebotten - Utviklerguide
 
-## Adding a New Feature
+> Guide for utviklere som vil bidra til eller utvide Inebotten
 
-### Step 1: Create Feature Manager
+---
 
-Create `feature_manager.py`:
+## 📋 Innholdsfortegnelse
+
+1. [Komme i Gang](#komme-i-gang)
+2. [Legge til Ny Feature](#legge-til-ny-feature)
+3. [Kode-stil](#kode-stil)
+4. [Testing](#testing)
+5. [Vanlige Mønstre](#vanlige-mønstre)
+6. [Debug-tips](#debug-tips)
+7. [Git-workflow](#git-workflow)
+8. [Nyttige Kommandoer](#nyttige-kommandoer)
+
+---
+
+## Komme i Gang
+
+### Utviklingsmiljø
+
+```bash
+# 1. Klon repoet
+git clone https://github.com/Reedtrullz/inebotten-discord.git
+cd inebotten-discord
+
+# 2. Lag virtuelt miljø
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 3. Installer avhengigheter
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# 4. Kopier og konfigurer miljø
+cp .env.example .env
+# Rediger .env med dine verdier
+
+# 5. Verifiser oppsett
+python3 -m py_compile *.py
+python3 tests/test_selfbot.py
+```
+
+### Prosjektstruktur
+
+```
+inebotten-discord/
+├── ai/                     # AI-komponenter
+│   ├── hermes_bridge_server.py
+│   ├── hermes_connector.py
+│   └── response_generator.py
+├── cal_system/             # Kalendersystem
+│   ├── calendar_manager.py
+│   ├── natural_language_parser.py
+│   └── google_calendar_manager.py
+├── core/                   # Kjernekomponenter
+│   ├── message_monitor.py
+│   ├── rate_limiter.py
+│   └── config.py
+├── features/               # Feature-managers
+│   ├── weather_api.py
+│   ├── poll_manager.py
+│   └── ...
+├── memory/                 # Personlighetssystem
+│   ├── user_memory.py
+│   └── conversation_context.py
+├── docs/                   # Dokumentasjon
+└── tests/                  # Tester
+```
+
+---
+
+## Legge til Ny Feature
+
+### Steg-for-Steg Guide
+
+#### Steg 1: Lag Feature Manager
+
+Opprett `features/my_feature_manager.py`:
 
 ```python
 #!/usr/bin/env python3
 """
-Feature Manager - [Description of your feature]
+MyFeature Manager - [Beskrivelse av din feature]
 """
 
 import json
 from pathlib import Path
 from datetime import datetime
+from typing import Tuple, Optional, Dict, Any
 
 
-class FeatureManager:
+class MyFeatureManager:
     """
-    Manages [feature] functionality
+    Manager for [feature] funksjonalitet.
+    
+    Ansvar:
+    - [Ansvar 1]
+    - [Ansvar 2]
+    - [Ansvar 3]
     """
     
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path: Optional[Path] = None):
+        """
+        Initialiser MyFeatureManager.
+        
+        Args:
+            storage_path: Sti til lagringsfil. Default: ~/.hermes/discord/data/my_feature.json
+        """
         if storage_path is None:
-            storage_path = Path.home() / '.hermes' / 'discord' / 'feature_data.json'
+            storage_path = Path.home() / '.hermes' / 'discord' / 'data' / 'my_feature.json'
         
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.data = self._load_data()
     
-    def _load_data(self):
-        """Load data from storage"""
+    def _load_data(self) -> Dict[str, Any]:
+        """Last data fra lagring."""
         if self.storage_path.exists():
             try:
                 with open(self.storage_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"[MYFEATURE] Advarsel: Kunne ikke laste data: {e}")
                 return {}
         return {}
     
-    def _save_data(self):
-        """Save data to storage"""
-        with open(self.storage_path, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+    def _save_data(self) -> None:
+        """Lagre data til disk."""
+        try:
+            with open(self.storage_path, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            print(f"[MYFEATURE] Feil: Kunne ikke lagre data: {e}")
     
-    def do_something(self, guild_id, user_id, param):
+    def add_item(self, guild_id: str, user_id: str, content: str) -> Tuple[bool, str]:
         """
-        Main feature logic
+        Legg til nytt element.
         
         Args:
             guild_id: Discord guild ID
-            user_id: Discord user ID
-            param: Some parameter
+            user_id: Discord bruker ID
+            content: Innhold å legge til
         
         Returns:
-            (success: bool, result: str)
+            (suksess: bool, melding: str)
         """
         guild_key = str(guild_id)
         
         if guild_key not in self.data:
             self.data[guild_key] = []
         
-        # Your logic here
+        item = {
+            "id": len(self.data[guild_key]) + 1,
+            "content": content,
+            "created_by": user_id,
+            "created_at": datetime.now().isoformat()
+        }
         
+        self.data[guild_key].append(item)
         self._save_data()
-        return True, "Success message"
+        
+        return True, f"Lagt til: {content}"
     
-    def format_output(self, guild_id):
-        """Format data for display"""
+    def list_items(self, guild_id: str) -> str:
+        """
+        Formater liste for visning.
+        
+        Args:
+            guild_id: Discord guild ID
+        
+        Returns:
+            Formatert streng for Discord
+        """
         guild_key = str(guild_id)
         
         if guild_key not in self.data or not self.data[guild_key]:
-            return "Ingen data funnet."
+            return "📋 **Min Feature**\nIngen elementer funnet."
         
-        lines = ["📋 **Feature Header:**"]
-        for i, item in enumerate(self.data[guild_key][:10], 1):
-            lines.append(f"{i}. {item}")
+        lines = ["📋 **Min Feature:**"]
+        for item in self.data[guild_key][:10]:
+            lines.append(f"{item['id']}. {item['content']}")
         
         return "\n".join(lines)
 
 
-def parse_feature_command(content: str):
+def parse_my_feature_command(content: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """
-    Parse feature command from message
+    Parse feature-kommando fra melding.
     
     Args:
-        content: Message content (without bot mention)
+        content: Meldingsinnhold (uten bot mention)
     
     Returns:
-        (action: str, params: dict) or None if not a match
+        (handling, parametere) eller None hvis ikke match
     """
     content_lower = content.lower().strip()
     
-    # Match patterns like "feature add ...", "feature list", etc.
-    if content_lower.startswith('feature '):
+    # Match mønstre som "myfeature add ...", "myfeature list", etc.
+    if content_lower.startswith('myfeature '):
         parts = content_lower.split(maxsplit=2)
         
         if len(parts) < 2:
@@ -108,67 +213,72 @@ def parse_feature_command(content: str):
     return None
 
 
-# Singleton instance
-_feature_manager = None
+# Singleton instans
+_my_feature_manager: Optional[MyFeatureManager] = None
 
-def get_feature_manager():
-    """Get or create singleton FeatureManager instance"""
-    global _feature_manager
-    if _feature_manager is None:
-        _feature_manager = FeatureManager()
-    return _feature_manager
+
+def get_my_feature_manager() -> MyFeatureManager:
+    """Hent eller opprett singleton MyFeatureManager instans."""
+    global _my_feature_manager
+    if _my_feature_manager is None:
+        _my_feature_manager = MyFeatureManager()
+    return _my_feature_manager
 ```
 
-### Step 2: Add to Message Monitor
+#### Steg 2: Legg til i Message Monitor
 
-In `message_monitor.py`:
-
-**1. Add import (around line 50):**
+**2.1. Legg til import (ca. linje 50 i `message_monitor.py`):**
 
 ```python
-from feature_manager import FeatureManager, parse_feature_command
+from features.my_feature_manager import MyFeatureManager, parse_my_feature_command
 ```
 
-**2. Initialize in `__init__` (around line 70):**
+**2.2. Initialiser i `__init__` (ca. linje 70):**
 
 ```python
-self.feature = FeatureManager()
-self.parse_feature_command = parse_feature_command
+self.my_feature = MyFeatureManager()
+self.parse_my_feature_command = parse_my_feature_command
 ```
 
-**3. Add command matcher in `process_message()`:**
+**2.3. Legg til kommandomatcher i `process_message()`:**
 
-Find the section with other command matchers (around line 250) and add:
+Finn seksjonen med andre kommandomatchere (ca. linje 250) og legg til:
 
 ```python
-# Check for feature command
-parsed = self.parse_feature_command(content)
+# Sjekk for myfeature-kommando
+parsed = self.parse_my_feature_command(content)
 if parsed:
-    print(f"[MONITOR] Matched: feature command")
-    await self._handle_feature_command(message, parsed)
+    print(f"[MONITOR] Matched: myfeature command")
+    await self._handle_my_feature_command(message, parsed)
     return
 ```
 
-**4. Add handler method:**
-
-Add a new method to the class:
+**2.4. Legg til handler-metode:**
 
 ```python
-async def _handle_feature_command(self, message, parsed):
+async def _handle_my_feature_command(self, message, parsed):
     """
-    Handle feature commands
+    Håndter myfeature-kommandoer.
     
     Args:
-        message: Discord message object
-        parsed: (action, params) tuple from parser
+        message: Discord meldingsobjekt
+        parsed: (handling, parametere) tuple fra parser
     """
     try:
         action, params = parsed
         guild_id = message.guild.id if message.guild else message.channel.id
         
         if action == 'add':
-            success, result = self.feature.do_something(
-                guild_id, 
+            if not params['content'].strip():
+                await message.reply(
+                    "❌ Du må skrive noe å legge til.\n"
+                    "Bruk: `@inebotten myfeature add [tekst]`",
+                    mention_author=False
+                )
+                return
+            
+            success, result = self.my_feature.add_item(
+                guild_id,
                 message.author.id,
                 params['content']
             )
@@ -179,290 +289,472 @@ async def _handle_feature_command(self, message, parsed):
                 await message.reply(f"❌ {result}", mention_author=False)
         
         elif action == 'list':
-            output = self.feature.format_output(guild_id)
+            output = self.my_feature.list_items(guild_id)
             await message.reply(output, mention_author=False)
         
         else:
             await message.reply(
-                "❌ Ukjent kommando. Bruk: `@inebotten feature [add/list/remove]`",
+                "❌ Ukjent kommando.\n"
+                "Bruk: `@inebotten myfeature [add/list]",
                 mention_author=False
             )
     
     except Exception as e:
-        print(f"[MONITOR] Feature command error: {e}")
+        print(f"[MONITOR] MyFeature kommando feil: {e}")
+        import traceback
+        traceback.print_exc()
         await message.reply(
             "❌ Noe gikk galt. Prøv igjen senere.",
             mention_author=False
         )
 ```
 
-### Step 3: Update Documentation
+#### Steg 3: Oppdater Dokumentasjon
 
-Add to `DOCUMENTATION.md` in the features table:
+**3.1. Legg til i `docs/DOCUMENTATION.md`:**
 
-```markdown
-| **Your Feature** | `feature_manager.py` | `@inebotten feature [action]` |
-```
-
-Add usage examples to `QUICK_REFERENCE.md`:
+Finn feature-tabellen og legg til:
 
 ```markdown
-| Your Feature | `@inebotten feature add [data]` |
+| **MyFeature** | `features/my_feature_manager.py` | `@inebotten myfeature [add/list]` |
 ```
 
-### Step 4: Test
+**3.2. Legg til i `docs/QUICK_REFERENCE.md`:**
+
+Finn "Andre kommandoer"-tabellen og legg til:
+
+```markdown
+| MyFeature | `@inebotten myfeature add [tekst]` |
+```
+
+#### Steg 4: Test
 
 ```bash
-# Syntax check
-python3 -m py_compile feature_manager.py
-python3 -m py_compile message_monitor.py
+# Syntaks-sjekk
+python3 -m py_compile features/my_feature_manager.py
+python3 -m py_compile core/message_monitor.py
 
-# Run tests
-python3 -c "from feature_manager import FeatureManager; fm = FeatureManager('/tmp/test.json'); print('OK')"
+# Enhetstest
+python3 -c "
+from features.my_feature_manager import MyFeatureManager, parse_my_feature_command
+import tempfile
+
+# Test parser
+result = parse_my_feature_command('myfeature add test data')
+assert result is not None
+assert result[0] == 'add'
+print('✓ Parser test passed')
+
+# Test manager
+with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    temp_path = f.name
+
+fm = MyFeatureManager(temp_path)
+success, msg = fm.add_item('guild1', 'user1', 'test')
+assert success
+print('✓ Manager test passed')
+
+print('\n✅ All tests passed!')
+"
+
+# Integrasjonstest
+python3 run_both.py
+# I Discord: "@inebotten myfeature add test"
 ```
 
-## Code Style Guidelines
+---
 
-### 1. Naming
+## Kode-stil
 
-- **Classes:** `PascalCase` (e.g., `CalendarManager`)
-- **Functions:** `snake_case` (e.g., `parse_event`)
-- **Constants:** `UPPER_CASE` (e.g., `MAX_ITEMS`)
-- **Private:** `_leading_underscore` (e.g., `_load_data`)
+### Navngiving
 
-### 2. Documentation
+| Type | Konvensjon | Eksempel |
+|------|------------|----------|
+| Klasser | PascalCase | `CalendarManager` |
+| Funksjoner | snake_case | `parse_event` |
+| Konstanter | UPPER_CASE | `MAX_ITEMS` |
+| Private | _leading_underscore | `_load_data` |
+| Type hints | Alltid bruk | `def func(x: str) -> int:` |
+
+### Dokumentasjon
 
 ```python
-def method_name(self, param1, param2):
+def calculate_next_occurrence(
+    date_str: str,
+    recurrence: str,
+    recurrence_day: Optional[str] = None
+) -> Optional[str]:
     """
-    Brief description of what this does
+    Beregn neste forekomst av et gjentagende event.
     
     Args:
-        param1: Description of param1
-        param2: Description of param2
+        date_str: Dato på formatet "DD.MM.YYYY"
+        recurrence: Gjentagelsestype ("weekly", "monthly", "yearly")
+        recurrence_day: Ukedag for ukentlige events ("Monday", etc.)
     
     Returns:
-        Description of return value
+        Neste dato som "DD.MM.YYYY" eller None hvis ugyldig
+    
+    Raises:
+        ValueError: Hvis datoformat er ugyldig
     
     Example:
-        >>> method_name("test", 123)
-        "result"
+        >>> calculate_next_occurrence("25.03.2026", "weekly", "Monday")
+        "30.03.2026"
     """
 ```
 
-### 3. Error Handling
+### Feilhåndtering
 
 ```python
 try:
     result = risky_operation()
 except SpecificError as e:
-    print(f"[FEATURE] Specific error: {e}")
-    return False, "User-friendly error message"
+    print(f"[FEATURE] Spesifikk feil: {e}")
+    return False, "Bruker-vennlig feilmelding"
 except Exception as e:
-    print(f"[FEATURE] Unexpected error: {e}")
+    print(f"[FEATURE] Uventet feil: {e}")
     import traceback
     traceback.print_exc()
     return False, "Noe gikk galt"
 ```
 
-### 4. Norwegian Text
+### Norsk Tekst
 
-Bot speaks Norwegian to users, but code is in English:
+> Botten snakker norsk til brukere, men kode er på engelsk:
 
 ```python
-# Good
-error_message = "Fant ikke noe med det nummeret."  # User sees Norwegian
+# ✅ Godt
+error_message = "Fant ikke noe med det nummeret."  # Bruker ser norsk
 
-# Bad
-error_message = "Item not found with that number."  # Mixing languages
+# ❌ Dårlig
+error_message = "Item not found with that number."  # Blanding av språk
 ```
+
+---
 
 ## Testing
 
-### Unit Test Template
+### Enhetstest-mal
 
 ```python
 #!/usr/bin/env python3
-"""Tests for feature_manager.py"""
+"""Tester for my_feature_manager.py"""
 
 import sys
 import os
 import tempfile
+from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Legg til foreldremappe i path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from feature_manager import FeatureManager, parse_feature_command
+from features.my_feature_manager import MyFeatureManager, parse_my_feature_command
 
 
-def test_parse_feature_command():
-    """Test command parsing"""
-    # Should match
-    result = parse_feature_command("feature add test data")
-    assert result is not None
+def test_parse_command():
+    """Test kommando-parsing."""
+    # Skal matche
+    result = parse_my_feature_command("myfeature add test data")
+    assert result is not None, "Skal matche 'myfeature add ...'"
     assert result[0] == "add"
     assert result[1]["content"] == "test data"
     
-    # Should not match
-    result = parse_feature_command("something else")
-    assert result is None
+    # Skal ikke matche
+    result = parse_my_feature_command("noe annet")
+    assert result is None, "Skal ikke matche 'noe annet'"
     
-    print("✓ parse_feature_command tests passed")
+    print("✓ parse_my_feature_command tester bestått")
 
 
-def test_feature_manager():
-    """Test feature manager operations"""
+def test_manager():
+    """Test feature manager operasjoner."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         temp_path = f.name
     
     try:
-        fm = FeatureManager(temp_path)
+        fm = MyFeatureManager(temp_path)
         
-        # Test add
-        success, result = fm.do_something("guild1", "user1", "test")
-        assert success is True
+        # Test legg til
+        success, result = fm.add_item("guild1", "user1", "test data")
+        assert success is True, "Legg til skal lykkes"
+        assert "test data" in result
         
-        # Test format
-        output = fm.format_output("guild1")
-        assert "test" in output
+        # Test formatering
+        output = fm.list_items("guild1")
+        assert "test data" in output, "Data skal vises i liste"
         
-        print("✓ FeatureManager tests passed")
+        print("✓ MyFeatureManager tester bestått")
+    
+    finally:
+        os.remove(temp_path)
+
+
+def test_edge_cases():
+    """Test grensetilfeller."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        temp_path = f.name
+    
+    try:
+        fm = MyFeatureManager(temp_path)
+        
+        # Tom liste
+        output = fm.list_items("guild1")
+        assert "Ingen elementer" in output
+        
+        # Tomt innhold
+        success, result = fm.add_item("guild1", "user1", "")
+        assert success is True  # Aksepterer tomt, men sjekk i handler
+        
+        print("✓ Edge case tester bestått")
     
     finally:
         os.remove(temp_path)
 
 
 if __name__ == "__main__":
-    test_parse_feature_command()
-    test_feature_manager()
-    print("\nAll tests passed!")
+    test_parse_command()
+    test_manager()
+    test_edge_cases()
+    print("\n🎉 Alle tester bestått!")
 ```
 
-## Common Patterns
+### Kjøre Tester
+
+```bash
+# Kjør alle tester
+python3 tests/test_selfbot.py
+
+# Kjør spesifikk test
+python3 tests/test_my_feature.py
+
+# Med pytest
+pytest tests/ -v
+
+# Coverage
+pytest tests/ --cov=. --cov-report=html
+```
+
+---
+
+## Vanlige Mønstre
 
 ### Singleton Pattern
 
 ```python
-_manager = None
+_manager: Optional[Manager] = None
 
-def get_manager():
+def get_manager() -> Manager:
     global _manager
     if _manager is None:
         _manager = Manager()
     return _manager
 ```
 
-### Storage Pattern
+### Lagringsmønster
 
 ```python
-def _load(self):
+def _load(self) -> Dict:
+    """Last data fra fil."""
     if self.path.exists():
-        with open(self.path, 'r') as f:
-            return json.load(f)
+        try:
+            with open(self.path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return {}
     return {}
 
-def _save(self):
-    with open(self.path, 'w') as f:
-        json.dump(self.data, f, indent=2)
+def _save(self) -> None:
+    """Lagre data til fil."""
+    try:
+        with open(self.path, 'w', encoding='utf-8') as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
+    except IOError as e:
+        print(f"[ERROR] Kunne ikke lagre: {e}")
 ```
 
-### Command Handler Pattern
+### Kommando Handler Pattern
 
 ```python
-async def _handle_command(self, message):
+async def _handle_command(self, message: discord.Message):
+    """Håndter kommando med standard feilhåndtering."""
     try:
         guild_id = message.guild.id if message.guild else message.channel.id
         content = message.content
         
-        # Parse command
+        # Parse kommando
         parsed = parse_command(content)
         if not parsed:
             return
         
-        # Execute
+        # Utfør
         success, result = self.manager.action(guild_id, parsed)
         
-        # Respond
+        # Svar
         if success:
-            await message.reply(f"✅ {result}")
+            await message.reply(f"✅ {result}", mention_author=False)
         else:
-            await message.reply(f"❌ {result}")
+            await message.reply(f"❌ {result}", mention_author=False)
     
     except Exception as e:
         print(f"[ERROR] {e}")
-        await message.reply("❌ Feil")
+        await message.reply("❌ Feil", mention_author=False)
 ```
 
-## Debugging Tips
+---
+
+## Debug-tips
 
 ### 1. Enable Debug Logging
 
-Add to your feature:
-
 ```python
-print(f"[FEATURE] Debug: variable={value}")
+# I din feature
+print(f"[MYFEATURE] Debug: variable={value}")
 ```
 
-### 2. Test in Isolation
+### 2. Test i Isolasjon
 
 ```python
-# Test just your feature
+# Test kun din feature
 python3 -c "
-from feature_manager import FeatureManager
-fm = FeatureManager('/tmp/test.json')
-print(fm.do_something('g1', 'u1', 'test'))
+from features.my_feature_manager import MyFeatureManager
+fm = MyFeatureManager('/tmp/test.json')
+print(fm.add_item('g1', 'u1', 'test'))
 "
 ```
 
-### 3. Check Storage
+### 3. Sjekk Lagring
 
 ```bash
-# View stored data
-cat ~/.hermes/discord/feature_data.json | python3 -m json.tool
+# Vis lagrede data
+cat ~/.hermes/discord/data/my_feature.json | python3 -m json.tool
+
+# Sjekk filrettigheter
+ls -la ~/.hermes/discord/data/
 ```
 
-### 4. Trace Message Flow
+### 4. Trace Meldingsflyt
 
-Watch the console output:
+Se konsoll-output:
 ```
 [MONITOR] Mention detected...
-[MONITOR] Matched: feature command
-[MONITOR] Feature command error: ...
+[MONITOR] Matched: myfeature command
+[MONITOR] MyFeature command error: ...
 ```
 
-## Git Workflow
+### 5. Bruk Python Debugger
+
+```python
+# Sett breakpoint
+import pdb; pdb.set_trace()
+
+# Eller bruk breakpoint() i Python 3.7+
+breakpoint()
+```
+
+---
+
+## Git-workflow
 
 ```bash
-# Before making changes
+# Før du gjør endringer
 git status
 git diff
 
-# Make changes to feature_manager.py
+# Lag ny branch
+git checkout -b feature/my-new-feature
+
+# Gjør endringer
+# ... rediger filer ...
 
 # Test
-python3 -m py_compile feature_manager.py
-python3 test_feature.py
+python3 -m py_compile features/my_feature_manager.py
+python3 test_my_feature.py
 
 # Commit
-git add feature_manager.py message_monitor.py
-git commit -m "Add feature: description"
+git add features/my_feature_manager.py core/message_monitor.py
+git commit -m "Add feature: My Feature
+
+- Kan gjøre X
+- Kan gjøre Y
+- Oppdatert dokumentasjon"
+
+# Push og lag PR
+git push -u origin feature/my-new-feature
+# Lag PR på GitHub
 ```
 
-## Useful Commands
+---
+
+## Nyttige Kommandoer
 
 ```bash
-# Find all TODOs
-grep -r "TODO" *.py
+# Finn alle TODOs
+grep -r "TODO" features/ core/ ai/
 
-# Check file sizes
-ls -lh *.py
+# Sjekk filstørrelser
+ls -lh features/*.py core/*.py
 
-# Count lines of code
-wc -l *.py
+# Tell kodelinjer
+wc -l features/*.py core/*.py
 
-# Find imports
-grep "^import\|^from" message_monitor.py
+# Finn imports
+grep "^import\|^from" core/message_monitor.py
 
-# Test all syntax
-for f in *.py; do python3 -m py_compile "$f" && echo "✓ $f"; done
+# Test all syntaks
+for f in features/*.py core/*.py; do
+    python3 -m py_compile "$f" && echo "✓ $f"
+done
+
+# Formater JSON
+cat data/calendar.json | python3 -m json.tool
+
+# Sjekk for hardkodede tokens
+grep -r "MTQ3\|discord_token" --include="*.py" .
+
+# Se endringer
+git diff --stat
+git log --oneline -10
 ```
+
+---
+
+## Best Practices
+
+### ✅ Gjør
+
+- Skriv tester for ny funksjonalitet
+- Oppdater dokumentasjon
+- Bruk type hints
+- Håndter feil graceful
+- Logg viktige hendelser
+- Følg eksisterende mønstre
+- Test i Discord før commit
+
+### ❌ Ikke Gjør
+
+- Hardkod tokens eller passord
+- Break eksisterende funksjonalitet
+- Ignorer feilmeldinger
+- Gjør for store endringer i én commit
+- Glem å oppdatere dokumentasjon
+- Bruk engelsk i brukervendte meldinger
+
+---
+
+## Få Hjelp
+
+- 📖 [Komplett Dokumentasjon](DOCUMENTATION.md)
+- 🏗️ [Systemarkitektur](ARCHITECTURE.md)
+- 📋 [Hurtigreferanse](QUICK_REFERENCE.md)
+- 💬 [GitHub Discussions](../../discussions)
+- 🐛 [Rapporter Bug](../../issues/new?template=bug_report.md)
+
+---
+
+<p align="center">
+  <a href="DOCUMENTATION.md">📖 Dokumentasjon</a> &nbsp;•&nbsp;
+  <a href="ARCHITECTURE.md">🏗️ Arkitektur</a> &nbsp;•&nbsp;
+  <a href="QUICK_REFERENCE.md">📋 Hurtigreferanse</a> &nbsp;•&nbsp;
+  <a href="../README.md">⬅️ Tilbake til README</a>
+</p>
