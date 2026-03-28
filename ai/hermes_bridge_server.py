@@ -33,12 +33,12 @@ LM_STUDIO_MODEL = "llama-3.2-3b"  # Now using Llama 3.2 3B for better Norwegian
 # Model-specific settings
 MODEL_CONFIG = {
     "llama-3.2-3b": {
-        "temperature": 0.6,  # Lower for more consistent Norwegian
-        "max_tokens": 150,   # Shorter responses for small model
-        "top_p": 0.85,       # More focused sampling
-        "frequency_penalty": 0.2,  # Stronger penalty to avoid English
-        "presence_penalty": 0.15,
-        "repeat_penalty": 1.2,  # Penalize repetition
+        "temperature": 0.4,  # Very low for maximum consistency
+        "max_tokens": 100,   # Very short responses
+        "top_p": 0.8,        # Focused sampling
+        "frequency_penalty": 0.3,  # Strong penalty to avoid English mixing
+        "presence_penalty": 0.2,
+        "repeat_penalty": 1.3,  # Penalize repetition
     },
     "gemma-3-4b": {
         "temperature": 0.8,
@@ -164,13 +164,20 @@ class HermesBridgeServer:
                 # For small models, use simplified prompt
                 logger.info(f"Custom prompt too long ({len(custom_system_prompt)} chars), using simplified for small model")
                 system_prompt = (
-                    f"Du er Inebotten, en vennlig norsk Discord-bot. "
-                    f"I dag er det {weekday} {today}. "
-                    f"Du snakker med {author_name}. "
-                    "SVAR ALLTID PÅ NORSK. "
-                    "Hold svarene korte (1-2 setninger) og vennlige. "
-                    "Ikke bruk engelsk. "
-                    "Snakk som en venn, ikke en robot."
+                    f"Du er Ine. Snakk norsk. "
+                    f"I dag er {today}. "
+                    f"Snakker med {author_name}. "
+                    "EKSEMPLER:\n"
+                    "Bruker: Hei!\n"
+                    "Deg: Hei! 👋 Hvordan går det?\n"
+                    "Bruker: Hvordan har du det?\n"
+                    "Deg: Det går bra! 😊 Hva med deg?\n"
+                    "REGLER:\n"
+                    "- ALLTID norsk (ikke engelsk)\n"
+                    "- Bruk 'deg' (ikke 'dig')\n"
+                    "- Bruk 'bra' (ikke 'godt')\n"
+                    "- Max 2 setninger\n"
+                    "- Vennlig tone"
                 )
             else:
                 system_prompt = custom_system_prompt
@@ -178,15 +185,22 @@ class HermesBridgeServer:
         else:
             # Default prompt based on model size
             if is_small_model:
-                # SIMPLIFIED for Llama 3.2 3B
+                # SIMPLIFIED for Llama 3.2 3B - Ultra clear Norwegian
                 system_prompt = (
-                    f"Du er Inebotten, en vennlig norsk Discord-bot. "
-                    f"I dag er det {weekday} {today}. "
-                    f"Du snakker med {author_name}. "
-                    "SVAR ALLTID PÅ NORSK. "
-                    "Hold svarene korte (1-2 setninger) og vennlige. "
-                    "Ikke bruk engelsk. "
-                    "Snakk som en venn, ikke en robot."
+                    f"Du er Ine. Snakk norsk. "
+                    f"I dag er {today}. "
+                    f"Snakker med {author_name}. "
+                    "EKSEMPLER:\n"
+                    "Bruker: Hei!\n"
+                    "Deg: Hei! 👋 Hvordan går det?\n"
+                    "Bruker: Hvordan har du det?\n"
+                    "Deg: Det går bra! 😊 Hva med deg?\n"
+                    "REGLER:\n"
+                    "- ALLTID norsk (ikke engelsk)\n"
+                    "- Bruk 'deg' (ikke 'dig')\n"
+                    "- Bruk 'bra' (ikke 'godt')\n"
+                    "- Max 2 setninger\n"
+                    "- Vennlig tone"
                 )
             else:
                 # More detailed for larger models
