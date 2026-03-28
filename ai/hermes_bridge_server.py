@@ -28,7 +28,7 @@ PORT = int(os.getenv('HERMES_BRIDGE_PORT', '3000'))
 
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = "qwen2.5-7b-instruct"  # Using Qwen 2.5 7B - best for natural Norwegian!
+LM_STUDIO_MODEL = "qwen3.5-9b-claude-opus-reasoning"  # Qwen 3.5 9B Claude Opus reasoning distilled
 
 # Model-specific settings
 MODEL_CONFIG = {
@@ -54,6 +54,14 @@ MODEL_CONFIG = {
         "frequency_penalty": 0.2,  # Penalty for English words
         "presence_penalty": 0.1,
         "stop": ["Hei again", "Hi ", "Hello ", "English"],  # Stop if it switches to English
+    },
+            "qwen3.5-9b-claude-opus-reasoning": {
+        "temperature": 0.5,  # Lower for focused responses
+        "max_tokens": 120,   # Keep it concise
+        "top_p": 0.8,
+        "frequency_penalty": 0.2,
+        "presence_penalty": 0.1,
+        "stop": ["Hei again", "Hi ", "Hello ", "English", "Looking at", "In the examples"],
     },
             "qwen3-4b-thinking": {
         "temperature": 0.6,
@@ -198,6 +206,8 @@ class HermesBridgeServer:
         is_qwen = "qwen" in LM_STUDIO_MODEL.lower()
         # Gemma 2 2B is small but works well
         is_gemma_2b = "gemma-2" in LM_STUDIO_MODEL.lower() and "2b" in LM_STUDIO_MODEL.lower()
+        # Reasoning/thinking models need special handling
+        is_reasoning_model = any(x in LM_STUDIO_MODEL.lower() for x in ["reasoning", "thinking", "opus"])
         
         # Use custom system prompt if provided (but truncate for problematic small models)
         # Note: Qwen and Gemma 2 2B handle long prompts well even when small
@@ -228,7 +238,26 @@ class HermesBridgeServer:
                 logger.info(f"Using custom system prompt ({len(custom_system_prompt)} chars)")
         else:
             # Default prompt based on model
-            if is_qwen:
+            if is_reasoning_model:
+                # Reasoning models - ULTRA direct to prevent overthinking
+                system_prompt = (
+                    f"Du er Ine. "
+                    f"Dato: {today}. "
+                    "\n"
+                    "EKSEMPLER (svar AKKURAT sånn):\n"
+                    "Hei! → Hei! 👋 Hvordan går det?\n"
+                    "Hvem er du? → Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅\n"
+                    "Hva kan du gjøre? → Jeg kan lagre arrangementer, minne deg på ting, eller prate! 😊\n"
+                    "Hvordan har du det? → Det går bra! 😊 Hva med deg?\n"
+                    "Fortell en vits → Hvorfor gikk kyllingen over veien? For å komme til den andre siden! 😄\n"
+                    "Takk! → Bare hyggelig! 😊\n"
+                    "\n"
+                    "VIKTIG:\n"
+                    "- Svar KUN med svaret. Ingen forklaring. Ingen 'Looking at'.\n"
+                    "- IKKE analyser eksemplene. BARE svar.\n"
+                    "- Max 2 setninger. Vær vennlig."
+                )
+            elif is_qwen:
                 # Qwen prompt - VERY direct, no thinking allowed
                 system_prompt = (
                     f"Du er Ine. Svar på norsk. "
