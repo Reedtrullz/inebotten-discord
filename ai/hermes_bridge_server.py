@@ -28,7 +28,7 @@ PORT = int(os.getenv('HERMES_BRIDGE_PORT', '3000'))
 
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = "qwen-2.5-7b"  # Using Qwen 2.5 7B - excellent Norwegian support!
+LM_STUDIO_MODEL = "qwen3-4b-thinking"  # Using Qwen3-4B-Thinking - latest model!
 
 # Model-specific settings
 MODEL_CONFIG = {
@@ -40,7 +40,7 @@ MODEL_CONFIG = {
         "presence_penalty": 0.2,
         "repeat_penalty": 1.3,  # Penalize repetition
     },
-    "qwen-2.5-4b": {
+            "qwen-2.5-4b": {
         "temperature": 0.7,  # Qwen handles Norwegian well at normal temps
         "max_tokens": 200,   # Can handle longer responses
         "top_p": 0.9,
@@ -54,6 +54,14 @@ MODEL_CONFIG = {
         "frequency_penalty": 0.2,  # Penalty for English words
         "presence_penalty": 0.1,
         "stop": ["Hei again", "Hi ", "Hello ", "English"],  # Stop if it switches to English
+    },
+            "qwen3-4b-thinking": {
+        "temperature": 0.6,
+        "max_tokens": 150,
+        "top_p": 0.85,
+        "frequency_penalty": 0.15,
+        "presence_penalty": 0.1,
+        "stop": ["Hei again", "Hi ", "Hello ", "English"],
     },
     "gemma-2-2b": {
         "temperature": 0.7,
@@ -185,8 +193,8 @@ class HermesBridgeServer:
         weekday = datetime.now().strftime("%A")
         
         # Check which model we're using
-        is_small_model = "3.2" in LM_STUDIO_MODEL or "3b" in LM_STUDIO_MODEL.lower()
-        # Qwen models handle Norwegian well even when small
+        is_small_model = "3.2" in LM_STUDIO_MODEL or "3b" in LM_STUDIO_MODEL.lower() or "4b" in LM_STUDIO_MODEL.lower()
+        # Qwen models (including Qwen 2.5 and Qwen3) handle Norwegian well
         is_qwen = "qwen" in LM_STUDIO_MODEL.lower()
         # Gemma 2 2B is small but works well
         is_gemma_2b = "gemma-2" in LM_STUDIO_MODEL.lower() and "2b" in LM_STUDIO_MODEL.lower()
