@@ -325,9 +325,32 @@ class HermesBridgeServer:
                     data = await resp.json()
                     choices = data.get('choices', [])
                     if choices:
-                        content = choices[0].get('message', {}).get('content', '').strip()
-                        logger.info(f"LM Studio generated {len(content)} chars")
-                        return content
+                        message = choices[0].get('message', {})
+                        # Standard content field
+                        content = message.get('content', '').strip()
+                        # Qwen3-Thinking uses reasoning_content field
+                        reasoning = message.get('reasoning_content', '').strip()
+                        
+                        # Use reasoning_content if content is empty (thinking models)
+                        if not content and reasoning:
+                            # Extract the actual response from reasoning
+                            # Usually the last part after reasoning
+                            lines = reasoning.strip().split('\n')
+                            # Get last non-empty line or last few lines
+                            for line in reversed(lines):
+                                line = line.strip()
+                                if line and not line.startswith('Wait,') and not line.startswith('Let me'):
+                                    content = line
+                                    break
+                            # If still no content, use last line
+                            if not content and lines:
+                                content = lines[-1].strip()
+                        
+                        logger.info(f"LM Studio generated {len(content)} chars (reasoning: {len(reasoning)} chars)")
+                        if content:
+                            return content
+                        else:
+                            return "(Modellen tenkte men ga ikke svar)"
                     logger.warning("LM Studio returned empty choices")
                     return "(No response from AI)"
                 else:
