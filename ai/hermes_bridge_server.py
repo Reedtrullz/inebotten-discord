@@ -28,7 +28,7 @@ PORT = int(os.getenv('HERMES_BRIDGE_PORT', '3000'))
 
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = "qwen3.5-9b-claude-4.6-opus-reasoning-distilled@q4_k_m"  # Exact model ID from LM Studio
+LM_STUDIO_MODEL = "qwen2.5-7b-instruct"  # Using Qwen 2.5 7B - best for natural Norwegian chat!
 
 # Model-specific settings
 MODEL_CONFIG = {
