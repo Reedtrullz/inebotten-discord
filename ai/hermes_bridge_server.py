@@ -229,25 +229,24 @@ class HermesBridgeServer:
         else:
             # Default prompt based on model
             if is_qwen:
-                # Qwen prompt - natural conversation
+                # Qwen prompt - VERY direct, no thinking allowed
                 system_prompt = (
-                    f"Du er Ine, en vennlig norsk assistent. "
+                    f"Du er Ine. Svar på norsk. "
                     f"Dato: {today}. "
                     "\n"
-                    "EKSEMPLER:\n"
-                    "Q: Hei!\n"
-                    "A: Hei! 👋 Hvordan går det?\n\n"
-                    "Q: Hvem er du?\n"
-                    "A: Jeg er Ine! Jeg hjelper deg med kalender, påminnelser og prat. 📅\n\n"
-                    "Q: Hva kan du gjøre?\n"
-                    "A: Jeg kan lagre arrangementer, minne deg på ting, sjekke været, eller bare prate! 😊\n\n"
-                    "Q: Hvordan føler du deg?\n"
-                    "A: Jeg har det bra! Klar for å hjelpe deg! 💪\n\n"
+                    "VIKTIG: Bare svar direkte. Ikke forklar. Ikke tenk høyt.\n\n"
+                    "Hei! → Hei! 👋 Hvordan går det?\n"
+                    "Hvem er du? → Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅\n"
+                    "Hva kan du gjøre? → Jeg kan lagre arrangementer, minne deg på ting, eller prate! 😊\n"
+                    "Hvordan har du det? → Det går bra! 😊 Hva med deg?\n"
+                    "Fortell en vits → Hvorfor gikk kyllingen over veien? For å komme til den andre siden! 😄\n"
+                    "Takk! → Bare hyggelig! 😊\n"
+                    "\n"
                     "REGLER:\n"
-                    "- Svar naturlig på norsk\n"
-                    "- Vær vennlig som en venn\n"
-                    "- Ikke list tekniske kommandoer med mindre spurt\n"
-                    "- Hold det enkelt og varmt"
+                    "- Svar KUN med svaret, ingen forklaring\n"
+                    "- Aldri start med 'Looking at', 'The rules say', 'In the examples'\n"
+                    "- Vær vennlig og naturlig\n"
+                    "- Max 2 setninger"
                 )
             elif is_gemma_2b:
                 # Gemma 2 2B works well for Norwegian
@@ -334,17 +333,38 @@ class HermesBridgeServer:
                         # Use reasoning_content if content is empty (thinking models)
                         if not content and reasoning:
                             # Extract the actual response from reasoning
-                            # Usually the last part after reasoning
                             lines = reasoning.strip().split('\n')
-                            # Get last non-empty line or last few lines
                             for line in reversed(lines):
                                 line = line.strip()
                                 if line and not line.startswith('Wait,') and not line.startswith('Let me'):
                                     content = line
                                     break
-                            # If still no content, use last line
                             if not content and lines:
                                 content = lines[-1].strip()
+                        
+                        # Clean up thinking patterns from content
+                        thinking_patterns = [
+                            "Looking at",
+                            "The rules say",
+                            "In the examples",
+                            "According to",
+                            "Based on",
+                            "The assistant",
+                            "I should",
+                            "I need to",
+                            "Alternatively",
+                            "This means",
+                            "So the response",
+                        ]
+                        for pattern in thinking_patterns:
+                            if content.startswith(pattern):
+                                # Try to find actual response after thinking
+                                lines = content.split('\n')
+                                for line in lines:
+                                    if not any(line.startswith(p) for p in thinking_patterns):
+                                        content = line.strip()
+                                        break
+                                break
                         
                         logger.info(f"LM Studio generated {len(content)} chars (reasoning: {len(reasoning)} chars)")
                         if content:
