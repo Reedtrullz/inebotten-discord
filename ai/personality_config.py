@@ -68,17 +68,22 @@ ALDRI si ting som:
     if user_name:
         prompt += f"\nDu snakker med: {user_name}\n"
     
-    # Add minimal user context
+    # Add minimal user context (handle both dict and string formats)
     if user_context:
-        context_parts = []
-        if user_context.get("location"):
-            context_parts.append(f"Bor i {user_context['location']}")
-        if user_context.get("interests"):
-            interests = ", ".join(user_context["interests"][:2])
-            context_parts.append(f"Liker {interests}")
-        
-        if context_parts:
-            prompt += f"Du vet: {' | '.join(context_parts)}\n"
+        if isinstance(user_context, dict):
+            # Dict format
+            context_parts = []
+            if user_context.get("location"):
+                context_parts.append(f"Bor i {user_context['location']}")
+            if user_context.get("interests"):
+                interests = ", ".join(user_context["interests"][:2])
+                context_parts.append(f"Liker {interests}")
+            
+            if context_parts:
+                prompt += f"Du vet: {' | '.join(context_parts)}\n"
+        elif isinstance(user_context, str) and user_context.strip():
+            # String format (from format_context_for_prompt)
+            prompt += f"Du vet: {user_context}\n"
     
     # Add minimal conversation history
     if conversation_history and len(conversation_history) > 0:
