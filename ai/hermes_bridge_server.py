@@ -56,12 +56,13 @@ MODEL_CONFIG = {
         "stop": ["Hei again", "Hi ", "Hello ", "English"],  # Stop if it switches to English
     },
             "qwen3.5-9b-claude-4.6-opus-reasoning-distilled@q4_k_m": {
-        "temperature": 0.5,  # Lower for focused responses
-        "max_tokens": 120,   # Keep it concise
-        "top_p": 0.8,
-        "frequency_penalty": 0.2,
-        "presence_penalty": 0.1,
-        "stop": ["Hei again", "Hi ", "Hello ", "English", "Looking at", "In the examples"],
+        "temperature": 0.35,  # Very low for strict adherence to examples
+        "max_tokens": 100,    # Short responses
+        "top_p": 0.75,
+        "frequency_penalty": 0.4,  # High penalty to prevent English thinking
+        "presence_penalty": 0.2,
+        "stop": ["Hei again", "Hi ", "Hello ", "English", "Looking at", "In the examples", 
+                 "The user is", "This is", "My reasoning", "I should", "I need"],
     },
     "qwen3.5-9b-claude-4.6-opus-reasoning-distilled": {
         # Alias without quantization suffix
@@ -248,23 +249,16 @@ class HermesBridgeServer:
         else:
             # Default prompt based on model
             if is_reasoning_model:
-                # Reasoning models - ULTRA direct to prevent overthinking
+                # Reasoning models - ABSOLUTELY MINIMAL to prevent overthinking
                 system_prompt = (
-                    f"Du er Ine. "
+                    f"Du er Ine, en norsk Discord-venn. "
                     f"Dato: {today}. "
-                    "\n"
-                    "EKSEMPLER (svar AKKURAT sånn):\n"
-                    "Hei! → Hei! 👋 Hvordan går det?\n"
-                    "Hvem er du? → Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅\n"
-                    "Hva kan du gjøre? → Jeg kan lagre arrangementer, minne deg på ting, eller prate! 😊\n"
-                    "Hvordan har du det? → Det går bra! 😊 Hva med deg?\n"
-                    "Fortell en vits → Hvorfor gikk kyllingen over veien? For å komme til den andre siden! 😄\n"
-                    "Takk! → Bare hyggelig! 😊\n"
-                    "\n"
-                    "VIKTIG:\n"
-                    "- Svar KUN med svaret. Ingen forklaring. Ingen 'Looking at'.\n"
-                    "- IKKE analyser eksemplene. BARE svar.\n"
-                    "- Max 2 setninger. Vær vennlig."
+                    "Svar KUN på norsk. "
+                    "ALDRI analyser eller forklar. "
+                    "ALDRI start med 'The user', 'This is', 'My reasoning', 'I should'. "
+                    "BARE svar direkte. "
+                    "Max 2 setninger. "
+                    "Eksempel: Hei! → Hei! 👋 Hvordan går det?"
                 )
             elif is_qwen:
                 # Qwen prompt - VERY direct, no thinking allowed
@@ -391,34 +385,66 @@ class HermesBridgeServer:
                             if not content and lines:
                                 content = lines[-1].strip()
                         
-                        # Import and use response cleaner (same directory)
-                        try:
-                            from response_cleaner import clean_thinking_response
-                        except ImportError:
-                            # Fallback inline cleaner
-                            def clean_thinking_response(text):
-                                if not text:
-                                    return ""
-                                # Simple filter - remove common thinking patterns
-                                thinking_starts = [
-                                    "Looking at", "In the examples", "According to",
-                                    "Based on", "I should", "I need to", "So I",
-                                    "Wait", "How about", "Hmm", "Let me", "I think",
-                                    "Alternatively", "This means", "The assistant",
-                                    "First,", "Then", "But", "Actually", "Maybe",
-                                    "Perhaps", "En nisse",  # incomplete phrases
-                                ]
-                                lines = text.split('\n')
-                                for line in reversed(lines):
-                                    line = line.strip()
-                                    if not line:
-                                        continue
-                                    if any(line.startswith(t) for t in thinking_starts):
-                                        continue
-                                    if len(line.split()) < 2:  # Too short
-                                        continue
-                                    return line
-                                return text[:100] if text else ""
+                        # Clean up reasoning/thinking model outputs
+                        def clean_thinking_response(text):
+                            if not text:
+                                return ""
+                            
+                            # Remove thinking tags
+                            text = text.replace('</thinking>', '').replace('<thinking>', '')
+                            
+                            # Extended list of thinking patterns to filter
+                            thinking_patterns = [
+                                # Analysis patterns
+                                r"^The user is (asking|greeting|sharing|saying|giving|apologizing)",
+                                r"^This (is a|seems like|matches)",
+                                r"^My reasoning:",
+                                r"^I should", r"^I need to", r"^I think", r"^I will",
+                                r"^Let me", r"^Wait", r"^Hmm", r"^How about",
+                                r"^Looking at", r"^In the examples?", r"^According to",
+                                r"^Based on", r"^So I", r"^Alternatively",
+                                r"^This means", r"^The assistant", r"^Example Matching",
+                                r"^First,", r"^Then", r"^But", r"^Actually", r"^Maybe",
+                                r"^Perhaps", r"^Only answer", r"^I can see",
+                                r"^That means", r"^This is", r"^These are",
+                                r"^\d+\.\s+(Be|Use|Check|Only)",  # "1. Be friendly", "2. Use..."
+                                r"^K$",  # Just "K"
+                                r"^En nisse$",  # Incomplete
+                                r"^Fortell meg en vits!$",  # Echo
+                            ]
+                            
+                            import re
+                            lines = text.split('\n')
+                            candidates = []
+                            
+                            for line in lines:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                
+                                # Skip if matches thinking pattern
+                                if any(re.search(pattern, line, re.IGNORECASE) for pattern in thinking_patterns):
+                                    continue
+                                
+                                # Skip very short lines
+                                if len(line.split()) < 2:
+                                    continue
+                                
+                                # Skip lines that are mostly punctuation
+                                if re.match(r'^[\s*\-\d\.👋😊🎉💪🌟✨🤔💡🦴🌧️☕📅]+$', line):
+                                    continue
+                                
+                                candidates.append(line)
+                            
+                            # Return the longest reasonable candidate (usually the actual response)
+                            if candidates:
+                                # Filter to reasonable length (10-200 chars)
+                                good_candidates = [c for c in candidates if 10 <= len(c) <= 200]
+                                if good_candidates:
+                                    return max(good_candidates, key=len)  # Longest good candidate
+                                return candidates[-1]  # Last candidate as fallback
+                            
+                            return text[:150] if text else ""
                         
                         content = clean_thinking_response(content)
                         

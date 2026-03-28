@@ -1,0 +1,758 @@
+{
+  "scores": {
+    "total": 50,
+    "natural": 33,
+    "robotic": 17,
+    "fallback": 0,
+    "broken": 0
+  },
+  "results": [
+    {
+      "message": "Hei!",
+      "response": "Hei! 👋 Hvordan går det?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 23,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hallo!",
+      "response": "My reasoning:.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 14,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "God morgen!",
+      "response": "My reasoning: <analysis>",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 24,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "God kveld!",
+      "response": "The user is greeting me with \"God kveld!\" (Good evening in Norwegian). I need to respond appropriately based on the examples provided, keeping it friendly and concise as instructed.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 181,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Heisann!",
+      "response": "Hei! 👋 Hvordan går det?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 23,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvordan går det?",
+      "response": "The user is asking me a question in Norwegian: \"Hvordan går det?\" which means \"How are you?\" or \"How's it going?\"",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 113,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Hvordan har du det?",
+      "response": "3. **Example Matching**:",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 24,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Lenge siden sist!",
+      "response": "My reasoning: <analysis>",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 24,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Godt å se deg!",
+      "response": "The user is greeting me warmly in Norwegian (\"Godt å se deg!\" = \"Good to see you!\"). This is a friendly social interaction, not a request for calendar help or other functionality.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 179,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Morn!",
+      "response": "Hei! 👋 Hvordan går det?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 23,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvem er du?",
+      "response": "Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 51,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva er du for noe?",
+      "response": "Jeg er Ine! 📅 Jeg hjelper deg med kalender, minneord og prat. 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 63,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva kan du gjøre?",
+      "response": "My reasoning: <analysis>",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 24,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "Hva er din jobb?",
+      "response": "My reasoning: <analysis>",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 24,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Er du en bot?",
+      "response": "3. Be friendly",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 14,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvor kommer du fra?",
+      "response": "The user is asking \"Hvor kommer du fra?\" which means \"Where are you from?\" in Norwegian.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 88,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Hva liker du å gjøre?",
+      "response": "The user is asking me what I like to do, in Norwegian.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 54,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Har du en familie?",
+      "response": "Hvordan har du det",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 18,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvor gammel er du?",
+      "response": "The user is asking \"Hvor gammel er du?\" which means \"How old are you?\" in Norwegian.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 84,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Hva er navnet ditt?",
+      "response": "The user is asking me \"What is your name?\" in Norwegian (\"Hva er navnet ditt?\").",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 80,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvordan føler du deg?",
+      "response": "The user is asking me \"Hvordan føler du deg?\" which means \"How do you feel?\" in Norwegian. This is a casual, friendly question about my state of being.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 151,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "english_words",
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "Er du glad?",
+      "response": "The user is asking \"Er du glad?\" which means \"Are you happy/cheerful?\" in Norwegian.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 84,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "english_words",
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "Hva tenker du om livet?",
+      "response": "- Only answer with the response",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 31,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Er du ekte?",
+      "response": "The user is asking if I'm \"real\" or \"genuine\". This seems like a playful question, possibly testing my responses or just being curious.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 135,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Har du følelser?",
+      "response": "Hvordan har du det",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 18,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva er meningen med livet?",
+      "response": "The user is asking \"Hva er meningen med livet?\" (What is the meaning of life?) - a classic philosophical question.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 114,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Er du intelligent?",
+      "response": "Jeg er Ine, en AI-assistent som hjelper deg med kalender, minne og prat! 😊 Hva kan jeg hjelpe deg med i dag?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 108,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Kan du bli forelsket?",
+      "response": "Jeg er en AI, så jeg kan ikke bli forelsket på den måten mennesker gjør! 😊 Men jeg liker å hjelpe deg med det beste jeg kan.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 124,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Drømmer du?",
+      "response": "Jeg drømmer ikke, men jeg er her for å hjelpe deg! 😊 Hva trenger du hjelp med i dag? 📅",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 86,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Er du redd for noe?",
+      "response": "Jeg er ikke redd for noe! 😊 Hva med deg - har du noen ting du bryr deg om?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 74,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Det er fint vær i dag!",
+      "response": "Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 51,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg er sliten...",
+      "response": "I should respond warmly, acknowledge their tiredness, and offer.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 64,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "Jeg har hatt en hard dag",
+      "response": "The user is sharing that they've had a hard day. This is an emotional statement, not a question or task requiring calendar functionality. I should respond warmly and empathetically as Ine would - being friendly and supportive while staying within the 2-sentence limit shown in examples.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 286,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "too_long",
+        "english_words"
+      ]
+    },
+    {
+      "message": "Skal du gjøre noe spennende i helgen?",
+      "response": "The user is asking a casual personal question in Norwegian about weekend plans. I need to respond naturally and conversationally, following the examples provided - brief, friendly responses without overthinking or providing lengthy explanations. The appropriate response would be a simple acknowledgment that I'm an AI assistant who doesn't have weekend activities like humans do, but keeping it light and conversational as per the example style shown in the few-shot prompts.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 476,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "too_long",
+        "english_words"
+      ]
+    },
+    {
+      "message": "Liker du kaffe?",
+      "response": "K",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 1,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva synes du om musikk?",
+      "response": "Musikk er gøy! 🎵 Hvilken type liker du best?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 44,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Har du sett en bra film i det siste?",
+      "response": "Jeg har ikke sett filmer siden jeg kom til verden! 😊 Men jeg kan hjelpe deg med å finne anbefalinger hvis du vil ha noen tips.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 126,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg skal på ferie snart!",
+      "response": "Hei! Det høres ut som en spennende plan! 🌴 Vil du at jeg skal hjelpe deg med å lagre noen arrangementer eller minne deg om noe før reisen?",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 138,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "lists_commands"
+      ]
+    },
+    {
+      "message": "Kan du synge?",
+      "response": "The user is asking me if I can sing.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 36,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Fortell meg en vits!",
+      "response": "Fortell meg en vits!",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 20,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hjelp meg!",
+      "response": "2.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 2,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg trenger noen å snakke med",
+      "response": "Hei! 👋 Det er fint at du har behov for det. Hva vil du prate om, eller bare slappe av sammen? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 95,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Takk for hjelpen!",
+      "response": "This matches exactly with one of the provided examples where \"Takk!\" was answered with \"Bare hy",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 95,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Beklager hvis jeg forstyrrer",
+      "response": "The user is apologizing in Norwegian (\"Beklager hvis jeg forstyrre\" means \"Sorry if I bother you\"). This is a social greeting, not a request for calendar help or other functionality.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 182,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Kan jeg spørre deg noe?",
+      "response": "</thinking> Hei! 📅 Ja, selvsagt – hva lurer du på? Jeg er her for å hjelpe deg med kalender, minne eller bare prate! 😊",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 118,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Jeg har en dårlig dag",
+      "response": "The user is sharing that they're having a bad day in Norwegian (\"Jeg har en dårlig dag\" = \"I'm having a bad day\").",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 114,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Dette er gøy!",
+      "response": "Hei! 👋 Det høres ut som en fin dag! Hva har du på agendaen i dag?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 65,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg er lei meg",
+      "response": "The user is saying \"I'm sorry\" or \"I feel bad/guilty\" in Norwegian (\"Jeg er lei meg\"). This is an emotional expression, not a request for calendar help.",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 152,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "english_words"
+      ]
+    },
+    {
+      "message": "Du er fantastisk!",
+      "response": "The user is giving me positive feedback saying \"You're fantastic!\" (Du er fantastisk!).",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 87,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Ha det bra!",
+      "response": "Hvordan har du det",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 18,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    }
+  ],
+  "timestamp": "2026-03-28T15:52:36.213626"
+}
