@@ -33,11 +33,12 @@ LM_STUDIO_MODEL = "llama-3.2-3b"  # Now using Llama 3.2 3B for better Norwegian
 # Model-specific settings
 MODEL_CONFIG = {
     "llama-3.2-3b": {
-        "temperature": 0.75,  # Slightly lower for more focused responses
-        "max_tokens": 400,
-        "top_p": 0.9,
-        "frequency_penalty": 0.1,  # Slight penalty to avoid repetition
-        "presence_penalty": 0.1,
+        "temperature": 0.6,  # Lower for more consistent Norwegian
+        "max_tokens": 150,   # Shorter responses for small model
+        "top_p": 0.85,       # More focused sampling
+        "frequency_penalty": 0.2,  # Stronger penalty to avoid English
+        "presence_penalty": 0.15,
+        "repeat_penalty": 1.2,  # Penalize repetition
     },
     "gemma-3-4b": {
         "temperature": 0.8,
@@ -154,20 +155,50 @@ class HermesBridgeServer:
         today = datetime.now().strftime("%d. %B %Y")
         weekday = datetime.now().strftime("%A")
         
-        # Use custom system prompt if provided, otherwise use default
+        # Check which model we're using
+        is_small_model = "3.2" in LM_STUDIO_MODEL or "3b" in LM_STUDIO_MODEL.lower()
+        
+        # Use custom system prompt if provided (but truncate for small models)
         if custom_system_prompt:
-            system_prompt = custom_system_prompt
-            logger.info(f"Using custom system prompt ({len(custom_system_prompt)} chars)")
+            if is_small_model and len(custom_system_prompt) > 800:
+                # For small models, use simplified prompt
+                logger.info(f"Custom prompt too long ({len(custom_system_prompt)} chars), using simplified for small model")
+                system_prompt = (
+                    f"Du er Inebotten, en vennlig norsk Discord-bot. "
+                    f"I dag er det {weekday} {today}. "
+                    f"Du snakker med {author_name}. "
+                    "SVAR ALLTID PÅ NORSK. "
+                    "Hold svarene korte (1-2 setninger) og vennlige. "
+                    "Ikke bruk engelsk. "
+                    "Snakk som en venn, ikke en robot."
+                )
+            else:
+                system_prompt = custom_system_prompt
+                logger.info(f"Using custom system prompt ({len(custom_system_prompt)} chars)")
         else:
-            system_prompt = (
-                f"Du er 'inebotten', ein vennleg Discord-kalenderbot. "
-                f"I dag er det {weekday} {today}. "
-                "Du svarar ALLTID på norsk (nynorsk eller bokmål). "
-                "ALDRI svar på engelsk. "
-                "Du hjelper til med vêr, høgtider, kalender og generelle spørsmål. "
-                "Hald svara korte (under 300 ord) og vennlege. "
-                f"Du pratar med {author_name}."
-            )
+            # Default prompt based on model size
+            if is_small_model:
+                # SIMPLIFIED for Llama 3.2 3B
+                system_prompt = (
+                    f"Du er Inebotten, en vennlig norsk Discord-bot. "
+                    f"I dag er det {weekday} {today}. "
+                    f"Du snakker med {author_name}. "
+                    "SVAR ALLTID PÅ NORSK. "
+                    "Hold svarene korte (1-2 setninger) og vennlige. "
+                    "Ikke bruk engelsk. "
+                    "Snakk som en venn, ikke en robot."
+                )
+            else:
+                # More detailed for larger models
+                system_prompt = (
+                    f"Du er 'inebotten', ein vennleg Discord-kalenderbot. "
+                    f"I dag er det {weekday} {today}. "
+                    "Du svarar ALLTID på norsk (nynorsk eller bokmål). "
+                    "ALDRI svar på engelsk. "
+                    "Du hjelper til med vêr, høgtider, kalender og generelle spørsmål. "
+                    "Hald svara korte (under 300 ord) og vennlege. "
+                    f"Du pratar med {author_name}."
+                )
 
         # Get model-specific settings
         config = MODEL_CONFIG.get(LM_STUDIO_MODEL, MODEL_CONFIG["llama-3.2-3b"])
@@ -185,6 +216,10 @@ class HermesBridgeServer:
             "presence_penalty": config.get("presence_penalty", 0.0),
             "stream": False
         }
+        
+        # Add repeat penalty for small models (helps with language consistency)
+        if "repeat_penalty" in config:
+            payload["repeat_penalty"] = config["repeat_penalty"]
 
         try:
             logger.info(f"Sending request to LM Studio with {len(payload['messages'])} messages")
