@@ -208,6 +208,7 @@ def get_system_prompt(
     user_name: str = "",
     user_context: Dict = None,
     conversation_history: List = None,
+    conversation_context: List = None,  # Alias for conversation_history (backward compat)
     time_of_day: str = "day",
     style: ResponseStyle = ResponseStyle.CASUAL
 ) -> str:
@@ -218,12 +219,16 @@ def get_system_prompt(
         user_name: Name of the user
         user_context: Dict with user preferences, location, interests
         conversation_history: List of recent messages
+        conversation_context: Alias for conversation_history (deprecated, use conversation_history)
         time_of_day: morning/afternoon/evening/night
         style: Response style to use
     
     Returns:
         Formatted system prompt string
     """
+    # Handle both conversation_history and conversation_context (backward compatibility)
+    if conversation_context is not None and conversation_history is None:
+        conversation_history = conversation_context
     
     p = InebottenPersonality
     
@@ -297,6 +302,22 @@ def get_system_prompt(
             f"Tidspunkt: {time_of_day}",
             f"Stemning: {context['mood']}",
         ])
+    
+    # Add conversation history if available
+    if conversation_history:
+        prompt_parts.extend([
+            "",
+            "Nylig samtale:",
+        ])
+        # Format conversation history (expecting list of dicts with 'role' and 'content')
+        for msg in conversation_history[-5:]:  # Last 5 messages
+            if isinstance(msg, dict):
+                role = msg.get('role', 'unknown')
+                content = msg.get('content', '')
+                if role == 'user':
+                    prompt_parts.append(f"Bruker: {content}")
+                elif role == 'assistant':
+                    prompt_parts.append(f"Deg: {content}")
     
     # Style-specific additions
     prompt_parts.append("")
