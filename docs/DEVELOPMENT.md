@@ -601,6 +601,72 @@ async def _handle_command(self, message: discord.Message):
         await message.reply("❌ Feil", mention_author=False)
 ```
 
+### Modular Handler Pattern (Anbefalt)
+
+Prosjektet bruker nå et modulært handler-mønster. Hver feature har sin egen Handler-klasse:
+
+**Struktur:**
+```
+features/
+├── _base.py           # BaseCog (arv for fremtidig bruk)
+├── _loader.py         # Cog loader (reservert)
+├── *_handler.py       # Handler-klasser (10 stk)
+└── *_manager.py      # Manager-klasser (20+ stk)
+```
+
+**Eksempel - Legge til ny Handler:**
+
+1. Opprett `features/my_handler.py`:
+
+```python
+class MyHandler:
+    def __init__(self, monitor):
+        self.monitor = monitor
+        self.my_manager = monitor.my_manager
+        self.loc = monitor.loc
+    
+    async def handle_my_command(self, message, parsed):
+        try:
+            result = self.my_manager.do_something(parsed)
+            await message.reply(f"✅ {result}", mention_author=False)
+            self.monitor.rate_limiter.record_sent()
+            self.monitor.response_count += 1
+        except Exception as e:
+            print(f"[MY_HANDLER] Error: {e}")
+```
+
+2. Registrer i `message_monitor.py` `_register_handlers()`:
+
+```python
+def _register_handlers(self):
+    from features.my_handler import MyHandler
+    self.handlers["my_feature"] = MyHandler(self)
+```
+
+3. Kall i `handle_message()` med hasattr-mønster:
+
+```python
+my_handler = self.handlers.get("my_feature")
+if my_handler:
+    await my_handler.handle_my_command(message, parsed)
+else:
+    await self._handle_my_command(message, parsed)  # fallback
+```
+
+**Eksisterende Handlers:**
+| Handler | Fil | Metoder |
+|---------|------|---------|
+| FunHandler | fun_handler.py | word_of_day, quote, horoscope, compliment |
+| UtilityHandler | utility_handler.py | calculator, price, shorten |
+| CountdownHandler | countdown_manager.py | countdown |
+| PollsHandler | polls_handler.py | poll, vote |
+| CalendarHandler | calendar_handler.py | calendar_item, list, delete, complete, edit |
+| WatchlistHandler | watchlist_manager.py | watchlist |
+| AuroraHandler | aurora_forecast.py | aurora |
+| SchoolHolidaysHandler | school_holidays.py | school_holidays |
+| HelpHandler | help_handler.py | help |
+| DailyDigestHandler | daily_digest_manager.py | daily_digest |
+
 ---
 
 ## Debug-tips

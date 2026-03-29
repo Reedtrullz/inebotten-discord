@@ -62,21 +62,27 @@ Inebotten er bygget med en **lagdelt arkitektur** som skiller bekymringer og mul
 │                                                     │ calculator      │              │
 │                                                     └─────────────────┘              │
 └────────────────────────────────────────────────────────────────────────────────────────┘
-                                         │
-┌────────────────────────────────────────▼────────────────────────────────────────────────┐
-│                                    DATA LAG                                           │
-│                                                                                         │
-│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐                    │
-│   │  Calendar Store  │  │   User Memory    │  │   GCal Cache     │                    │
-│   │  (JSON)          │  │   (JSON)         │  │   (OAuth)        │                    │
-│   │                  │  │                  │  │                  │                    │
-│   │ • Events         │  │ • Preferences    │  │ • Sync tokens    │                    │
-│   │ • Reminders      │  │ • Interests      │  │ • Event IDs      │                    │
-│   │ • Recurring      │  │ • Last topics    │  │                  │                    │
-│   └──────────────────┘  └──────────────────┘  └──────────────────┘                    │
-│                                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Modular Handler Arkitektur
+
+Boten bruker nå et modulært handler-mønster med 10 Handler-klasser:
+
+| Handler | Fil | Beskrivelse |
+|---------|-----|-------------|
+| FunHandler | features/fun_handler.py | Ord/dagen, sitat, horoskop, kompliment |
+| UtilityHandler | features/utility_handler.py | Kalkulator, pris, URL-korting |
+| CountdownHandler | features/countdown_manager.py | Nedtelling til hendelser |
+| PollsHandler | features/polls_handler.py | Avstemninger, stemmegivning |
+| CalendarHandler | features/calendar_handler.py | Kalender CRUD-operasjoner |
+| WatchlistHandler | features/watchlist_manager.py | Watchlist-håndtering |
+| AuroraHandler | features/aurora_forecast.py | Nordlys-varsler |
+| SchoolHolidaysHandler | features/school_holidays.py | Norske skoleferier |
+| HelpHandler | features/help_handler.py | Hjelp-kommando |
+| DailyDigestHandler | features/daily_digest_manager.py | Daglige oppsummeringer |
+
+**Registrering:**
+Alle handlers registreres i `message_monitor.py` `_register_handlers()` metoden og brukes via `self.handlers` ordboken med fallback til original `_handle_*` metoder.
 
 ---
 
