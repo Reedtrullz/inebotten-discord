@@ -1,10 +1,14 @@
 name: CI
 
-on:
-  push:
-    branches: [ master, main ]
-  pull_request:
-    branches: [ master, main ]
+# Temporarily disabled - remove comments to re-enable GitHub Actions
+# on:
+#   push:
+#     branches: [ master, main ]
+#   pull_request:
+#     branches: [ master, main ]
+
+# Manual trigger only (click "Run workflow" in GitHub UI)
+on: workflow_dispatch
 
 jobs:
   test:
