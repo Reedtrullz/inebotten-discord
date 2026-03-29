@@ -31,9 +31,9 @@ class HelpHandler(BaseHandler):
                 gcal_status = "✅ Synkronisert med Google Calendar"
 
             lines = [
-                self.loc.t("help_title", lang),
+                self.loc.t("help_title"),
                 "",
-                self.loc.t("help_events", lang),
+                self.loc.t("help_events"),
             ]
 
             if gcal_status:
@@ -42,10 +42,10 @@ class HelpHandler(BaseHandler):
             lines.extend(
                 [
                     "",
-                    self.loc.t("help_reminders", lang),
+                    self.loc.t("help_reminders"),
                     "",
-                    self.loc.t("help_fun", lang),
-                    self.loc.t("help_footer_tip", lang),
+                    self.loc.t("help_fun"),
+                    self.loc.t("help_footer_tip"),
                 ]
             )
 
