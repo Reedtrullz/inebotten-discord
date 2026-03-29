@@ -28,7 +28,12 @@ SCHOOL_HOLIDAYS_KEYWORDS = [
 DAILY_DIGEST_KEYWORDS = [
     "daglig oppsummering", "daily digest", "oppsummering", "summary"
 ]
-HELP_KEYWORDS = ["hjelp", "help", "kommandoer", "commands"]
+HELP_KEYWORDS = [
+    "hjelp", "help", "kommandoer", "commands",
+    "hva kan du gjøre", "hva kan du", "hva gjør du",
+    "funksjoner", "features", "capabilities",
+    "hva er du", "hvem er du", "what can you do",
+]
 
 
 class MessageMonitor:
