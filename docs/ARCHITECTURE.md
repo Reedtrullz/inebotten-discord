@@ -66,23 +66,38 @@ Inebotten er bygget med en **lagdelt arkitektur** som skiller bekymringer og mul
 
 ### Modular Handler Arkitektur
 
-Boten bruker nå et modulært handler-mønster med 10 Handler-klasser:
+Boten bruker et modulært handler-mønster basert på **BaseHandler**-klassen:
 
-| Handler | Fil | Beskrivelse |
-|---------|-----|-------------|
-| FunHandler | features/fun_handler.py | Ord/dagen, sitat, horoskop, kompliment |
-| UtilityHandler | features/utility_handler.py | Kalkulator, pris, URL-korting |
-| CountdownHandler | features/countdown_manager.py | Nedtelling til hendelser |
-| PollsHandler | features/polls_handler.py | Avstemninger, stemmegivning |
-| CalendarHandler | features/calendar_handler.py | Kalender CRUD-operasjoner |
-| WatchlistHandler | features/watchlist_manager.py | Watchlist-håndtering |
-| AuroraHandler | features/aurora_forecast.py | Nordlys-varsler |
-| SchoolHolidaysHandler | features/school_holidays.py | Norske skoleferier |
-| HelpHandler | features/help_handler.py | Hjelp-kommando |
-| DailyDigestHandler | features/daily_digest_manager.py | Daglige oppsummeringer |
+```
+Handler Architecture
+├── BaseHandler (features/base_handler.py)
+│   ├── send_response()     # Unified DM/Group/Guild replies
+│   ├── get_guild_id()      # DM-safe guild ID extraction
+│   ├── extract_number()    # Parse numbers from messages
+│   ├── check_rate_limit()  # Rate limiting
+│   └── log()               # Structured logging
+│
+└── 10 Feature Handlers (all extend BaseHandler)
+    ├── FunHandler          # word_of_day, quote, horoscope, compliment
+    ├── UtilityHandler      # calculator, price, shorten
+    ├── CountdownHandler    # Event countdowns
+    ├── PollsHandler        # Polls and voting
+    ├── CalendarHandler     # Calendar CRUD operations
+    ├── WatchlistHandler    # Watchlist management
+    ├── AuroraHandler       # Aurora forecasts
+    ├── SchoolHolidaysHandler  # Norwegian school holidays
+    ├── HelpHandler         # Help command
+    └── DailyDigestHandler  # Daily summaries
+```
 
-**Registrering:**
-Alle handlers registreres i `message_monitor.py` `_register_handlers()` metoden og brukes via `self.handlers` ordboken med fallback til original `_handle_*` metoder.
+**Key Benefits:**
+- **Code reuse:** All handlers share common utilities via BaseHandler
+- **Consistent behavior:** Rate limiting and error handling in one place
+- **Simplified testing:** Mock BaseHandler for isolated handler tests
+- **Type safety:** All handlers implement same interface
+
+**Registration:**
+Handlers are registered in `MessageMonitor._register_handlers()` and accessed via `self.handlers` dict.
 
 ---
 

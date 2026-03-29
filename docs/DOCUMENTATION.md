@@ -162,9 +162,9 @@ Du pratar med {author_name}.
 | Metode | Beskrivelse |
 |--------|-------------|
 | `is_mention()` | Detekterer @inebotten-mentions |
-| `process_message()` | Hovedprosesseringsrørledning |
-| `_send_response()` | AI-/samtalerespons |
-| `_handle_calendar_*()` | Kalenderkommandoer |
+| `handle_message()` | Hovedprosesseringsrørledning |
+| `_send_ai_response()` | AI-/samtalerespons |
+| `handlers["calendar"]` | Kalenderkommandoer (via CalendarHandler) |
 
 **Kommandoprioritet:**
 
@@ -375,7 +375,7 @@ Bruker: @inebotten Hei! Hvordan går det?
 ```
 Bruker: @inebotten kalender
 
-1. message_monitor._handle_calendar_list() kalles
+1. handlers["calendar"].handle_list() kalles
 2. calendar_manager.get_upcoming() henter elementer
 3. Formater med statusindikatorer (📅📌✓)
 4. Vis Google Calendar sync-lenker hvis aktivert

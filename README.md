@@ -150,17 +150,19 @@ python3 run_both.py
 
 ```
 ┌─────────────┐      ┌─────────────────┐      ┌──────────────┐
-│  Discord    │──────▶  Message Monitor │──────▶   Features   │
+│  Discord    │──────▶  Message Monitor │──────▶   Handlers  │
 │  (Brukere)  │      │  (Ruting)       │      │  (Kalender,  │
 └─────────────┘      └────────┬────────┘      │   Vær, etc)  │
                               │               └──────────────┘
-                              │
-                              ▼
+                              │                      │
+                              ▼                      ▼
                     ┌─────────────────┐      ┌──────────────┐
                     │  Hermes Bridge  │──────▶  LM Studio   │
                     │  (HTTP Bridge)  │      │  (gemma-3-4b)│
                     └─────────────────┘      └──────────────┘
 ```
+
+**Handler Architecture:** All 10 handlers extend `BaseHandler` for unified response handling, rate limiting, and logging.
 
 Se [ARCHITECTURE.md](docs/ARCHITECTURE.md) for full detaljering.
 

@@ -225,89 +225,120 @@ def get_my_feature_manager() -> MyFeatureManager:
     return _my_feature_manager
 ```
 
-#### Steg 2: Legg til i Message Monitor
+#### Steg 2: Lag Handler (Ny Arkitektur)
 
-**2.1. Legg til import (ca. linje 50 i `message_monitor.py`):**
+Opprett `features/my_feature_handler.py`:
 
 ```python
+#!/usr/bin/env python3
+"""
+MyFeatureHandler - Håndterer myfeature-kommandoer
+"""
+
+from typing import Optional, Dict, Any, Tuple
+from features.base_handler import BaseHandler
 from features.my_feature_manager import MyFeatureManager, parse_my_feature_command
+
+
+class MyFeatureHandler(BaseHandler):
+    """
+    Handler for myfeature-kommandoer.
+    
+    Arver fra BaseHandler for å få:
+    - send_response(): Unified DM/Group/Guild replies
+    - get_guild_id(): DM-safe guild ID extraction
+    - extract_number(): Parse numbers fra meldinger
+    - log(): Structured logging
+    """
+    
+    def __init__(self, monitor):
+        super().__init__(monitor)
+        self.my_feature = MyFeatureManager()
+        self.parse_my_feature_command = parse_my_feature_command
+    
+    async def handle_my_feature(self, message, parsed: Tuple[str, Dict[str, Any]]) -> None:
+        """
+        Håndter myfeature-kommandoer.
+        
+        Args:
+            message: Discord meldingsobjekt
+            parsed: (handling, parametere) tuple fra parser
+        """
+        try:
+            action, params = parsed
+            guild_id = self.get_guild_id(message)  # DM-safe!
+            
+            if action == 'add':
+                if not params.get('content', '').strip():
+                    await self.send_response(
+                        message,
+                        "❌ Du må skrive noe å legge til.\n"
+                        "Bruk: `@inebotten myfeature add [tekst]`"
+                    )
+                    return
+                
+                success, result = self.my_feature.add_item(
+                    guild_id,
+                    message.author.id,
+                    params['content']
+                )
+                
+                if success:
+                    await self.send_response(message, f"✅ {result}")
+                else:
+                    await self.send_response(message, f"❌ {result}")
+            
+            elif action == 'list':
+                output = self.my_feature.list_items(guild_id)
+                await self.send_response(message, output)
+            
+            else:
+                await self.send_response(
+                    message,
+                    "❌ Ukjent kommando.\n"
+                    "Bruk: `@inebotten myfeature [add/list]`"
+                )
+        
+        except Exception as e:
+            self.log(f"Kommando feil: {e}")
+            await self.send_response(
+                message,
+                "❌ Noe gikk galt. Prøv igjen senere."
+            )
 ```
 
-**2.2. Initialiser i `__init__` (ca. linje 70):**
+**2.1. Registrer handler i MessageMonitor:**
+
+I `core/message_monitor.py`, legg til i `_register_handlers()`:
 
 ```python
-self.my_feature = MyFeatureManager()
-self.parse_my_feature_command = parse_my_feature_command
+from features.my_feature_handler import MyFeatureHandler
+
+self.handlers = {
+    # ... eksisterende handlers ...
+    "my_feature": MyFeatureHandler(self),
+}
 ```
 
-**2.3. Legg til kommandomatcher i `process_message()`:**
+**2.2. Legg til kommandomatcher:**
 
-Finn seksjonen med andre kommandomatchere (ca. linje 250) og legg til:
+I `handle_message()`, legg til før AI-fallback:
 
 ```python
 # Sjekk for myfeature-kommando
 parsed = self.parse_my_feature_command(content)
 if parsed:
-    print(f"[MONITOR] Matched: myfeature command")
-    await self._handle_my_feature_command(message, parsed)
+    self.log("Matched: myfeature command")
+    await self.handlers["my_feature"].handle_my_feature(message, parsed)
     return
 ```
 
-**2.4. Legg til handler-metode:**
-
-```python
-async def _handle_my_feature_command(self, message, parsed):
-    """
-    Håndter myfeature-kommandoer.
-    
-    Args:
-        message: Discord meldingsobjekt
-        parsed: (handling, parametere) tuple fra parser
-    """
-    try:
-        action, params = parsed
-        guild_id = message.guild.id if message.guild else message.channel.id
-        
-        if action == 'add':
-            if not params['content'].strip():
-                await message.reply(
-                    "❌ Du må skrive noe å legge til.\n"
-                    "Bruk: `@inebotten myfeature add [tekst]`",
-                    mention_author=False
-                )
-                return
-            
-            success, result = self.my_feature.add_item(
-                guild_id,
-                message.author.id,
-                params['content']
-            )
-            
-            if success:
-                await message.reply(f"✅ {result}", mention_author=False)
-            else:
-                await message.reply(f"❌ {result}", mention_author=False)
-        
-        elif action == 'list':
-            output = self.my_feature.list_items(guild_id)
-            await message.reply(output, mention_author=False)
-        
-        else:
-            await message.reply(
-                "❌ Ukjent kommando.\n"
-                "Bruk: `@inebotten myfeature [add/list]",
-                mention_author=False
-            )
-    
-    except Exception as e:
-        print(f"[MONITOR] MyFeature kommando feil: {e}")
-        import traceback
-        traceback.print_exc()
-        await message.reply(
-            "❌ Noe gikk galt. Prøv igjen senere.",
-            mention_author=False
-        )
-```
+**Fordeler med ny arkitektur:**
+- ✅ **send_response()** håndterer automatisk DM/Group/Guild kanaler
+- ✅ **Rate limiting** skjer automatisk
+- ✅ **Error handling** konsistent på tvers av alle handlers
+- ✅ **Enklere testing** - kan mocke BaseHandler
+- ✅ **Mindre kode** - ingen duplisert respons-håndtering
 
 #### Steg 3: Oppdater Dokumentasjon
 
@@ -361,6 +392,20 @@ print('\n✅ All tests passed!')
 python3 run_both.py
 # I Discord: "@inebotten myfeature add test"
 ```
+
+#### BaseHandler Referanse
+
+**Tilgjengelige metoder i alle handlers:**
+
+| Metode | Beskrivelse | Eksempel |
+|--------|-------------|----------|
+| `send_response(message, content)` | Send svar (håndterer DM/Group/Guild) | `await self.send_response(msg, "Hei!")` |
+| `get_guild_id(message)` | Hent guild ID (DM-safe) | `guild_id = self.get_guild_id(msg)` |
+| `extract_number(content)` | Hent første tall fra melding | `num = self.extract_number(msg.content)` |
+| `check_rate_limit()` | Sjekk rate limit | `can_send, reason = await self.check_rate_limit()` |
+| `wait_if_needed()` | Vent på rate limit | `await self.wait_if_needed()` |
+| `get_channel_type(channel)` | Hent kanaltype | `ch_type = self.get_channel_type(msg.channel)` |
+| `log(message)` | Logg med handler-navn | `self.log("Behandlet kommando")` |
 
 ---
 
@@ -735,10 +780,11 @@ git checkout -b feature/my-new-feature
 
 # Test
 python3 -m py_compile features/my_feature_manager.py
+python3 -m py_compile features/my_feature_handler.py
 python3 test_my_feature.py
 
 # Commit
-git add features/my_feature_manager.py core/message_monitor.py
+git add features/my_feature_manager.py features/my_feature_handler.py core/message_monitor.py
 git commit -m "Add feature: My Feature
 
 - Kan gjøre X

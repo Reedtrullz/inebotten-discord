@@ -1,7 +1,7 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-03-29
-**Commit:** 22b13fb
+**Generated:** 2026-03-29  
+**Commit:** 682b960  
 **Branch:** master
 
 ## OVERVIEW
@@ -11,20 +11,28 @@ Inebotten - Norwegian Discord selfbot with AI integration (LM Studio). Monitors 
 ```
 .
 ├── run_both.py              # Main entry (Hermes Bridge + Selfbot)
-├── core/                    # Bot infrastructure (message_monitor, config, auth)
-├── features/                # 30+ command handlers (polls, calendar, crypto, weather)
+├── core/                    # Bot infrastructure
+│   ├── message_monitor.py   # Message routing (607 lines)
+│   ├── rate_limiter.py      # Rate limiting
+│   ├── config.py            # Configuration
+│   ├── auth_handler.py      # Token authentication
+│   └── selfbot_runner.py    # Main runner
+├── features/                # Command handlers
+│   ├── base_handler.py      # Base class for all handlers
+│   ├── *_handler.py         # 10 handler classes
+│   └── *_manager.py         # Feature managers
 ├── ai/                      # Hermes connector, personality, responses
 ├── cal_system/              # Norwegian calendar, Google Calendar sync
 ├── memory/                  # User memory, context, localization
 ├── tests/                   # 157 pytest tests
-└── docs/                    # DEVELOPMENT.md, API docs
+└── docs/                    # Documentation
 ```
 
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
 |------|----------|-------|
-| Add feature | features/ | Create *_handler.py, register in message_monitor.py |
+| Add feature | features/ | Extend BaseHandler, register in message_monitor.py |
 | Fix AI response | ai/hermes_connector.py | LM Studio bridge |
 | Calendar fix | cal_system/calendar_manager.py | NLP parsing, Google sync |
 | Tests | tests/test_comprehensive.py | 157 tests, run via pytest |
@@ -47,10 +55,34 @@ Inebotten - Norwegian Discord selfbot with AI integration (LM Studio). Monitors 
 
 ## UNIQUE STYLES
 
-- Cascading if/elif message routing (NOT keyword commands)
-- Selfbot architecture (access DMs/Group DMs - slash commands impossible)
-- Norwegian-first localization
-- Handler pattern with fallback (not Discord.py Cogs)
+- **Handler Pattern**: All handlers extend `BaseHandler` from `features/base_handler.py`
+- **Unified Response**: Use `self.send_response()` from BaseHandler for all replies
+- **Selfbot architecture**: Access DMs/Group DMs (slash commands impossible)
+- **Norwegian-first localization**
+- **Cascading if/elif message routing** (NOT keyword commands)
+
+## BASEHANDLER UTILITIES
+
+All handlers inherit from `BaseHandler`:
+
+```python
+class MyHandler(BaseHandler):
+    async def handle_command(self, message):
+        # Unified response (handles DM/Group/Guild)
+        await self.send_response(message, "Response text")
+        
+        # Guild ID (works in DMs too)
+        guild_id = self.get_guild_id(message)
+        
+        # Extract number from message
+        num = self.extract_number(message.content)
+        
+        # Rate limit check
+        can_send, reason = await self.check_rate_limit()
+        
+        # Logging
+        self.log("Message processed")
+```
 
 ## COMMANDS
 
@@ -71,5 +103,6 @@ pip install -r requirements-dev.txt
 ## NOTES
 
 - Root __init__.py removed (causes discord.py import shadowing)
-- Handler migration complete: 10 handler classes wired
+- Handler architecture: 10 handlers extend BaseHandler
 - pytest.ini: pythonpath=. required for tests
+- MessageMonitor: Reduced from 1302 to 607 lines (53% smaller)
