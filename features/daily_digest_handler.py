@@ -1,29 +1,34 @@
-import discord
+#!/usr/bin/env python3
+"""
+DailyDigestHandler - Handles daily digest commands for the selfbot.
+
+Commands:
+- Generate daily summary of calendar, weather, etc.
+"""
+
+from features.base_handler import BaseHandler
 
 
-class DailyDigestHandler:
+class DailyDigestHandler(BaseHandler):
+    """Handler for daily digest commands"""
+
     def __init__(self, monitor):
-        self.monitor = monitor
+        super().__init__(monitor)
         self.daily_digest = monitor.daily_digest
-        self.loc = monitor.loc
-        self.rate_limiter = monitor.rate_limiter
-        self.response_count = monitor.response_count
 
-    async def handle_daily_digest(self, message):
+    async def handle_daily_digest(self, message) -> None:
+        """
+        Handle daily digest requests.
+
+        Args:
+            message: The Discord message
+        """
         try:
-            guild_id = message.guild.id if message.guild else message.channel.id
+            guild_id = self.get_guild_id(message)
             lang = self.loc.current_lang
 
             response_text = self.daily_digest.generate_digest(guild_id, lang)
+            await self.send_response(message, response_text)
 
-            if isinstance(message.channel, discord.DMChannel):
-                await message.channel.send(response_text)
-            elif isinstance(message.channel, discord.GroupChannel):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.rate_limiter.record_sent()
-            self.response_count += 1
         except Exception as e:
-            print(f"[DAILY_DIGEST_HANDLER] Error handling daily digest: {e}")
+            self.log(f"Error handling daily digest: {e}")

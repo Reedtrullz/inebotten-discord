@@ -1,38 +1,83 @@
 #!/usr/bin/env python3
-"""PollsHandler - Poll creation and voting"""
+"""
+PollsHandler - Handles poll creation and voting for the selfbot.
+
+Commands:
+- Create polls with options
+- Vote on active polls
+"""
+
+from typing import Dict, Any
+
+from features.base_handler import BaseHandler
 
 
-class PollsHandler:
+class PollsHandler(BaseHandler):
+    """Handler for poll-related commands"""
+
     def __init__(self, monitor):
-        self.monitor = monitor
+        super().__init__(monitor)
         self.poll = monitor.poll
-        self.loc = monitor.loc
 
-    async def handle_poll(self, message, poll_cmd):
-        try:
-            lang = poll_cmd.get("lang", self.monitor.loc.current_lang)
-            guild_id = message.guild.id if message.guild else message.channel.id
-            poll_msg = self.poll.create_poll(guild_id, poll_cmd["options"])
-            response_text = self.poll.format_poll_created(poll_msg, lang)
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
-        except Exception as e:
-            print(f"[MONITOR] Poll error: {e}")
+    async def handle_poll(self, message, poll_cmd: Dict[str, Any]) -> None:
+        """
+        Handle poll creation.
 
-    async def handle_vote(self, message, vote):
+        Args:
+            message: The Discord message
+            poll_cmd: Parsed poll command with 'question' and 'options'
+        """
         try:
-            lang = self.monitor.loc.current_lang
-            guild_id = message.guild.id if message.guild else message.channel.id
-            poll_msg = self.poll.add_vote(
-                guild_id, vote["poll_id"], vote["option_index"], message.author.id
+            guild_id = self.get_guild_id(message)
+            lang = poll_cmd.get("lang", self.loc.current_lang)
+
+            poll = self.poll.create_poll(
+                guild_id=guild_id,
+                question=poll_cmd["question"],
+                options=poll_cmd["options"],
+                created_by=message.author.name,
             )
-            if poll_msg:
-                response_text = self.loc.t("vote_registered", lang)
-            else:
-                response_text = self.loc.t("vote_failed", lang)
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+
+            response_text = self.poll.format_poll(poll, lang)
+            await self.send_response(message, response_text)
+
         except Exception as e:
-            print(f"[MONITOR] Vote error: {e}")
+            self.log(f"Error creating poll: {e}")
+
+    async def handle_vote(self, message, vote: Dict[str, Any]) -> None:
+        """
+        Handle voting on polls.
+
+        Args:
+            message: The Discord message
+            vote: Parsed vote with 'option_index'
+        """
+        try:
+            guild_id = self.get_guild_id(message)
+            lang = self.loc.current_lang
+
+            # Get active polls
+            active_polls = self.poll.get_active_polls(guild_id)
+
+            if not active_polls:
+                response_text = self.loc.t("no_active_polls") + " 📊"
+            else:
+                # Vote on the most recent poll
+                poll = active_polls[-1]
+                success, msg = self.poll.vote(
+                    guild_id,
+                    poll["id"],
+                    vote["option_index"],
+                    message.author.id,
+                    message.author.name,
+                )
+
+                if success:
+                    response_text = self.loc.t("vote_registered", num=vote["option_index"])
+                else:
+                    response_text = self.loc.t("vote_error", error=msg)
+
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error handling vote: {e}")

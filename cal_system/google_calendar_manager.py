@@ -13,10 +13,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Suppress requests/urllib3 version warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='requests')
+warnings.filterwarnings("ignore", category=UserWarning, module="requests")
 
 # Add the google-workspace skill scripts to path
-SKILL_PATH = Path.home() / '.hermes' / 'skills' / 'productivity' / 'google-workspace' / 'scripts'
+SKILL_PATH = (
+    Path.home() / ".hermes" / "skills" / "productivity" / "google-workspace" / "scripts"
+)
 if str(SKILL_PATH) not in sys.path:
     sys.path.insert(0, str(SKILL_PATH))
 
@@ -28,11 +30,13 @@ class GoogleCalendarManager:
     """
     Manages Google Calendar integration for the Discord bot
     """
-    
+
     def __init__(self):
         self.enabled = self._check_auth()
-        self.calendar_id = "inebotten@gmail.com"  # Inebotten's calendar (named "Degenerert Almanakk")
-        
+        self.calendar_id = (
+            "inebotten@gmail.com"  # Inebotten's calendar (named "Degenerert Almanakk")
+        )
+
     def _check_auth(self):
         """Check if Google authentication is set up"""
         if not TOKEN_PATH.exists():
@@ -40,30 +44,26 @@ class GoogleCalendarManager:
         try:
             # Try to import and validate credentials
             from google.oauth2.credentials import Credentials
-            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), [
-                "https://www.googleapis.com/auth/calendar"
-            ])
+
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+            )
             return creds.valid or (creds.expired and creds.refresh_token)
         except Exception as e:
             print(f"[GCAL] Auth check failed: {e}")
             return False
-    
+
     def is_configured(self):
         """Return True if Google Calendar is configured and ready"""
         return self.enabled
-    
+
     def _run_calendar_command(self, *args):
         """Run a calendar command via the google_api.py script"""
         script_path = SKILL_PATH / "google_api.py"
         cmd = [sys.executable, str(script_path), "calendar"] + list(args)
-        
+
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 print(f"[GCAL] Command failed: {result.stderr}")
                 return None
@@ -71,38 +71,51 @@ class GoogleCalendarManager:
         except Exception as e:
             print(f"[GCAL] Error running command: {e}")
             return None
-    
+
     def list_upcoming_events(self, days=30):
         """
         List upcoming events from Google Calendar
-        
+
         Args:
             days: Number of days to look ahead
-            
+
         Returns:
             List of event dicts or None if error
         """
         if not self.enabled:
             return None
-            
+
         now = datetime.now(timezone.utc)
         end = now + timedelta(days=days)
-        
+
         result = self._run_calendar_command(
             "list",
-            "--start", now.isoformat(),
-            "--end", end.isoformat(),
-            "--max", "50",
-            "--calendar", self.calendar_id
+            "--start",
+            now.isoformat(),
+            "--end",
+            end.isoformat(),
+            "--max",
+            "50",
+            "--calendar",
+            self.calendar_id,
         )
-        
+
         return result if result else []
-    
-    def create_event(self, title, start_time, end_time=None, 
-                     description=None, location=None, attendees=None, recurrence=None, rrule_day=None):
+
+    def create_event(
+        self,
+        title,
+        start_time,
+        end_time=None,
+        description=None,
+        location=None,
+        attendees=None,
+        recurrence=None,
+        rrule_day=None,
+    ):
         """
         Create a new event in Google Calendar
-        
+
         Args:
             title: Event title/summary
             start_time: ISO 8601 datetime string (with timezone)
@@ -112,41 +125,42 @@ class GoogleCalendarManager:
             attendees: Optional comma-separated list of email addresses
             recurrence: Optional recurrence rule ('weekly', 'biweekly', 'monthly', 'yearly')
             rrule_day: Optional specific day for weekly recurrence (e.g., 'MO', 'TU')
-            
+
         Returns:
             Event dict with id and htmlLink, or None if error
         """
         if not self.enabled:
             return None
-        
+
         # Calculate end time if not provided (default 1 hour duration)
         if end_time is None:
             try:
-                start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
                 end_dt = start_dt + timedelta(hours=1)
                 end_time = end_dt.isoformat()
-            except:
+            except Exception as e:
+                print(f"[CALENDAR] GCal datetime parse error: {e}")
                 return None
-        
+
         # Build recurrence rule if specified
         rrule = None
         if recurrence:
             recurrence = recurrence.lower()
-            if recurrence == 'weekly':
+            if recurrence == "weekly":
                 if rrule_day:
                     rrule = f"RRULE:FREQ=WEEKLY;BYDAY={rrule_day}"
                 else:
                     rrule = "RRULE:FREQ=WEEKLY"
-            elif recurrence == 'biweekly':
+            elif recurrence == "biweekly":
                 if rrule_day:
                     rrule = f"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY={rrule_day}"
                 else:
                     rrule = "RRULE:FREQ=WEEKLY;INTERVAL=2"
-            elif recurrence == 'monthly':
+            elif recurrence == "monthly":
                 rrule = "RRULE:FREQ=MONTHLY"
-            elif recurrence == 'yearly':
+            elif recurrence == "yearly":
                 rrule = "RRULE:FREQ=YEARLY"
-        
+
         # Use direct API for all events (ensures timezone support)
         return self._create_event_api(
             title=title,
@@ -154,10 +168,12 @@ class GoogleCalendarManager:
             end_time=end_time,
             description=description,
             location=location,
-            rrule=rrule
+            rrule=rrule,
         )
-    
-    def _create_event_api(self, title, start_time, end_time, description=None, location=None, rrule=None):
+
+    def _create_event_api(
+        self, title, start_time, end_time, description=None, location=None, rrule=None
+    ):
         """
         Create an event using direct Google Calendar API (handles both recurring and non-recurring)
         """
@@ -165,159 +181,162 @@ class GoogleCalendarManager:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
-            
+
             # Load credentials
-            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), [
-                "https://www.googleapis.com/auth/calendar"
-            ])
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+            )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-            
-            service = build('calendar', 'v3', credentials=creds)
-            
+
+            service = build("calendar", "v3", credentials=creds)
+
             # Build event body
             event_body = {
-                'summary': title,
-                'start': {'dateTime': start_time, 'timeZone': 'Europe/Oslo'},
-                'end': {'dateTime': end_time, 'timeZone': 'Europe/Oslo'},
+                "summary": title,
+                "start": {"dateTime": start_time, "timeZone": "Europe/Oslo"},
+                "end": {"dateTime": end_time, "timeZone": "Europe/Oslo"},
             }
-            
+
             if description:
-                event_body['description'] = description
+                event_body["description"] = description
             if location:
-                event_body['location'] = location
+                event_body["location"] = location
             if rrule:
-                event_body['recurrence'] = [rrule]
-            
-            result = service.events().insert(calendarId=self.calendar_id, body=event_body).execute()
-            
+                event_body["recurrence"] = [rrule]
+
+            result = (
+                service.events()
+                .insert(calendarId=self.calendar_id, body=event_body)
+                .execute()
+            )
+
             return {
-                'status': 'created',
-                'id': result['id'],
-                'summary': result.get('summary', ''),
-                'htmlLink': result.get('htmlLink', '')
+                "status": "created",
+                "id": result["id"],
+                "summary": result.get("summary", ""),
+                "htmlLink": result.get("htmlLink", ""),
             }
-            
+
         except Exception as e:
             print(f"[GCAL] Error creating event: {e}")
             return None
-    
+
     def delete_event(self, event_id):
         """
         Delete an event from Google Calendar
-        
+
         Args:
             event_id: The Google Calendar event ID
-            
+
         Returns:
             True if successful, False otherwise
         """
         if not self.enabled:
             return False
-            
+
         result = self._run_calendar_command(
-            "delete",
-            event_id,
-            "--calendar", self.calendar_id
+            "delete", event_id, "--calendar", self.calendar_id
         )
-        
+
         return result is not None and result.get("status") == "deleted"
-    
+
     def sync_local_event(self, event_data):
         """
         Sync a local bot event to Google Calendar
-        
+
         Args:
             event_data: Dict with title, date (DD.MM.YYYY), time (HH:MM), description
-            
+
         Returns:
             Created event dict or None
         """
         if not self.enabled:
             return None
-        
+
         try:
             # Parse date and time
-            date_str = event_data.get('date', '')  # DD.MM.YYYY
-            time_str = event_data.get('time', '12:00')  # HH:MM
-            
+            date_str = event_data.get("date", "")  # DD.MM.YYYY
+            time_str = event_data.get("time", "12:00")  # HH:MM
+
             # Parse date
-            day, month, year = date_str.split('.')
-            hour, minute = time_str.split(':')
-            
+            day, month, year = date_str.split(".")
+            hour, minute = time_str.split(":")
+
             # Create datetime in local timezone (assume Europe/Oslo for Norway)
             from zoneinfo import ZoneInfo
+
             local_tz = ZoneInfo("Europe/Oslo")
-            
+
             start_dt = datetime(
-                int(year), int(month), int(day),
-                int(hour), int(minute),
-                tzinfo=local_tz
+                int(year), int(month), int(day), int(hour), int(minute), tzinfo=local_tz
             )
             end_dt = start_dt + timedelta(hours=1)
-            
+
             # Convert to ISO format with timezone
             start_iso = start_dt.isoformat()
             end_iso = end_dt.isoformat()
-            
+
             return self.create_event(
-                title=event_data.get('title', 'Untitled'),
+                title=event_data.get("title", "Untitled"),
                 start_time=start_iso,
                 end_time=end_iso,
-                description=event_data.get('description', ''),
-                recurrence=event_data.get('recurrence'),
-                rrule_day=event_data.get('rrule_day')
+                description=event_data.get("description", ""),
+                recurrence=event_data.get("recurrence"),
+                rrule_day=event_data.get("rrule_day"),
             )
-            
+
         except Exception as e:
             print(f"[GCAL] Error syncing event: {e}")
             return None
-    
+
     def format_event_list(self, events, title="Google Calendar - Kommende"):
         """
         Format a list of Google Calendar events for display
         """
         if not events:
             return f"📅 **{title}**\nIngen arrangementer funnet."
-        
+
         lines = [f"📅 **{title}**", ""]
-        
+
         for event in events[:10]:  # Show max 10
-            summary = event.get('summary', '(ingen tittel)')
-            start = event.get('start', '')
-            location = event.get('location', '')
-            link = event.get('htmlLink', '')
-            
+            summary = event.get("summary", "(ingen tittel)")
+            start = event.get("start", "")
+            location = event.get("location", "")
+            link = event.get("htmlLink", "")
+
             # Parse datetime
             try:
-                if 'T' in start:
+                if "T" in start:
                     # datetime format
-                    dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                    dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
                     from zoneinfo import ZoneInfo
+
                     local_dt = dt.astimezone(ZoneInfo("Europe/Oslo"))
-                    date_str = local_dt.strftime('%d.%m.%Y')
-                    time_str = local_dt.strftime('%H:%M')
+                    date_str = local_dt.strftime("%d.%m.%Y")
+                    time_str = local_dt.strftime("%H:%M")
                     time_display = f" kl. {time_str}"
                 else:
                     # date-only format
                     date_str = start
                     time_display = ""
-            except:
+            except Exception as e:
+                print(f"[CALENDAR] GCal parse error: {e}")
                 date_str = start
                 time_display = ""
-            
+
             lines.append(f"📌 **{summary}** - {date_str}{time_display}")
-            
+
             if location:
                 lines.append(f"   📍 {location}")
-            
+
             if link:
                 lines.append(f"   🔗 {link}")
-            
+
             lines.append("")
-        
+
         return "\n".join(lines)
-    
+
     def get_setup_instructions(self):
         """Get instructions for setting up Google Calendar integration"""
         return """🔧 **Google Calendar-oppsett**
@@ -338,43 +357,43 @@ Deretter kjører vi setup-scriptet for å autorisere.
 def parse_google_calendar_command(message_content):
     """
     Parse Google Calendar commands from message
-    
+
     Commands:
     - "google calendar" or "gcal" - list upcoming events
     - "sync til google" - sync local events to Google Calendar
-    
+
     Returns:
         Command dict or None
     """
     content = message_content.lower()
-    
+
     # Check for Google Calendar commands
-    if any(phrase in content for phrase in [
-        'google calendar', 'gcal', 'google kalender'
-    ]):
-        if any(word in content for word in ['sync', 'synk', 'oppdater', 'push']):
-            return {'action': 'sync'}
-        elif any(word in content for word in ['slett', 'delete', 'fjern']):
-            return {'action': 'delete'}
+    if any(
+        phrase in content for phrase in ["google calendar", "gcal", "google kalender"]
+    ):
+        if any(word in content for word in ["sync", "synk", "oppdater", "push"]):
+            return {"action": "sync"}
+        elif any(word in content for word in ["slett", "delete", "fjern"]):
+            return {"action": "delete"}
         else:
-            return {'action': 'list'}
-    
+            return {"action": "list"}
+
     return None
 
 
 if __name__ == "__main__":
     # Test the manager
     print("=== Google Calendar Manager Test ===\n")
-    
+
     manager = GoogleCalendarManager()
-    
+
     if not manager.is_configured():
         print("Google Calendar er ikke konfigurert ennå.")
         print(manager.get_setup_instructions())
     else:
         print("✅ Google Calendar er konfigurert!")
         print("\nHenter kommende arrangementer...\n")
-        
+
         events = manager.list_upcoming_events(days=30)
         if events:
             print(manager.format_event_list(events))

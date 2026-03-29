@@ -1,0 +1,728 @@
+{
+  "scores": {
+    "total": 50,
+    "natural": 43,
+    "robotic": 7,
+    "fallback": 0,
+    "broken": 3
+  },
+  "results": [
+    {
+      "message": "Hei!",
+      "response": "hei! 👋 Hvordan går det?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 23,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hallo!",
+      "response": "Hei! Hvordan går det? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 23,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "God morgen!",
+      "response": "God morgon! Hvordan kan jeg hjelpe deg i dag? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 47,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "God kveld!",
+      "response": "Hei på deg! Hvordan kan jeg hjelpe deg i denne goda kvalet? 🌅✨",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 62,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Heisann!",
+      "response": "Heiå! Hvordan kan jeg hjelpe deg i dag? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 41,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvordan går det?",
+      "response": "Det går bra! 😊 Hvåre du?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 24,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvordan har du det?",
+      "response": "Det går bra! 😊 Hvow meh deg?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 28,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Lenge siden sist!",
+      "response": "Hei igjen! Lengteiden har vært, men det er alt bra nå. Hvordan går ting hos deg? 🌟",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 82,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Godt å se deg!",
+      "response": "Hei igjen! Det er hyggelig å høre fra deg. Hvordan kan jeg hjelpe deg idag? 🌟",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 77,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Morn!",
+      "response": "Hei! Hvordan kan jeg hjelpe deg i dag? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 40,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvem er du?",
+      "response": "Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅👋",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 52,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva er du for noe?",
+      "response": "Jeg er en hjelpemiddel som kan kalendasere og prate. 📅💬",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 55,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva kan du gjøre?",
+      "response": "Jeg kan lagre arrangementer, minne deg på ting, eller prate! 😊",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 62,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "lists_commands"
+      ]
+    },
+    {
+      "message": "Hva er din jobb?",
+      "response": "Jeg hjelper deg med kalender og prat. 📅😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 40,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Er du en bot?",
+      "response": "Ja, jeg er et hjelpesystem. 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 29,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvor kommer du fra?",
+      "response": "Jeg er en digitale hjelpemiddel, ikke frå noen sted spesifikk. 😊",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 64,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "broken_norwegian"
+      ]
+    },
+    {
+      "message": "Hva liker du å gjøre?",
+      "response": "Jeg likeстер hjelpe deg og organisere ditt tidsbruk! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 54,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Har du en familie?",
+      "response": "Nei, men jeg har programmer som jobber sammen for å hjelpe deg. 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 65,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvor gammel er du?",
+      "response": "Jeg er en kanskje uendelig tommer gammal, for jeg oppdateres kontinuerleg.Haunted emoji: 👻",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 90,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva er navnet ditt?",
+      "response": "Jeg heter Ine! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 16,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hvordan føler du deg?",
+      "response": "Det går bra! 😊 Hvow om det ved deg?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 35,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Er du glad?",
+      "response": "Ja, det går bra! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 18,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva tenker du om livet?",
+      "response": "Livet er spennende og full av muligheter! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 43,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Er du ekte?",
+      "response": "Nei, jeg er en AI.",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 18,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Har du følelser?",
+      "response": "Nei, men jeg kan kjenne vesentlige oppryse. 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 45,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva er meningen med livet?",
+      "response": "Meningsfyltliv kan betyr differentier for deg, oppleve kjennerutter, gjøre verden bedre og ha en innvirkning på andre. Men mening kan også være subjektiv og variere fra person tilperson. Hvordan ser du livets mening ut?",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 219,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "too_long"
+      ]
+    },
+    {
+      "message": "Er du intelligent?",
+      "response": "Ja, jeg har mye kunnskap! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 27,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Kan du bli forelsket?",
+      "response": "Nei, jeg er en kjedelig dataprogram. 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 38,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Drømmer du?",
+      "response": "Nei, men takk for spørsmålet! 😊",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 31,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "broken_norwegian"
+      ]
+    },
+    {
+      "message": "Er du redd for noe?",
+      "response": "Nei, jeg er en AI ikke en verkenhet som kan være redd. Men takk for spørsmålet! 😊",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 81,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "broken_norwegian"
+      ]
+    },
+    {
+      "message": "Det er fint vær i dag!",
+      "response": "Det gladner meg å høre det! 🌤️ Hvordan kan jeg hjelpe deg videre?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 65,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg er sliten...",
+      "response": "Det kan være vanskelig. Er det noe spesielt du trenger hjelp med? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 67,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": false
+      },
+      "issues": [
+        "not_contextual"
+      ]
+    },
+    {
+      "message": "Jeg har hatt en hard dag",
+      "response": "Det er unngåelig å føle det. Vil du snakke om noe spesielt? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 61,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Skal du gjøre noe spennende i helgen?",
+      "response": "Jeg har ikke likevel eierkapasitet for å planlegge arrangementer, men jeg kan hjelpe deg med å organisere dine egne! 😊",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 118,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "lists_commands"
+      ]
+    },
+    {
+      "message": "Liker du kaffe?",
+      "response": "Ja, jeg liker kaffee! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 23,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hva synes du om musikk?",
+      "response": "Jeg liker ulike typer musikken, avhenger av humorene min. 🎵😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 60,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Har du sett en bra film i det siste?",
+      "response": "Nei, jeg har ikke personlige erfaringer. Men kan gi rekomendasjon på populære filmer hvis du likner! 🎬",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 102,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg skal på ferie snart!",
+      "response": "Det lyder bra! Hvor går du? 🌴😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 30,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Kan du synge?",
+      "response": "Nei takk, men jeg kan hjelpe deg planlegge et sangarrangement! 🎤🎵",
+      "success": true,
+      "is_natural": false,
+      "indicators": {
+        "length": 65,
+        "has_emoji": false,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": [
+        "lists_commands"
+      ]
+    },
+    {
+      "message": "Fortell meg en vits!",
+      "response": "Hvorfor gikk kyllingen over veien? For å komme til den andre siden! 😄",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 69,
+        "has_emoji": false,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Hjelp meg!",
+      "response": "Jeg kan hjelpe deg. Hva trenger du? 🌟",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 37,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg trenger noen å snakke med",
+      "response": "Det er greit! Jeg kan prate om hva som helst du ønsker. Hvordan føler deg eller hvilken tema vil vi diskutere? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 112,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Takk for hjelpen!",
+      "response": "Det var en nytta å prate med deg! 😊 Har du flere spørsmål eller trenger du hjelp?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 81,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Beklager hvis jeg forstyrrer",
+      "response": "Det er ingenting! 🌟 Hvordan kan du hjelpe deg i dag?",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 52,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Kan jeg spørre deg noe?",
+      "response": "Selvfølgelig! Spør gjerne videre. 🌟",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 35,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg har en dårlig dag",
+      "response": "Det-sjekk! La meg prate litt med deg eller finne et sittet sted for deg. 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 74,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Dette er gøy!",
+      "response": "Det er hyggelig å høre det! 😊 Har du noen spørsmål eller trenger hjelp med noget? 📅",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 83,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Jeg er lei meg",
+      "response": "Det er skrevet. Er det noe du vil tale om eller hjelp med? 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 60,
+        "has_emoji": true,
+        "asks_followup": true,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Du er fantastisk!",
+      "response": "Takk for å si det! 😊 Jeg har mye til å lære fra deg. 📘",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 54,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": false,
+        "contextual": true
+      },
+      "issues": []
+    },
+    {
+      "message": "Ha det bra!",
+      "response": "Det går bra takk! Ha du en god dag! 😊",
+      "success": true,
+      "is_natural": true,
+      "indicators": {
+        "length": 37,
+        "has_emoji": true,
+        "asks_followup": false,
+        "warm_tone": true,
+        "contextual": true
+      },
+      "issues": []
+    }
+  ],
+  "timestamp": "2026-03-28T16:04:49.324188"
+}

@@ -1,130 +1,192 @@
 #!/usr/bin/env python3
-"""CalendarHandler - Events, tasks, reminders"""
+"""
+CalendarHandler - Handles calendar-related commands for the selfbot.
 
-import re
+Commands:
+- Creating calendar items (events, tasks, recurring items)
+- Listing upcoming items
+- Deleting items
+- Marking items as complete
+- Editing items (via delete+recreate workflow)
+"""
+
+from typing import Optional, Dict, Any
+
+from features.base_handler import BaseHandler
 
 
-class CalendarHandler:
+class CalendarHandler(BaseHandler):
+    """Handler for calendar-related commands"""
+
     def __init__(self, monitor):
-        self.monitor = monitor
+        super().__init__(monitor)
         self.calendar = monitor.calendar
         self.nlp_parser = monitor.nlp_parser
-        self.loc = monitor.loc
 
-    async def handle_calendar_item(self, message, item_data):
+    async def handle_calendar_item(self, message, item_data: Dict[str, Any]) -> None:
+        """
+        Handle natural language calendar item creation (unified events + tasks).
+
+        Args:
+            message: The Discord message
+            item_data: Parsed calendar item data from NLP parser
+        """
         try:
-            guild_id = message.guild.id if message.guild else message.channel.id
+            guild_id = self.get_guild_id(message)
+
+            # Sync to Google Calendar if available
             gcal_event_id = None
             gcal_link = None
-            if self.calendar.gcal_enabled:
-                day, month, year = item_data["date"].split(".")
-                start_iso = f"{year}-{month.zfill(2)}-{day.zfill(2)}T{item_data.get('time', '09:00')}:00"
-                end_time = f"{int(item_data.get('time', '09:00').split(':')[0]) + 1:02d}:{item_data.get('time', '09:00').split(':')[1] if ':' in item_data.get('time', '09:00') else '00'}"
-                end_iso = f"{year}-{month.zfill(2)}-{day.zfill(2)}T{end_time}:00"
-                gcal_result = self.calendar.gcal.create_event(
-                    title=item_data["title"],
-                    start_time=start_iso,
-                    end_time=end_iso,
-                    description=item_data["title"],
-                    recurrence=item_data.get("recurrence"),
-                    rrule_day=item_data.get("rrule_day"),
-                )
-                if gcal_result:
-                    gcal_event_id = gcal_result.get("id")
-                    gcal_link = gcal_result.get("htmlLink")
 
-            self.calendar.add_item(
+            if self.calendar.gcal_enabled:
+                try:
+                    self.log(f"Syncing to Google Calendar: {item_data['title']}")
+                    gcal_result = self._sync_to_gcal(item_data)
+                    if gcal_result:
+                        gcal_event_id = gcal_result.get("id")
+                        gcal_link = gcal_result.get("htmlLink")
+                        self.log(f"GCal sync successful: {gcal_link}")
+                except Exception as e:
+                    self.log(f"GCal sync failed: {e}")
+
+            # Add to calendar
+            item = self.calendar.add_item(
                 guild_id=guild_id,
+                user_id=message.author.id,
+                username=message.author.name,
                 title=item_data["title"],
-                date=item_data["date"],
-                time=item_data.get("time"),
-                event_type=item_data.get("type", "event"),
+                date_str=item_data["date"],
+                time_str=item_data.get("time"),
                 recurrence=item_data.get("recurrence"),
+                recurrence_day=item_data.get("recurrence_day"),
                 gcal_event_id=gcal_event_id,
                 gcal_link=gcal_link,
             )
-            lang = self.monitor.loc.current_lang
-            response_text = self.loc.t("event_created", lang)
-            if gcal_link:
-                response_text += f"\n{gcal_link}"
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
-        except Exception as e:
-            print(f"[MONITOR] Calendar item error: {e}")
 
-    async def handle_list(self, message):
-        try:
-            guild_id = message.guild.id if message.guild else message.channel.id
-            items = self.calendar.get_upcoming_items(guild_id)
-            lang = self.monitor.loc.current_lang
-            if items:
-                response_text = self.loc.t("calendar_upcoming", lang) + "\n"
-                for i, item in enumerate(items[:10], 1):
-                    response_text += f"{i}. {item['title']} ({item['date']})\n"
+            if item:
+                response_text = self.calendar.format_single_item(item)
             else:
-                response_text = self.loc.t("calendar_empty", lang)
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+                response_text = (
+                    "❌ Beklager, jeg klarte ikke å legge til i kalenderen. Prøv igjen!"
+                )
+
+            await self.send_response(message, response_text)
+
         except Exception as e:
-            print(f"[MONITOR] Calendar list error: {e}")
+            self.log(f"Error handling calendar item: {e}")
 
-    async def handle_delete(self, message):
+    def _sync_to_gcal(self, item_data: Dict[str, Any]) -> Optional[Dict]:
+        """
+        Sync a calendar item to Google Calendar.
+
+        Args:
+            item_data: The parsed calendar item data
+
+        Returns:
+            GCal API result or None if failed
+        """
+        day, month, year = item_data["date"].split(".")
+        time_str = item_data.get("time", "09:00")
+
+        start_iso = f"{year}-{month.zfill(2)}-{day.zfill(2)}T{time_str}:00"
+
+        # Calculate end time (1 hour later)
+        hour = int(time_str.split(":")[0])
+        minute = time_str.split(":")[1] if ":" in time_str else "00"
+        end_time = f"{hour + 1:02d}:{minute}"
+        end_iso = f"{year}-{month.zfill(2)}-{day.zfill(2)}T{end_time}:00"
+
+        return self.calendar.gcal.create_event(
+            title=item_data["title"],
+            start_time=start_iso,
+            end_time=end_iso,
+            description=item_data["title"],
+            recurrence=item_data.get("recurrence"),
+            rrule_day=item_data.get("rrule_day"),
+        )
+
+    async def handle_list(self, message) -> None:
+        """Handle listing calendar items."""
         try:
-            import re
+            guild_id = self.get_guild_id(message)
+            calendar_text = self.calendar.format_list(guild_id, days=90)
 
-            guild_id = message.guild.id if message.guild else message.channel.id
-            content_lower = message.content.lower()
-            content_clean = re.sub(r"<@!?\d+>", "", content_lower).strip()
-            num_match = re.search(r"\b(\d+)\b", content_clean)
+            if calendar_text:
+                response_text = calendar_text
+            else:
+                response_text = (
+                    "📭 **Kalenderen er tom**\n\n"
+                    "Legg til med:\n"
+                    "• `@inebotten [noe] på [dato]`\n"
+                    "• `@inebotten Jeg må [gjøremål] på [dato]`"
+                )
 
-            if num_match:
-                item_num = int(num_match.group(1))
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error listing calendar: {e}")
+
+    async def handle_delete(self, message) -> None:
+        """Handle calendar item deletion."""
+        try:
+            guild_id = self.get_guild_id(message)
+            item_num = self.extract_number(message.content)
+
+            if item_num:
                 success, title = self.calendar.delete_item(guild_id, item_num)
 
                 if success:
                     response_text = f"✅ **Slettet!** {title}"
                 else:
-                    response_text = "❌ Fant ikke noe med det nummeret. Bruk `@inebotten kalender` for å se listen."
+                    response_text = (
+                        "❌ Fant ikke noe med det nummeret. "
+                        "Bruk `@inebotten kalender` for å se listen."
+                    )
             else:
+                # No number provided, show calendar
                 calendar_text = self.calendar.format_list(guild_id)
                 if calendar_text:
                     response_text = f"📋 Hva vil du slette?\n\n{calendar_text}"
                 else:
                     response_text = "📭 Kalenderen er tom."
 
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+            await self.send_response(message, response_text)
+
         except Exception as e:
-            print(f"[MONITOR] Calendar delete error: {e}")
+            self.log(f"Error deleting item: {e}")
 
-    async def handle_complete(self, message):
+    async def handle_complete(self, message) -> None:
+        """Handle marking calendar items as complete."""
         try:
-            import re
+            guild_id = self.get_guild_id(message)
+            item_num = self.extract_number(message.content)
 
-            guild_id = message.guild.id if message.guild else message.channel.id
-            content_lower = message.content.lower()
-            content_clean = re.sub(r"<@!?\d+>", "", content_lower)
-            num_match = re.search(r"\b(\d+)\b", content_clean)
-
-            if num_match:
-                item_num = int(num_match.group(1))
+            if item_num:
                 success, title, next_date = self.calendar.complete_item(
                     guild_id, item_num
                 )
 
                 if success:
                     if next_date:
-                        response_text = f"✅ **Fullført!**\n\n✓ ~~{title}~~\n\n📅 Neste gang: {next_date}\n\nBra jobba! 🎉"
+                        response_text = (
+                            f"✅ **Fullført!**\n\n"
+                            f"✓ ~~{title}~~\n\n"
+                            f"📅 Neste gang: {next_date}\n\n"
+                            f"Bra jobba! 🎉"
+                        )
                     else:
                         response_text = (
-                            f"✅ **Fullført!**\n\n✓ ~~{title}~~\n\nBra jobba! 🎉"
+                            f"✅ **Fullført!**\n\n"
+                            f"✓ ~~{title}~~\n\n"
+                            f"Bra jobba! 🎉"
                         )
                 else:
-                    response_text = "❌ Fant ikke noe med det nummeret. Bruk `@inebotten kalender` for å se listen."
+                    response_text = (
+                        "❌ Fant ikke noe med det nummeret. "
+                        "Bruk `@inebotten kalender` for å se listen."
+                    )
             else:
+                # No number, show calendar
                 calendar_text = self.calendar.format_list(guild_id)
                 if calendar_text:
                     response_text = (
@@ -133,19 +195,25 @@ class CalendarHandler:
                 else:
                     response_text = "📭 Kalenderen er tom."
 
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
-        except Exception as e:
-            print(f"[MONITOR] Calendar complete error: {e}")
+            await self.send_response(message, response_text)
 
-    async def handle_edit(self, message):
+        except Exception as e:
+            self.log(f"Error completing item: {e}")
+
+    async def handle_edit(self, message) -> None:
+        """
+        Handle event editing.
+        Currently guides users to delete+recreate workflow.
+        """
         try:
-            guild_id = message.guild.id if message.guild else message.channel.id
+            guild_id = self.get_guild_id(message)
             items = self.calendar.get_upcoming(guild_id, days=365)
 
             if not items:
-                response_text = "📭 **Ingen arrangementer å endre**\n\nDet er ingen aktive arrangementer."
+                response_text = (
+                    "📭 **Ingen arrangementer å endre**\n\n"
+                    "Det er ingen aktive arrangementer."
+                )
             else:
                 response_text = "📝 **Endre arrangement**\n\n"
                 response_text += (
@@ -158,8 +226,7 @@ class CalendarHandler:
                     "Deretter: `@inebotten [nytt arrangement] [dato] [tid]`"
                 )
 
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+            await self.send_response(message, response_text)
+
         except Exception as e:
-            print(f"[MONITOR] Calendar edit error: {e}")
+            self.log(f"Error editing event: {e}")

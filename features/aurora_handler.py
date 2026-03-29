@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""Aurora Handler - Nordlys forecast handler"""
+"""
+AuroraHandler - Handles aurora (nordlys) forecast commands for the selfbot.
 
-import discord
+Commands:
+- Get aurora forecast for Norway
+"""
+
+from features.base_handler import BaseHandler
 
 
-class AuroraHandler:
+class AuroraHandler(BaseHandler):
+    """Handler for aurora/nordlys commands"""
+
     def __init__(self, monitor):
-        self.monitor = monitor
+        super().__init__(monitor)
         self.aurora = monitor.aurora
-        self.loc = monitor.loc
 
-    async def handle_aurora(self, message):
+    async def handle_aurora(self, message) -> None:
+        """
+        Handle aurora forecast requests.
+
+        Args:
+            message: The Discord message
+        """
         try:
             forecast = await self.aurora.get_forecast()
 
@@ -21,15 +33,7 @@ class AuroraHandler:
                     "Kunne ikke hente nordlysvarsel akkurat nå. Prøv igjen senere! 🌌"
                 )
 
-            if isinstance(message.channel, discord.DMChannel):
-                await message.channel.send(response_text)
-            elif isinstance(message.channel, discord.GroupChannel):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+            await self.send_response(message, response_text)
 
         except Exception as e:
-            print(f"[MONITOR] Error handling aurora command: {e}")
+            self.log(f"Error handling aurora command: {e}")

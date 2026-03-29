@@ -1,19 +1,35 @@
 #!/usr/bin/env python3
-"""CountdownHandler - Countdown to dates"""
+"""
+CountdownHandler - Handles countdown queries for the selfbot.
+
+Commands:
+- Countdown to specific dates
+- Days until events
+"""
+
+from typing import Dict, Any
+
+from features.base_handler import BaseHandler
 
 
-class CountdownHandler:
+class CountdownHandler(BaseHandler):
+    """Handler for countdown-related commands"""
+
     def __init__(self, monitor):
-        self.monitor = monitor
+        super().__init__(monitor)
         self.countdown = monitor.countdown
-        self.loc = monitor.loc
 
-    async def handle_countdown(self, message, countdown_result):
+    async def handle_countdown(self, message, countdown_result: Dict[str, Any]) -> None:
+        """
+        Handle countdown queries.
+
+        Args:
+            message: The Discord message
+            countdown_result: Parsed countdown data
+        """
         try:
-            lang = self.monitor.loc.current_lang
-            response_text = self.countdown.format_countdown(countdown_result, lang)
-            await message.reply(response_text, mention_author=False)
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+            lang = self.loc.current_lang
+            response_text = self.countdown.format_response(countdown_result, lang)
+            await self.send_response(message, response_text)
         except Exception as e:
-            print(f"[MONITOR] Countdown error: {e}")
+            self.log(f"Error handling countdown: {e}")

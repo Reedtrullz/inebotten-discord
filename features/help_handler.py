@@ -1,15 +1,28 @@
-import discord
+#!/usr/bin/env python3
+"""
+HelpHandler - Handles help commands for the selfbot.
+
+Commands:
+- Show available commands and features
+"""
+
+from features.base_handler import BaseHandler
 
 
-class HelpHandler:
+class HelpHandler(BaseHandler):
+    """Handler for help commands"""
+
     def __init__(self, monitor):
-        self.monitor = monitor
-        self.loc = monitor.loc
+        super().__init__(monitor)
         self.calendar = monitor.calendar
-        self.rate_limiter = monitor.rate_limiter
-        self.response_count = monitor.response_count
 
-    async def handle_help(self, message):
+    async def handle_help(self, message) -> None:
+        """
+        Handle help requests.
+
+        Args:
+            message: The Discord message
+        """
         try:
             lang = self.loc.current_lang
 
@@ -37,16 +50,7 @@ class HelpHandler:
             )
 
             response_text = "\n".join(lines)
-
-            if isinstance(message.channel, discord.DMChannel):
-                await message.channel.send(response_text)
-            elif isinstance(message.channel, discord.GroupChannel):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.rate_limiter.record_sent()
-            self.response_count += 1
+            await self.send_response(message, response_text)
 
         except Exception as e:
-            print(f"[HELP_HANDLER] Error handling help command: {e}")
+            self.log(f"Error handling help command: {e}")

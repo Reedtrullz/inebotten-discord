@@ -40,7 +40,7 @@ NAVNEDAGER = {
         28: ["Karl", "Karla"],
         29: ["Herdis", "Hermod"],
         30: ["Gunnhild", "Gunhild"],
-        31: ["Vidar", "Vigdis"]
+        31: ["Vidar", "Vigdis"],
     },
     2: {
         1: ["Birgit", "Birger"],
@@ -70,7 +70,7 @@ NAVNEDAGER = {
         25: ["Viktor", "Viktoria"],
         26: ["Ingeleif", "Ingeleiv"],
         27: ["Laila", "Lage"],
-        28: ["Marit", "Maren"]
+        28: ["Marit", "Maren"],
     },
     3: {
         1: ["Audny", "Audun"],
@@ -103,7 +103,7 @@ NAVNEDAGER = {
         28: ["Jonas", "Jonatan"],
         29: ["Holger", "Olga"],
         30: ["Rolf", "Rolv"],
-        31: ["Jon", "Jona"]
+        31: ["Jon", "Jona"],
     },
     4: {
         1: ["Aron", "Arve"],
@@ -135,7 +135,7 @@ NAVNEDAGER = {
         27: ["Rolf", "Rune"],
         28: ["Peter", "Petter"],
         29: ["Toralf", "Torhild"],
-        30: ["Gina", "Gine"]
+        30: ["Gina", "Gine"],
     },
     5: {
         1: ["Valborg", "Valborga"],
@@ -168,7 +168,7 @@ NAVNEDAGER = {
         28: ["Gunnbjørg", "Gunnlaug"],
         29: ["Håkon", "Haakon"],
         30: ["Gard", "Geir"],
-        31: ["Pernille", "Preben"]
+        31: ["Pernille", "Preben"],
     },
     6: {
         1: ["Runa", "Runar"],
@@ -200,7 +200,7 @@ NAVNEDAGER = {
         27: ["Torstein", "Torunn"],
         28: ["Lea", "Leif"],
         29: ["Peter", "Petter"],
-        30: ["Solfrid", "Solfrød"]
+        30: ["Solfrid", "Solfrød"],
     },
     7: {
         1: ["Jørgen", "Georg"],
@@ -233,7 +233,7 @@ NAVNEDAGER = {
         28: ["Stig", "Stian"],
         29: ["Olav", "Olaf"],
         30: ["Astrid", "Asta"],
-        31: ["Helge", "Helga"]
+        31: ["Helge", "Helga"],
     },
     8: {
         1: ["Peder", "Petra"],
@@ -266,7 +266,7 @@ NAVNEDAGER = {
         28: ["Elisabet", "Isabel"],
         29: ["Rolf", "Rolv"],
         30: ["Benjamin", "Benedicte"],
-        31: ["Hjalmar"]
+        31: ["Hjalmar"],
     },
     9: {
         1: ["Runhild", "Runar"],
@@ -298,7 +298,7 @@ NAVNEDAGER = {
         27: ["Dag", "Daga"],
         28: ["Lena", "Lene"],
         29: ["Mikael", "Mikal"],
-        30: ["Helga", "Helge"]
+        30: ["Helga", "Helge"],
     },
     10: {
         1: ["Solveig", "Sølvi"],
@@ -331,7 +331,7 @@ NAVNEDAGER = {
         28: ["Simon", "Simen"],
         29: ["Nils", "Nina"],
         30: ["Aksel", "Åse"],
-        31: ["Hallvard", "Halvor"]
+        31: ["Hallvard", "Halvor"],
     },
     11: {
         1: ["Vigdis", "Vigdís"],
@@ -363,7 +363,7 @@ NAVNEDAGER = {
         27: ["Ludvig", "Lovise"],
         28: ["Ruben", "Rune"],
         29: ["Frode", "Frøydis"],
-        30: ["Trygve", "Tryggve"]
+        30: ["Trygve", "Tryggve"],
     },
     12: {
         1: ["Arnold", "Arnt"],
@@ -396,8 +396,8 @@ NAVNEDAGER = {
         28: ["Unni", "Unn"],
         29: ["Vida", "Vidar"],
         30: ["Ragnhild", "Ragni"],
-        31: ["Sylvester", "Sylfest"]
-    }
+        31: ["Sylvester", "Sylfest"],
+    },
 }
 
 # Norwegian flag days (flaggdager) - when the Norwegian flag should be flown
@@ -440,7 +440,8 @@ def get_navnedag(month, day):
         if names and isinstance(names[0], list):
             names = names[0]
         return names
-    except:
+    except Exception as e:
+        print(f"[CALENDAR] Holiday parse error: {e}")
         return []
 
 
@@ -469,22 +470,34 @@ def format_date_norwegian(date_obj=None, include_week=True):
     """
     if date_obj is None:
         date_obj = datetime.now()
-    
+
     weekdays = ["Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag", "Lørdag", "Søndag"]
-    months = ["januar", "februar", "mars", "april", "mai", "juni",
-              "juli", "august", "september", "oktober", "november", "desember"]
-    
+    months = [
+        "januar",
+        "februar",
+        "mars",
+        "april",
+        "mai",
+        "juni",
+        "juli",
+        "august",
+        "september",
+        "oktober",
+        "november",
+        "desember",
+    ]
+
     weekday = weekdays[date_obj.weekday()]
     day = date_obj.day
     month = months[date_obj.month - 1]
     year = date_obj.year
-    
+
     date_str = f"{weekday} {day}. {month} {year}"
-    
+
     if include_week:
         week = get_week_number(date_obj)
         date_str += f" (Uke {week})"
-    
+
     return date_str
 
 
@@ -494,15 +507,15 @@ def get_todays_info():
     Returns dict with navnedag, flaggdag, week number
     """
     today = date.today()
-    
+
     return {
-        'date': today,
-        'formatted_date': format_date_norwegian(today),
-        'week_number': get_week_number(today),
-        'navnedag': get_navnedag(today.month, today.day),
-        'flaggdag': get_flaggdag(today.month, today.day),
-        'is_sunday': today.weekday() == 6,
-        'is_holiday': FLAGGDAGER.get((today.month, today.day)) is not None
+        "date": today,
+        "formatted_date": format_date_norwegian(today),
+        "week_number": get_week_number(today),
+        "navnedag": get_navnedag(today.month, today.day),
+        "flaggdag": get_flaggdag(today.month, today.day),
+        "is_sunday": today.weekday() == 6,
+        "is_holiday": FLAGGDAGER.get((today.month, today.day)) is not None,
     }
 
 
@@ -514,18 +527,18 @@ def get_moon_phase(date_obj=None):
     """
     if date_obj is None:
         date_obj = date.today()
-    
+
     # Known new moon: January 6, 2000
     known_new_moon = date(2000, 1, 6)
     days_since_new = (date_obj - known_new_moon).days
-    
+
     # Lunar cycle is approximately 29.53 days
     lunar_cycle = 29.53059
     moon_age = days_since_new % lunar_cycle
-    
+
     # Calculate phase
     phase = moon_age / lunar_cycle
-    
+
     # Determine phase name
     if phase < 0.03 or phase > 0.97:
         return ("Nymåne", "🌑", int((1 - abs(phase - 0.5) * 2) * 100))
@@ -552,54 +565,54 @@ def get_sunrise_sunset(day_of_year=None, latitude=59.9, longitude=10.7):
     """
     if day_of_year is None:
         day_of_year = date.today().timetuple().tm_yday
-    
+
     # Oslo coordinates approximately 59.9°N, 10.7°E
     # Simplified calculation - not precise but reasonable for display
-    
+
     # Daylight variation throughout the year (Oslo)
     # Longest day ~18.5 hours (June 21)
     # Shortest day ~6 hours (December 21)
-    
+
     import math
-    
+
     # Convert day to radians (0 to 2π)
     day_rad = 2 * math.pi * (day_of_year - 1) / 365.25
-    
+
     # Calculate daylight hours using sine wave
     # Peak at day ~172 (June 21)
     avg_daylight = 12.25
     amplitude = 6.25  # variation from average
     daylight_hours = avg_daylight + amplitude * math.sin(day_rad - 1.39)
-    
+
     # Calculate sunrise/sunset from daylight hours (approximate)
     sunrise_hour = 12 - (daylight_hours / 2)
     sunset_hour = 12 + (daylight_hours / 2)
-    
+
     sunrise = f"{int(sunrise_hour):02d}:{int((sunrise_hour % 1) * 60):02d}"
     sunset = f"{int(sunset_hour):02d}:{int((sunset_hour % 1) * 60):02d}"
-    
+
     daylight = f"{int(daylight_hours)}t {int((daylight_hours % 1) * 60):02d}m"
-    
+
     return sunrise, sunset, daylight
 
 
 if __name__ == "__main__":
     # Test the module
     print("=== Norwegian Calendar Test ===\n")
-    
+
     info = get_todays_info()
     print(f"Dato: {info['formatted_date']}")
     print(f"Ukenummer: {info['week_number']}")
-    
-    if info['navnedag']:
+
+    if info["navnedag"]:
         print(f"Navnedag: {', '.join(info['navnedag'])}")
-    
-    if info['flaggdag']:
+
+    if info["flaggdag"]:
         print(f"Flaggdag: {info['flaggdag']} 🇳🇴")
-    
+
     moon = get_moon_phase()
     print(f"Månefase: {moon[0]} {moon[1]}")
-    
+
     sunrise, sunset, daylight = get_sunrise_sunset()
     print(f"Soloppgang: {sunrise}")
     print(f"Solnedgang: {sunset}")

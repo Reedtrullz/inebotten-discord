@@ -1,91 +1,114 @@
 #!/usr/bin/env python3
 """
-FunHandler - Modular handler for fun features (word of day, quotes, etc)
+FunHandler - Handles fun/entertainment commands for the selfbot.
 
-This handler object wraps the feature managers and provides
-a clean interface for message_monitor to delegate to.
+Commands:
+- Word of the day
+- Quotes (save/get)
+- Compliments/roasts
+- Horoscopes
 """
+
+from typing import Dict, Any, Optional
 
 import discord
 
+from features.base_handler import BaseHandler
 
-class FunHandler:
-    """Handler for fun features"""
+
+class FunHandler(BaseHandler):
+    """Handler for fun/entertainment commands"""
 
     def __init__(self, monitor):
-        self.monitor = monitor
+        super().__init__(monitor)
         self.wod = monitor.wod
         self.quote = monitor.quote
         self.compliments = monitor.compliments
         self.horoscope = monitor.horoscope
-        self.loc = monitor.loc
 
-    async def handle_word_of_day(self, message):
-        """Handle word of the day request"""
+    async def handle_word_of_day(self, message) -> None:
+        """Handle word of the day request."""
         try:
-            lang = self.monitor.loc.current_lang
+            lang = self.loc.current_lang
             word = self.wod.get_word_of_day(lang)
             response_text = self.wod.format_word(word, lang)
-
-            if isinstance(message.channel, discord.DMChannel):
-                await message.channel.send(response_text)
-            elif isinstance(message.channel, discord.GroupChannel):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.monitor.rate_limiter.record_sent()
-            self.monitor.response_count += 1
+            await self.send_response(message, response_text)
         except Exception as e:
-            print(f"[MONITOR] Error handling word of day: {e}")
+            self.log(f"Error handling word of day: {e}")
 
-    async def handle_quote_command(self, message, quote_cmd):
-        """Handle quote commands"""
-        guild_id = message.guild.id if message.guild else message.channel.id
-        lang = quote_cmd.get("lang", self.monitor.loc.current_lang)
+    async def handle_quote_command(self, message, quote_cmd: Dict[str, Any]) -> None:
+        """
+        Handle quote commands.
 
-        if quote_cmd["action"] == "save":
-            self.quote.add_quote(
-                guild_id=guild_id,
-                text=quote_cmd["text"],
-            )
-            response_text = self.loc.t("quote_saved", lang)
-        else:
-            quote = self.quote.get_random_quote(guild_id)
-            if quote:
-                response_text = self.loc.t("quote_random", lang).format(quote=quote)
-            else:
-                response_text = self.loc.t("quote_empty", lang)
+        Args:
+            message: The Discord message
+            quote_cmd: Parsed quote command with 'action' and optional 'text'
+        """
+        try:
+            guild_id = self.get_guild_id(message)
+            lang = quote_cmd.get("lang", self.loc.current_lang)
 
-        await message.reply(response_text, mention_author=False)
-        self.monitor.rate_limiter.record_sent()
-        self.monitor.response_count += 1
+            if quote_cmd["action"] == "save":
+                self.quote.add_quote(
+                    guild_id=guild_id,
+                    text=quote_cmd["text"],
+                    author=message.author.name,
+                )
+                response_text = self.quote.format_confirmation(quote_cmd["text"], lang)
+            else:  # "get"
+                quote = self.quote.get_random_quote(guild_id)
+                if quote:
+                    response_text = self.quote.format_quote(quote, lang)
+                else:
+                    response_text = self.loc.t("no_quotes")
 
-    async def handle_compliment(self, message, compliment_cmd):
-        """Handle compliment/roast commands"""
-        target = compliment_cmd.get("target")
-        lang = compliment_cmd.get("lang", self.monitor.loc.current_lang)
+            await self.send_response(message, response_text)
 
-        if compliment_cmd["type"] == "roast":
-            response_text = self.compliments.get_roast(target, lang)
-        else:
-            response_text = self.compliments.get_compliment(target, lang)
+        except Exception as e:
+            self.log(f"Error handling quote: {e}")
 
-        await message.reply(response_text, mention_author=False)
-        self.monitor.rate_limiter.record_sent()
-        self.monitor.response_count += 1
+    async def handle_compliment(self, message, compliment_cmd: Dict[str, Any]) -> None:
+        """
+        Handle compliment/roast commands.
 
-    async def handle_horoscope(self, message, horoscope_cmd):
-        """Handle horoscope requests"""
-        sign = horoscope_cmd.get("sign", "").lower()
-        lang = horoscope_cmd.get("lang", self.monitor.loc.current_lang)
+        Args:
+            message: The Discord message
+            compliment_cmd: Parsed command with 'action' and optional 'user'
+        """
+        try:
+            lang = self.loc.current_lang
 
-        response_text = self.horoscope.get_horoscope(sign, lang)
+            if compliment_cmd["action"] == "compliment":
+                text = self.compliments.get_compliment(lang)
+                response_text = self.compliments.format_compliment(
+                    text, compliment_cmd.get("user"), lang
+                )
+            else:  # roast
+                text = self.compliments.get_roast(lang)
+                response_text = self.compliments.format_roast(
+                    text, compliment_cmd.get("user"), lang
+                )
 
-        if isinstance(message.channel, discord.DMChannel):
-            await message.channel.send(response_text)
-        else:
-            await message.reply(response_text, mention_author=False)
+            await self.send_response(message, response_text)
 
-        self.monitor.rate_limiter.record_sent()
-        self.monitor.response_count += 1
+        except Exception as e:
+            self.log(f"Error handling compliment: {e}")
+
+    async def handle_horoscope(self, message, horoscope_cmd: Dict[str, Any]) -> None:
+        """
+        Handle horoscope requests.
+
+        Args:
+            message: The Discord message
+            horoscope_cmd: Parsed command with 'sign'
+        """
+        try:
+            lang = self.loc.current_lang
+
+            horoscope_data = self.horoscope.get_horoscope(horoscope_cmd["sign"], lang)
+            response_text = self.horoscope.format_horoscope(horoscope_data, lang)
+
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error handling horoscope: {e}")

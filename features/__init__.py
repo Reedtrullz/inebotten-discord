@@ -1,5 +1,11 @@
-from features._base import BaseCog
-from features._loader import load_all_cogs, get_available_cogs
+#!/usr/bin/env python3
+"""
+Features package for Inebotten Discord selfbot.
+
+This package contains handlers for all bot features.
+"""
+
+from features.base_handler import BaseHandler
 from features.fun_handler import FunHandler
 from features.utility_handler import UtilityHandler
 from features.countdown_handler import CountdownHandler
@@ -12,9 +18,7 @@ from features.help_handler import HelpHandler
 from features.daily_digest_handler import DailyDigestHandler
 
 __all__ = [
-    "BaseCog",
-    "load_all_cogs",
-    "get_available_cogs",
+    "BaseHandler",
     "FunHandler",
     "UtilityHandler",
     "CountdownHandler",
