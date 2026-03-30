@@ -147,14 +147,21 @@ class NaturalLanguageParser:
         
         # Extract date
         date_str, days_offset = self._extract_date(content)
+        
+        # If no date found but recurrence is present, default to today
+        recurrence_data = self._extract_recurrence(content)
         if not date_str and days_offset is None:
-            return None
+            if recurrence_data:
+                # Default to today for recurrence-only patterns like "regninger hver måned"
+                from datetime import datetime
+                today = datetime.now()
+                date_str = today.strftime('%d.%m.%Y')
+                days_offset = 0
+            else:
+                return None
         
         # Extract time
         time_str = self._extract_time(content)
-        
-        # Extract recurrence
-        recurrence_data = self._extract_recurrence(content)
         
         # Extract title by removing date/time/recurrence parts
         title = self._extract_title(content, date_str, time_str, recurrence_data)
