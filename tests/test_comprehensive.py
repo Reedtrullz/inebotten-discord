@@ -948,6 +948,108 @@ class TestCalendarNLP(unittest.TestCase):
         except Exception as e:
             self.fail(f"Should not crash: {e}")
 
+    def test_65a_month_name_parsing_norwegian(self):
+        """Test 65a: Date parsing with Norwegian month names"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test "15. mai" format
+        result = parser.parse_event("møte 15. mai kl 14")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "15.5.2026")
+        self.assertEqual(result["time"], "14:00")
+
+        # Test "20 desember" format (without dot)
+        result = parser.parse_event("julebord 20 desember")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "20.12.2026")
+
+        # Test with short month name
+        result = parser.parse_event("frist 15. mar")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "15.3.2026")
+
+    def test_65b_month_name_parsing_english(self):
+        """Test 65b: Date parsing with English month names"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test English month names
+        result = parser.parse_event("meeting 15. may")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "15.5.2026")
+
+        result = parser.parse_event("deadline 20 december")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "20.12.2026")
+
+    def test_65c_den_x_pattern(self):
+        """Test 65c: Date parsing with 'den X.' pattern"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test "den 5." (day only, uses current month)
+        result = parser.parse_event("regninger den 5.")
+        self.assertIsNotNone(result)
+        self.assertIn("5.", result["date"])
+
+        # Test "den 15. mai"
+        result = parser.parse_event("møte den 15. mai")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "15.5.2026")
+
+        # Test "den 20 desember" (without dot)
+        result = parser.parse_event("julebord den 20 desember")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["date"], "20.12.2026")
+
+    def test_65d_den_x_with_recurrence(self):
+        """Test 65d: 'den X.' pattern combined with recurrence"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test "den 5. hver måned" - the key use case
+        result = parser.parse_event("regninger den 5. hver måned")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["recurrence"], "monthly")
+        self.assertIn("5.", result["date"])
+
+        # Test with different recurrence
+        result = parser.parse_event("tannlege den 15. hver uke")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["recurrence"], "weekly")
+
+    def test_65e_get_month_number_helper(self):
+        """Test 65e: _get_month_number helper method"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Norwegian full names
+        self.assertEqual(parser._get_month_number("januar"), 1)
+        self.assertEqual(parser._get_month_number("mai"), 5)
+        self.assertEqual(parser._get_month_number("desember"), 12)
+
+        # Norwegian short forms
+        self.assertEqual(parser._get_month_number("mar"), 3)
+        self.assertEqual(parser._get_month_number("des"), 12)
+
+        # English names
+        self.assertEqual(parser._get_month_number("march"), 3)
+        self.assertEqual(parser._get_month_number("december"), 12)
+
+        # Case insensitive
+        self.assertEqual(parser._get_month_number("MAI"), 5)
+        self.assertEqual(parser._get_month_number("Mai"), 5)
+
+        # Invalid month returns None
+        self.assertIsNone(parser._get_month_number("invalid"))
+        self.assertIsNone(parser._get_month_number("hver"))
+
 
 # ============================================================================
 # PHASE 4: FEATURE COMMANDS (tests 66-103)

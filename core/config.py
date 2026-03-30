@@ -36,6 +36,7 @@ class Config:
         
         # Hermes Integration
         self.HERMES_MAX_REQ_PER_MIN = int(os.getenv('HERMES_MAX_REQ_PER_MIN', 60))
+        self.HERMES_MAX_TOKENS = int(os.getenv('HERMES_MAX_TOKENS', 200))
         
         self.validate()
     

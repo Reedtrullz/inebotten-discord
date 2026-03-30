@@ -361,18 +361,50 @@ class NaturalLanguageParser:
         
         return result
     
+    def _get_month_number(self, month_name):
+        """Convert Norwegian or English month name to month number (1-12)"""
+        month_map = {
+            # Norwegian
+            'januar': 1, 'jan': 1,
+            'februar': 2, 'feb': 2,
+            'mars': 3, 'mar': 3,
+            'april': 4, 'apr': 4,
+            'mai': 5,
+            'juni': 6, 'jun': 6,
+            'juli': 7, 'jul': 7,
+            'august': 8, 'aug': 8,
+            'september': 9, 'sep': 9,
+            'oktober': 10, 'okt': 10,
+            'november': 11, 'nov': 11,
+            'desember': 12, 'des': 12,
+            # English
+            'january': 1,
+            'february': 2,
+            'march': 3,
+            'april': 4,
+            'may': 5,
+            'june': 6,
+            'july': 7,
+            'august': 8,
+            'september': 9,
+            'october': 10,
+            'november': 11,
+            'december': 12,
+        }
+        return month_map.get(month_name.lower())
+
     def _has_time_indicator(self, content):
         """
         Check if content has strong time/date indicators that suggest a calendar command.
-        
+
         This method is conservative - it requires multiple indicators OR explicit
         calendar keywords to avoid misinterpreting casual conversation.
         """
         content_lower = content.lower()
-        
+
         # Strong indicators that almost certainly mean calendar command
         strong_indicators = 0
-        
+
         # 1. Explicit calendar keywords (very strong signal)
         calendar_keywords = [
             'møte', 'meeting', 'treff', 'avtale', 'appointment',
@@ -386,49 +418,59 @@ class NaturalLanguageParser:
         for keyword in calendar_keywords:
             if keyword in content_lower:
                 strong_indicators += 2  # Calendar keywords are strong signals
-        
+
         # 2. Task indicators (husk, jeg må, etc.)
         for indicator in self.task_indicators:
             if indicator in content_lower:
                 strong_indicators += 2
-        
+
         # 3. Explicit time patterns (kl 14, 14:00)
         if re.search(r'(?:kl\.?|klokken)\s*\d{1,2}', content_lower):
             strong_indicators += 2
         if re.search(r'\b\d{1,2}:\d{2}\b', content):
             strong_indicators += 2
-        
+
         # 4. Numeric dates (DD.MM.YYYY or DD.MM)
         if re.search(r'\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?', content):
             strong_indicators += 2
-        
+
+        # 4b. Month name dates (15. mai, 20 desember)
+        month_pattern = r'\d{1,2}\s*[.-]?\s*(?:januar|februar|mars|april|mai|juni|juli|august|september|oktober|november|desember|jan|feb|mar|apr|jun|jul|aug|sep|okt|nov|des|january|february|march|may|june|july|august|september|october|november|december)'
+        if re.search(month_pattern, content_lower):
+            strong_indicators += 2
+
+        # 4c. "den X" pattern (den 5., den 15. mai)
+        den_pattern = r'den\s*\d{1,2}\s*\.?(?:\s*(?:januar|februar|mars|april|mai|juni|juli|august|september|oktober|november|desember|jan|feb|mar|apr|jun|jul|aug|sep|okt|nov|des))?'
+        if re.search(den_pattern, content_lower):
+            strong_indicators += 2
+
         # 5. Recurrence patterns (hver uke, etc.)
         for pattern in self.recurrence_patterns:
             if pattern in content_lower:
                 strong_indicators += 2
-        
+
         # If we have strong indicators, it's likely a calendar command
         if strong_indicators >= 2:
             return True
-        
+
         # Weak indicators (date words like "i dag", "i morgen")
         # These alone are NOT enough - they're too common in conversation
         weak_indicators = 0
-        
+
         for word in self.date_words:
             if word in content_lower:
                 weak_indicators += 1
-        
+
         for day in self.days:
             if day in content_lower:
                 weak_indicators += 1
-        
+
         # Only accept weak indicators if we have multiple AND the message is short
         # (short messages with date words are more likely to be calendar commands)
         word_count = len(content.split())
         if weak_indicators >= 1 and word_count <= 5:
             return True
-        
+
         return False
     
     def _extract_date(self, content):
@@ -438,8 +480,8 @@ class NaturalLanguageParser:
         """
         content_lower = content.lower()
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Check for explicit DD.MM.YYYY or DD.MM
+
+        # 1. Check for explicit DD.MM.YYYY or DD.MM
         date_match = re.search(r'(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?', content)
         if date_match:
             day, month, year = date_match.groups()
@@ -450,14 +492,55 @@ class NaturalLanguageParser:
             else:
                 date_str = f"{day}.{month}.{today.year}"
             return date_str, None
-        
-        # Check for "i dag", "i morgen", etc.
+
+        # 2. NEW: Check for month name date format (e.g., "15. mai", "20 desember")
+        # Pattern: one or two digits, optional dot/dash/space, month name, optional year
+        month_date_match = re.search(
+            r'(\d{1,2})\s*[.-]?\s*([a-zæøå]+)(?:\s+(\d{4}))?',
+            content_lower
+        )
+        if month_date_match:
+            day_str, month_name, year_str = month_date_match.groups()
+            month_num = self._get_month_number(month_name)
+            if month_num:
+                year = year_str if year_str else str(today.year)
+                # Handle two-digit years
+                if len(year) == 2:
+                    year = '20' + year
+                date_str = f"{day_str}.{month_num}.{year}"
+                return date_str, None
+
+        # 3. NEW: Check for "den X." pattern (e.g., "den 5.", "den 15. mai")
+        # Only match valid Norwegian/English month names
+        valid_months = 'januar|februar|mars|april|mai|juni|juli|august|september|oktober|november|desember|jan|feb|mar|apr|jun|jul|aug|sep|okt|nov|des|january|february|march|may|june|july|august|september|october|november|december'
+        den_match = re.search(
+            rf'den\s*(\d{{1,2}})\s*[.]?\s*(?:({valid_months}))?(?:\s+(\d{{4}}))?',
+            content_lower
+        )
+        if den_match:
+            day_str, month_name, year_str = den_match.groups()
+            if month_name:  # "den 15. mai"
+                month_num = self._get_month_number(month_name.lower())
+                if month_num:
+                    year = year_str if year_str else str(today.year)
+                    if len(year) == 2:
+                        year = '20' + year
+                    date_str = f"{day_str}.{month_num}.{year}"
+                    return date_str, None
+            else:  # "den 5." - day only, use current month
+                year = year_str if year_str else str(today.year)
+                if len(year) == 2:
+                    year = '20' + year
+                date_str = f"{day_str}.{today.month}.{year}"
+                return date_str, None
+
+        # 4. Check for "i dag", "i morgen", etc.
         for word, offset in self.date_words.items():
             if word in content_lower:
                 target_date = today + timedelta(days=offset)
                 return target_date.strftime('%d.%m.%Y'), offset
-        
-        # Check for day names ("på lørdag", "til lørdag", etc.)
+
+        # 5. Check for day names ("på lørdag", "til lørdag", etc.)
         for day_name, day_num in self.days.items():
             # Match patterns like "på lørdag", "til lørdag", "lørdag"
             pattern = r'(?:på|til|neste)?\s*' + day_name
@@ -467,12 +550,12 @@ class NaturalLanguageParser:
                     days_ahead += 7
                 target_date = today + timedelta(days=days_ahead)
                 return target_date.strftime('%d.%m.%Y'), days_ahead
-        
-        # If we have time indicators like "i kveld" but no date, assume today
+
+        # 6. If we have time indicators like "i kveld" but no date, assume today
         for time_word in ['i kveld', 'i natt', 'i dag']:
             if time_word in content_lower:
                 return today.strftime('%d.%m.%Y'), 0
-        
+
         return None, None
     
     def _extract_time(self, content):

@@ -124,6 +124,9 @@ python3 run_both.py
 @inebotten husk å ringe mamma på lørdag
 @inebotten RBK-kamp 12.04 kl 18:30 hver uke
 @inebotten lunsj hver fredag kl 12
+@inebotten regninger den 5. hver måned
+@inebotten julebord 20 desember kl 18:00
+@inebotten møte 15. mai kl 10:00
 ```
 
 ### Vanlig chatting

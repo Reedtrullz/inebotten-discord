@@ -43,18 +43,24 @@ python3 selfbot_runner.py        # Terminal 2 - Discord-bot
 @inebotten bursdag til mamma 15.05 hvert år
 @inebotten tannlege neste tirsdag kl 09:00
 @inebotten test imårra kl 13:37
+@inebotten møte 15. mai kl 10:00
+@inebotten regninger den 5. hver måned
+@inebotten julebord 20 desember
 ```
 
 ### Nøkkelord for Datoer
 
-| Nøkkelord | Betydning |
-|-----------|-----------|
-| `i dag`, `idag` | I dag |
-| `i morgen`, `imorgen`, `imårra` | I morgen |
-| `i overmorgen` | I overmorgen |
-| `på mandag` | Neste mandag |
-| `neste tirsdag` | Neste tirsdag |
-| `den 25.03` | 25. mars |
+| Nøkkelord | Betydning | Eksempel |
+|-----------|-----------|----------|
+| `i dag`, `idag` | I dag | `@inebotten møte i dag kl 14` |
+| `i morgen`, `imorgen`, `imårra` | I morgen | `@inebotten test imårra` |
+| `i overmorgen` | I overmorgen | `@inebotten avtale i overmorgen` |
+| `på mandag` | Neste mandag | `@inebotten møte på mandag kl 10` |
+| `neste tirsdag` | Neste tirsdag | `@inebotten tannlege neste tirsdag` |
+| `den 25.03` | 25. mars | `@inebotten frist den 25.03` |
+| `15. mai` | 15. mai (månedsnavn) | `@inebotten møte 15. mai kl 14` |
+| `den 5.` | Den 5. (daglig) | `@inebotten regninger den 5. hver måned` |
+| `20 desember` | 20. desember | `@inebotten julebord 20 desember` |
 
 ### Statusikoner
 

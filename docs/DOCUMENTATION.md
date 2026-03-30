@@ -223,15 +223,21 @@ Du pratar med {author_name}.
 | `@inebotten RBK-kamp 12.04 kl 18:30` | Spesifikk dato/tid |
 | `@inebotten lunsj med Ola hver fredag kl 12` | Gjentagende ukentlig |
 | `@inebotten test imårra kl 13:37` | Dialektstøtte (imårra) |
+| `@inebotten møte 15. mai kl 10:00` | Månedsnavn (mai) |
+| `@inebotten regninger den 5. hver måned` | "Den X" mønster med gjentagelse |
+| `@inebotten bursdag 20 desember` | Månedsnavn uten punktum |
 
 **Datoparsing:**
 - Eksplisitt: `25.03.2026`, `25/03/2026`
 - Relativt: `i dag`, `i morgen`/`imorgen`/`imårra`, `i overmorgen`
 - Ukedager: `på mandag`, `neste tirsdag`
+- Månedsnavn: `15. mai`, `20 desember`, `1. januar` (norsk/engelsk)
+- "Den X" mønster: `den 5.`, `den 15. mai` (daglig gjentagelse)
 
 **Gjentagelse:**
 - Nøkkelord: `hver uke`, `hver måned`, `hvert år`, `annenhver uke`
 - Dags-spesifikasjon: `hver mandag`, `hver lørdag kl 10`
+- Månedlig med dato: `den 5. hver måned` (kombinert mønster)
 
 #### 4.3 Google Calendar Integration (`google_calendar_manager.py`)
 
