@@ -375,8 +375,16 @@ class MessageMonitor:
 
         # If it's small talk, don't show dashboard - use AI conversation
         if not wants_dashboard:
-            try:
-                if self.hermes:
+            # Check for Norwegian dialect expressions first (fast path)
+            from ai.personality import get_personality
+            dialect_response = get_personality().respond_to_dialect(message.content)
+            if dialect_response:
+                response_text = dialect_response
+                print(f"[MONITOR] Using dialect response for: {message.content[:50]}")
+            
+            # Fall back to AI if no dialect match and hermes is available
+            if not response_text and self.hermes:
+                try:
                     user_context = self.user_memory.format_context_for_prompt(
                         message.author.id, message.author.name
                     )
@@ -403,8 +411,8 @@ class MessageMonitor:
                     if success and ai_response:
                         response_text = ai_response
                         print("[MONITOR] Using personalized AI response")
-            except Exception as e:
-                print(f"[MONITOR] Personalized AI failed: {e}")
+                except Exception as e:
+                    print(f"[MONITOR] Personalized AI failed: {e}")
 
         # Fallback: dashboard or basic response
         if not response_text:

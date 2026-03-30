@@ -1154,6 +1154,153 @@
       "created_at": "2026-03-29T03:54:09.703480",
       "expires_at": "2026-04-05T03:54:09.703484",
       "status": "active"
+    },
+    "poll_123_1774859702": {
+      "id": "poll_123_1774859702",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T10:35:02.647943",
+      "expires_at": "2026-04-06T10:35:02.647945",
+      "status": "active"
+    },
+    "poll_123_1774860060": {
+      "id": "poll_123_1774860060",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T10:41:00.315128",
+      "expires_at": "2026-04-06T10:41:00.315133",
+      "status": "active"
+    },
+    "poll_123_1774860295": {
+      "id": "poll_123_1774860295",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T10:44:55.630220",
+      "expires_at": "2026-04-06T10:44:55.630223",
+      "status": "active"
+    },
+    "poll_123_1774861473": {
+      "id": "poll_123_1774861473",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T11:04:33.510798",
+      "expires_at": "2026-04-06T11:04:33.510801",
+      "status": "active"
+    },
+    "poll_123_1774861880": {
+      "id": "poll_123_1774861880",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T11:11:20.329062",
+      "expires_at": "2026-04-06T11:11:20.329065",
+      "status": "active"
+    },
+    "poll_123_1774861903": {
+      "id": "poll_123_1774861903",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T11:11:43.813165",
+      "expires_at": "2026-04-06T11:11:43.813169",
+      "status": "active"
+    },
+    "poll_123_1774861950": {
+      "id": "poll_123_1774861950",
+      "guild_id": "123",
+      "question": "Test?",
+      "options": [
+        {
+          "text": "A",
+          "votes": [],
+          "emoji": "1️⃣"
+        },
+        {
+          "text": "B",
+          "votes": [],
+          "emoji": "2️⃣"
+        }
+      ],
+      "created_by": "user",
+      "created_at": "2026-03-30T11:12:30.773258",
+      "expires_at": "2026-04-06T11:12:30.773262",
+      "status": "active"
     }
   }
 }

@@ -27,12 +27,17 @@ class ConversationContext:
     SMALL_TALK_PATTERNS = [
         r'^hei\b', r'^hallo\b', r'^halla\b', r'^yo\b',
         r'^god (morgen|dag|kveld|natt)',
+        r'^morn\b', r'^kvelden\b', r'^heisann\b',
         r'hvordan går det', r'how are you',
         r'hva (gjør|driver) du',
         r'takk', r'bra',
         r'\?$',  # Ends with question mark
         r'hva (synes|mener) du',
         r'forklar', r'fortell',
+        # Norwegian dialect expressions
+        r'\bkjekt\b', r'\btøft\b', r'\brått\b',
+        r'\bskikkelig\b', r'\bkult\b', r'\bstilig\b',
+        r'\bkempe', r'\bsupert\b', r'\bflott\b',
     ]
     
     def __init__(self, max_history=10, expiry_minutes=30):

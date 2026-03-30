@@ -7,8 +7,53 @@ Handles communication with Hermes AI for intelligent responses
 import json
 import asyncio
 import aiohttp
+import os
 from datetime import datetime
 from urllib.parse import quote
+
+
+# Load system prompt from file
+DEFAULT_SYSTEM_PROMPT = None
+
+def load_system_prompt(model_size="12b"):
+    """Load the Norwegian system prompt from file
+    
+    Args:
+        model_size: "4b" or "12b" - determines which prompt to load
+    """
+    global DEFAULT_SYSTEM_PROMPT
+    if DEFAULT_SYSTEM_PROMPT is not None:
+        return DEFAULT_SYSTEM_PROMPT
+    
+    # Choose prompt file based on model size
+    if model_size == "12b":
+        prompt_filename = 'system_prompt_12b.txt'
+    else:
+        prompt_filename = 'system_prompt.txt'
+    
+    # Look for system prompt in same directory as this file
+    prompt_path = os.path.join(os.path.dirname(__file__), prompt_filename)
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            DEFAULT_SYSTEM_PROMPT = f.read()
+            print(f"[HERMES] Loaded system prompt from {prompt_path}")
+            return DEFAULT_SYSTEM_PROMPT
+    except FileNotFoundError:
+        # Fallback to default prompt
+        fallback_path = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
+        try:
+            with open(fallback_path, 'r', encoding='utf-8') as f:
+                DEFAULT_SYSTEM_PROMPT = f.read()
+                print(f"[HERMES] Loaded fallback system prompt from {fallback_path}")
+                return DEFAULT_SYSTEM_PROMPT
+        except:
+            print(f"[HERMES] System prompt file not found")
+            DEFAULT_SYSTEM_PROMPT = ""
+            return DEFAULT_SYSTEM_PROMPT
+    except Exception as e:
+        print(f"[HERMES] Error loading system prompt: {e}")
+        DEFAULT_SYSTEM_PROMPT = ""
+        return DEFAULT_SYSTEM_PROMPT
 
 
 class HermesConnector:
@@ -17,12 +62,17 @@ class HermesConnector:
     Uses GET /api/chat?data={payload}
     """
 
-    def __init__(self, base_url="http://127.0.0.1:3000/api/chat"):
+    def __init__(self, base_url="http://127.0.0.1:3000/api/chat", temperature=0.7, max_tokens=200, model_size="12b"):
         self.base_url = base_url.rstrip("/")
         self.session = None
         self.request_count = 0
         self.error_count = 0
         self.last_error = None
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        
+        # Load system prompt optimized for model size (default to 12b)
+        self.default_system_prompt = load_system_prompt(model_size)
 
     async def _get_session(self):
         """
@@ -85,6 +135,8 @@ class HermesConnector:
         channel_type,
         is_mention=True,
         system_prompt=None,
+        temperature=None,
+        max_tokens=None,
     ):
         """
         Send message to Hermes API and get AI-generated response
@@ -95,6 +147,8 @@ class HermesConnector:
             channel_type: 'DM', 'GROUP_DM', or 'GUILD_TEXT'
             is_mention: Whether the bot was mentioned
             system_prompt: Optional custom system prompt for personality
+            temperature: Optional temperature (0.0-1.0) for response creativity
+            max_tokens: Optional max tokens for response length
 
         Returns:
             (success, response_text or error_message)
@@ -110,9 +164,22 @@ class HermesConnector:
             "is_mention": is_mention,
         }
 
-        # Add system prompt if provided (for personality customization)
+        # Add system prompt (use provided, or default, or none)
         if system_prompt:
             payload["system_prompt"] = system_prompt
+        elif self.default_system_prompt:
+            payload["system_prompt"] = self.default_system_prompt
+            
+        # Add temperature and max_tokens if specified
+        if temperature is not None:
+            payload["temperature"] = temperature
+        else:
+            payload["temperature"] = self.temperature
+            
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        else:
+            payload["max_tokens"] = self.max_tokens
 
         try:
             # Construct URL with encoded payload
@@ -210,4 +277,12 @@ def create_hermes_connector(config):
     """
     Factory function to create HermesConnector from config
     """
-    return HermesConnector(base_url=config.get_hermes_url())
+    # Get optional parameters from config with defaults
+    temperature = getattr(config, 'HERMES_TEMPERATURE', 0.7)
+    max_tokens = getattr(config, 'HERMES_MAX_TOKENS', 200)
+    
+    return HermesConnector(
+        base_url=config.get_hermes_url(),
+        temperature=temperature,
+        max_tokens=max_tokens
+    )

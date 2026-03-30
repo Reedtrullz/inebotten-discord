@@ -272,6 +272,44 @@ class InebottenPersonality:
             ],
         }
         return random.choice(errors.get(context, errors["general"]))
+    
+    def respond_to_dialect(self, content):
+        """
+        Check if content contains Norwegian dialect expressions and return
+        an appropriate response. Returns None if no dialect words found.
+        """
+        content_lower = content.lower()
+        
+        # Check for dialect expressions
+        if 'kjekt' in content_lower:
+            return random.choice([
+                "Det var kjekt å høre! 😊",
+                "Kjekt at du sier det!",
+                "Det høres kjekt ut!",
+            ])
+        
+        if 'tøft' in content_lower:
+            return random.choice([
+                "Skikkelig tøft! 👍",
+                "Det var tøft!",
+                "Tøft å høre!",
+            ])
+        
+        if 'rått' in content_lower:
+            return random.choice([
+                "Helt rått! 🎉",
+                "Det var rått!",
+                "Rått! Kjempebra!",
+            ])
+        
+        if 'skikkelig' in content_lower:
+            return random.choice([
+                "Skikkelig bra! 👍",
+                "Det var skikkelig fint!",
+                "Skikkelig!",
+            ])
+        
+        return None
 
 
 # Singleton instance

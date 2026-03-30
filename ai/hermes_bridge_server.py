@@ -29,7 +29,7 @@ PORT = int(os.getenv("HERMES_BRIDGE_PORT", "3000"))
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
 LM_STUDIO_MODEL = (
-    "qwen2.5-7b-instruct"  # Using Qwen 2.5 7B - best for natural Norwegian chat!
+    "gemma-3-4b"  # Gemma 3 4B - Google's model, good multilingual support
 )
 
 # Model-specific settings
@@ -120,6 +120,14 @@ MODEL_CONFIG = {
         "frequency_penalty": 0.0,
         "presence_penalty": 0.0,
     },
+    "norskgpt-llama3-8b": {
+        "temperature": 0.6,  # Moderate temperature for consistency
+        "max_tokens": 200,   # Reasonable length for chat responses
+        "top_p": 0.9,
+        "frequency_penalty": 0.2,  # Slight penalty to avoid repetition
+        "presence_penalty": 0.1,
+        "stop": ["[", "<|", "WSS", "User:", "Human:"],  # Stop on special tokens
+    },
     "mistral-7b": {
         "temperature": 0.75,
         "max_tokens": 300,
@@ -157,9 +165,9 @@ RESPONSES = {
         "Visste du? 🐙 Blekkspruter har tre hjerter og blått blod!",
     ],
     "default": [
-        "🤔 Interessant spørsmål! La meg tenke...",
-        "Hmm, det var et godt spørsmål! 🤔",
-        "La meg se på det! 🔍",
+        "😅 Beklager, jeg sliter med å svare akkurat nå. Prøv å spørre igjen!",
+        "Hmm, AI-modellen virker litt trett. Kan du spørre på nytt? 🤔",
+        "Oi, jeg fikk ikke svar fra hjernen min. Prøv igjen! 🧠",
     ],
 }
 
@@ -329,6 +337,19 @@ class HermesBridgeServer:
                     "Svar på norsk. Vær vennlig og hjelpsom. "
                     "Hold det kort og naturlig."
                 )
+            elif "gemma-3" in LM_STUDIO_MODEL.lower():
+                # Gemma 3 - excellent multilingual model
+                system_prompt = (
+                    f"Du er Ine, en vennlig Discord-bot. "
+                    f"Dato: {today}. "
+                    f"Snakker med: {author_name}.\n\n"
+                    "Svar på norsk. Vær naturlig og hjelpsom. "
+                    "Svar direkte på spørsmålet.\n\n"
+                    "Eksempler:\n"
+                    "Bruker: Hei! → Hei! 👋 Hvordan går det?\n"
+                    "Bruker: Hvordan fungerer solen? → Solen er en stor stjerne som gir varme og lys! ☀️\n"
+                    "Bruker: Hva er 2+2? → 2+2 = 4 🧮"
+                )
             elif is_small_model:
                 # SIMPLIFIED for problematic small models (Llama 3.2)
                 system_prompt = (
@@ -346,6 +367,19 @@ class HermesBridgeServer:
                     "- Bruk 'bra' (ikke 'godt')\n"
                     "- Max 2 setninger\n"
                     "- Vennlig tone"
+                )
+            elif "llama3" in LM_STUDIO_MODEL.lower() or "llama-3" in LM_STUDIO_MODEL.lower():
+                # Llama 3 models - clean, direct prompt
+                system_prompt = (
+                    f"Du er Ine, en vennlig norsk Discord-bot. "
+                    f"Dato: {today}. "
+                    f"Snakker med: {author_name}.\n\n"
+                    "Svar på norsk. Vær kortfattet og naturlig. "
+                    "Ikke bruk engelsk. Ikke forklar hva du gjør.\n\n"
+                    "Eksempler:\n"
+                    "Bruker: Hei! → Hei! 👋 Hvordan går det?\n"
+                    "Bruker: Hvordan er livet? → Livet er bra! 😊 Hva med deg?\n"
+                    "Bruker: Hvordan fungerer solen? → Solen er en stor stjerne som gir varme og lys! ☀️"
                 )
             else:
                 # More detailed for larger models
