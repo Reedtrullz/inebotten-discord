@@ -503,12 +503,13 @@ run_both.py
 **Løsning:** Parse norsk tekst til strukturerte data.
 
 **Parser-funksjoner:**
-- **Relativt:** `i dag`, `i morgen`, `imårra`, `på mandag`
+- **Relativt:** `i dag`, `i morgen`/`i morgon`, `imårra`, `på mandag`
 - **Numerisk:** `25.03.2026`, `DD.MM`, `DD/MM/YYYY`
 - **Månedsnavn:** `15. mai`, `20 desember` (norsk/engelsk)
 - **"Den X" mønster:** `den 5.`, `den 15. mai`
 - **Tid:** `kl 14`, `klokken 14:30`, `14:30`, tidsord (`i kveld`)
-- **Gjentagelse:** `hver uke`, `den 5. hver måned`, `annenhver torsdag`
+- **Gjentagelse:** `hver uke`/`kvar veke`, `den 5. hver måned`, `annenhver torsdag`
+- **Nynorsk:** Full støtte for `kvar`, `måndag`, `laurdag`, `kvart år`, etc.
 
 **Fordeler:**
 - Intuitivt for norske brukere

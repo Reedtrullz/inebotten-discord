@@ -229,10 +229,11 @@ Du pratar med {author_name}.
 
 **Datoparsing:**
 - Eksplisitt: `25.03.2026`, `25/03/2026`
-- Relativt: `i dag`, `i morgen`/`imorgen`/`imårra`, `i overmorgen`
-- Ukedager: `på mandag`, `neste tirsdag`
+- Relativt: `i dag`, `i morgen`/`imorgen`/`imårra`/`i morgon`, `i overmorgen`
+- Ukedager: `på mandag`/`måndag`, `neste tirsdag` (Bokmål + Nynorsk)
 - Månedsnavn: `15. mai`, `20 desember`, `1. januar` (norsk/engelsk)
 - "Den X" mønster: `den 5.`, `den 15. mai` (daglig gjentagelse)
+- Dialektstøtte: Nynorsk (`kvar veke`, `måndag`, `laurdag`, etc.)
 
 **Gjentagelse:**
 - Nøkkelord: `hver uke`, `hver måned`, `hvert år`, `annenhver uke`

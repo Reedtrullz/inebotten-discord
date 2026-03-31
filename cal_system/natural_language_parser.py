@@ -19,22 +19,22 @@ class NaturalLanguageParser:
     def setup_patterns(self):
         """Setup regex patterns for natural language parsing"""
         
-        # Date indicators in Norwegian and English
+        # Date indicators in Norwegian (Bokmål/Nynorsk) and English
         self.date_words = {
-            'i dag': 0, 'today': 0, 'idag': 0,
-            'i morgen': 1, 'imorgen': 1, 'imårra': 1, 'imorra': 1, 'tomorrow': 1,
-            'i overmorgen': 2, 'overmorgen': 2,
+            'i dag': 0, 'today': 0, 'idag': 0, 'i dag': 0,
+            'i morgen': 1, 'imorgen': 1, 'imårra': 1, 'imorra': 1, 'i morgon': 1, 'tomorrow': 1,
+            'i overmorgen': 2, 'overmorgen': 2, 'i overmorgon': 2,
         }
-        
-        # Day names
+
+        # Day names (Bokmål + Nynorsk variants)
         self.days = {
-            'mandag': 0, 'monday': 0,
+            'mandag': 0, 'måndag': 0, 'monday': 0,
             'tirsdag': 1, 'tuesday': 1,
             'onsdag': 2, 'wednesday': 2,
             'torsdag': 3, 'thursday': 3,
             'fredag': 4, 'friday': 4,
-            'lørdag': 5, 'saturday': 5,
-            'søndag': 6, 'sunday': 6,
+            'lørdag': 5, 'laurdag': 5, 'saturday': 5,
+            'søndag': 6, 'sundag': 6, 'sunday': 6,
         }
         
         # Time words
@@ -85,41 +85,51 @@ class NaturalLanguageParser:
         
         # Recurrence patterns
         self.recurrence_patterns = {
-            # Norwegian
+            # Bokmål + Nynorsk
             'hver uke': 'weekly',
+            'kvar veke': 'weekly',
             'ukentlig': 'weekly',
             'ukent': 'weekly',
             'weekly': 'weekly',
             'hver andre uke': 'biweekly',
             'annenhver uke': 'biweekly',
+            'kvar andre veke': 'biweekly',
             'biweekly': 'biweekly',
             'hver måned': 'monthly',
+            'kvar månad': 'monthly',
             'månedlig': 'monthly',
             'monthly': 'monthly',
             'hvert år': 'yearly',
+            'kvart år': 'yearly',
             'årlig': 'yearly',
             'yearly': 'yearly',
             'hver dag': 'daily',
+            'kvar dag': 'daily',
             'daglig': 'daily',
             'daily': 'daily',
         }
-        
+
         # Day-specific recurrence patterns (e.g., "hver mandag", "annenhver tirsdag")
         self.day_recurrence_patterns = {
             'hver': 'weekly',
+            'kvar': 'weekly',
             'annenhver': 'biweekly',
+            'kvar andre': 'biweekly',
             'hver andre': 'biweekly',
         }
-        
-        # Day name mappings for RRULE
+
+        # Day name mappings for RRULE (Bokmål + Nynorsk)
         self.day_name_to_rrule = {
             'mandag': 'MO',
+            'måndag': 'MO',
             'tirsdag': 'TU',
             'onsdag': 'WE',
             'torsdag': 'TH',
             'fredag': 'FR',
             'lørdag': 'SA',
+            'laurdag': 'SA',
             'søndag': 'SU',
+            'sundag': 'SU',
             'monday': 'MO',
             'tuesday': 'TU',
             'wednesday': 'WE',
