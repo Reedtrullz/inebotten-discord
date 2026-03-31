@@ -649,7 +649,6 @@ class SelfbotClient(discord.Client):
             )
 
     async def _thornode_poll_loop(self):
-        """Background loop to poll THORNode API and send withdrawal alerts."""
         interval = max(self.config.THORNODE_POLL_INTERVAL, 60)
         while True:
             try:
@@ -658,8 +657,25 @@ class SelfbotClient(discord.Client):
                     continue
 
                 node_data = await self.monitor.thornode.fetch_node_status()
+
+                api_health = self.monitor.thornode.check_api_health()
+                if api_health:
+                    alert_msg = self.monitor.thornode.format_api_failure_alert(
+                        api_health
+                    )
+                    await self._send_thornode_alert(alert_msg)
+
                 if not node_data:
                     continue
+
+                bond_check = self.monitor.thornode.check_bond_provider_presence(
+                    node_data
+                )
+                if bond_check:
+                    alert_msg = self.monitor.thornode.format_bond_provider_alert(
+                        bond_check
+                    )
+                    await self._send_thornode_alert(alert_msg)
 
                 eligibility = self.monitor.thornode.check_withdrawal_eligibility(
                     node_data
@@ -671,29 +687,29 @@ class SelfbotClient(discord.Client):
                     continue
 
                 alert_msg = self.monitor.thornode.format_alert_message(eligibility)
-
-                if self.config.THORNODE_ALERT_CHANNEL_ID:
-                    try:
-                        channel_id = int(self.config.THORNODE_ALERT_CHANNEL_ID)
-                        channel = self.get_channel(channel_id)
-                        if channel:
-                            await channel.send(alert_msg)
-                            self.rate_limiter.record_sent()
-                            print("[THORNODE] Alert sent to channel")
-                        else:
-                            print(f"[THORNODE] Channel {channel_id} not found")
-                    except (ValueError, discord.HTTPException) as e:
-                        print(f"[THORNODE] Failed to send alert: {e}")
-                else:
-                    print(
-                        "[THORNODE] Withdrawal eligible but no alert channel configured"
-                    )
-                    print(f"[THORNODE] {alert_msg}")
+                await self._send_thornode_alert(alert_msg)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[THORNODE] Poll loop error: {e}")
+
+    async def _send_thornode_alert(self, message):
+        if self.config.THORNODE_ALERT_CHANNEL_ID:
+            try:
+                channel_id = int(self.config.THORNODE_ALERT_CHANNEL_ID)
+                channel = self.get_channel(channel_id)
+                if channel:
+                    await channel.send(message)
+                    self.rate_limiter.record_sent()
+                    print("[THORNODE] Alert sent to channel")
+                else:
+                    print(f"[THORNODE] Channel {channel_id} not found")
+            except (ValueError, discord.HTTPException) as e:
+                print(f"[THORNODE] Failed to send alert: {e}")
+        else:
+            print("[THORNODE] Alert triggered but no channel configured")
+            print(f"[THORNODE] {message}")
 
     async def on_message(self, message):
         """Called when a message is received"""

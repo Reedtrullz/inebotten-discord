@@ -18,6 +18,8 @@ class THORNodeManager:
     signaling that bonded RUNE can be withdrawn.
     """
 
+    API_FAILURE_THRESHOLD = 6
+
     def __init__(self, node_address, bond_provider_address, state_file=None):
         self.node_address = node_address
         self.bond_provider_address = bond_provider_address
@@ -30,7 +32,8 @@ class THORNodeManager:
         self.state = self._load_state()
         self.last_node_data = None
         self.last_poll_time = None
-        self.poll_errors = 0
+        self.consecutive_failures = 0
+        self.api_failure_alerted = False
 
     def _load_state(self):
         """Load persisted notification state from disk."""
@@ -88,7 +91,7 @@ class THORNodeManager:
                         data = await resp.json()
                         self.last_node_data = data
                         self.last_poll_time = datetime.now()
-                        self.poll_errors = 0
+                        self.consecutive_failures = 0
                         return data
                     else:
                         print(f"[THORNODE] API returned {resp.status} from {url}")
@@ -97,8 +100,39 @@ class THORNodeManager:
             except Exception as e:
                 print(f"[THORNODE] Error fetching node status: {e}")
 
-        self.poll_errors += 1
+        self.consecutive_failures += 1
         return None
+
+    def check_api_health(self):
+        if (
+            self.consecutive_failures >= self.API_FAILURE_THRESHOLD
+            and not self.api_failure_alerted
+        ):
+            self.api_failure_alerted = True
+            return {
+                "type": "api_failure",
+                "message": f"THORNode API unreachable for {self.consecutive_failures} consecutive polls",
+                "consecutive_failures": self.consecutive_failures,
+            }
+        if self.consecutive_failures == 0:
+            self.api_failure_alerted = False
+        return None
+
+    def check_bond_provider_presence(self, node_data):
+        if not node_data:
+            return None
+        providers = node_data.get("bond_providers", {}).get("providers", [])
+        for provider in providers:
+            if provider.get("bond_address") == self.bond_provider_address:
+                return None
+        all_addresses = [p.get("bond_address", "unknown") for p in providers]
+        return {
+            "type": "bond_provider_missing",
+            "message": f"Bond provider address not found on node",
+            "expected": self.bond_provider_address,
+            "found_addresses": all_addresses,
+            "total_providers": len(providers),
+        }
 
     def check_withdrawal_eligibility(self, node_data):
         """
@@ -268,6 +302,62 @@ class THORNodeManager:
         if details.get("slash_points", 0) > 0:
             lines.append(f"⚡ Slash points: {details['slash_points']}")
 
+        return "\n".join(lines)
+
+    def format_api_failure_alert(self, health_check):
+        node_short = (
+            self.node_address[:12] + "..." + self.node_address[-8:]
+            if len(self.node_address) > 20
+            else self.node_address
+        )
+        lines = [
+            "🔴 **THORNode Monitor Alert — API Failure**",
+            "",
+            f"**Node:** `{node_short}`",
+            f"**Consecutive failures:** {health_check['consecutive_failures']}",
+            "",
+            "⚠️ Cannot reach THORNode API. The monitor may be blind to withdrawal events.",
+            "",
+            "**Endpoints tried:**",
+            f"- `{self.api_base}`",
+            f"- `{self.fallback_api_base}`",
+            "",
+            "Check your internet connection or try a different API endpoint.",
+        ]
+        return "\n".join(lines)
+
+    def format_bond_provider_alert(self, bond_check):
+        node_short = (
+            self.node_address[:12] + "..." + self.node_address[-8:]
+            if len(self.node_address) > 20
+            else self.node_address
+        )
+        expected_short = (
+            bond_check["expected"][:12] + "..." + bond_check["expected"][-8:]
+            if len(bond_check["expected"]) > 20
+            else bond_check["expected"]
+        )
+        found_list = "\n".join(
+            f"- `{addr[:12]}...{addr[-8:]}`" if len(addr) > 20 else f"- `{addr}`"
+            for addr in bond_check.get("found_addresses", [])
+        )
+        lines = [
+            "🔴 **THORNode Monitor Alert — Bond Provider Missing**",
+            "",
+            f"**Node:** `{node_short}`",
+            f"**Expected provider:** `{expected_short}`",
+            f"**Providers found:** {bond_check['total_providers']}",
+            "",
+            "⚠️ Your bond provider address is NOT on this node. This means:",
+            "- Your bond may have been removed or slashed",
+            "- The node address may be wrong",
+            "- Your provider address may be wrong",
+            "",
+            f"**Current providers on node:**",
+            found_list if found_list else "- *(none)*",
+            "",
+            f"📊 [View on Runescan](https://runescan.io/node/{self.node_address})",
+        ]
         return "\n".join(lines)
 
     def format_status_message(self, eligibility):
