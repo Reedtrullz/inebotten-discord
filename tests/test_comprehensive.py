@@ -1050,6 +1050,73 @@ class TestCalendarNLP(unittest.TestCase):
         self.assertIsNone(parser._get_month_number("invalid"))
         self.assertIsNone(parser._get_month_number("hver"))
 
+    def test_65f_nynorsk_date_words(self):
+        """Test 65f: Nynorsk date words parsing"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test "i morgon" (Nynorsk for "i morgen")
+        result = parser.parse_event("møte i morgon kl 10")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["days_offset"], 1)
+        self.assertEqual(result["time"], "10:00")
+
+        # Test "i dag" works in both
+        result = parser.parse_event("møte i dag kl 14")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["days_offset"], 0)
+
+    def test_65g_nynorsk_day_names(self):
+        """Test 65g: Nynorsk day names parsing"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test Nynorsk day names
+        nynorsk_days = [
+            ("møte på måndag kl 09", "måndag"),
+            ("kurs på laurdag kl 10", "laurdag"),
+            ("treff på sundag", "sundag"),
+        ]
+
+        for test_input, day_name in nynorsk_days:
+            result = parser.parse_event(test_input)
+            self.assertIsNotNone(result, f"Failed to parse {day_name}")
+            self.assertIn("date", result)
+
+    def test_65h_nynorsk_recurrence(self):
+        """Test 65h: Nynorsk recurrence patterns"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test "kvar veke" (Nynorsk for "hver uke")
+        result = parser.parse_event("øving kvar veke")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["recurrence"], "weekly")
+
+        # Test "kvar månad"
+        result = parser.parse_event("regningar kvar månad")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["recurrence"], "monthly")
+
+        # Test "kvart år"
+        result = parser.parse_event("tannlege kvart år")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["recurrence"], "yearly")
+
+    def test_65i_nynorsk_task_indicators(self):
+        """Test 65i: Nynorsk task indicators"""
+        from cal_system.natural_language_parser import NaturalLanguageParser
+
+        parser = NaturalLanguageParser()
+
+        # Test Nynorsk task patterns
+        result = parser.parse_event("eg må ringe mamma på måndag")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["type"], "task")
+
 
 # ============================================================================
 # PHASE 4: FEATURE COMMANDS (tests 66-103)

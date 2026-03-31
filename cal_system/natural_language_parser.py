@@ -61,12 +61,18 @@ class NaturalLanguageParser:
             'minn meg på', 'minn meg om', 'påminn meg', 'remind me',
         ]
         
-        # Task/obligation indicators (personal tasks)
+        # Task/obligation indicators (personal tasks) - Bokmål + Nynorsk + English
         self.task_indicators = [
+            # Bokmål
             'jeg må', 'jeg skal', 'jeg trenger å', 'jeg bør',
             'jeg har lovet å', 'jeg har tenkt å', 'jeg vil',
-            'husk', 'husk å', 'ikke glem å', 'må huske å',
+            # Nynorsk
+            'eg må', 'eg skal', 'eg treng å', 'eg bør',
+            'eg har lova å', 'eg har tenkt å', 'eg vil',
+            # Both
+            'husk', 'husk å', 'ikkje gløym å', 'ikke glem å', 'må hugse å',
             'minn meg på', 'minn meg om', 'påminn meg',
+            # English
             'i need to', 'i have to', 'i should', 'i must',
             'remember to', 'don\'t forget to', 'need to', 'remind me',
         ]
