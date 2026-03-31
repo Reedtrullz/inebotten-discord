@@ -4,6 +4,7 @@ Message Monitor for Discord Selfbot
 Polls DMs and detects @inebotten mentions using discord.py
 """
 
+import asyncio
 import re
 from collections import deque
 from datetime import datetime
@@ -13,8 +14,14 @@ import discord
 
 # Keyword sets for command matching
 CALENDAR_KEYWORDS = [
-    "kalender", "calendar", "arrangementer", "events",
-    "kommende", "planlagt", "påminnelser", "huskeliste",
+    "kalender",
+    "calendar",
+    "arrangementer",
+    "events",
+    "kommende",
+    "planlagt",
+    "påminnelser",
+    "huskeliste",
 ]
 
 DELETE_KEYWORDS = ["slett", "delete", "fjern"]
@@ -22,17 +29,36 @@ COMPLETE_KEYWORDS = ["ferdig", "done", "complete", "fullført"]
 EDIT_KEYWORDS = ["endre", "edit", "oppdater"]
 WORD_OF_DAY_KEYWORDS = ["dagens ord", "word of the day", "lære meg et ord"]
 AURORA_KEYWORDS = ["nordlys", "aurora", "nordly"]
-SCHOOL_HOLIDAYS_KEYWORDS = [
-    "skoleferie", "skoleferier", "vinterferie", "påskeferie"
-]
+SCHOOL_HOLIDAYS_KEYWORDS = ["skoleferie", "skoleferier", "vinterferie", "påskeferie"]
 DAILY_DIGEST_KEYWORDS = [
-    "daglig oppsummering", "daily digest", "oppsummering", "summary"
+    "daglig oppsummering",
+    "daily digest",
+    "oppsummering",
+    "summary",
 ]
 HELP_KEYWORDS = [
-    "hjelp", "help", "kommandoer", "commands",
-    "hva kan du gjøre", "hva kan du", "hva gjør du",
-    "funksjoner", "features", "capabilities",
-    "hva er du", "hvem er du", "what can you do",
+    "hjelp",
+    "help",
+    "kommandoer",
+    "commands",
+    "hva kan du gjøre",
+    "hva kan du",
+    "hva gjør du",
+    "funksjoner",
+    "features",
+    "capabilities",
+    "hva er du",
+    "hvem er du",
+    "what can you do",
+]
+THORNODE_KEYWORDS = [
+    "thornode",
+    "thor node",
+    "withdraw",
+    "unbond",
+    "bond status",
+    "bonded rune",
+    "rune withdrawal",
 ]
 
 
@@ -92,12 +118,19 @@ class MessageMonitor:
         from features.word_of_day import WordOfTheDay
         from features.quote_manager import QuoteManager, parse_quote_command
         from features.crypto_manager import CryptoManager, parse_price_command
-        from features.compliments_manager import ComplimentsManager, parse_compliment_command
+        from features.compliments_manager import (
+            ComplimentsManager,
+            parse_compliment_command,
+        )
         from features.horoscope_manager import HoroscopeManager, parse_horoscope_command
-        from features.calculator_manager import CalculatorManager, parse_calculator_command
+        from features.calculator_manager import (
+            CalculatorManager,
+            parse_calculator_command,
+        )
         from features.url_shortener import URLShortener, parse_shorten_command
         from features.aurora_forecast import AuroraForecast
         from features.daily_digest_manager import DailyDigestManager
+        from features.thornode_manager import THORNodeManager
 
         self.countdown = CountdownManager()
         self.poll = PollManager()
@@ -111,6 +144,7 @@ class MessageMonitor:
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
         self.daily_digest = DailyDigestManager(self.calendar)
+        self.thornode = None
 
         self.parse_poll_command = parse_poll_command
         self.parse_vote = parse_vote
@@ -335,6 +369,12 @@ class MessageMonitor:
             await self.handlers["help"].handle_help(message)
             return
 
+        # Check for THORNode status command
+        if self.thornode and any(word in content_lower for word in THORNODE_KEYWORDS):
+            print("[MONITOR] Matched: thornode status command")
+            await self.handlers["thornode"].handle_thornode_status(message)
+            return
+
         # Generate and send AI response
         print("[MONITOR] No command matched, falling back to AI response...")
         await self._send_ai_response(message)
@@ -344,7 +384,9 @@ class MessageMonitor:
         Generate and send an AI response to a mention.
         Uses Hermes AI with personality system.
         """
-        print(f"[MONITOR] _send_ai_response called for message: {message.content[:50]}...")
+        print(
+            f"[MONITOR] _send_ai_response called for message: {message.content[:50]}..."
+        )
 
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
@@ -353,7 +395,9 @@ class MessageMonitor:
         wants_dashboard, reason = self.conversation.should_show_dashboard(
             message.content, guild_id
         )
-        print(f"[MONITOR] Intent detection: wants_dashboard={wants_dashboard}, reason={reason}")
+        print(
+            f"[MONITOR] Intent detection: wants_dashboard={wants_dashboard}, reason={reason}"
+        )
 
         # Update conversation history
         self.conversation.add_message(
@@ -377,11 +421,12 @@ class MessageMonitor:
         if not wants_dashboard:
             # Check for Norwegian dialect expressions first (fast path)
             from ai.personality import get_personality
+
             dialect_response = get_personality().respond_to_dialect(message.content)
             if dialect_response:
                 response_text = dialect_response
                 print(f"[MONITOR] Using dialect response for: {message.content[:50]}")
-            
+
             # Fall back to AI if no dialect match and hermes is available
             if not response_text and self.hermes:
                 try:
@@ -398,7 +443,9 @@ class MessageMonitor:
                         style=self.ResponseStyle.CASUAL,
                     )
 
-                    print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
+                    print(
+                        f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)"
+                    )
 
                     success, ai_response = await self.hermes.generate_response(
                         message_content=message.content,
@@ -420,6 +467,7 @@ class MessageMonitor:
                 response_text = await self._generate_dashboard(guild_id)
             else:
                 from ai.personality_config import get_fallback_response
+
                 response_text = get_fallback_response("general")
 
         # Send the response
@@ -464,7 +512,9 @@ class MessageMonitor:
 
             self.rate_limiter.record_sent()
             self.response_count += 1
-            print(f"[MONITOR] Response sent to {message.author.name}: {response_text[:100]}...")
+            print(
+                f"[MONITOR] Response sent to {message.author.name}: {response_text[:100]}..."
+            )
 
             # Add bot response to conversation history
             guild_id = message.guild.id if message.guild else message.channel.id
@@ -522,6 +572,7 @@ class MessageMonitor:
         from features.school_holidays_handler import SchoolHolidaysHandler
         from features.help_handler import HelpHandler
         from features.daily_digest_handler import DailyDigestHandler
+        from features.thornode_handler import THORNodeHandler
 
         self.handlers = {
             "fun": FunHandler(self),
@@ -534,6 +585,7 @@ class MessageMonitor:
             "school_holidays": SchoolHolidaysHandler(self),
             "help": HelpHandler(self),
             "daily_digest": DailyDigestHandler(self),
+            "thornode": THORNodeHandler(self),
         }
 
 
@@ -578,6 +630,70 @@ class SelfbotClient(discord.Client):
         else:
             print(f"[BOT] WARNING: Hermes API issue - {message}")
             print("[BOT] Will use local response generator as fallback")
+
+        # Initialize THORNode monitor if configured
+        if self.config.THORNODE_ADDRESS and self.config.THORNODE_BOND_PROVIDER:
+            from features.thornode_manager import THORNodeManager
+
+            self.monitor.thornode = THORNodeManager(
+                node_address=self.config.THORNODE_ADDRESS,
+                bond_provider_address=self.config.THORNODE_BOND_PROVIDER,
+            )
+            print(
+                f"[BOT] THORNode monitor active for {self.config.THORNODE_ADDRESS[:16]}..."
+            )
+            asyncio.create_task(self._thornode_poll_loop())
+        else:
+            print(
+                "[BOT] THORNode monitor not configured (set THORNODE_ADDRESS and THORNODE_BOND_PROVIDER in .env)"
+            )
+
+    async def _thornode_poll_loop(self):
+        """Background loop to poll THORNode API and send withdrawal alerts."""
+        interval = max(self.config.THORNODE_POLL_INTERVAL, 60)
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                if not self.monitor or not self.monitor.thornode:
+                    continue
+
+                node_data = await self.monitor.thornode.fetch_node_status()
+                if not node_data:
+                    continue
+
+                eligibility = self.monitor.thornode.check_withdrawal_eligibility(
+                    node_data
+                )
+                if not eligibility["eligible"]:
+                    continue
+
+                if not self.monitor.thornode.should_notify(eligibility):
+                    continue
+
+                alert_msg = self.monitor.thornode.format_alert_message(eligibility)
+
+                if self.config.THORNODE_ALERT_CHANNEL_ID:
+                    try:
+                        channel_id = int(self.config.THORNODE_ALERT_CHANNEL_ID)
+                        channel = self.get_channel(channel_id)
+                        if channel:
+                            await channel.send(alert_msg)
+                            self.rate_limiter.record_sent()
+                            print("[THORNODE] Alert sent to channel")
+                        else:
+                            print(f"[THORNODE] Channel {channel_id} not found")
+                    except (ValueError, discord.HTTPException) as e:
+                        print(f"[THORNODE] Failed to send alert: {e}")
+                else:
+                    print(
+                        "[THORNODE] Withdrawal eligible but no alert channel configured"
+                    )
+                    print(f"[THORNODE] {alert_msg}")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[THORNODE] Poll loop error: {e}")
 
     async def on_message(self, message):
         """Called when a message is received"""
