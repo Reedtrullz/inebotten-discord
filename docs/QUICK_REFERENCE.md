@@ -145,6 +145,18 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 
 ---
 
+## ⚡ THORNode Overvåking
+
+| Kommando | Beskrivelse |
+|----------|-------------|
+| `@inebotten thornode` | Sjekk withdrawal-status for din bonded RUNE |
+| `@inebotten withdraw` | Samme som over |
+| `@inebotten bond status` | Samme som over |
+
+Se [THORNode Monitor-dokumentasjon](THORNODE_MONITOR.md) for fullstendig oppsettguide.
+
+---
+
 ## 💬 Chatting
 
 > Bare nev @inebotten og snakk naturlig!
@@ -166,6 +178,7 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` |
 | Google Calendar Token | `~/.gcal_token.pickle` |
 | Konfigurasjon | `.env` (i prosjektmappen) |
+| THORNode state | `~/.hermes/discord/thornode_state.json` |
 
 ---
 
