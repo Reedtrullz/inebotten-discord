@@ -21,17 +21,7 @@ python3 selfbot_runner.py        # Terminal 2 - Discord-bot
 
 ## 📅 Kalenderkommandoer
 
-### Grunnleggende
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten kalender` | Vis alle kommende hendelser | `@inebotten kalender` |
-| `@inebotten kalender [dager]` | Vis neste N dager | `@inebotten kalender 7` |
-| `@inebotten ferdig [nummer]` | Marker som fullført | `@inebotten ferdig 2` |
-| `@inebotten slett [nummer]` | Slett hendelse | `@inebotten slett 3` |
-| `@inebotten sync` | Synkroniser med Google Calendar | `@inebotten sync` |
-
-### Naturlig Språk
+### Opprette Kalender-element
 
 > Du trenger ikke lære kommandoer - bare skriv som du snakker!
 
@@ -47,6 +37,32 @@ python3 selfbot_runner.py        # Terminal 2 - Discord-bot
 @inebotten regninger den 5. hver måned
 @inebotten julebord 20 desember
 ```
+
+### Se Liste
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten kalender` | Vis alle kommende hendelser (90 dager) | `@inebotten kalender` |
+
+### Slette
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten slett [nummer]` | Slett hendelse etter nummer | `@inebotten slett 2` |
+| `@inebotten slett [tittel]` | Slett første treff på delvis tittel | `@inebotten slett spaghetti` |
+| `@inebotten slett alle [tittel]` | Slett ALLE treff | `@inebotten slett alle spaghetti` |
+
+### Fullføre
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten ferdig [nummer]` | Marker som fullført | `@inebotten ferdig 2` |
+| `@inebotten ferdig [tittel]` | Fullfør første treff på delvis tittel | `@inebotten ferdig meldekort` |
+| `@inebotten ferdig alle [tittel]` | Fullfør ALLE treff | `@inebotten ferdig alle meldekort` |
+
+### Gjentagende Oppføringer
+
+Gjentagende elementer (`hver uke`, `annenhver uke`, `hver måned`, `hvert år`) blir ikke slettet når du fullfører dem - de flyttes til neste dato. Bruk `slett` for å fjerne dem permanent.
 
 ### Nøkkelord for Datoer
 
@@ -70,6 +86,15 @@ python3 selfbot_runner.py        # Terminal 2 - Discord-bot
 | 📌 | Kun lokalt |
 | ✓ | Fullført |
 | 🔄 | Gjentagende |
+
+### Påminnelser (Automatisk)
+
+Boten sender automatisk påminnelser når kalender-elementer nærmer seg:
+
+- **30 minutter før:** Boten pinger deg i kanalen der elementet ble opprettet
+- **Morgen-digest kl 09:00:** Boten poster dagens plan med tider hvis tilgjengelig
+
+Du trenger ikke be om påminnelser - de skjer automatisk!
 
 ---
 
@@ -164,7 +189,7 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 |------|------------|
 | Kalender | `~/.hermes/discord/data/calendar.json` |
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` |
-| Google Calendar Token | `~/.gcal_token.pickle` |
+| Google Calendar Token | `~/.hermes/google_token.json` |
 | Konfigurasjon | `.env` (i prosjektmappen) |
 
 ---
@@ -175,9 +200,11 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 |---------|---------|
 | Botten svarer ikke | Sjekk at `run_both.py` kjører uten feil |
 | AI svarer ikke | Sjekk at LM Studio kjører på Windows |
-| GCal sync feiler | Kjør `python3 sync_calendar_to_gcal.py` |
+| GCal sync feiler | Sjekk at token ikke er utløpt (`~/.hermes/google_token.json`) |
 | "Fant ikke nummer" | Bruk `@inebotten kalender` først for å se numre |
 | "Ugyldig token" | Hent ny token fra Discord (F12 > Application > Local Storage) |
+| Påminnelser kommer ikke | Sjekk at `reminder_checker.py` logger ved oppstart (`[REMIND] Reminder checker started`) |
+| Ingen morgen-digest | Opprett minst 1 arrangement for dagen via boten |
 
 ---
 

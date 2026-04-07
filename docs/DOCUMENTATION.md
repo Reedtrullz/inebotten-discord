@@ -200,6 +200,7 @@ Du pratar med {author_name}.
       "time": "18:00",
       "created_by": "user_id",
       "created_at": "...",
+      "channel_id": "discord_channel_id",
       "completed": false,
       "recurrence": "weekly",
       "recurrence_day": "Saturday",
@@ -209,6 +210,33 @@ Du pratar med {author_name}.
   ]
 }
 ```
+
+**Felt:**
+- `channel_id` - Discord-kanalen der elementet ble opprettet. Brukes for påminnelser.
+
+### Slette og Fullføre
+
+Du kan slette eller fullføre elementer på tre måter:
+
+**1. Etter nummer:** Se listen med `@inebotten kalender` og bruk nummeret
+```
+@inebotten slett 2
+@inebotten ferdig 1
+```
+
+**2. Etter tittel:** Slett/fullfør første treff på delvis tittel
+```
+@inebotten slett spaghetti
+@inebotten ferdig meldekort
+```
+
+**3. Bulk:** Slett/fullfør ALLE treff med `alle`
+```
+@inebotten slett alle spaghetti
+@inebotten ferdig alle meldekort
+```
+
+Gjentagende elementer flyttes til neste dato når du fullfører dem. Bruk `slett` for permanent fjerning.
 
 #### 4.2 Natural Language Parser (`natural_language_parser.py`)
 
@@ -245,16 +273,40 @@ Du pratar med {author_name}.
 **Formål:** To-veis sync med Google Calendar
 
 **OAuth Flyt:**
-1. Bruker kjører `sync_calendar_to_gcal.py`
-2. Åpner nettleser for Google OAuth
-3. Godkjenner kalender-tilgang
-4. Token lagres i `~/.gcal_token.pickle`
+1. Opprett OAuth credentials i Google Cloud Console
+2. Plasser `google_client_secret.json` i `~/.hermes/`
+3. Autoriser via setup-script - token lagres i `~/.hermes/google_token.json`
 
 **Sync-oppførsel:**
 - Oppretter events i GCal når lagt til via bot
 - Lagrer GCal event-ID for fremtidige oppdateringer
 - Viser 📅 indikator for synkroniserte elementer
 - Viser 📌 for kun lokale elementer
+- Sletter fra GCal når element slettes i bot
+- Starter med direkte API-kall (ingen subprocess)
+
+**GCal-slett:** Når du sletter et element i boten som er synkronisert til Google Calendar, slettes det også fra GCal automatisk.
+
+#### 4.4 Proaktive Påminnelser (`reminder_checker.py`)
+
+**Formål:** Bakgrunnsprosess som sjekker kalender hvert minutt og sender påminnelser
+
+**Funksjoner:**
+- **30-minutters varsel:** Når et element er ≤30 minutter unna, pinger boten brukeren som opprettet det i den opprinnelige kanalen
+- **Morgen-digest kl 09:00:** Poster dagens plan med alle arrangementer, sendte til kanalen der det tidligste arrangementet ble opprettet
+- **Deduplisering:** Tracking-fil i `~/.hermes/discord/reminder_log.json` forhindrer doble pings (60-min vindu)
+- **Kanal-sporing:** Hvert arrangement lagrer `channel_id` slik at påminnelser sendes til riktig sted
+- **Auto-avslutning:** Stopper graceful når boten stenger
+
+**Slik virker det:**
+```
+Du oppretter: @inebotten møte kl 15:00
+Kl 14:30:     ⏰ @deg - Påminnelse: møte. Det er 30 minutter til!
+Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
+                - møte kl. 15:00
+                - lunsj med Ola kl. 12:00
+              Ha ein fin dag! ✨
+```
 
 ### 5. Personlighetssystem
 
