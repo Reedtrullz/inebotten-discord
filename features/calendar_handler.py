@@ -157,13 +157,25 @@ class CalendarHandler(BaseHandler):
 
             # Try title-based matching first if search text found
             if search_text and not item_num:
-                success, title = self.calendar.delete_item_by_title(
-                    guild_id, search_text
-                )
-                if success:
-                    await self.send_response(message, f"✅ **Slettet! {title}**")
+                # Check for bulk delete: "alle <title>" or "all <title>"
+                lower_text = search_text.lower()
+                bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)", lower_text)
+                if bulk_match:
+                    bulk_title = bulk_match.group(2).strip()
+                    count, deleted = self.calendar.delete_items_by_title(guild_id, bulk_title)
+                    if count > 0:
+                        titles = ", ".join(deleted) if count <= 3 else f"{count} stykker"
+                        await self.send_response(message, f"✅ **Slettet {count} stykker!**\n{titles}")
+                    else:
+                        await self.send_response(message, f"❌ Fant ingen \"{bulk_title}\" i kalenderen.")
                     return
-                # Fall through to number/list behavior if no match
+                else:
+                    # Single delete by title
+                    success, title = self.calendar.delete_item_by_title(guild_id, search_text)
+                    if success:
+                        await self.send_response(message, f"✅ **Slettet! {title}**")
+                        return
+                    # Fall through to number/list behavior if no match
 
             if item_num:
                 success, title = self.calendar.delete_item(guild_id, item_num)
@@ -185,8 +197,9 @@ class CalendarHandler(BaseHandler):
                 calendar_text = self.calendar.format_list(guild_id)
                 if calendar_text:
                     response_text = (
-                        f"📋 Hvilken vil du slette? (nummer eller tittel)\n\n"
-                        f"{calendar_text}"
+                        f"📋 Hvilken vil du slette? (nummer eller skriv tittelen)\n\n"
+                        f"{calendar_text}\n\n"
+                        f"Bruk: `@inebotten slett [nummer]` eller `@inebotten slett [tittel]`"
                     )
                 else:
                     response_text = "📭 Kalenderen er tom."
@@ -205,23 +218,44 @@ class CalendarHandler(BaseHandler):
 
             # Try title-based matching first if search text found
             if search_text and not item_num:
-                success, title, next_date = self.calendar.complete_item_by_title(
-                    guild_id, search_text
-                )
-                if success:
-                    if next_date:
-                        response_text = (
-                            f"✅ **Fullført! {title}**\n\n"
-                            f"📅 Neste gang: {next_date}\n\n"
-                            f"Bra jobba! 🎉"
-                        )
+                # Check for bulk complete: "alle <title>" or "all <title>"
+                lower_text = search_text.lower()
+                bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)", lower_text)
+                if bulk_match:
+                    bulk_title = bulk_match.group(2).strip()
+                    count, completed, has_recurring = self.calendar.complete_items_by_title(
+                        guild_id, bulk_title
+                    )
+                    if count > 0:
+                        titles = ", ".join(completed) if count <= 3 else f"{count} stk"
+                        response_text = f"✅ **Fullført {count}!**\n{titles}"
+                        if has_recurring:
+                            response_text += "\n🔄 Gjentakende oppføringer er flyttet til neste dato."
+                        response_text += "\n\nBra jobba! 🎉"
                     else:
-                        response_text = (
-                            f"✅ **Fullført! {title}**\n\n"
-                            f"Bra jobba! 🎉"
-                        )
+                        response_text = f"❌ Fant ingen \"{bulk_title}\" i kalenderen."
                     await self.send_response(message, response_text)
                     return
+                else:
+                    # Single complete by title
+                    success, title, next_date = self.calendar.complete_item_by_title(
+                        guild_id, search_text
+                    )
+                    if success:
+                        if next_date:
+                            response_text = (
+                                f"✅ **Fullført! {title}**\n\n"
+                                f"📅 Neste gang: {next_date}\n\n"
+                                f"Bra jobba! 🎉"
+                            )
+                        else:
+                            response_text = (
+                                f"✅ **Fullført! {title}**\n\n"
+                                f"Bra jobba! 🎉"
+                            )
+                        await self.send_response(message, response_text)
+                        return
+                    # Fall through
 
             if item_num:
                 success, title, next_date = self.calendar.complete_item(
@@ -255,7 +289,8 @@ class CalendarHandler(BaseHandler):
                 if calendar_text:
                     response_text = (
                         f"📝 Hvilket vil du markere som fullført? "
-                        f"(nummer eller tittel)\n\n{calendar_text}"
+                        f"(nummer eller skriv tittelen)\n\n{calendar_text}\n\n"
+                        f"Bruk: `@inebotten ferdig [nummer]` eller `@inebotten ferdig [tittel]`"
                     )
                 else:
                     response_text = "📭 Kalenderen er tom."

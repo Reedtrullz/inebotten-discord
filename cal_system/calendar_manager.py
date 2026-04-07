@@ -274,6 +274,49 @@ class CalendarManager:
 
         return False, None
 
+    def delete_items_by_title(self, guild_id, title):
+        """Delete ALL calendar items matching the title (case-insensitive).
+
+        Returns:
+            (count, deleted_titles) where count is number deleted
+        """
+        guild_key = str(guild_id)
+        if guild_key not in self.items:
+            return 0, []
+
+        items = self.get_upcoming(guild_id, days=90, include_completed=False)
+        matches = []
+        for item in items:
+            if title.lower() in item["title"].lower():
+                matches.append(item)
+
+        if not matches:
+            return 0, []
+
+        deleted_titles = []
+        # Use a set of IDs to track what we already deleted
+        deleted_ids = set()
+        for item in matches:
+            item_id = item["id"]
+            if item_id in deleted_ids:
+                continue
+            deleted_ids.add(item_id)
+            for i, stored_item in enumerate(list(self.items[guild_key])):
+                if stored_item["id"] == item_id:
+                    gcal_id = stored_item.get("gcal_event_id")
+                    if self.gcal_enabled and gcal_id:
+                        try:
+                            self.gcal.delete_event(gcal_id)
+                        except Exception as e:
+                            print(f"[CALENDAR] GCal delete failed: {e}")
+                    deleted_titles.append(stored_item["title"])
+                    self.items[guild_key].pop(i)
+                    break
+
+        if deleted_titles:
+            self._save_items()
+        return len(deleted_titles), deleted_titles
+
     def complete_item_by_title(self, guild_id, title):
         """Complete the first matching incomplete item by partial title match.
 
@@ -291,6 +334,45 @@ class CalendarManager:
                 return self.complete_item(guild_id, item_id=item_id)
 
         return False, None, None
+
+    def complete_items_by_title(self, guild_id, title):
+        """Complete ALL matching calendar items by partial title match.
+
+        Returns:
+            (count, completed_titles, has_recurring) where count is number marked done
+        """
+        guild_key = str(guild_id)
+        if guild_key not in self.items:
+            return 0, [], False
+
+        items = self.get_upcoming(guild_id, days=90, include_completed=False)
+        matches = []
+        for item in items:
+            if title.lower() in item["title"].lower():
+                matches.append(item)
+
+        if not matches:
+            return 0, [], False
+
+        completed_titles = []
+        has_recurring = False
+        completed_ids = set()
+
+        for item in matches:
+            item_id = item["id"]
+            if item_id in completed_ids:
+                continue
+            completed_ids.add(item_id)
+            try:
+                success, t, next_date = self.complete_item(guild_id, item_id=item_id)
+                if success:
+                    completed_titles.append(t)
+                    if next_date:
+                        has_recurring = True
+            except Exception as e:
+                print(f"[CALENDAR] Bulk complete error: {e}")
+
+        return len(completed_titles), completed_titles, has_recurring
 
     def get_upcoming(self, guild_id, days=30, include_completed=False):
         """
@@ -330,10 +412,13 @@ class CalendarManager:
         upcoming.sort(key=lambda x: datetime.strptime(x["date"], "%d.%m.%Y"))
         return upcoming
 
-    def format_list(self, guild_id, days=90, show_completed=False):
+    def format_list(self, guild_id, days=90, show_completed=False, footer=None):
         """
         Format calendar items for display
         Shows next 3 months by default to capture future events
+
+        Args:
+            footer: Override footer text (defaults to complete hint)
         """
         items = self.get_upcoming(guild_id, days=days, include_completed=False)
 
@@ -385,7 +470,7 @@ class CalendarManager:
                 for item in completed:
                     lines.append(f"  ✓ ~~{item['title']}~~")
 
-        lines.append("\n— *`@inebotten ferdig [nummer]` for å fullføre*")
+        # Neutral footer - handlers add context-specific hints
         return "\n".join(lines)
 
     def format_single_item(self, item):
