@@ -210,7 +210,8 @@ class CalendarManager:
 
     def delete_item(self, guild_id, item_num):
         """
-        Delete a calendar item by its number in the list
+        Delete a calendar item by its number in the list.
+        Uses days=90 to match format_list so numbers stay consistent.
 
         Returns:
             (success, item_title)
@@ -220,8 +221,7 @@ class CalendarManager:
         if guild_key not in self.items:
             return False, None
 
-        # Get items to display (same order as format_calendar)
-        items = self.get_upcoming(guild_id, days=365, include_completed=False)
+        items = self.get_upcoming(guild_id, days=90, include_completed=False)
 
         idx = item_num - 1
         if 0 <= idx < len(items):
@@ -232,11 +232,65 @@ class CalendarManager:
             for i, stored_item in enumerate(self.items[guild_key]):
                 if stored_item["id"] == item_id:
                     title = stored_item["title"]
+                    # Also delete from GCal if synced
+                    gcal_id = stored_item.get("gcal_event_id")
+                    if self.gcal_enabled and gcal_id:
+                        try:
+                            self.gcal.delete_event(gcal_id)
+                        except Exception as e:
+                            print(f"[CALENDAR] GCal delete failed: {e}")
                     self.items[guild_key].pop(i)
                     self._save_items()
                     return True, title
 
         return False, None
+
+    def delete_item_by_title(self, guild_id, title):
+        """Delete the first calendar item matching the title (case-insensitive).
+
+        Returns:
+            (success, item_title)
+        """
+        guild_key = str(guild_id)
+        if guild_key not in self.items:
+            return False, None
+
+        items = self.get_upcoming(guild_id, days=90, include_completed=False)
+        for item in items:
+            if title.lower() in item["title"].lower():
+                item_id = item["id"]
+                for i, stored_item in enumerate(self.items[guild_key]):
+                    if stored_item["id"] == item_id:
+                        gcal_id = stored_item.get("gcal_event_id")
+                        if self.gcal_enabled and gcal_id:
+                            try:
+                                self.gcal.delete_event(gcal_id)
+                            except Exception as e:
+                                print(f"[CALENDAR] GCal delete failed: {e}")
+                        title_actual = stored_item["title"]
+                        self.items[guild_key].pop(i)
+                        self._save_items()
+                        return True, title_actual
+
+        return False, None
+
+    def complete_item_by_title(self, guild_id, title):
+        """Complete the first matching incomplete item by partial title match.
+
+        Returns:
+            (success, item_title, next_date)
+        """
+        guild_key = str(guild_id)
+        if guild_key not in self.items:
+            return False, None, None
+
+        items = self.get_upcoming(guild_id, days=90, include_completed=False)
+        for item in items:
+            if title.lower() in item["title"].lower():
+                item_id = item["id"]
+                return self.complete_item(guild_id, item_id=item_id)
+
+        return False, None, None
 
     def get_upcoming(self, guild_id, days=30, include_completed=False):
         """

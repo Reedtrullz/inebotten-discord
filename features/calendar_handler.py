@@ -10,6 +10,7 @@ Commands:
 - Editing items (via delete+recreate workflow)
 """
 
+import re
 from typing import Optional, Dict, Any
 
 from features.base_handler import BaseHandler
@@ -22,6 +23,26 @@ class CalendarHandler(BaseHandler):
         super().__init__(monitor)
         self.calendar = monitor.calendar
         self.nlp_parser = monitor.nlp_parser
+
+    def _extract_search_text(self, content: str) -> Optional[str]:
+        """Extract search text after the command keyword in a message.
+        Looks for text after @mention + keyword combination.
+        """
+        # Remove Discord mentions and @inebotten
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+
+        # Remove known command keywords
+        keywords = [
+            "slett", "delete", "fjern",
+            "ferdig", "done", "complete", "fullført",
+        ]
+        for kw in keywords:
+            if cleaned.lower().startswith(kw):
+                rest = cleaned[len(kw):].strip()
+                if rest and len(rest) > 1:
+                    return rest
+        return None
 
     async def handle_calendar_item(self, message, item_data: Dict[str, Any]) -> None:
         """
@@ -132,22 +153,41 @@ class CalendarHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
             item_num = self.extract_number(message.content)
+            search_text = self._extract_search_text(message.content)
+
+            # Try title-based matching first if search text found
+            if search_text and not item_num:
+                success, title = self.calendar.delete_item_by_title(
+                    guild_id, search_text
+                )
+                if success:
+                    await self.send_response(message, f"✅ **Slettet! {title}**")
+                    return
+                # Fall through to number/list behavior if no match
 
             if item_num:
                 success, title = self.calendar.delete_item(guild_id, item_num)
 
                 if success:
-                    response_text = f"✅ **Slettet!** {title}"
+                    response_text = f"✅ **Slettet! {title}**"
                 else:
                     response_text = (
-                        "❌ Fant ikke noe med det nummeret. "
+                        f"❌ Fant ikke noe med nummer {item_num}. "
                         "Bruk `@inebotten kalender` for å se listen."
                     )
+            elif search_text:
+                response_text = (
+                    f"❌ Fant ikke \"{search_text}\" i kalenderen. "
+                    "Sjekk stavemåten eller bruk `@inebotten kalender`."
+                )
             else:
                 # No number provided, show calendar
                 calendar_text = self.calendar.format_list(guild_id)
                 if calendar_text:
-                    response_text = f"📋 Hva vil du slette?\n\n{calendar_text}"
+                    response_text = (
+                        f"📋 Hvilken vil du slette? (nummer eller tittel)\n\n"
+                        f"{calendar_text}"
+                    )
                 else:
                     response_text = "📭 Kalenderen er tom."
 
@@ -161,6 +201,27 @@ class CalendarHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
             item_num = self.extract_number(message.content)
+            search_text = self._extract_search_text(message.content)
+
+            # Try title-based matching first if search text found
+            if search_text and not item_num:
+                success, title, next_date = self.calendar.complete_item_by_title(
+                    guild_id, search_text
+                )
+                if success:
+                    if next_date:
+                        response_text = (
+                            f"✅ **Fullført! {title}**\n\n"
+                            f"📅 Neste gang: {next_date}\n\n"
+                            f"Bra jobba! 🎉"
+                        )
+                    else:
+                        response_text = (
+                            f"✅ **Fullført! {title}**\n\n"
+                            f"Bra jobba! 🎉"
+                        )
+                    await self.send_response(message, response_text)
+                    return
 
             if item_num:
                 success, title, next_date = self.calendar.complete_item(
@@ -170,28 +231,31 @@ class CalendarHandler(BaseHandler):
                 if success:
                     if next_date:
                         response_text = (
-                            f"✅ **Fullført!**\n\n"
-                            f"✓ ~~{title}~~\n\n"
+                            f"✅ **Fullført! {title}**\n\n"
                             f"📅 Neste gang: {next_date}\n\n"
                             f"Bra jobba! 🎉"
                         )
                     else:
                         response_text = (
-                            f"✅ **Fullført!**\n\n"
-                            f"✓ ~~{title}~~\n\n"
+                            f"✅ **Fullført! {title}**\n\n"
                             f"Bra jobba! 🎉"
                         )
                 else:
                     response_text = (
-                        "❌ Fant ikke noe med det nummeret. "
+                        f"❌ Fant ikke noe med nummer {item_num}. "
                         "Bruk `@inebotten kalender` for å se listen."
                     )
+            elif search_text:
+                response_text = (
+                    f"❌ Fant ikke \"{search_text}\" i kalenderen. "
+                    "Sjekk stavemåten eller bruk `@inebotten kalender`."
+                )
             else:
-                # No number, show calendar
-                calendar_text = self.calendar.format_list(guild_id)
+                calendar_text = self.calendar.format_list(guild_id, days=90)
                 if calendar_text:
                     response_text = (
-                        f"📝 Hvilket vil du markere som fullført?\n\n{calendar_text}"
+                        f"📝 Hvilket vil du markere som fullført? "
+                        f"(nummer eller tittel)\n\n{calendar_text}"
                     )
                 else:
                     response_text = "📭 Kalenderen er tom."
