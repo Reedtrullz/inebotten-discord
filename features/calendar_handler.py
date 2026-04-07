@@ -61,6 +61,7 @@ class CalendarHandler(BaseHandler):
                 recurrence_day=item_data.get("recurrence_day"),
                 gcal_event_id=gcal_event_id,
                 gcal_link=gcal_link,
+                channel_id=message.channel.id,
             )
 
             if item:

@@ -71,6 +71,7 @@ class CalendarManager:
         rrule_day=None,
         gcal_event_id=None,
         gcal_link=None,
+        channel_id=None,
     ):
         """
         Add a new calendar item
@@ -88,11 +89,14 @@ class CalendarManager:
             rrule_day: Optional RRULE day code (e.g., 'SA')
             gcal_event_id: Optional GCal event ID
             gcal_link: Optional GCal link
+            channel_id: Optional Discord channel ID for reminder pings
 
         Returns:
             item dict
         """
         guild_key = str(guild_id)
+        if channel_id:
+            channel_id = str(channel_id)
         item_id = f"cal_{guild_id}_{int(datetime.now().timestamp())}"
 
         if guild_key not in self.items:
@@ -111,6 +115,7 @@ class CalendarManager:
             "rrule_day": rrule_day,
             "gcal_event_id": gcal_event_id,
             "gcal_link": gcal_link,
+            "channel_id": channel_id,
             "created_at": datetime.now().isoformat(),
             "completed": False,
             "completed_at": None,

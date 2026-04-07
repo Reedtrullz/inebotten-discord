@@ -4,6 +4,7 @@ Message Monitor for Discord Selfbot
 Polls DMs and detects @inebotten mentions using discord.py
 """
 
+import asyncio
 import re
 from collections import deque
 from datetime import datetime
@@ -571,6 +572,12 @@ class SelfbotClient(discord.Client):
             response_generator=self.response_gen,
         )
 
+        # Initialize and start calendar reminder checker
+        self.reminder_checker = self._create_reminder_checker()
+        if self.reminder_checker:
+            asyncio.create_task(self.reminder_checker.start())
+            print("[BOT] Calendar reminder checker started")
+
         # Check Hermes health
         healthy, message = await self.hermes.check_health()
         if healthy:
@@ -578,6 +585,24 @@ class SelfbotClient(discord.Client):
         else:
             print(f"[BOT] WARNING: Hermes API issue - {message}")
             print("[BOT] Will use local response generator as fallback")
+
+    def _create_reminder_checker(self):
+        """Create a ReminderChecker wired to the bot's channels."""
+        from cal_system.reminder_checker import ReminderChecker
+        from cal_system.calendar_manager import CalendarManager
+        from cal_system.reminder_manager import ReminderManager
+
+        calendar = self.monitor.calendar if self.monitor else CalendarManager()
+        reminders = ReminderManager()
+
+        def get_channel(channel_id: int):
+            return self.get_channel(channel_id)
+
+        return ReminderChecker(
+            calendar_manager=calendar,
+            reminder_manager=reminders,
+            get_channel_func=get_channel,
+        )
 
     async def on_message(self, message):
         """Called when a message is received"""

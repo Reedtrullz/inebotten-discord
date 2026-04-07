@@ -23,7 +23,13 @@ if str(SKILL_PATH) not in sys.path:
     sys.path.insert(0, str(SKILL_PATH))
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+# Google auth tokens are stored at HERMES_HOME root, not in a subproject dir
 TOKEN_PATH = HERMES_HOME / "google_token.json"
+# If that doesn't exist, also check relative path (for backwards compat)
+if not TOKEN_PATH.exists():
+    alt_path = Path(__file__).parent.parent.parent.parent / "google_token.json"
+    if alt_path.exists():
+        TOKEN_PATH = alt_path
 
 
 class GoogleCalendarManager:
@@ -38,20 +44,40 @@ class GoogleCalendarManager:
         )
 
     def _check_auth(self):
-        """Check if Google authentication is set up"""
+        """Check if Google authentication is set up and actually works"""
         if not TOKEN_PATH.exists():
             return False
         try:
-            # Try to import and validate credentials
             from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
 
             creds = Credentials.from_authorized_user_file(
                 str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
             )
-            return creds.valid or (creds.expired and creds.refresh_token)
+            # If token is valid right now, we're good
+            if creds.valid:
+                return True
+            # If expired but we have a refresh token, try to refresh now
+            # to catch revoked tokens early
+            if creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    return True
+                except Exception as e:
+                    print(f"[GCAL] Refresh failed (token revoked): {e}")
+                    return False
+            return False
         except Exception as e:
             print(f"[GCAL] Auth check failed: {e}")
             return False
+
+    def _save_credentials(self, creds):
+        """Persist credentials back to disk (e.g. after token refresh)"""
+        try:
+            with open(TOKEN_PATH, "w") as token:
+                token.write(creds.to_json())
+        except Exception as e:
+            print(f"[GCAL] Failed to save token: {e}")
 
     def is_configured(self):
         """Return True if Google Calendar is configured and ready"""
@@ -74,7 +100,7 @@ class GoogleCalendarManager:
 
     def list_upcoming_events(self, days=30):
         """
-        List upcoming events from Google Calendar
+        List upcoming events from Google Calendar using direct API.
 
         Args:
             days: Number of days to look ahead
@@ -85,22 +111,38 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
-        now = datetime.now(timezone.utc)
-        end = now + timedelta(days=days)
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
 
-        result = self._run_calendar_command(
-            "list",
-            "--start",
-            now.isoformat(),
-            "--end",
-            end.isoformat(),
-            "--max",
-            "50",
-            "--calendar",
-            self.calendar_id,
-        )
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+            )
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                self._save_credentials(creds)
 
-        return result if result else []
+            service = build("calendar", "v3", credentials=creds)
+
+            now = datetime.now(timezone.utc)
+            end = now + timedelta(days=days)
+
+            events_result = service.events().list(
+                calendarId=self.calendar_id,
+                timeMin=now.isoformat(),
+                timeMax=end.isoformat(),
+                maxResults=50,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+
+            items = events_result.get("items", [])
+            return items
+
+        except Exception as e:
+            print(f"[GCAL] Error listing events: {e}")
+            return None
 
     def create_event(
         self,
@@ -186,8 +228,22 @@ class GoogleCalendarManager:
             creds = Credentials.from_authorized_user_file(
                 str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
             )
+            # Refresh if expired
             if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except Exception as e:
+                    print(f"[GCAL] Token refresh failed during event creation: {e}")
+                    # Mark as disabled so we don't keep trying
+                    self.enabled = False
+                    return None
+            elif not creds.valid:
+                print("[GCAL] Credentials invalid (no refresh token)")
+                self.enabled = False
+                return None
+
+            # Save back refreshed token
+            self._save_credentials(creds)
 
             service = build("calendar", "v3", credentials=creds)
 
@@ -305,13 +361,22 @@ class GoogleCalendarManager:
             location = event.get("location", "")
             link = event.get("htmlLink", "")
 
-            # Parse datetime
+            # Parse datetime - start can be a dict or string
             try:
-                if "T" in start:
-                    # datetime format
+                if isinstance(start, dict):
+                    if "dateTime" in start:
+                        dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
+                        from zoneinfo import ZoneInfo
+                        local_dt = dt.astimezone(ZoneInfo("Europe/Oslo"))
+                        date_str = local_dt.strftime("%d.%m.%Y")
+                        time_str = local_dt.strftime("%H:%M")
+                        time_display = f" kl. {time_str}"
+                    else:
+                        date_str = start.get("date", start)
+                        time_display = ""
+                elif isinstance(start, str) and "T" in start:
                     dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
                     from zoneinfo import ZoneInfo
-
                     local_dt = dt.astimezone(ZoneInfo("Europe/Oslo"))
                     date_str = local_dt.strftime("%d.%m.%Y")
                     time_str = local_dt.strftime("%H:%M")

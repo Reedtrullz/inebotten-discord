@@ -50,6 +50,7 @@ class ReminderManager:
         rrule_day=None,
         gcal_event_id=None,
         gcal_link=None,
+        channel_id=None,
     ):
         """
         Add a new reminder
@@ -65,6 +66,7 @@ class ReminderManager:
             rrule_day: Optional RRULE day code (e.g., 'SA')
             gcal_event_id: Optional Google Calendar event ID
             gcal_link: Optional Google Calendar link
+            channel_id: Optional Discord channel ID for reminder pings
 
         Returns:
             reminder_id
@@ -74,6 +76,8 @@ class ReminderManager:
 
         if guild_key not in self.reminders:
             self.reminders[guild_key] = []
+        if channel_id:
+            channel_id = str(channel_id)
 
         reminder = {
             "id": reminder_id,
@@ -86,6 +90,7 @@ class ReminderManager:
             "rrule_day": rrule_day,
             "gcal_event_id": gcal_event_id,
             "gcal_link": gcal_link,
+            "channel_id": channel_id,
             "created_at": datetime.now().isoformat(),
             "completed": False,
             "completed_at": None,
