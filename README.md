@@ -85,7 +85,7 @@ Last ned ferdige desktop-apper fra [Releases](https://github.com/Reedtrullz/ineb
 - **macOS:** `Inebotten-macos.zip` - Pakk ut og åpne `Inebotten.app`
 - **Windows:** `Inebotten.exe` - Dobbeltklikk for å kjøre
 
-Se [RELEASE.md](RELEASE.md) for hvordan du lager nye releases.
+Se [docs/RELEASE.md](docs/RELEASE.md) for hvordan du lager nye releases.
 
 ### Bygg Lokalt
 
@@ -128,7 +128,36 @@ cp .env.example .env
 # Rediger .env og legg til din Discord-token
 
 # 4. Start botten
-python3 run_both.py
+python scripts/run_both.py
+```
+
+---
+
+## 📁 Project Structure
+
+```
+inebotten-discord/
+├── ai/                    # AI integration and personality
+├── cal_system/            # Calendar management system
+├── core/                  # Core bot functionality
+├── features/             # Feature handlers
+├── memory/                # Memory management
+├── utils/                 # Utility functions
+├── docs/                  # Documentation
+│   ├── ARCHITECTURE.md
+│   ├── DEVELOPMENT.md
+│   ├── DOCUMENTATION.md
+│   └── ...
+├── scripts/               # Utility scripts
+│   ├── run_both.py
+│   ├── create-release.sh
+│   └── ...
+├── tests/                 # Test files
+├── mac_app/               # macOS desktop app
+├── windows_app/           # Windows desktop app
+├── .env.example           # Environment template
+├── requirements.txt       # Python dependencies
+└── README.md             # This file
 ```
 
 ---
@@ -137,12 +166,12 @@ python3 run_both.py
 
 | Dokument | Beskrivelse | For hvem |
 |----------|-------------|----------|
-| **[QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md)** | Hurtigreferanse for alle kommandoer | Brukere |
-| **[DOCUMENTATION.md](docs/DOCUMENTATION.md)** | Komplett teknisk dokumentasjon | Utviklere |
-| **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
-| **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
-| **[GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
-| **[RELEASE.md](RELEASE.md)** | Hvordan lage releases med pre-built apps | Utviklere |
+| **[docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md)** | Hurtigreferanse for alle kommandoer | Brukere |
+| **[docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)** | Komplett teknisk dokumentasjon | Utviklere |
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
+| **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
+| **[docs/GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
+| **[docs/RELEASE.md](docs/RELEASE.md)** | Hvordan lage releases med pre-built apps | Utviklere |
 | **[mac_app/README.md](mac_app/README.md)** | macOS app dokumentasjon | macOS-brukere |
 | **[windows_app/README.md](windows_app/README.md)** | Windows app dokumentasjon | Windows-brukere |
 
@@ -200,7 +229,7 @@ python3 run_both.py
 
 **Handler Architecture:** All 10 handlers extend `BaseHandler` for unified response handling, rate limiting, and logging.
 
-Se [ARCHITECTURE.md](docs/ARCHITECTURE.md) for full detaljering.
+Se [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full detaljering.
 
 ---
 
@@ -213,13 +242,13 @@ Se [ARCHITECTURE.md](docs/ARCHITECTURE.md) for full detaljering.
 - **Konservative rate limits** - maks 5 meldinger/sekund
 - **Kun svar ved mention** - botten responderer kun når @inebotten blir nevnt
 
-Se [SECURITY.md](SECURITY.md) for mer informasjon.
+Se [docs/SECURITY.md](docs/SECURITY.md) for mer informasjon.
 
 ---
 
 ## 🤝 Bidragsytere
 
-Vi setter pris på alle bidrag! Se [CONTRIBUTING.md](CONTRIBUTING.md) for hvordan du kan hjelpe til.
+Vi setter pris på alle bidrag! Se [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for hvordan du kan hjelpe til.
 
 ---
 

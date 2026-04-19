@@ -45,6 +45,8 @@ data/calendar.json
 data/events.json
 data/reminders.json
 data/*.json
+polls.json
+reminder_log.json
 
 # Google credentials
 data/client_secret*.json
@@ -64,6 +66,9 @@ desktop.ini
 .coverage
 htmlcov/
 .tox/
+test_report_*.json
+baseline_results.md
+improved_prompt_*.txt
 
 # AI agent temporary files
 .hermes/
