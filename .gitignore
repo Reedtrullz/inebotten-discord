@@ -57,9 +57,31 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Test artifacts
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
+
+# AI agent temporary files
+.hermes/
+.sisyphus/
+
+# Build artifacts
+*.spec
+*.exe
+*.app
+*.dmg
+*.msi
+*.zip
+*.tar.gz
+
+# Temporary analysis files
+*_ANALYSIS.md
+*_FIXED.md
+*_SUMMARY.md
+*_PLAN.md
+*_REPORT.md
+AGENTS.md
