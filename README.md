@@ -85,6 +85,8 @@ Last ned ferdige desktop-apper fra [Releases](https://github.com/Reedtrullz/ineb
 - **macOS:** `Inebotten-macos.zip` - Pakk ut og åpne `Inebotten.app`
 - **Windows:** `Inebotten.exe` - Dobbeltklikk for å kjøre
 
+⚠️ **macOS Gatekeeper Warning:** If you see "Inebotten.app is damaged and can't be opened", right-click the app and select "Open". See [mac_app/README.md](mac_app/README.md#troubleshooting) for details.
+
 Se [docs/RELEASE.md](docs/RELEASE.md) for hvordan du lager nye releases.
 
 ### Bygg Lokalt

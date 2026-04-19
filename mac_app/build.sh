@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Build script for Inebotten Discord Bot - macOS
-# Creates a standalone .app bundle using PyInstaller
+# Creates a standalone .app bundle using PyInstaller with code signing
 
 set -e
 
@@ -110,6 +110,11 @@ cat > "$APP_PATH/Contents/Info.plist" << 'EOF'
     <string>10.12</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
 EOF
@@ -128,6 +133,18 @@ fi
 echo "Created $APP_NAME"
 echo ""
 
+# Code sign the app (ad-hoc signing to avoid Gatekeeper issues)
+echo "Code signing the app..."
+if command -v codesign &> /dev/null; then
+    codesign --force --deep --sign - "$APP_PATH"
+    echo "App signed successfully"
+else
+    echo "Warning: codesign not found, app may be blocked by Gatekeeper"
+    echo "         Users can bypass by right-clicking and selecting 'Open'"
+fi
+
+echo ""
+
 # Final output
 echo "=========================================="
 echo "Build successful!"
@@ -137,6 +154,10 @@ echo "App location: $APP_PATH"
 echo ""
 echo "To run the app:"
 echo "  open $APP_PATH"
+echo ""
+echo "If Gatekeeper blocks the app:"
+echo "  Right-click the app and select 'Open'"
+echo "  Or run: xattr -cr $APP_PATH"
 echo ""
 echo "To create a distributable zip:"
 echo "  cd dist"
