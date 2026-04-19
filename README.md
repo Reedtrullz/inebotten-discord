@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/discord-selfbot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Selfbot">
   <img src="https://img.shields.io/badge/AI-LM%20Studio-green?style=for-the-badge&logo=openai&logoColor=white" alt="AI Powered">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey?style=for-the-badge&logo=apple&logoColor=white" alt="Platform">
 </p>
 
 <p align="center">
@@ -77,13 +78,33 @@ Inebotten er en feature-rik Discord selfbot som kombinerer AI-drevne samtaler me
 
 ## 🚀 Hurtigstart
 
-### Forutsetninger
+### Desktop Apps (Enkelst)
+
+**macOS:**
+```bash
+cd mac_app
+./build.sh
+open dist/Inebotten.app
+```
+
+**Windows:**
+```bash
+cd windows_app
+python build.py
+dist\Inebotten.exe
+```
+
+Se [mac_app/README.md](mac_app/README.md) eller [windows_app/README.md](windows_app/README.md) for detaljert instruksjoner.
+
+### Kommandolinje
+
+#### Forutsetninger
 
 - Python 3.10+
 - Discord bruker-token ([hvordan finne](#-discord-token))
 - LM Studio (valgfritt, for AI-funksjonalitet)
 
-### Installasjon
+#### Installasjon
 
 ```bash
 # 1. Klon repoet
@@ -112,6 +133,8 @@ python3 run_both.py
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
 | **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
 | **[GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
+| **[mac_app/README.md](mac_app/README.md)** | macOS app dokumentasjon | macOS-brukere |
+| **[windows_app/README.md](windows_app/README.md)** | Windows app dokumentasjon | Windows-brukere |
 
 ---
 
@@ -197,7 +220,7 @@ Dette prosjektet er lisensiert under MIT License - se [LICENSE](LICENSE) for det
 ---
 
 <p align="center">
-  <b>Versjon:</b> 2.0 (Mars 2026) &nbsp;|&nbsp;
+  <b>Versjon:</b> 2.0 (April 2026) &nbsp;|&nbsp;
   <b>Modell:</b> gemma-3-4b &nbsp;|&nbsp;
   <b>Språk:</b> Norsk (bokmål/nynorsk)
 </p>
