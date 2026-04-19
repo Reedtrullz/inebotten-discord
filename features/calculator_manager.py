@@ -282,12 +282,58 @@ class CalculatorManager:
         else:
             return f"⚖️ **Weight**\n{value} {from_unit} = {result:.2f} {to_unit}"
 
+    def _validate_expression(self, expression: str) -> tuple[bool, str]:
+        """
+        Validate math expression before evaluation
+        
+        Args:
+            expression: The math expression to validate
+            
+        Returns:
+            (is_valid, error_message)
+        """
+        # Length check
+        if len(expression) > 100:
+            return False, "Expression too long (max 100 chars)"
+        
+        # Parentheses depth check
+        depth = 0
+        max_depth = 0
+        for char in expression:
+            if char == '(':
+                depth += 1
+                max_depth = max(max_depth, depth)
+                if depth > 5:
+                    return False, "Expression too complex (max 5 nested levels)"
+            elif char == ')':
+                depth -= 1
+                if depth < 0:
+                    return False, "Unbalanced parentheses"
+        
+        if depth != 0:
+            return False, "Unbalanced parentheses"
+        
+        # Operator count check
+        operator_count = sum(1 for c in expression if c in '+-*/')
+        if operator_count > 20:
+            return False, "Too many operators (max 20)"
+        
+        return True, "Valid"
+
     def _do_math(self, cmd, lang):
         """Perform math calculation"""
         expression = cmd["expression"]
 
         # Clean expression
         expression = expression.replace("x", "*").replace(":", "/")
+
+        # Validate expression
+        is_valid, error_msg = self._validate_expression(expression)
+        if not is_valid:
+            if lang == "no":
+                return f"❌ {error_msg}"
+            else:
+                return f"❌ {error_msg}"
 
         # Only allow safe characters
         if not re.match(r"^[\d\+\-\*\/\(\)\.\s]+$", expression):

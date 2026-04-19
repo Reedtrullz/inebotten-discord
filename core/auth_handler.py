@@ -128,12 +128,41 @@ class AuthHandler:
 
     def save_token_to_file(self, filepath=None):
         """
-        Save token to a file for persistence
+        Save token to secure storage using system keychain or encrypted file
+        
+        Args:
+            filepath: Optional filepath (ignored if keyring is available)
+            
+        Returns:
+            True if successful, False otherwise
         """
         if self.auth_method != "token":
             print("[AUTH] Cannot save: not using token auth")
             return False
 
+        try:
+            from utils.secure_storage import get_secure_storage
+            
+            storage = get_secure_storage()
+            success = storage.save_token(self.credentials["token"])
+            
+            if success:
+                print("[AUTH] Token saved to secure storage")
+            else:
+                print("[AUTH] Failed to save token to secure storage")
+            
+            return success
+        except ImportError:
+            print("[AUTH] Secure storage not available, using fallback")
+            return self._save_token_fallback(filepath)
+        except Exception as e:
+            print(f"[AUTH] Error saving token: {e}")
+            return False
+    
+    def _save_token_fallback(self, filepath=None):
+        """
+        Fallback method to save token to file with restricted permissions
+        """
         if filepath is None:
             filepath = Path.home() / ".hermes" / "discord" / ".token"
 

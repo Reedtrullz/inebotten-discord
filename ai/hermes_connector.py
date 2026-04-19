@@ -76,14 +76,20 @@ class HermesConnector:
 
     async def _get_session(self):
         """
-        Get or create aiohttp session
+        Get or create aiohttp session with proper timeout configuration
         """
         if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(
+                total=30,      # Total request timeout
+                connect=10,   # Connection timeout
+                sock_read=20  # Socket read timeout
+            )
             self.session = aiohttp.ClientSession(
                 headers={
                     "User-Agent": "DiscordSelfbot/1.0 HermesConnector",
                     "Accept": "application/json",
-                }
+                },
+                timeout=timeout
             )
         return self.session
 
@@ -95,6 +101,114 @@ class HermesConnector:
             await self.session.close()
             self.session = None
 
+    async def _make_request(self, url: str, method: str = "GET", payload: dict = None) -> tuple[bool, any]:
+        """
+        Make API request with comprehensive error handling
+        
+        Args:
+            url: The URL to request
+            method: HTTP method (GET or POST)
+            payload: Optional payload for POST requests
+            
+        Returns:
+            (success, response_data or error_message)
+        """
+        try:
+            session = await self._get_session()
+            
+            if method.upper() == "POST":
+                async with session.post(url, json=payload) as response:
+                    return await self._handle_response(response)
+            else:
+                async with session.get(url) as response:
+                    return await self._handle_response(response)
+                    
+        except asyncio.TimeoutError:
+            self.error_count += 1
+            self.last_error = "Request timeout"
+            print(f"[HERMES] Request timed out after 30s")
+            return False, "Request timeout (30s)"
+            
+        except aiohttp.ClientConnectorError as e:
+            self.error_count += 1
+            self.last_error = f"Connection error: {type(e).__name__}"
+            print(f"[HERMES] Network error: {type(e).__name__}: {str(e)[:100]}")
+            return False, f"Cannot connect to Hermes: {type(e).__name__}"
+            
+        except aiohttp.ClientError as e:
+            self.error_count += 1
+            self.last_error = f"Client error: {type(e).__name__}"
+            print(f"[HERMES] HTTP client error: {type(e).__name__}: {str(e)[:100]}")
+            return False, f"HTTP error: {type(e).__name__}"
+            
+        except json.JSONDecodeError as e:
+            self.error_count += 1
+            self.last_error = f"JSON decode error: {str(e)[:100]}"
+            print(f"[HERMES] Invalid JSON response: {str(e)[:100]}")
+            return False, "Invalid response format"
+            
+        except Exception as e:
+            self.error_count += 1
+            self.last_error = f"Unexpected error: {type(e).__name__}"
+            print(f"[HERMES] Unexpected error: {type(e).__name__}: {str(e)[:100]}")
+            return False, f"Request error: {type(e).__name__}"
+
+    async def _handle_response(self, response: aiohttp.ClientResponse) -> tuple[bool, any]:
+        """
+        Handle HTTP response with proper error handling
+        
+        Args:
+            response: The aiohttp response object
+            
+        Returns:
+            (success, response_data or error_message)
+        """
+        print(f"[HERMES] Response status: {response.status}")
+        
+        if response.status == 200:
+            try:
+                data = await response.json()
+                print(f"[HERMES] Response data: {str(data)[:150]}...")
+                # Handle different response formats
+                if isinstance(data, dict):
+                    if "response" in data:
+                        print(f"[HERMES] Using 'response' field: {data['response'][:80]}...")
+                        return True, data["response"]
+                    elif "message" in data:
+                        return True, data["message"]
+                    elif "content" in data:
+                        return True, data["content"]
+                    else:
+                        return True, str(data)
+                else:
+                    return True, str(data)
+            except json.JSONDecodeError as e:
+                # Non-JSON response
+                print(f"[HERMES] Response parse error: {e}")
+                text = await response.text()
+                return True, text
+                
+        elif response.status == 429:
+            retry_after = int(response.headers.get('Retry-After', 5))
+            self.error_count += 1
+            self.last_error = f"Rate limited (retry after {retry_after}s)"
+            print(f"[HERMES] Rate limited, retry after {retry_after}s")
+            return False, f"Rate limited (retry after {retry_after}s)"
+            
+        elif response.status >= 500:
+            self.error_count += 1
+            self.last_error = f"Server error {response.status}"
+            error_text = await response.text()
+            print(f"[HERMES] Server error {response.status}: {error_text[:100]}")
+            return False, f"Server error (status {response.status})"
+            
+        else:
+            self.error_count += 1
+            self.last_error = f"HTTP {response.status}"
+            error_text = await response.text()
+            print(f"[HERMES] HTTP error {response.status}: {error_text[:100]}")
+            return False, f"API error (status {response.status})"
+
     async def check_health(self):
         """
         Check if Hermes API is reachable
@@ -104,7 +218,6 @@ class HermesConnector:
             session = await self._get_session()
 
             # Try a simple request to check connectivity
-            # Some APIs have a status endpoint, others just need a test request
             test_payload = {
                 "message": "health_check",
                 "author_name": "selfbot",
@@ -115,18 +228,14 @@ class HermesConnector:
 
             url = f"{self.base_url}?data={quote(json.dumps(test_payload))}"
 
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                # Any response (even error) means the server is up
-                return True, f"API reachable (status: {response.status})"
+            success, result = await self._make_request(url)
+            if success:
+                return True, f"API reachable"
+            else:
+                return False, result
 
-        except aiohttp.ClientConnectorError as e:
-            return False, f"Cannot connect to Hermes API: {e}"
-        except asyncio.TimeoutError:
-            return False, "Connection timeout"
         except Exception as e:
-            return False, f"Health check error: {e}"
+            return False, f"Health check error: {type(e).__name__}"
 
     async def generate_response(
         self,
@@ -153,8 +262,6 @@ class HermesConnector:
         Returns:
             (success, response_text or error_message)
         """
-        session = await self._get_session()
-
         # Build payload
         payload = {
             "message": message_content,
@@ -188,60 +295,14 @@ class HermesConnector:
 
             self.request_count += 1
 
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                print(f"[HERMES] Bridge response status: {response.status}")
-                if response.status == 200:
-                    try:
-                        data = await response.json()
-                        print(f"[HERMES] Bridge returned data: {str(data)[:150]}...")
-                        # Handle different response formats
-                        if isinstance(data, dict):
-                            if "response" in data:
-                                print(
-                                    f"[HERMES] Using 'response' field: {data['response'][:80]}..."
-                                )
-                                return True, data["response"]
-                            elif "message" in data:
-                                return True, data["message"]
-                            elif "content" in data:
-                                return True, data["content"]
-                            else:
-                                return True, str(data)
-                        else:
-                            return True, str(data)
-                    except Exception as e:
-                        # Non-JSON response
-                        print(f"[HERMES] Response parse error: {e}")
-                        text = await response.text()
-                        return True, text
-
-                elif response.status == 429:
-                    self.error_count += 1
-                    self.last_error = "Rate limited by Hermes API"
-                    return False, "Hermes API rate limit hit"
-
-                else:
-                    self.error_count += 1
-                    error_text = await response.text()
-                    self.last_error = f"HTTP {response.status}: {error_text[:100]}"
-                    return False, f"API error (status {response.status})"
-
-        except asyncio.TimeoutError:
-            self.error_count += 1
-            self.last_error = "Request timeout"
-            return False, "Hermes API timeout (30s)"
-
-        except aiohttp.ClientConnectorError as e:
-            self.error_count += 1
-            self.last_error = str(e)
-            return False, f"Cannot connect to Hermes: {e}"
+            success, result = await self._make_request(url)
+            return success, result
 
         except Exception as e:
             self.error_count += 1
             self.last_error = str(e)
-            return False, f"Request error: {e}"
+            print(f"[HERMES] Unexpected error in generate_response: {type(e).__name__}: {str(e)[:100]}")
+            return False, f"Request error: {type(e).__name__}"
 
     async def generate_calendar_response(self, query, author_name):
         """

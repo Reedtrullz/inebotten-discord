@@ -5,7 +5,9 @@ Calendar Reminder Checker for Inebotten
 Background asyncio task that:
 1. Checks every minute for events/reminders coming up in 30 minutes
    and pings the event creator in the original channel
-2. Sends a morning digest at 09:00 Europe/Oslo with today's events
+2. Sends a "now" reminder when events are happening
+3. Sends a "passed" notification when events just happened
+4. Sends a morning digest at 09:00 Europe/Oslo with today's events
 
 Tracks sent reminders in a JSON file to avoid duplicate pings.
 """
@@ -21,7 +23,8 @@ from zoneinfo import ZoneInfo
 class ReminderChecker:
     """
     Proactive calendar reminder checker that pings users in Discord
-    when events are approaching or sends a morning digest.
+    when events are approaching, happening, or have just happened.
+    Also sends a morning digest.
     """
 
     def __init__(
@@ -42,6 +45,15 @@ class ReminderChecker:
         self.send_ping_message = send_ping_message_func
         self.running = False
         self._morning_digest_sent = False  # per-day reset
+
+        # Statistics
+        self.stats = {
+            "30min_sent": 0,
+            "now_sent": 0,
+            "passed_sent": 0,
+            "digest_sent": 0,
+            "errors": 0,
+        }
 
         if storage_path is None:
             storage_path = Path.home() / ".hermes" / "discord" / "reminder_log.json"
@@ -161,6 +173,97 @@ class ReminderChecker:
                             continue
                         await self._send_reminder_remind(reminder, "30min", "30 minutter")
 
+    # ---- Event happening NOW ----
+
+    async def check_event_now(self):
+        """Check for events happening NOW and send notifications"""
+        now = datetime.now(ZoneInfo("Europe/Oslo"))
+        one_minute_ago = now - timedelta(minutes=1)
+        one_minute_ahead = now + timedelta(minutes=1)
+
+        # Check calendar items
+        if self.calendar:
+            for guild_id, items_list in self.calendar.items.items():
+                for item in items_list:
+                    if item.get("completed"):
+                        continue
+                    try:
+                        item_date = self._parse_item_datetime(item)
+                    except (ValueError, TypeError):
+                        continue
+                    if item_date is None:
+                        continue
+                    # Check if event is happening NOW (within 1 minute window)
+                    if one_minute_ago <= item_date <= one_minute_ahead:
+                        if self._has_been_sent(item["id"], "now"):
+                            continue
+                        await self._send_item_reminder(item, "now", "nå")
+
+        # Check reminders
+        if self.reminders:
+            for guild_id, reminders_list in self.reminders.reminders.items():
+                for reminder in reminders_list:
+                    if reminder.get("completed"):
+                        continue
+                    due = reminder.get("due_date")
+                    if not due:
+                        continue
+                    try:
+                        reminder_dt = self._parse_due_date(due)
+                    except Exception:
+                        continue
+                    if reminder_dt is None:
+                        continue
+                    if one_minute_ago <= reminder_dt <= one_minute_ahead:
+                        if self._has_been_sent(reminder["id"], "now"):
+                            continue
+                        await self._send_reminder_remind(reminder, "now", "nå")
+
+    # ---- Event just passed ----
+
+    async def check_event_passed(self):
+        """Check for events that just happened (within last 5 minutes)"""
+        now = datetime.now(ZoneInfo("Europe/Oslo"))
+        five_minutes_ago = now - timedelta(minutes=5)
+
+        # Check calendar items
+        if self.calendar:
+            for guild_id, items_list in self.calendar.items.items():
+                for item in items_list:
+                    if item.get("completed"):
+                        continue
+                    try:
+                        item_date = self._parse_item_datetime(item)
+                    except (ValueError, TypeError):
+                        continue
+                    if item_date is None:
+                        continue
+                    # Check if event just happened (within last 5 minutes)
+                    if five_minutes_ago <= item_date <= now:
+                        if self._has_been_sent(item["id"], "passed"):
+                            continue
+                        await self._send_item_reminder(item, "passed", "akkurat nå")
+
+        # Check reminders
+        if self.reminders:
+            for guild_id, reminders_list in self.reminders.reminders.items():
+                for reminder in reminders_list:
+                    if reminder.get("completed"):
+                        continue
+                    due = reminder.get("due_date")
+                    if not due:
+                        continue
+                    try:
+                        reminder_dt = self._parse_due_date(due)
+                    except Exception:
+                        continue
+                    if reminder_dt is None:
+                        continue
+                    if five_minutes_ago <= reminder_dt <= now:
+                        if self._has_been_sent(reminder["id"], "passed"):
+                            continue
+                        await self._send_reminder_remind(reminder, "passed", "akkurat nå")
+
     # ---- Morning digest at 09:00 ----
 
     async def check_morning_digest(self):
@@ -168,11 +271,8 @@ class ReminderChecker:
         oslo_tz = ZoneInfo("Europe/Oslo")
         now = datetime.now(oslo_tz)
 
-        # Only trigger between 09:00 and 09:05
-        if not (9 <= now.hour < 9 and now.minute < 5):
-            return
-        # Actually use a simpler check: if it's after 09:00 and before 09:10
-        if not (now.hour == 9 and now.minute < 10):
+        # Trigger between 09:00 and 10:00 (wider window for reliability)
+        if not (9 <= now.hour < 10):
             return
 
         # Check all guilds that have calendar data
@@ -215,6 +315,9 @@ class ReminderChecker:
                 dt = dt.replace(hour=int(parts[0]), minute=int(parts[1]))
             except (ValueError, IndexError):
                 pass
+        else:
+            # For date-only events, use 09:00 as default time
+            dt = dt.replace(hour=9, minute=0)
         return dt
 
     def _parse_due_date(self, due_str):
@@ -269,27 +372,67 @@ class ReminderChecker:
         return "\n".join(lines)
 
     async def _send_item_reminder(self, item, remind_type, label):
-        """Send a 30-min warning for a calendar item in its original channel"""
+        """Send a reminder for a calendar item in its original channel"""
         channel_id = item.get("channel_id")
         time_str = f" kl. {item['time']}" if item.get("time") else ""
 
-        message = (
-            f"⏰ **Påminnelse: {item['title']}**\n\n"
-            f"Det er {label} til!{time_str}\n\n"
-            f"Kan du det? 😊"
-        )
+        # Different messages based on reminder type
+        if remind_type == "30min":
+            message = (
+                f"⏰ **Påminnelse: {item['title']}**\n\n"
+                f"Det er {label} til!{time_str}\n\n"
+                f"Klar? 😊"
+            )
+        elif remind_type == "now":
+            message = (
+                f"🔔 **Starter nå: {item['title']}**\n\n"
+                f"Det er på tide!{time_str}\n\n"
+                f"Lykke til! 🎉"
+            )
+        elif remind_type == "passed":
+            message = (
+                f"✅ **Akkurat ferdig: {item['title']}**\n\n"
+                f"Håper det gikk bra!{time_str}\n\n"
+                f"Bra jobba! 👍"
+            )
+        else:
+            message = f"⏰ **{item['title']}** - {label}{time_str}"
 
         await self._send_mentions_item(channel_id, item, message)
         self._mark_sent(item["id"], remind_type)
+        
+        # Update statistics
+        if remind_type == "30min":
+            self.stats["30min_sent"] += 1
+        elif remind_type == "now":
+            self.stats["now_sent"] += 1
+        elif remind_type == "passed":
+            self.stats["passed_sent"] += 1
 
     async def _send_reminder_remind(self, reminder, remind_type, label):
-        """Send a 30-min warning for a reminder"""
+        """Send a reminder for a reminder item"""
         channel_id = reminder.get("channel_id")
-        message = (
-            f"⏰ **Påminnelse: {reminder['text']}**\n\n"
-            f"Det er {label} til!\n\n"
-            f"Kan du det? 😊"
-        )
+        
+        # Different messages based on reminder type
+        if remind_type == "30min":
+            message = (
+                f"⏰ **Påminnelse: {reminder['text']}**\n\n"
+                f"Det er {label} til!\n\n"
+                f"Klar? 😊"
+            )
+        elif remind_type == "now":
+            message = (
+                f"🔔 **Nå: {reminder['text']}**\n\n"
+                f"Det er på tide!\n\n"
+                f"Lykke til! 🎉"
+            )
+        elif remind_type == "passed":
+            message = (
+                f"✅ **Ferdig: {reminder['text']}**\n\n"
+                f"Bra jobba! 👍"
+            )
+        else:
+            message = f"⏰ **{reminder['text']}** - {label}"
 
         if channel_id:
             await self._send_to_channel(channel_id, message)
@@ -297,6 +440,14 @@ class ReminderChecker:
             print(f"[REMIND] No channel_id for reminder: {reminder['text']}")
 
         self._mark_sent(reminder["id"], remind_type)
+        
+        # Update statistics
+        if remind_type == "30min":
+            self.stats["30min_sent"] += 1
+        elif remind_type == "now":
+            self.stats["now_sent"] += 1
+        elif remind_type == "passed":
+            self.stats["passed_sent"] += 1
 
     async def _send_mentions_item(self, channel_id, item, message):
         """Send a message mentioning the item creator"""
@@ -328,6 +479,7 @@ class ReminderChecker:
                 print(f"[REMIND] Sent (fallback) to channel {channel_id}: {message[:80]}")
         except Exception as e:
             print(f"[REMIND] Failed to send to channel {channel_id}: {e}")
+            self.stats["errors"] += 1
 
     # ---- Main loop ----
 
@@ -338,9 +490,12 @@ class ReminderChecker:
         while self.running:
             try:
                 await self.check_upcoming_30min()
+                await self.check_event_now()
+                await self.check_event_passed()
                 await self.check_morning_digest()
             except Exception as e:
                 print(f"[REMIND] Error in checker loop: {e}")
+                self.stats["errors"] += 1
 
             # Check every 60 seconds
             for _ in range(60):
@@ -353,3 +508,4 @@ class ReminderChecker:
         """Stop the reminder checker"""
         self.running = False
         print("[REMIND] Reminder checker stopped")
+        print(f"[REMIND] Statistics: {self.stats}")

@@ -28,7 +28,7 @@ except ImportError:
 from core.config import get_config
 from core.auth_handler import create_auth_handler
 from core.rate_limiter import create_rate_limiter
-from ai.hermes_connector import create_hermes_connector
+from ai.connector_factory import create_ai_connector
 from ai.response_generator import create_response_generator
 from core.message_monitor import SelfbotClient
 
@@ -40,7 +40,7 @@ class SelfbotRunner:
         self.config = None
         self.auth_handler = None
         self.rate_limiter = None
-        self.hermes = None
+        self.ai_connector = None
         self.response_gen = None
         self.client = None
         self.running = False
@@ -54,7 +54,14 @@ class SelfbotRunner:
         # Load configuration
         print("\n[1/5] Loading configuration...")
         self.config = get_config()
-        print(f"  Hermes API: {self.config.HERMES_API_URL}")
+        
+        # Show AI provider info
+        ai_provider = self.config.get_ai_provider()
+        if ai_provider == 'openrouter':
+            print(f"  AI Provider: OpenRouter (model: {self.config.OPENROUTER_MODEL})")
+        else:
+            print(f"  AI Provider: LM Studio (URL: {self.config.HERMES_API_URL})")
+        
         print(f"  Rate limit: {self.config.MAX_MSGS_PER_SECOND}/sec")
         
         # Initialize auth handler
@@ -75,10 +82,19 @@ class SelfbotRunner:
         self.rate_limiter = create_rate_limiter(self.config)
         print(f"  Max: {self.rate_limiter.max_per_second}/sec, {self.rate_limiter.daily_quota}/day")
         
-        # Initialize Hermes connector
-        print("\n[4/5] Initializing Hermes connector...")
-        self.hermes = create_hermes_connector(self.config)
-        print(f"  API URL: {self.hermes.base_url}")
+        # Initialize AI connector (LM Studio or OpenRouter)
+        print("\n[4/5] Initializing AI connector...")
+        try:
+            self.ai_connector = create_ai_connector(self.config)
+            if ai_provider == 'openrouter':
+                print(f"  OpenRouter API: {self.config.OPENROUTER_BASE_URL}")
+                print(f"  Model: {self.config.OPENROUTER_MODEL}")
+            else:
+                print(f"  LM Studio API: {self.ai_connector.base_url}")
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            print(f"  Will use local response generator as fallback")
+            self.ai_connector = None
         
         # Initialize response generator
         print("\n[5/5] Initializing response generator...")
@@ -94,13 +110,17 @@ class SelfbotRunner:
         """Check all components before starting"""
         print("\n[HEALTH CHECK]")
         
-        # Check Hermes
-        healthy, message = await self.hermes.check_health()
-        if healthy:
-            print(f"  ✓ Hermes API: {message}")
+        # Check AI connector
+        if self.ai_connector:
+            healthy, message = await self.ai_connector.check_health()
+            if healthy:
+                print(f"  ✓ AI Connector: {message}")
+            else:
+                print(f"  ⚠ AI Connector: {message}")
+                print("    Will use local response generator as fallback")
         else:
-            print(f"  ⚠ Hermes API: {message}")
-            print("    Will use local response generator as fallback")
+            print("  ⚠ AI Connector: Not initialized")
+            print("    Will use local response generator")
         
         print("  ✓ All components ready")
         return True
@@ -111,7 +131,7 @@ class SelfbotRunner:
             config=self.config,
             auth_handler=self.auth_handler,
             rate_limiter=self.rate_limiter,
-            hermes_connector=self.hermes,
+            hermes_connector=self.ai_connector,  # Can be None
             response_generator=self.response_gen
         )
         
@@ -171,8 +191,8 @@ class SelfbotRunner:
         if self.client:
             await self.client.close()
         
-        if self.hermes:
-            await self.hermes.close()
+        if self.ai_connector:
+            await self.ai_connector.close()
         
         print("\n[FINAL STATS]")
         if self.rate_limiter:
@@ -180,8 +200,14 @@ class SelfbotRunner:
             print(f"  Messages sent today: {stats['sent_today']}/{stats['daily_quota']}")
             print(f"  Total sent: {stats['total_sent']}")
         
+        if self.ai_connector:
+            ai_stats = self.ai_connector.get_stats()
+            print(f"  AI Provider: {ai_stats.get('provider', 'unknown')}")
+            print(f"  AI Requests: {ai_stats.get('requests', 0)}")
+            print(f"  AI Errors: {ai_stats.get('errors', 0)}")
+            print(f"  AI Success Rate: {ai_stats.get('success_rate', 0):.1f}%")
+        
         print("\n[SHUTDOWN] Complete")
-
 
 def main():
     """Entry point"""

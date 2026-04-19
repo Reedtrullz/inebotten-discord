@@ -15,9 +15,10 @@ This class should be inherited by all new handlers.
 import discord
 import re
 from typing import Optional, Union
+from utils.logger import LoggerMixin
 
 
-class BaseHandler:
+class BaseHandler(LoggerMixin):
     """
     Base handler class providing shared utilities for all feature handlers.
 
@@ -71,13 +72,13 @@ to ensure consistent access to shared state like rate limiting and
 
             return sent
         except discord.errors.Forbidden:
-            self.log(f"Forbidden: Cannot send message in this channel")
+            self.logger.warning("Forbidden: Cannot send message in this channel")
             self.rate_limiter.record_failure()
         except discord.errors.HTTPException as e:
-            self.log(f"HTTP error sending message: {e}")
+            self.logger.error(f"HTTP error sending message: {e}")
             self.rate_limiter.record_failure(is_rate_limit=(e.status == 429))
         except Exception as e:
-            self.log(f"Error sending response: {e}")
+            self.logger.error(f"Error sending response: {e}")
             self.rate_limiter.record_failure()
 
         return None
@@ -144,10 +145,10 @@ to ensure consistent access to shared state like rate limiting and
             int or None: The extracted number
         """
         # Remove Discord mentions
-        content_clean = re.sub(r"<@!?\d+>", "", content).strip()
+        content_clean = re.sub(r"<@!?\\d+>", "", content).strip()
 
         # Extract number
-        num_match = re.search(r"\b(\d+)\b", content_clean)
+        num_match = re.search(r"\\b(\\d+)\\b", content_clean)
         if num_match:
             return int(num_match.group(1))
         return None
@@ -155,11 +156,12 @@ to ensure consistent access to shared state like rate limiting and
     def log(self, message: str) -> None:
         """
         Log a message with the handler name prefix.
+        Deprecated: Use self.logger instead
 
         Args:
             message: Message to log
         """
-        print(f"[{self.__class__.__name__}] {message}")
+        self.logger.info(message)
 
     def get_stats(self) -> dict:
         """

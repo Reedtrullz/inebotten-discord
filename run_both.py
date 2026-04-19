@@ -31,6 +31,10 @@ import threading
 import requests
 from pathlib import Path
 from datetime import datetime
+from utils.logger import setup_logger
+
+# Setup logging
+logger = setup_logger(__name__, log_level="INFO")
 
 # Configuration
 BRIDGE_HOST = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1")
@@ -51,7 +55,7 @@ class CombinedRunner:
 
     def log(self, message):
         """Print with timestamp"""
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+        logger.info(message)
 
     async def start_bridge(self):
         """Start the Hermes Bridge Server as a subprocess"""
@@ -62,15 +66,17 @@ class CombinedRunner:
 
         # Check if bridge is already running
         try:
-            response = requests.get(BRIDGE_HEALTH_URL, timeout=2)
+            response = requests.get(BRIDGE_HEALTH_URL, timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 lm_status = data.get("lm_studio", "unknown")
                 self.log(f"✓ Bridge already running! LM Studio: {lm_status}")
                 self.log("  (Using existing bridge instance)")
                 return True
+        except requests.exceptions.Timeout:
+            logger.warning("Bridge health check timed out")
         except Exception as e:
-            print(f"[RUNNER] Bridge check error: {e}")
+            logger.debug(f"Bridge check error: {e}")
 
         # Get the path to the bridge server
         bridge_script = Path(__file__).parent / "ai" / "hermes_bridge_server.py"
@@ -103,12 +109,14 @@ class CombinedRunner:
         start_time = time.time()
         while time.time() - start_time < BRIDGE_READY_TIMEOUT:
             try:
-                response = requests.get(BRIDGE_HEALTH_URL, timeout=2)
+                response = requests.get(BRIDGE_HEALTH_URL, timeout=5)
                 if response.status_code == 200:
                     data = response.json()
                     lm_status = data.get("lm_studio", "unknown")
                     self.log(f"✓ Bridge ready! LM Studio: {lm_status}")
                     return True
+            except requests.exceptions.Timeout:
+                pass
             except requests.exceptions.ConnectionError:
                 pass
             except Exception:
@@ -143,7 +151,7 @@ class CombinedRunner:
                 else:
                     time.sleep(0.1)
         except Exception as e:
-            print(f"[BRIDGE OUTPUT ERROR] {e}", flush=True)
+            logger.error(f"Bridge output error: {e}")
 
     async def start_selfbot(self):
         """Start the Discord Selfbot"""
@@ -175,9 +183,7 @@ class CombinedRunner:
             return False
         except Exception as e:
             self.log(f"ERROR starting selfbot: {e}")
-            import traceback
-
-            traceback.print_exc()
+            logger.exception("Selfbot startup error")
             return False
 
     def shutdown(self):
@@ -200,7 +206,7 @@ class CombinedRunner:
                 if loop.is_running():
                     asyncio.create_task(self.selfbot_runner.shutdown())
             except Exception as e:
-                print(f"[RUNNER] Shutdown error: {e}")
+                logger.error(f"Shutdown error: {e}")
 
         # Stop bridge process
         if self.bridge_process:
@@ -213,7 +219,7 @@ class CombinedRunner:
                     self.bridge_process.kill()
                     self.bridge_process.wait()
             except Exception as e:
-                print(f"[RUNNER] Process terminate error: {e}")
+                logger.error(f"Process terminate error: {e}")
 
         self.shutdown_event.set()
 
@@ -276,13 +282,11 @@ def main():
     try:
         return asyncio.run(runner.run())
     except KeyboardInterrupt:
-        print("\n[MAIN] Interrupted by user")
+        logger.info("Interrupted by user")
         return 0
     except Exception as e:
-        print(f"\n[MAIN] Fatal error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"Fatal error: {e}")
+        logger.exception("Fatal error traceback")
         return 1
 
 
