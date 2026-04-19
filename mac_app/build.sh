@@ -12,37 +12,47 @@ echo ""
 
 # Check if Python is installed
 if ! command -v python3 &> /dev/null; then
-    echo "❌ Error: Python 3 is not installed"
+    echo "Error: Python 3 is not installed"
     echo "   Install Python 3.10+ from https://www.python.org/"
     exit 1
 fi
 
 PYTHON_VERSION=$(python3 --version | awk '{print $2}')
-echo "✅ Found Python $PYTHON_VERSION"
+echo "Found Python $PYTHON_VERSION"
 
 # Check if PyInstaller is installed
 if ! python3 -c "import PyInstaller" &> /dev/null; then
-    echo "⚠️  PyInstaller not found, installing..."
+    echo "PyInstaller not found, installing..."
     pip3 install pyinstaller
 fi
 
 # Check if launcher.py exists
 if [ ! -f "launcher.py" ]; then
-    echo "❌ Error: launcher.py not found"
+    echo "Error: launcher.py not found"
     echo "   Make sure you're in the mac_app directory"
     exit 1
 fi
 
-echo "✅ Found launcher.py"
+echo "Found launcher.py"
 echo ""
 
 # Build the app
-echo "🔨 Building app with PyInstaller..."
+echo "Building app with PyInstaller..."
+
+# Check if icon exists
+ICON_ARG=""
+if [ -f "../assets/icon.icns" ]; then
+    ICON_ARG="--icon=../assets/icon.icns"
+    echo "Using icon: ../assets/icon.icns"
+else
+    echo "No icon found, building without icon"
+fi
+
 pyinstaller \
     --name="Inebotten" \
     --onefile \
     --windowed \
-    --icon=../assets/icon.icns \
+    $ICON_ARG \
     --add-data="../ai:ai" \
     --add-data="../cal_system:cal_system" \
     --add-data="../core:core" \
@@ -60,11 +70,11 @@ pyinstaller \
     launcher.py
 
 echo ""
-echo "✅ Build complete!"
+echo "Build complete!"
 echo ""
 
 # Create .app bundle
-echo "📦 Creating .app bundle..."
+echo "Creating .app bundle..."
 APP_NAME="Inebotten.app"
 APP_PATH="dist/$APP_NAME"
 
@@ -115,12 +125,12 @@ if [ -f "../assets/icon.icns" ]; then
     cp ../assets/icon.icns "$APP_PATH/Contents/Resources/"
 fi
 
-echo "✅ Created $APP_NAME"
+echo "Created $APP_NAME"
 echo ""
 
 # Final output
 echo "=========================================="
-echo "✅ Build successful!"
+echo "Build successful!"
 echo "=========================================="
 echo ""
 echo "App location: $APP_PATH"

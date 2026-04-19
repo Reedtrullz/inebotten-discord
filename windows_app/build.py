@@ -10,33 +10,33 @@ import shutil
 
 def check_python():
     """Check if Python is installed"""
-    print("✅ Found Python", sys.version.split()[0])
+    print("[OK] Found Python", sys.version.split()[0])
     return True
 
 def check_pyinstaller():
     """Check if PyInstaller is installed"""
     try:
         import PyInstaller
-        print("✅ Found PyInstaller")
+        print("[OK] Found PyInstaller")
         return True
     except ImportError:
-        print("⚠️  PyInstaller not found, installing...")
+        print("[WARN] PyInstaller not found, installing...")
         subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
-        print("✅ PyInstaller installed")
+        print("[OK] PyInstaller installed")
         return True
 
 def check_launcher():
     """Check if launcher.py exists"""
     if not os.path.exists("launcher.py"):
-        print("❌ Error: launcher.py not found")
+        print("[ERROR] launcher.py not found")
         print("   Make sure you're in the windows_app directory")
         return False
-    print("✅ Found launcher.py")
+    print("[OK] Found launcher.py")
     return True
 
 def build_app():
     """Build the Windows executable"""
-    print("\n🔨 Building Windows executable with PyInstaller...")
+    print("\n[INFO] Building Windows executable with PyInstaller...")
 
     # PyInstaller command
     cmd = [
@@ -67,10 +67,10 @@ def build_app():
 
     try:
         subprocess.run(cmd, check=True)
-        print("\n✅ Build complete!")
+        print("\n[OK] Build complete!")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ Build failed: {e}")
+        print(f"\n[ERROR] Build failed: {e}")
         return False
 
 def main():
@@ -97,7 +97,7 @@ def main():
     # Final output
     print()
     print("=" * 50)
-    print("✅ Build successful!")
+    print("[OK] Build successful!")
     print("=" * 50)
     print()
     print("Executable location: dist\\Inebotten.exe")
