@@ -1,0 +1,166 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v2.0.0)'
+        required: true
+        default: 'v2.0.0'
+
+jobs:
+  build-macos:
+    name: Build macOS App
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build macOS app
+        run: |
+          cd mac_app
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Create macOS app archive
+        run: |
+          cd mac_app/dist
+          zip -r Inebotten-macos.zip Inebotten.app
+          cd ../..
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Inebotten-macos
+          path: mac_app/dist/Inebotten-macos.zip
+          retention-days: 30
+
+  build-windows:
+    name: Build Windows App
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Windows app
+        run: |
+          cd windows_app
+          python build.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Inebotten-windows
+          path: windows_app/dist/Inebotten.exe
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Inebotten-macos
+          path: ./artifacts
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Inebotten-windows
+          path: ./artifacts
+
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building release for version: $VERSION"
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Inebotten Discord Bot - Desktop Apps
+
+          ### 🍎 macOS
+          - Download `Inebotten-macos.zip`
+          - Extract and open `Inebotten.app`
+          - See [mac_app/README.md](https://github.com/Reedtrullz/inebotten-discord/tree/main/mac_app) for instructions
+
+          ### 🪟 Windows
+          - Download `Inebotten.exe`
+          - Double-click to run
+          - See [windows_app/README.md](https://github.com/Reedtrullz/inebotten-discord/tree/main/windows_app) for instructions
+
+          ### Features
+          - 🖥️ Native desktop apps with GUI
+          - 🔑 Easy API key configuration
+          - 🤖 AI provider selection (LM Studio / OpenRouter)
+          - 📊 Live output logs
+          - 💾 Save configuration
+          - ⏯️ One-click start/stop
+
+          ### Requirements
+          - macOS 12+ (Monterey) or Windows 10+ (64-bit)
+          - Discord user token
+          - OpenRouter API key (optional, for cloud AI)
+
+          ### Documentation
+          - [Quick Start Guide](https://github.com/Reedtrullz/inebotten-discord/blob/main/docs/QUICK_REFERENCE.md)
+          - [Full Documentation](https://github.com/Reedtrullz/inebotten-discord/blob/main/docs/DOCUMENTATION.md)
+          - [macOS App Guide](https://github.com/Reedtrullz/inebotten-discord/blob/main/mac_app/README.md)
+          - [Windows App Guide](https://github.com/Reedtrullz/inebotten-discord/blob/main/windows_app/README.md)
+
+          ---
+          Built with ❤️ by [reedtrullz](https://github.com/Reedtrullz)
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: Inebotten ${{ steps.get_version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            ./artifacts/Inebotten-macos.zip
+            ./artifacts/Inebotten.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

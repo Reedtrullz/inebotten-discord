@@ -78,7 +78,16 @@ Inebotten er en feature-rik Discord selfbot som kombinerer AI-drevne samtaler me
 
 ## 🚀 Hurtigstart
 
-### Desktop Apps (Enkelst)
+### 📥 Last ned Pre-built Apps (Enkelst)
+
+Last ned ferdige desktop-apper fra [Releases](https://github.com/Reedtrullz/inebotten-discord/releases):
+
+- **macOS:** `Inebotten-macos.zip` - Pakk ut og åpne `Inebotten.app`
+- **Windows:** `Inebotten.exe` - Dobbeltklikk for å kjøre
+
+Se [RELEASE.md](RELEASE.md) for hvordan du lager nye releases.
+
+### Bygg Lokalt
 
 **macOS:**
 ```bash
@@ -133,6 +142,7 @@ python3 run_both.py
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
 | **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
 | **[GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
+| **[RELEASE.md](RELEASE.md)** | Hvordan lage releases med pre-built apps | Utviklere |
 | **[mac_app/README.md](mac_app/README.md)** | macOS app dokumentasjon | macOS-brukere |
 | **[windows_app/README.md](windows_app/README.md)** | Windows app dokumentasjon | Windows-brukere |
 
