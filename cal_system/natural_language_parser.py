@@ -49,6 +49,8 @@ class NaturalLanguageParser:
             'i natt': 'night',
             'på natten': 'night',
             'midnatt': '00:00',
+            'midnight': '00:00',
+            'noon': '12:00',
         }
         
         # Common prefixes to strip (from beginning of content)
@@ -156,6 +158,9 @@ class NaturalLanguageParser:
         content = message_content
         content = re.sub(r'<@!?\d+>', '', content)  # Remove Discord mentions like <@123456> or <@!123456>
         content = re.sub(r'@inebotten\s*', '', content, flags=re.IGNORECASE).strip()
+
+        if self._is_conversational_false_positive(content):
+            return None
         
         # Check if it looks like an event (has time indicator or date)
         if not self._has_time_indicator(content):
@@ -437,6 +442,7 @@ class NaturalLanguageParser:
             'konfirmasjon', 'bryllup', 'bursdag', 'jubileum',
             'frist', 'deadline', 'innlevering', 'eksamen',
             'trening', 'økt', 'øvelse', 'prøve', 'øving',
+            'julebord', 'regning', 'regninger', 'regningar',
         ]
         for keyword in calendar_keywords:
             if keyword in content_lower:
@@ -444,8 +450,9 @@ class NaturalLanguageParser:
 
         # 2. Task indicators (husk, jeg må, skal, etc.)
         task_indicators = [
-            'jeg må', 'jeg skal', 'må', 'skal', 'vil', 'bør', 'trenger å',
-            'eg må', 'eg skal', 'minn meg', 'husk', 'huske'
+            'jeg må', 'må', 'trenger å',
+            'eg må', 'minn meg', 'husk', 'huske', 'påminn meg',
+            'remind me', 'remember to', "don't forget",
         ]
         for indicator in task_indicators:
             # Match indicator as whole word
@@ -457,6 +464,8 @@ class NaturalLanguageParser:
             strong_indicators += 2
         if re.search(r'\b\d{1,2}:\d{2}\b', content):
             strong_indicators += 2
+        if re.search(r'\b(?:at\s*)?\d{1,2}\s*(?:am|pm)\b', content_lower):
+            strong_indicators += 2
             
         time_words = ['kveld', 'morgen', 'ettermiddag', 'formiddag', 'natt', 'lunsj', 'middag']
         for word in time_words:
@@ -466,8 +475,15 @@ class NaturalLanguageParser:
         # 4. Numeric dates (DD.MM.YYYY or DD.MM)
         if re.search(r'\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?', content):
             strong_indicators += 2
+        if re.search(r'\b\d{1,2}\s*[.-]?\s*[a-zæøå]+\b', content_lower):
+            strong_indicators += 2
+        if re.search(r'\bden\s*\d{1,2}\.?\b', content_lower):
+            strong_indicators += 2
 
-        # 5. Day names (Mandag, Fredag, etc.) are now VERY strong indicators
+        if self._extract_recurrence(content):
+            strong_indicators += 2
+
+        # 5. Day names (Mandag, Fredag, etc.) are strong indicators
         for day in self.days:
             if day in content_lower:
                 strong_indicators += 2
@@ -477,6 +493,24 @@ class NaturalLanguageParser:
             return True
 
         return False
+
+    def _is_conversational_false_positive(self, content):
+        """Reject future-tense chat that mentions time without asking for scheduling."""
+        content_lower = content.lower().strip()
+        conversational_patterns = [
+            r'\b(jeg|eg)\s+skal\s+bare\s+(høre|spørre|sjekke|prate|snakke)\b',
+            r'\b(hva|kva)\s+(synes|mener|tenker)\s+du\b',
+            r'\bfortell\s+(meg\s+)?om\b',
+            r'\bforklar\b',
+            r'\bwhat\s+do\s+you\s+think\b',
+        ]
+        if any(re.search(pattern, content_lower) for pattern in conversational_patterns):
+            return True
+
+        question_words = ['hva', 'kva', 'hvem', 'korleis', 'hvordan', 'why', 'what', 'how']
+        if content_lower.endswith('?') and any(content_lower.startswith(word) for word in question_words):
+            if not any(word in content_lower for word in ['minn meg', 'husk', 'møte', 'meeting', 'avtale', 'appointment']):
+                return True
 
         return False
     
@@ -579,6 +613,17 @@ class NaturalLanguageParser:
             hour = time_match.group(1)
             minute = time_match.group(2) if time_match.group(2) else '00'
             return f"{hour}:{minute}"
+
+        # English 12-hour clock: "at 3pm", "3 pm"
+        time_match = re.search(r'\b(?:at\s*)?(\d{1,2})\s*(am|pm)\b', content_lower)
+        if time_match:
+            hour = int(time_match.group(1))
+            meridiem = time_match.group(2)
+            if meridiem == 'pm' and hour != 12:
+                hour += 12
+            elif meridiem == 'am' and hour == 12:
+                hour = 0
+            return f"{hour:02d}:00"
         
         # Check for HH:MM format
         time_match = re.search(r'\b(\d{1,2}):(\d{2})\b', content)
@@ -635,6 +680,13 @@ class NaturalLanguageParser:
         if date_str:
             # Remove various date formats
             title = re.sub(r'\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?', '', title)
+            valid_months = (
+                r'januar|februar|mars|april|mai|juni|juli|august|september|oktober|november|desember|'
+                r'jan|feb|mar|apr|jun|jul|aug|sep|okt|nov|des|'
+                r'january|february|march|may|june|july|august|september|october|november|december'
+            )
+            title = re.sub(rf'\bden\s*\d{{1,2}}\s*[.]?\s*(?:{valid_months})?(?:\s+\d{{4}})?', '', title, flags=re.IGNORECASE)
+            title = re.sub(rf'\b\d{{1,2}}\s*[.-]?\s*(?:{valid_months})(?:\s+\d{{4}})?', '', title, flags=re.IGNORECASE)
             
             # Remove date words
             for word in self.date_words:
@@ -648,6 +700,7 @@ class NaturalLanguageParser:
         if time_str:
             title = re.sub(r'(?:kl\.?|klokken)\s*\d{1,2}(?::\d{2})?', '', title, flags=re.IGNORECASE)
             title = re.sub(r'\b\d{1,2}:\d{2}\b', '', title)
+            title = re.sub(r'\b(?:at\s*)?\d{1,2}\s*(?:am|pm)\b', '', title, flags=re.IGNORECASE)
             
             # Remove time words
             for word in self.time_words:
@@ -668,7 +721,7 @@ class NaturalLanguageParser:
             title = re.sub(prefix, '', title, flags=re.IGNORECASE)
         
         # Remove trailing prepositions that weren't followed by their expected objects
-        title = re.sub(r'\s+(på|om|å)\s*$', '', title, flags=re.IGNORECASE)
+        title = re.sub(r'\s+(på|om|å|at)\s*$', '', title, flags=re.IGNORECASE)
         
         # Clean up
         title = re.sub(r'\s+', ' ', title).strip()

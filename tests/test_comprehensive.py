@@ -653,7 +653,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -672,7 +672,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -693,7 +693,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
             result = manager.complete_item("test_guild", item_id=event["id"])
@@ -713,7 +713,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
             result = manager.delete_item("test_guild", item_num=1)
@@ -1297,7 +1297,7 @@ class TestFeatureCommands(unittest.TestCase):
         result = manager.parse_command("25C til F")
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["type"], "currency")
+        self.assertEqual(result["type"], "temperature")
 
     def test_85_url_shortener(self):
         """Test 85: URL shortener: 'shorten https://example.com'"""
@@ -1917,7 +1917,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -1936,7 +1936,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -1958,7 +1958,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -1980,7 +1980,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -2002,7 +2002,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -2024,7 +2024,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
 
@@ -2046,7 +2046,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test1",
-                date_str="15.04.2026",
+                date_str="15.05.2026",
                 time_str="14:00",
             )
             manager.add_item(

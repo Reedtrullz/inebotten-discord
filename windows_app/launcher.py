@@ -206,10 +206,8 @@ class InebottenLauncher:
                     config = json.load(f)
                 
                 self.provider_var.set(config.get("provider", "lm_studio"))
-                self.token_var.set(config.get("discord_token", ""))
-                self.openrouter_key_var.set(config.get("openrouter_key", ""))
                 self.model_var.set(config.get("model", "google/gemma-3-4b-it:free"))
-                
+
                 self._log("Loaded saved configuration")
             except Exception as e:
                 self._log(f"Error loading config: {e}")
@@ -223,8 +221,6 @@ class InebottenLauncher:
             import json
             config = {
                 "provider": self.provider_var.get(),
-                "discord_token": self.token_var.get(),
-                "openrouter_key": self.openrouter_key_var.get(),
                 "model": self.model_var.get(),
             }
             
@@ -310,7 +306,8 @@ POLL_INTERVAL=8
         
         with open(env_path, "w") as f:
             f.write(env_content)
-        
+        env_path.chmod(0o600)
+
         self._log(f"Created .env file at {env_path}")
     
     def _run_bot(self):

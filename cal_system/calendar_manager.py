@@ -13,6 +13,39 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 
+class AwaitableDict(dict):
+    """Dictionary result that can also be awaited by async handlers."""
+
+    def __await__(self):
+        async def _return():
+            return self
+        return _return().__await__()
+
+
+class AwaitableValue:
+    """Generic result wrapper that can be awaited without breaking sync callers."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __await__(self):
+        async def _return():
+            return self.value
+        return _return().__await__()
+
+    def __bool__(self):
+        return bool(self.value)
+
+    def __iter__(self):
+        return iter(self.value)
+
+    def __getitem__(self, key):
+        return self.value[key]
+
+    def __repr__(self):
+        return repr(self.value)
+
+
 class CalendarManager:
     """
     Manages calendar items - everything is just something happening on a date
@@ -52,21 +85,21 @@ class CalendarManager:
 
     async def _save_data(self):
         """Save calendar data to JSON file atomically and asynchronously"""
-        def _write():
-            temp_path = self.storage_path.with_suffix(".tmp")
-            try:
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(self.items, f, ensure_ascii=False, indent=2)
-                # Atomic rename
-                os.replace(temp_path, self.storage_path)
-            except Exception as e:
-                print(f"[CAL] Error saving calendar data: {e}")
-                if temp_path.exists():
-                    os.remove(temp_path)
+        await asyncio.to_thread(self._save_data_sync)
 
-        await asyncio.to_thread(_write)
+    def _save_data_sync(self):
+        """Save calendar data to JSON file atomically."""
+        temp_path = self.storage_path.with_suffix(".tmp")
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(self.items, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, self.storage_path)
+        except Exception as e:
+            print(f"[CAL] Error saving calendar data: {e}")
+            if temp_path.exists():
+                os.remove(temp_path)
 
-    async def add_item(
+    def add_item(
         self,
         guild_id,
         user_id,
@@ -112,15 +145,15 @@ class CalendarManager:
         }
 
         self.items[guild_key].append(item)
-        await self._save_data()
-        return item
+        self._save_data_sync()
+        return AwaitableDict(item)
 
-    async def delete_item(self, guild_id, item_num):
+    def delete_item(self, guild_id, item_num):
         """Delete an item by its list number"""
         guild_key = str(guild_id)
         items = self.get_upcoming(guild_id, days=365)
 
-        if 1 <= item_num <= len(items):
+        if item_num is not None and 1 <= item_num <= len(items):
             item_to_delete = items[item_num - 1]
             title = item_to_delete["title"]
 
@@ -137,10 +170,10 @@ class CalendarManager:
                 i for i in self.items[guild_key] if i["id"] != item_to_delete["id"]
             ]
 
-            await self._save_data()
-            return True, title
+            self._save_data_sync()
+            return AwaitableValue((True, title))
 
-        return False, None
+        return AwaitableValue((False, None))
 
     async def delete_item_by_title(self, guild_id, title_search):
         """Delete a single item by title matching"""
@@ -181,16 +214,22 @@ class CalendarManager:
 
         return count, deleted_titles
 
-    async def complete_item(self, guild_id, item_num):
+    def complete_item(self, guild_id, item_num=None, item_id=None):
         """Mark an item as complete (or move to next date if recurring)"""
         guild_key = str(guild_id)
         items = self.get_upcoming(guild_id, days=365)
 
-        if 1 <= item_num <= len(items):
-            item = items[item_num - 1]
-            return await self._process_completion(guild_key, item)
+        if item_id:
+            for item in items:
+                if item.get("id") == item_id:
+                    return AwaitableValue(self._process_completion_sync(guild_key, item))
+            return AwaitableValue((False, None, None))
 
-        return False, None, None
+        if item_num is not None and 1 <= item_num <= len(items):
+            item = items[item_num - 1]
+            return AwaitableValue(self._process_completion_sync(guild_key, item))
+
+        return AwaitableValue((False, None, None))
 
     async def complete_item_by_title(self, guild_id, title_search):
         """Mark an item as complete by title matching"""
@@ -227,13 +266,17 @@ class CalendarManager:
 
     async def _process_completion(self, guild_key, item):
         """Internal helper to handle completion logic"""
+        return self._process_completion_sync(guild_key, item)
+
+    def _process_completion_sync(self, guild_key, item):
+        """Internal helper to handle completion logic synchronously."""
         title = item["title"]
 
         if item.get("recurrence"):
             # Update to next date
             next_date = self._calculate_next_date(item["date"], item["recurrence"])
             item["date"] = next_date
-            await self._save_data()
+            self._save_data_sync()
             return True, title, next_date
         else:
             # Mark as completed
@@ -247,7 +290,7 @@ class CalendarManager:
                 except Exception as e:
                     print(f"[CAL] GCal update failed: {e}")
 
-            await self._save_data()
+            self._save_data_sync()
             return True, title, None
 
     def _calculate_next_date(self, current_date_str, recurrence):

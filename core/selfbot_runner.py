@@ -17,17 +17,7 @@ BASE_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(BASE_DIR))  # Add root for ai/, cal_system/, etc.
 sys.path.insert(0, str(SCRIPT_DIR))  # Add core/ for local imports
 
-try:
-    import discord
-except ImportError:
-    print("[SETUP] Installing discord.py-self...")
-    import subprocess
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "discord.py-self"])
-    except subprocess.CalledProcessError:
-        # Fallback for systems that require --break-system-packages (like newer Debian/Ubuntu)
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--break-system-packages", "discord.py-self"])
-    import discord
+import discord
 
 from core.config import get_config
 from core.auth_handler import create_auth_handler

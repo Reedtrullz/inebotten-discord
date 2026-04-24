@@ -105,9 +105,8 @@ class CalculatorManager:
                     "to": to_unit,
                 }
 
-        # Temperature conversion
-        # Require "konverter" or explicit temperature units
-        temp_pattern = r"(?:(?:konverter|convert|omgjør)\s+)(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)(?:\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin))?"
+        # Temperature conversion with explicit temperature units.
+        temp_pattern = r"(?:(?:konverter|convert|omgjør)\s+)?(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)(?:\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin))?"
         match = re.search(temp_pattern, content_lower)
         if match:
             return {

@@ -11,6 +11,8 @@ from datetime import datetime
 
 import discord
 
+from core.intent_router import BotIntent, IntentRouter
+
 
 # Keyword sets for command matching
 CALENDAR_KEYWORDS = [
@@ -205,6 +207,7 @@ class MessageMonitor:
 
         self.handlers = {}
         self._register_handlers()
+        self.intent_router = IntentRouter(self)
 
     async def setup(self):
         """Async initialization of managers"""
@@ -317,182 +320,66 @@ class MessageMonitor:
         self.loc.set_language(lang)
         print(f"[MONITOR] Detected language: {lang}")
 
-        # Get lowercase content once for all keyword checks
-        content_lower = message.content.lower()
+        guild_id = message.guild.id if message.guild else message.channel.id
+        route = self.intent_router.route(message.content, guild_id=guild_id)
+        print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
+        await self._handle_intent(message, route)
 
-        # Check for calendar help specifically (before general keyword matches)
-        if "kalender" in content_lower and any(word in content_lower for word in ["hjelp", "help", "guide"]):
-            print("[MONITOR] Matched: calendar help command")
-            help_text = self.conv_gen.get_calendar_help()
-            await self._send_response(message, help_text)
-            return
+    async def _handle_intent(self, message, route):
+        """Execute the handler for a routed intent."""
+        payload = route.payload
 
-        try:
-            # Check for natural language calendar items
-            parsed = self.nlp_parser.parse_task_with_recurrence(message.content)
-            if not parsed:
-                parsed = self.nlp_parser.parse_event(message.content)
-
-            if parsed:
-                print(f"[MONITOR] Calendar item matched: {parsed}")
-                await self.handlers["calendar"].handle_calendar_item(message, parsed)
-                return
-        except (ValueError, KeyError, AttributeError) as e:
-            print(f"[MONITOR] Calendar parser error: {e}")
-
-
-        # Check for calendar commands (including delete/complete)
-        if any(word in content_lower for word in CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS):
-            print("[MONITOR] Matched: calendar command block")
-            # List command
-            if any(word in content_lower for word in ["liste", "vis", "se", "oversikt"]) or content_lower.strip() in CALENDAR_KEYWORDS:
-                await self.handlers["calendar"].handle_list(message)
-                return
-            
-            # Sync command
-            if any(word in content_lower for word in SYNC_KEYWORDS):
-                await self.handlers["calendar"].handle_sync(message)
-                return
-                
-            # Delete command
-            if any(word in content_lower for word in DELETE_KEYWORDS):
-                await self.handlers["calendar"].handle_delete(message)
-                return
-                
-            # Complete command
-            if any(word in content_lower for word in COMPLETE_KEYWORDS):
-                await self.handlers["calendar"].handle_complete(message)
-                return
-            elif any(keyword in content_lower for keyword in EDIT_KEYWORDS):
-                await self.handlers["calendar"].handle_edit(message)
-                return
-            elif any(keyword in content_lower for keyword in SYNC_KEYWORDS):
-                await self.handlers["calendar"].handle_sync(message)
-                return
-            else:
-                # Default behavior for calendar keyword is to list
-                await self.handlers["calendar"].handle_list(message)
-                return
-
-        # Check for countdown queries
-        print("[MONITOR] Checking countdown...")
-        countdown_result = self.countdown.parse_countdown_query(message.content)
-        if countdown_result:
-            print("[MONITOR] Matched: countdown query")
-            await self.handlers["countdown"].handle_countdown(message, countdown_result)
-            return
-
-        # Check for poll commands
-        print("[MONITOR] Checking poll...")
-        poll_cmd = self.parse_poll_command(message.content)
-        if poll_cmd:
-            print("[MONITOR] Matched: poll command")
-            await self.handlers["polls"].handle_poll(message, poll_cmd)
-            return
-
-        # Check for vote
-        print("[MONITOR] Checking vote...")
-        vote = self.parse_vote(message.content)
-        if vote:
-            print("[MONITOR] Matched: vote")
-            await self.handlers["polls"].handle_vote(message, vote)
-            return
-
-        # Check for watchlist commands
-        print("[MONITOR] Checking watchlist...")
-        watchlist_cmd = self.parse_watchlist_command(message.content)
-        if watchlist_cmd:
-            print("[MONITOR] Matched: watchlist command")
-            await self.handlers["watchlist"].handle_watchlist(message, watchlist_cmd)
-            return
-
-        # Check for word of the day
-        if any(phrase in content_lower for phrase in WORD_OF_DAY_KEYWORDS):
-            print("[MONITOR] Matched: word of the day")
-            await self.handlers["fun"].handle_word_of_day(message)
-            return
-
-        # Check for quote commands
-        quote_cmd = self.parse_quote_command(message.content)
-        if quote_cmd:
-            print("[MONITOR] Matched: quote command")
-            await self.handlers["fun"].handle_quote_command(message, quote_cmd)
-            return
-
-        # Check for aurora/nordlys command
-        if any(word in content_lower for word in AURORA_KEYWORDS):
-            print("[MONITOR] Matched: aurora command")
-            await self.handlers["aurora"].handle_aurora(message)
-            return
-
-        # Check for school holidays command
-        if any(phrase in content_lower for phrase in SCHOOL_HOLIDAYS_KEYWORDS):
-            print("[MONITOR] Matched: school holidays")
-            await self.handlers["school_holidays"].handle_school_holidays(message)
-            return
-
-        # Check for crypto/stock price commands
-        price_cmd = self.parse_price_command(message.content)
-        if price_cmd:
-            print("[MONITOR] Matched: price command")
-            await self.handlers["utility"].handle_price(message, price_cmd)
-            return
-
-        # Check for horoscope commands FIRST (before compliment)
-        horoscope_cmd = self.parse_horoscope_command(message.content)
-        if horoscope_cmd:
-            print("[MONITOR] Matched: horoscope command")
-            await self.handlers["fun"].handle_horoscope(message, horoscope_cmd)
-            return
-
-        # Check for compliment commands
-        compliment_cmd = self.parse_compliment_command(message.content)
-        if compliment_cmd:
-            print("[MONITOR] Matched: compliment command")
-            await self.handlers["fun"].handle_compliment(message, compliment_cmd)
-            return
-
-        # Check for calculator/conversion commands
-        calc_cmd = self.parse_calculator_command(message.content)
-        if calc_cmd:
-            print("[MONITOR] Matched: calculator command")
-            await self.handlers["utility"].handle_calculator(message, calc_cmd)
-            return
-
-        # Check for URL shorten commands
-        shorten_cmd = self.parse_shorten_command(message.content)
-        if shorten_cmd:
-            print("[MONITOR] Matched: url shorten")
-            await self.handlers["utility"].handle_shorten(message, shorten_cmd)
-            return
-
-        # Check for daily digest
-        if any(phrase in content_lower for phrase in DAILY_DIGEST_KEYWORDS):
-            print("[MONITOR] Matched: daily digest")
-            await self.handlers["daily_digest"].handle_daily_digest(message)
-            return
-
-        # Check for operational status
-        if self._is_status_command(content_lower):
-            print("[MONITOR] Matched: bot status")
-            await self._send_status_response(message)
-            return
-
-        # Check for help command
-        if any(word in content_lower for word in HELP_KEYWORDS):
-            print("[MONITOR] Matched: help command")
+        if route.intent == BotIntent.HELP:
             await self.handlers["help"].handle_help(message)
-            return
-
-        # Check for profile/status commands
-        if any(word in content_lower for word in PROFILE_KEYWORDS):
-            print("[MONITOR] Checking profile command...")
-            if await self.handlers["profile"].handle_profile_command(message):
-                return
-
-        # Generate and send AI response
-        print("[MONITOR] No command matched, falling back to AI response...")
-        await self._send_ai_response(message)
+        elif route.intent == BotIntent.CALENDAR_HELP:
+            await self._send_response(message, self.conv_gen.get_calendar_help())
+        elif route.intent == BotIntent.STATUS:
+            await self._send_status_response(message)
+        elif route.intent == BotIntent.PROFILE:
+            if not await self.handlers["profile"].handle_profile_command(message):
+                await self._send_ai_response(message)
+        elif route.intent == BotIntent.CALENDAR_LIST:
+            await self.handlers["calendar"].handle_list(message)
+        elif route.intent == BotIntent.CALENDAR_SYNC:
+            await self.handlers["calendar"].handle_sync(message)
+        elif route.intent == BotIntent.CALENDAR_DELETE:
+            await self.handlers["calendar"].handle_delete(message)
+        elif route.intent == BotIntent.CALENDAR_COMPLETE:
+            await self.handlers["calendar"].handle_complete(message)
+        elif route.intent == BotIntent.CALENDAR_EDIT:
+            await self.handlers["calendar"].handle_edit(message)
+        elif route.intent == BotIntent.CALENDAR_ITEM:
+            await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
+        elif route.intent == BotIntent.POLL_CREATE:
+            await self.handlers["polls"].handle_poll(message, payload["poll"])
+        elif route.intent == BotIntent.POLL_VOTE:
+            await self.handlers["polls"].handle_vote(message, payload["vote"])
+        elif route.intent == BotIntent.COUNTDOWN:
+            await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
+        elif route.intent == BotIntent.WATCHLIST:
+            await self.handlers["watchlist"].handle_watchlist(message, payload["watchlist"])
+        elif route.intent == BotIntent.WORD_OF_DAY:
+            await self.handlers["fun"].handle_word_of_day(message)
+        elif route.intent == BotIntent.QUOTE:
+            await self.handlers["fun"].handle_quote_command(message, payload["quote"])
+        elif route.intent == BotIntent.AURORA:
+            await self.handlers["aurora"].handle_aurora(message)
+        elif route.intent == BotIntent.SCHOOL_HOLIDAYS:
+            await self.handlers["school_holidays"].handle_school_holidays(message)
+        elif route.intent == BotIntent.PRICE:
+            await self.handlers["utility"].handle_price(message, payload["price"])
+        elif route.intent == BotIntent.HOROSCOPE:
+            await self.handlers["fun"].handle_horoscope(message, payload["horoscope"])
+        elif route.intent == BotIntent.COMPLIMENT:
+            await self.handlers["fun"].handle_compliment(message, payload["compliment"])
+        elif route.intent == BotIntent.CALCULATOR:
+            await self.handlers["utility"].handle_calculator(message, payload["calculator"])
+        elif route.intent == BotIntent.SHORTEN_URL:
+            await self.handlers["utility"].handle_shorten(message, payload["shorten"])
+        elif route.intent == BotIntent.DAILY_DIGEST:
+            await self.handlers["daily_digest"].handle_daily_digest(message)
+        else:
+            await self._send_ai_response(message)
 
     async def _send_ai_response(self, message):
         """
@@ -503,6 +390,12 @@ class MessageMonitor:
 
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
+        guild_id = message.guild.id if message.guild else message.channel.id
+        content_lower = message.content.lower()
+        wants_dashboard, dashboard_reason = self.conversation.should_show_dashboard(
+            message.content, guild_id
+        )
+        print(f"[MONITOR] AI fallback mode: dashboard={wants_dashboard} ({dashboard_reason})")
 
         # AI Router Mode: We default to chat and let the AI decide if a dashboard/action is needed.
         # But we still check for explicit city names if the user MIGHT want weather.
@@ -635,11 +528,13 @@ class MessageMonitor:
             title, date, time = event_match.groups()
             print(f"[ROUTER] Detected SAVE_EVENT action: {title} on {date} at {time}")
             
-            # Execute the save using the calendar handler
             if "calendar" in self.handlers:
                 try:
-                    # Parse specific fields
-                    await self.handlers["calendar"].handle_save_request(message, title, date, time)
+                    parsed_event = self.nlp_parser.parse_event(f"{title} {date} {time}")
+                    if parsed_event:
+                        await self.handlers["calendar"].handle_calendar_item(message, parsed_event)
+                    else:
+                        print("[ROUTER] Ignored SAVE_EVENT action because parser could not validate it")
                 except Exception as e:
                     print(f"[ROUTER] Failed to save event: {e}")
             

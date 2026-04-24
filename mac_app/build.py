@@ -75,7 +75,7 @@ a = Analysis(
         'zoneinfo',
     ],
     hookspath=[],
-    hooksconfig={{{}},
+    hooksconfig={{}},
     runtime_hooks=[],
     excludes=[],
     win_no_prefer_redirects=False,
