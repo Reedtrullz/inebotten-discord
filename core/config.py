@@ -31,13 +31,13 @@ class Config:
         # LM Studio Configuration (default)
         self.HERMES_API_URL = os.getenv('HERMES_API_URL', 'http://127.0.0.1:3000/api/chat')
         self.HERMES_TEMPERATURE = float(os.getenv('HERMES_TEMPERATURE', '0.7'))
-        self.HERMES_MAX_TOKENS = int(os.getenv('HERMES_MAX_TOKENS', '200'))
+        self.HERMES_MAX_TOKENS = int(os.getenv('HERMES_MAX_TOKENS', '500'))
         
         # OpenRouter Configuration
         self.OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
         self.OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'google/gemma-3-4b-it:free')
         self.OPENROUTER_TEMPERATURE = float(os.getenv('OPENROUTER_TEMPERATURE', '0.7'))
-        self.OPENROUTER_MAX_TOKENS = int(os.getenv('OPENROUTER_MAX_TOKENS', '200'))
+        self.OPENROUTER_MAX_TOKENS = int(os.getenv('OPENROUTER_MAX_TOKENS', '500'))
         self.OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
         
         # Google Calendar Configuration

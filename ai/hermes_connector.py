@@ -62,7 +62,7 @@ class HermesConnector:
     Uses GET /api/chat?data={payload}
     """
 
-    def __init__(self, base_url="http://127.0.0.1:3000/api/chat", temperature=0.7, max_tokens=200, model_size="12b"):
+    def __init__(self, base_url="http://127.0.0.1:3000/api/chat", temperature=0.7, max_tokens=500, model_size="12b"):
         self.base_url = base_url.rstrip("/")
         self.session = None
         self.request_count = 0

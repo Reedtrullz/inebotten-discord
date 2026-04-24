@@ -56,7 +56,7 @@ REGLER:
 - Snakk som en venn, ikke en manual
 - Bruk Discord Markdown:
   * **fet skrift** for viktige ting
-  * [tekst](url) for lenker (IKKE skriv ut lange URL-er rått)
+  * Masker alle lenker slik: [Beskrivelse](https://url.com)
   * Bruk emojis naturlig for å skape stemning ✨
 - Ikke list opp kommandoer med mindre noen spør spesifikt"""
 

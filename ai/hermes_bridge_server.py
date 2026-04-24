@@ -36,7 +36,7 @@ LM_STUDIO_MODEL = (
 MODEL_CONFIG = {
     "llama-3.2-3b": {
         "temperature": 0.4,  # Very low for maximum consistency
-        "max_tokens": 100,  # Very short responses
+        "max_tokens": 250,  # Increased for markdown support
         "top_p": 0.8,  # Focused sampling
         "frequency_penalty": 0.3,  # Strong penalty to avoid English mixing
         "presence_penalty": 0.2,
@@ -64,7 +64,7 @@ MODEL_CONFIG = {
     },
     "qwen3.5-9b-claude-4.6-opus-reasoning-distilled@q4_k_m": {
         "temperature": 0.35,  # Very low for strict adherence to examples
-        "max_tokens": 100,  # Short responses
+        "max_tokens": 200,  # Short responses
         "top_p": 0.75,
         "frequency_penalty": 0.4,  # High penalty to prevent English thinking
         "presence_penalty": 0.2,
@@ -126,7 +126,7 @@ MODEL_CONFIG = {
         "top_p": 0.9,
         "frequency_penalty": 0.2,  # Slight penalty to avoid repetition
         "presence_penalty": 0.1,
-        "stop": ["[", "<|", "WSS", "User:", "Human:"],  # Stop on special tokens
+        "stop": ["<|", "WSS", "User:", "Human:"],  # Stop on special tokens (REMOVED '[' to allow Markdown)
     },
     "mistral-7b": {
         "temperature": 0.75,
@@ -554,7 +554,7 @@ class HermesBridgeServer:
                             if candidates:
                                 # Filter to reasonable length (10-200 chars)
                                 good_candidates = [
-                                    c for c in candidates if 10 <= len(c) <= 200
+                                    c for c in candidates if 10 <= len(c) <= 500
                                 ]
                                 if good_candidates:
                                     return max(
@@ -562,7 +562,7 @@ class HermesBridgeServer:
                                     )  # Longest good candidate
                                 return candidates[-1]  # Last candidate as fallback
 
-                            return text[:150] if text else ""
+                            return text[:500] if text else ""
 
                         content = clean_thinking_response(content)
 
