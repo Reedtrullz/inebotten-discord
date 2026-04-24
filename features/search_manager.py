@@ -93,9 +93,10 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     
     # Information/Fact keywords that imply real-time need
     info_triggers = [
-        r"hvem vant", r"hva ble resultatet", r"hvordan gikk det med",
-        r"hva er status på", r"hvor mye koster en", r"søk på nett etter",
-        r"hva skjer med", r"hvor mye er", r"fortell meg om", r"hva vet du om"
+        r"hvem vant", r"resultatet", r"hvordan gikk det",
+        r"hva er status", r"hvor mye koster", r"søk på nett",
+        r"hva skjer", r"hvor mye er", r"fortell meg om", r"hva vet du om",
+        r"hvem er", r"hva er", r"hvordan fungerer", r"når begynner"
     ]
     
     query_type = None

@@ -572,8 +572,8 @@ class MessageMonitor:
                     
                     # Inject search results into system prompt if available
                     if search_context:
-                        system_prompt += f"\n\nSØKERESULTATER FRA NETTET (Bruk dette for å svare):\n{search_context}\n"
-                        system_prompt += "\nVennligst oppsummer informasjonen over på en naturlig måte som Ine."
+                        system_prompt += f"\n\nSØKERESULTATER FRA NETTET (Du SKAL bruke dette for å svare):\n{search_context}\n"
+                        system_prompt += "\nVIKTIG: Du har nå tilgang til internett via dine søkeverktøy. ALDRI si at du ikke har sanntidstilgang eller at du ikke kan sjekke nettet når du har fått søkeresultater over. Svar naturlig og vennlig som Ine, basert på informasjonen over."
 
                     print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
 
