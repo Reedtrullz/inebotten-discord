@@ -21,6 +21,11 @@ CREDENTIALS_PATH = HERMES_HOME / "google_credentials" / "client_secret.json"
 ALT_CREDENTIALS_PATH = Path("client_secret.json")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Google Calendar auth (headless support)')
+    parser.add_argument('--no-browser', action='store_true', help='Run auth without opening a browser')
+    args = parser.parse_args()
+    
     print("=== Google Calendar Authorization ===")
     
     creds = None
@@ -53,17 +58,24 @@ def main():
             
             flow = InstalledAppFlow.from_client_secrets_file(str(target_cred), SCOPES)
             
-            # Use local server for the OAuth flow; fallback to console flow for headless environments
+            # Use local server for the OAuth flow; fallback to manual flow for headless environments
             try:
                 print("Attempting to open your browser for authorization (local server flow)...")
+                # If user passed --no-browser, skip opening the browser
+                if args.no_browser:
+                    raise Exception('User requested no-browser flow')
                 creds = flow.run_local_server(port=0, open_browser=True)
             except Exception as e:
                 print(f"Local server flow failed: {e}")
-                print("Falling back to console (copy‑paste) authentication flow...")
-                # Console flow prints a URL that the user can open on any machine and paste the verification code
-                creds = flow.run_console()
-
-
+                print("Falling back to manual console authentication flow...")
+                # Manual flow: generate auth URL, ask user to open it elsewhere, then paste code
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                print("Please open the following URL in a browser on any machine, authorize, and paste the resulting code below:")
+                print(auth_url)
+                code = input('Enter verification code: ').strip()
+                flow.fetch_token(code=code)
+                creds = flow.credentials
+            
         # Save the credentials for the next run
         HERMES_HOME.mkdir(parents=True, exist_ok=True)
         with open(TOKEN_PATH, 'w') as token:
