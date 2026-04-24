@@ -39,6 +39,54 @@ HELP_KEYWORDS = [
     "hva er du", "hvem er du", "what can you do",
 ]
 
+STATUS_KEYWORDS = [
+    "bot status", "status bot", "inebotten status",
+    "health", "helse", "diagnose", "diagnostics",
+]
+
+COMMAND_REGISTRY = [
+    {"name": "help", "aliases": HELP_KEYWORDS, "priority": 10, "scope": "any"},
+    {"name": "status", "aliases": STATUS_KEYWORDS, "priority": 20, "scope": "any"},
+    {
+        "name": "calendar",
+        "aliases": CALENDAR_KEYWORDS,
+        "priority": 30,
+        "scope": "group",
+    },
+    {
+        "name": "polls",
+        "aliases": ["poll", "avstemning", "vote", "stemme"],
+        "priority": 40,
+        "scope": "group",
+    },
+    {
+        "name": "watchlist",
+        "aliases": ["watchlist", "filmforslag", "hva skal vi se"],
+        "priority": 50,
+        "scope": "group",
+    },
+    {"name": "ai_chat", "aliases": [], "priority": 1000, "scope": "any"},
+]
+
+
+class AuthorizedMessage:
+    """
+    Delegates to a Discord message while exposing content that has passed the
+    mention gate and had only Inebotten's own mention removed.
+    """
+
+    def __init__(self, message, authorized_content):
+        self._message = message
+        self.raw_content = message.content
+        self.authorized_content = authorized_content
+
+    @property
+    def content(self):
+        return self.authorized_content
+
+    def __getattr__(self, name):
+        return getattr(self._message, name)
+
 
 class MessageMonitor:
     """
@@ -154,17 +202,13 @@ class MessageMonitor:
         print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
 
     def is_mention(self, message):
-        """Check if message mentions the bot"""
-        if isinstance(message.channel, discord.DMChannel):
+        """Check if message explicitly mentions the bot."""
+        if self.client.user and any(
+            getattr(user, "id", None) == self.client.user.id
+            for user in getattr(message, "mentions", [])
+        ):
             return True
 
-        content = message.content.lower()
-
-        # Check for @inebotten mention
-        if self.bot_mention.lower() in content:
-            return True
-
-        # Check for bot mention via Discord mention syntax
         if self.client.user:
             mention_strings = [
                 f"<@{self.client.user.id}>",
@@ -174,7 +218,35 @@ class MessageMonitor:
                 if mention in message.content:
                     return True
 
+        if self.bot_mention.lower() in message.content.lower():
+            return True
+
         return False
+
+    def clean_authorized_content(self, message):
+        """Remove only Inebotten's own mention after the message is authorized."""
+        content = message.content
+
+        if self.client.user:
+            content = re.sub(
+                rf"<@!?{re.escape(str(self.client.user.id))}>",
+                "",
+                content,
+            )
+
+        content = re.sub(
+            rf"@{re.escape(self.bot_name)}\b[:,]?",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r"\s+", " ", content).strip()
+
+    def authorize_message(self, message):
+        """Return a cleaned message proxy if the bot is explicitly mentioned."""
+        if not self.is_mention(message):
+            return None
+        return AuthorizedMessage(message, self.clean_authorized_content(message))
 
     async def handle_message(self, message):
         """Process an incoming message"""
@@ -182,19 +254,21 @@ class MessageMonitor:
         if message.author.id == self.client.user.id:
             return
 
-        # Skip already processed
+        authorized_message = self.authorize_message(message)
+        if not authorized_message:
+            return
+
+        # Skip already processed after the mention gate so untagged messages are not tracked.
         msg_id = f"{message.channel.id}:{message.id}"
         if msg_id in self.processed_messages:
             return
         self.processed_messages.append(msg_id)
 
-        # Check for mention
-        if not self.is_mention(message):
-            return
-
+        message = authorized_message
         self.mention_count += 1
         print(
-            f"[MONITOR] Mention detected from {message.author.name}: {message.content[:50]}..."
+            f"[MONITOR] Mention detected from {message.author.name} "
+            f"in {self._get_channel_type(message.channel)}"
         )
 
         # Rate limit check
@@ -353,6 +427,12 @@ class MessageMonitor:
             await self.handlers["daily_digest"].handle_daily_digest(message)
             return
 
+        # Check for operational status
+        if self._is_status_command(content_lower):
+            print("[MONITOR] Matched: bot status")
+            await self._send_status_response(message)
+            return
+
         # Check for help command
         if any(word in content_lower for word in HELP_KEYWORDS):
             print("[MONITOR] Matched: help command")
@@ -455,6 +535,48 @@ class MessageMonitor:
         # Send the response
         await self._send_response(message, response_text)
 
+    def _is_status_command(self, content_lower):
+        """Return True for bot health/status commands, not profile status changes."""
+        normalized = content_lower.strip()
+        return any(keyword in normalized for keyword in STATUS_KEYWORDS)
+
+    async def _send_status_response(self, message):
+        """Send a concise operational status report."""
+        uptime = self.client.get_uptime() if hasattr(self.client, "get_uptime") else None
+        handler_count = sum(1 for handler in self.handlers.values() if handler is not None)
+        rate_stats = self.rate_limiter.get_stats()
+        hermes_stats = self.hermes.get_stats() if self.hermes else {}
+        last_error = (
+            getattr(self.hermes, "last_error", None)
+            or getattr(self.rate_limiter, "last_error", None)
+            or "none"
+        )
+
+        try:
+            if self.hermes:
+                healthy, health_message = await self.hermes.check_health()
+            else:
+                healthy, health_message = False, "AI connector missing"
+        except Exception as e:
+            healthy, health_message = False, str(e)
+
+        ai_status = "ok" if healthy else "degraded"
+        response_text = "\n".join(
+            [
+                "🤖 **Inebotten status**",
+                f"Uptime: {uptime or 'starting'}",
+                f"Handlers: {handler_count}/{len(self.handlers)} loaded",
+                f"AI: {ai_status} ({health_message})",
+                f"Rate limit: {rate_stats.get('sent_last_second', 0)} sent last second, "
+                f"{rate_stats.get('sent_today', 0)} today",
+                f"Mentions handled: {self.mention_count}",
+                f"Responses sent: {self.response_count}",
+                f"Last error: {last_error}",
+                f"Provider stats: {hermes_stats.get('provider', 'unknown')}",
+            ]
+        )
+        await self._send_response(message, response_text)
+
     async def _generate_dashboard(self, guild_id: int) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
@@ -539,6 +661,10 @@ class MessageMonitor:
         for name, handler in self.handlers.items():
             status[name] = "loaded" if handler is not None else "not loaded"
         return status
+
+    def get_command_registry(self):
+        """Return command metadata used by help/status surfaces."""
+        return COMMAND_REGISTRY
 
     def _register_handlers(self):
         """Register all handlers"""
@@ -639,10 +765,6 @@ class SelfbotClient(discord.Client):
 
     async def on_message(self, message):
         """Called when a message is received"""
-        print(
-            f"[BOT] Message received from {message.author} "
-            f"in {type(message.channel).__name__}: {message.content[:80]}"
-        )
         if self.monitor:
             await self.monitor.handle_message(message)
 

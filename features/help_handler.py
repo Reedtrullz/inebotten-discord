@@ -33,6 +33,9 @@ class HelpHandler(BaseHandler):
             lines = [
                 self.loc.t("help_title"),
                 "",
+                "Jeg svarer bare når du tagger meg i chatten, f.eks. `@Inebotten help`.",
+                "I gruppe-DM-er bruker jeg denne chatten som felles rom for kalender, avstemninger og lister.",
+                "",
                 self.loc.t("help_events"),
             ]
 
@@ -47,6 +50,9 @@ class HelpHandler(BaseHandler):
                     self.loc.t("help_profile"),
                     "",
                     self.loc.t("help_fun"),
+                    "",
+                    "**Drift:**\n• `@Inebotten bot status` / `@Inebotten health`",
+                    "",
                     self.loc.t("help_footer_tip"),
                 ]
             )

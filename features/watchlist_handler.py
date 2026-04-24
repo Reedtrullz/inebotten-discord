@@ -30,10 +30,13 @@ class WatchlistHandler(BaseHandler):
         """
         try:
             lang = watchlist_cmd.get("lang", self.loc.current_lang)
+            guild_id = self.get_guild_id(message)
 
             if watchlist_cmd["action"] == "suggest":
                 suggestion = self.watchlist.get_random_suggestion(
-                    watchlist_cmd.get("type"), watchlist_cmd.get("genre")
+                    watchlist_cmd.get("type"),
+                    watchlist_cmd.get("genre"),
+                    guild_id=guild_id,
                 )
                 if suggestion:
                     response_text = self.watchlist.format_suggestion(suggestion, lang)
@@ -41,7 +44,10 @@ class WatchlistHandler(BaseHandler):
                     response_text = self.loc.t("no_suggestions", lang)
 
             elif watchlist_cmd["action"] == "status":
-                response_text = self.watchlist.format_watchlist_status(lang)
+                response_text = self.watchlist.format_watchlist_status(
+                    lang,
+                    guild_id=guild_id,
+                )
 
             elif watchlist_cmd["action"] == "add":
                 response_text = await self._handle_add(message, lang)
@@ -88,7 +94,11 @@ class WatchlistHandler(BaseHandler):
                 )
                 else "movie"
             )
-            self.watchlist.add_from_discord_message(title, content_type)
+            self.watchlist.add_from_discord_message(
+                title,
+                content_type,
+                guild_id=self.get_guild_id(message),
+            )
             if lang == "no":
                 return f"✅ Lagt til **{title}** til watchlista!"
             else:

@@ -86,54 +86,76 @@ class WatchlistManager:
                 print(f"[FEATURES] Watchlist load error: {e}")
         return {"movies": [], "series": []}
 
+    def _empty_watchlist(self):
+        """Create an empty watchlist bucket."""
+        return {"movies": [], "series": []}
+
+    def _get_scope(self, guild_id=None):
+        """
+        Get a watchlist bucket.
+        Without guild_id, keep using the legacy global bucket for compatibility.
+        """
+        if guild_id is None:
+            self.watchlist.setdefault("movies", [])
+            self.watchlist.setdefault("series", [])
+            return self.watchlist
+
+        scopes = self.watchlist.setdefault("scopes", {})
+        return scopes.setdefault(str(guild_id), self._empty_watchlist())
+
     def _save_watchlist(self):
         """Save watchlist to storage"""
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(self.watchlist, f, ensure_ascii=False, indent=2)
 
-    def add_from_discord_message(self, title, content_type="movie", **kwargs):
+    def add_from_discord_message(self, title, content_type="movie", guild_id=None, **kwargs):
         """
         Add a movie/series from a Discord message
 
         Args:
             title: Movie/series title
             content_type: 'movie' or 'series'
+            guild_id: Guild/channel scope. DMs and group DMs should pass channel ID.
             **kwargs: Extra info like genre, year, platform, etc.
         """
+        bucket = self._get_scope(guild_id)
         item = {
             "title": title,
             "type": content_type,
             "added_at": datetime.now().isoformat(),
             "watched": False,
+            "completed": False,
             **kwargs,
         }
 
         if content_type == "movie":
-            self.watchlist["movies"].append(item)
+            bucket["movies"].append(item)
         else:
-            self.watchlist["series"].append(item)
+            bucket["series"].append(item)
 
         self._save_watchlist()
         return True
 
-    def get_random_suggestion(self, content_type=None, genre=None):
+    def get_random_suggestion(self, content_type=None, genre=None, guild_id=None):
         """
         Get a random suggestion
 
         Args:
             content_type: 'movie', 'series', or None for both
             genre: Optional genre filter
+            guild_id: Optional guild/channel scope
         """
+        bucket = self._get_scope(guild_id)
         candidates = []
 
         # Add from watchlist
         if content_type in (None, "movie"):
             candidates.extend(
-                [m for m in self.watchlist["movies"] if not m.get("watched", False)]
+                [m for m in bucket["movies"] if not m.get("watched", False)]
             )
         if content_type in (None, "series"):
             candidates.extend(
-                [s for s in self.watchlist["series"] if not s.get("watched", False)]
+                [s for s in bucket["series"] if not s.get("watched", False)]
             )
 
         # Add defaults if watchlist is empty
@@ -154,27 +176,35 @@ class WatchlistManager:
 
         return random.choice(candidates)
 
-    def get_watchlist_summary(self):
+    def get_watchlist(self, guild_id=None):
+        """Return all watchlist items for a scope."""
+        bucket = self._get_scope(guild_id)
+        return bucket["movies"] + bucket["series"]
+
+    def get_watchlist_summary(self, guild_id=None):
         """Get summary of watchlist"""
+        bucket = self._get_scope(guild_id)
         unwatched_movies = [
-            m for m in self.watchlist["movies"] if not m.get("watched", False)
+            m for m in bucket["movies"] if not m.get("watched", False)
         ]
         unwatched_series = [
-            s for s in self.watchlist["series"] if not s.get("watched", False)
+            s for s in bucket["series"] if not s.get("watched", False)
         ]
 
         return {
-            "movies_total": len(self.watchlist["movies"]),
+            "movies_total": len(bucket["movies"]),
             "movies_unwatched": len(unwatched_movies),
-            "series_total": len(self.watchlist["series"]),
+            "series_total": len(bucket["series"]),
             "series_unwatched": len(unwatched_series),
         }
 
-    def mark_as_watched(self, title):
+    def mark_as_watched(self, title, guild_id=None):
         """Mark an item as watched"""
-        for item in self.watchlist["movies"] + self.watchlist["series"]:
+        bucket = self._get_scope(guild_id)
+        for item in bucket["movies"] + bucket["series"]:
             if item["title"].lower() == title.lower():
                 item["watched"] = True
+                item["completed"] = True
                 item["watched_at"] = datetime.now().isoformat()
                 self._save_watchlist()
                 return True
@@ -253,9 +283,9 @@ class WatchlistManager:
 
         return "\n".join(lines)
 
-    def format_watchlist_status(self, lang="no"):
+    def format_watchlist_status(self, lang="no", guild_id=None):
         """Format watchlist status in specified language"""
-        summary = self.get_watchlist_summary()
+        summary = self.get_watchlist_summary(guild_id)
 
         if lang == "no":
             header = "📋 **Watchlist Status**"

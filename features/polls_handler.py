@@ -56,6 +56,12 @@ class PollsHandler(BaseHandler):
             guild_id = self.get_guild_id(message)
             lang = self.loc.current_lang
 
+            option_index = (
+                vote.get("option_index")
+                if isinstance(vote, dict)
+                else int(vote)
+            )
+
             # Get active polls
             active_polls = self.poll.get_active_polls(guild_id)
 
@@ -67,13 +73,13 @@ class PollsHandler(BaseHandler):
                 success, msg = self.poll.vote(
                     guild_id,
                     poll["id"],
-                    vote["option_index"],
+                    option_index,
                     message.author.id,
                     message.author.name,
                 )
 
                 if success:
-                    response_text = self.loc.t("vote_registered", num=vote["option_index"])
+                    response_text = self.loc.t("vote_registered", num=option_index)
                 else:
                     response_text = self.loc.t("vote_error", error=msg)
 

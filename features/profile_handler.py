@@ -116,7 +116,7 @@ class ProfileHandler(BaseHandler):
                     return True
         
         # Bio command: "bio [text]" or "about me [text]"
-        if content.startswith("@inebotten bio") or "endre bio" in content:
+        if content.startswith("bio") or "endre bio" in content:
             new_bio = message.content.split("bio", 1)[1].strip()
             if not new_bio:
                 await self.send_response(message, "⚠️ Vennligst skriv inn teksten du vil ha i bioen din.")

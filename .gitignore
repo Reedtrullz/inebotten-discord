@@ -90,3 +90,5 @@ improved_prompt_*.txt
 *_PLAN.md
 *_REPORT.md
 AGENTS.md
+.codex-ssh/inebotten_vps_codex
+.codex-ssh/inebotten_vps_codex.pub
