@@ -199,13 +199,24 @@ class UserMemory:
 
         # Interests
         if user.get("interests"):
-            context_parts.append(f"Interesser: {', '.join(user['interests'])}")
+            interests = [str(i) for i in user["interests"] if i]
+            if interests:
+                context_parts.append(f"Interesser: {', '.join(interests)}")
 
         # Recent topics
         if user.get("last_topics"):
-            context_parts.append(
-                f"Nylige samtaler: {', '.join(user['last_topics'][:3])}"
-            )
+            # Ensure all items are strings (handles legacy corrupted data)
+            topics = []
+            for t in user["last_topics"][:3]:
+                if isinstance(t, list):
+                    topics.extend([str(item) for item in t if item])
+                elif t:
+                    topics.append(str(t))
+            
+            if topics:
+                context_parts.append(
+                    f"Nylige samtaler: {', '.join(topics[:3])}"
+                )
 
         # Preferences
         prefs = user.get("preferences", {})
