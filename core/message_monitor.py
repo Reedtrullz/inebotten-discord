@@ -149,18 +149,9 @@ class MessageMonitor:
         self.loc = get_localization()
 
         # Initialize feature managers
-        from features.countdown_manager import CountdownManager
-        from features.poll_manager import PollManager, parse_poll_command, parse_vote
-        from features.watchlist_manager import WatchlistManager, parse_watchlist_command
-        from features.word_of_day import WordOfTheDay
-        from features.quote_manager import QuoteManager, parse_quote_command
-        from features.crypto_manager import CryptoManager, parse_price_command
-        from features.compliments_manager import ComplimentsManager, parse_compliment_command
-        from features.horoscope_manager import HoroscopeManager, parse_horoscope_command
-        from features.calculator_manager import CalculatorManager, parse_calculator_command
-        from features.url_shortener import URLShortener, parse_shorten_command
         from features.aurora_forecast import AuroraForecast
         from features.daily_digest_manager import DailyDigestManager
+        from features.search_manager import SearchManager, detect_search_intent
 
         self.countdown = CountdownManager()
         self.poll = PollManager()
@@ -173,6 +164,8 @@ class MessageMonitor:
         self.calculator = CalculatorManager()
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
+        self.search_manager = SearchManager()
+        self.detect_search_intent = detect_search_intent
         self.daily_digest = DailyDigestManager(
             event_manager=self.calendar,
             birthday_manager=None,  # Will be set in setup()
@@ -544,11 +537,33 @@ class MessageMonitor:
                         guild_id, limit=5
                     )
 
+                    # Check for search intent
+                    search_info = self.detect_search_intent(message.content)
+                    search_context = ""
+                    if search_info:
+                        query = search_info["query"]
+                        search_type = search_info["type"]
+                        print(f"[MONITOR] Web search ({search_type}) triggered for: {query}")
+                        
+                        if search_type == "news":
+                            search_results = await self.search_manager.get_news(query)
+                        else:
+                            search_results = await self.search_manager.search(query)
+                            
+                        if search_results:
+                            search_context = self.search_manager.format_results_for_ai(search_results)
+                            print(f"[MONITOR] Found {len(search_results)} search results")
+
                     system_prompt = self.get_system_prompt(
                         user_context=user_context,
                         conversation_context=conversation_context,
                         style=self.ResponseStyle.CASUAL,
                     )
+                    
+                    # Inject search results into system prompt if available
+                    if search_context:
+                        system_prompt += f"\n\nSØKERESULTATER FRA NETTET (Bruk dette for å svare):\n{search_context}\n"
+                        system_prompt += "\nVennligst oppsummer informasjonen over på en naturlig måte som Ine."
 
                     print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
 

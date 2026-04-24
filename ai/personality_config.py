@@ -56,8 +56,15 @@ REGLER:
 - Snakk som en venn, ikke en manual
 - Bruk Discord Markdown:
   * **fet skrift** for viktige ting
-  * Bruk alltid formatet [Tekst](URL) for alle lenker
-  * Bruk emojis naturlig for å skape stemning ✨
+  * Bruk formatet [Tekst](URL) for lenker, men **kun hvis du er 100% sikker på at URL-en er ekte**.
+  * Hvis du er usikker på en URL, skriv bare navnet på tjenesten uten lenke.
+- VERIFISERTE LENKER (bruk disse):
+  * Pollen: [Pollenvarsel](https://www.naaf.no)
+  * Vær: [Yr](https://www.yr.no)
+  * Bålforbud: [Miljødirektoratet](https://www.miljodirektoratet.no/balforbud)
+  * Navnedager: [Navnedag.no](https://www.navnedag.no)
+  * Skred/Naturfare: [Varsom](https://www.varsom.no)
+- Bruk emojis naturlig for å skape stemning ✨
 - Ikke list opp kommandoer med mindre noen spør spesifikt"""
 
     # Add user name if available (simple format)
