@@ -215,20 +215,14 @@ class HermesConnector:
         Returns: (is_healthy, message)
         """
         try:
-            session = await self._get_session()
-
-            # Try a simple request to check connectivity
+            # Try a simple POST request to check connectivity
             test_payload = {
                 "message": "health_check",
                 "author_name": "selfbot",
                 "channel_type": "health_check",
-                "timestamp": datetime.now().isoformat(),
-                "is_mention": False,
             }
 
-            url = f"{self.base_url}?data={quote(json.dumps(test_payload))}"
-
-            success, result = await self._make_request(url)
+            success, result = await self._make_request(self.base_url, method="POST", payload=test_payload)
             if success:
                 return True, f"API reachable"
             else:
@@ -289,13 +283,8 @@ class HermesConnector:
             payload["max_tokens"] = self.max_tokens
 
         try:
-            # Construct URL with encoded payload
-            encoded_payload = quote(json.dumps(payload))
-            url = f"{self.base_url}?data={encoded_payload}"
-
             self.request_count += 1
-
-            success, result = await self._make_request(url)
+            success, result = await self._make_request(self.base_url, method="POST", payload=payload)
             return success, result
 
         except Exception as e:

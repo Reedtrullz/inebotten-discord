@@ -44,7 +44,7 @@ Inebotten er en feature-rik Discord selfbot som kombinerer AI-drevne samtaler me
 
 ### 📅 Kalender & Planlegging
 - **Enhetlig kalender** for events og påminnelser
-- **Google Calendar-sync** to-veis
+- **Google Calendar-sync** (To-veis automatisk synkronisering)
 - **Gjentagende events** (ukentlig, månedlig, årlig)
 - **Norsk kalender** med helligdager og flaggdager
 
@@ -125,9 +125,9 @@ cd inebotten-discord
 # 2. Installer avhengigheter
 pip install -r requirements.txt
 
-# 3. Konfigurer miljø
-cp .env.example .env
-# Rediger .env og legg til din Discord-token
+# 3. Kjør interaktivt oppsett
+python setup.py
+# Følg instruksjonene for å legge til Discord-token og konfigurere AI
 
 # 4. Start botten
 python scripts/run_both.py
@@ -209,6 +209,10 @@ inebotten-discord/
 @inebotten nedtelling til 17. mai  # Nedtelling
 @inebotten pris BTC                # Kryptopris
 @inebotten horoskop væren          # Horoskop
+@inebotten daglig oppsummering     # Dagens briefing (Vær, marked, kalender)
+@inebotten status dnd              # Endre online-status
+@inebotten bio Din nye kule bio    # Endre din "About Me"
+@inebotten spiller Elden Ring      # Endre aktivitet
 ```
 
 ---

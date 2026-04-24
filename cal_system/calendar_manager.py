@@ -5,8 +5,12 @@ Everything is just a calendar item with a date
 """
 
 import json
+import os
+import uuid
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List, Dict, Optional, Any
 
 
 class CalendarManager:
@@ -14,7 +18,7 @@ class CalendarManager:
     Manages calendar items - everything is just something happening on a date
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path=None, gcal_manager=None):
         if storage_path is None:
             storage_path = (
                 Path.home() / ".hermes" / "discord" / "data" / "calendar.json"
@@ -22,369 +26,378 @@ class CalendarManager:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.items = self._load_items()
+        self.gcal = gcal_manager
+        self.gcal_enabled = gcal_manager is not None
+        self.items = {}  # {guild_id: [item1, item2, ...]}
 
-        # Initialize Google Calendar integration
-        self._init_gcal()
+    async def setup(self):
+        """Async initialization"""
+        self.items = await self._load_data()
+        print(f"[CAL] Calendar system initialized with {sum(len(v) for v in self.items.values())} items")
 
-    def _init_gcal(self):
-        """Initialize Google Calendar manager if available"""
-        self.gcal = None
-        self.gcal_enabled = False
-        try:
-            from cal_system.google_calendar_manager import GoogleCalendarManager
+    async def _load_data(self) -> Dict:
+        """Load calendar data from JSON file asynchronously"""
+        if not self.storage_path.exists():
+            return {}
 
-            self.gcal = GoogleCalendarManager()
-            self.gcal_enabled = self.gcal.is_configured()
-            if self.gcal_enabled:
-                print("[CALENDAR] Google Calendar integration enabled")
-        except Exception as e:
-            print(f"[CALENDAR] Google Calendar not available: {e}")
-
-    def _load_items(self):
-        """Load calendar items from storage"""
-        if self.storage_path.exists():
+        def _read():
             try:
                 with open(self.storage_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[CALENDAR] Calendar load error: {e}")
+                print(f"[CAL] Error loading calendar data: {e}")
                 return {}
-        return {}
 
-    def _save_items(self):
-        """Save calendar items to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.items, f, ensure_ascii=False, indent=2)
+        return await asyncio.to_thread(_read)
 
-    def add_item(
+    async def _save_data(self):
+        """Save calendar data to JSON file atomically and asynchronously"""
+        def _write():
+            temp_path = self.storage_path.with_suffix(".tmp")
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(self.items, f, ensure_ascii=False, indent=2)
+                # Atomic rename
+                os.replace(temp_path, self.storage_path)
+            except Exception as e:
+                print(f"[CAL] Error saving calendar data: {e}")
+                if temp_path.exists():
+                    os.remove(temp_path)
+
+        await asyncio.to_thread(_write)
+
+    async def add_item(
         self,
         guild_id,
         user_id,
         username,
         title,
-        date_str=None,
+        date_str,
         time_str=None,
-        description=None,
         recurrence=None,
         recurrence_day=None,
-        rrule_day=None,
         gcal_event_id=None,
         gcal_link=None,
         channel_id=None,
     ):
-        """
-        Add a new calendar item
+        """Add a new item to the calendar"""
+        # Validate date format
+        if not self._validate_date_format(date_str):
+            # Try to fix padding if possible
+            parts = date_str.split('.')
+            if len(parts) == 3:
+                try:
+                    date_str = f"{int(parts[0]):02d}.{int(parts[1]):02d}.{int(parts[2])}"
+                except ValueError:
+                    pass
 
-        Args:
-            guild_id: Discord guild ID
-            user_id: User who created it
-            username: Display name
-            title: Item title
-            date_str: Date in DD.MM.YYYY format
-            time_str: Time in HH:MM format (optional)
-            description: Optional description
-            recurrence: Optional recurrence type ('weekly', 'biweekly', etc.)
-            recurrence_day: Optional day name (e.g., 'lørdag')
-            rrule_day: Optional RRULE day code (e.g., 'SA')
-            gcal_event_id: Optional GCal event ID
-            gcal_link: Optional GCal link
-            channel_id: Optional Discord channel ID for reminder pings
-
-        Returns:
-            item dict
-        """
         guild_key = str(guild_id)
-        if channel_id:
-            channel_id = str(channel_id)
-        item_id = f"cal_{guild_id}_{int(datetime.now().timestamp())}"
-
         if guild_key not in self.items:
             self.items[guild_key] = []
 
         item = {
-            "id": item_id,
-            "user_id": str(user_id),
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
             "username": username,
             "title": title,
             "date": date_str,
             "time": time_str,
-            "description": description,
             "recurrence": recurrence,
             "recurrence_day": recurrence_day,
-            "rrule_day": rrule_day,
-            "gcal_event_id": gcal_event_id,
-            "gcal_link": gcal_link,
-            "channel_id": channel_id,
             "created_at": datetime.now().isoformat(),
             "completed": False,
-            "completed_at": None,
-            "completed_count": 0,
+            "gcal_event_id": gcal_event_id,
+            "gcal_link": gcal_link,
+            "channel_id": str(channel_id) if channel_id else None,
         }
 
         self.items[guild_key].append(item)
-        self._save_items()
-
+        await self._save_data()
         return item
 
-    def complete_item(self, guild_id, item_num=None, item_id=None):
-        """
-        Mark a calendar item as completed
-        For recurring items, advances the date instead
-
-        Returns:
-            (success, item_title, next_date)
-        """
+    async def delete_item(self, guild_id, item_num):
+        """Delete an item by its list number"""
         guild_key = str(guild_id)
+        items = self.get_upcoming(guild_id, days=365)
 
+        if 1 <= item_num <= len(items):
+            item_to_delete = items[item_num - 1]
+            title = item_to_delete["title"]
+
+            # Remove from GCal if enabled
+            if self.gcal_enabled and item_to_delete.get("gcal_event_id"):
+                try:
+                    self.gcal.delete_event(item_to_delete["gcal_event_id"])
+                    print(f"[CAL] Deleted from GCal: {title}")
+                except Exception as e:
+                    print(f"[CAL] GCal delete failed: {e}")
+
+            # Remove from main list
+            self.items[guild_key] = [
+                i for i in self.items[guild_key] if i["id"] != item_to_delete["id"]
+            ]
+
+            await self._save_data()
+            return True, title
+
+        return False, None
+
+    async def delete_item_by_title(self, guild_id, title_search):
+        """Delete a single item by title matching"""
+        guild_key = str(guild_id)
         if guild_key not in self.items:
-            return False, None, None
+            return False, None
 
-        # Get incomplete items
-        incomplete = [i for i in self.items[guild_key] if not i.get("completed")]
-        incomplete.sort(
-            key=lambda x: (
-                datetime.strptime(x["date"], "%d.%m.%Y")
-                if x.get("date")
-                else datetime.max
-            )
-        )
+        title_search = title_search.lower()
+        for i, item in enumerate(self.items[guild_key]):
+            if title_search in item["title"].lower():
+                title = item["title"]
+                self.items[guild_key].pop(i)
+                await self._save_data()
+                return True, title
 
-        target_item = None
+        return False, None
 
-        if item_num is not None:
-            idx = item_num - 1
-            if 0 <= idx < len(incomplete):
-                target_item = incomplete[idx]
-        elif item_id:
-            for item in self.items[guild_key]:
-                if item["id"] == item_id and not item["completed"]:
-                    target_item = item
-                    break
+    async def delete_items_by_title(self, guild_id, title_search):
+        """Delete multiple items by title matching"""
+        guild_key = str(guild_id)
+        if guild_key not in self.items:
+            return 0, []
 
-        if not target_item:
-            return False, None, None
+        title_search = title_search.lower()
+        to_keep = []
+        deleted_titles = []
 
-        # Check if recurring
-        if target_item.get("recurrence") and target_item.get("date"):
-            next_date = self._calculate_next_date(
-                target_item["date"], target_item["recurrence"]
-            )
-            if next_date:
-                target_item["date"] = next_date
-                target_item["completed_count"] = (
-                    target_item.get("completed_count", 0) + 1
-                )
-                self._save_items()
-                return True, target_item["title"], next_date
+        for item in self.items[guild_key]:
+            if title_search in item["title"].lower():
+                deleted_titles.append(item["title"])
+            else:
+                to_keep.append(item)
 
-        # Non-recurring - mark complete
-        target_item["completed"] = True
-        target_item["completed_at"] = datetime.now().isoformat()
-        self._save_items()
-        return True, target_item["title"], None
+        count = len(deleted_titles)
+        if count > 0:
+            self.items[guild_key] = to_keep
+            await self._save_data()
+
+        return count, deleted_titles
+
+    async def complete_item(self, guild_id, item_num):
+        """Mark an item as complete (or move to next date if recurring)"""
+        guild_key = str(guild_id)
+        items = self.get_upcoming(guild_id, days=365)
+
+        if 1 <= item_num <= len(items):
+            item = items[item_num - 1]
+            return await self._process_completion(guild_key, item)
+
+        return False, None, None
+
+    async def complete_item_by_title(self, guild_id, title_search):
+        """Mark an item as complete by title matching"""
+        guild_key = str(guild_id)
+        items = self.get_upcoming(guild_id, days=365)
+
+        title_search = title_search.lower()
+        for item in items:
+            if title_search in item["title"].lower():
+                return await self._process_completion(guild_key, item)
+
+        return False, None, None
+
+    async def complete_items_by_title(self, guild_id, title_search):
+        """Mark multiple items as complete by title matching"""
+        guild_key = str(guild_id)
+        items = self.get_upcoming(guild_id, days=365)
+
+        title_search = title_search.lower()
+        count = 0
+        completed_titles = []
+        has_recurring = False
+
+        for item in items:
+            if title_search in item["title"].lower():
+                success, title, next_date = await self._process_completion(guild_key, item)
+                if success:
+                    count += 1
+                    completed_titles.append(title)
+                    if next_date:
+                        has_recurring = True
+
+        return count, completed_titles, has_recurring
+
+    async def _process_completion(self, guild_key, item):
+        """Internal helper to handle completion logic"""
+        title = item["title"]
+
+        if item.get("recurrence"):
+            # Update to next date
+            next_date = self._calculate_next_date(item["date"], item["recurrence"])
+            item["date"] = next_date
+            await self._save_data()
+            return True, title, next_date
+        else:
+            # Mark as completed
+            item["completed"] = True
+            
+            # Sync to GCal if enabled
+            if self.gcal_enabled and item.get("gcal_event_id"):
+                try:
+                    self.gcal.update_event(item["gcal_event_id"], completed=True)
+                    print(f"[CAL] Marked completed in GCal: {title}")
+                except Exception as e:
+                    print(f"[CAL] GCal update failed: {e}")
+
+            await self._save_data()
+            return True, title, None
 
     def _calculate_next_date(self, current_date_str, recurrence):
-        """Calculate next occurrence date"""
+        """Calculate next occurrence date with month-end safety"""
         try:
-            current = datetime.strptime(current_date_str, "%d.%m.%Y")
-
-            if recurrence == "weekly":
-                next_date = current + timedelta(weeks=1)
+            current_date = datetime.strptime(current_date_str, "%d.%m.%Y")
+            
+            if recurrence == "daily":
+                next_date = current_date + timedelta(days=1)
+            elif recurrence == "weekly":
+                next_date = current_date + timedelta(weeks=1)
             elif recurrence == "biweekly":
-                next_date = current + timedelta(weeks=2)
+                next_date = current_date + timedelta(weeks=2)
             elif recurrence == "monthly":
-                if current.month == 12:
-                    next_date = current.replace(year=current.year + 1, month=1)
-                else:
-                    next_date = current.replace(month=current.month + 1)
+                # Handle month transition safely
+                year = current_date.year + (current_date.month // 12)
+                month = (current_date.month % 12) + 1
+                day = current_date.day
+                
+                # Clamp day to max days in next month
+                import calendar as py_cal
+                last_day = py_cal.monthrange(year, month)[1]
+                next_date = datetime(year, month, min(day, last_day))
             elif recurrence == "yearly":
-                next_date = current.replace(year=current.year + 1)
+                try:
+                    next_date = current_date.replace(year=current_date.year + 1)
+                except ValueError:
+                    # Feb 29 leap year case
+                    next_date = current_date.replace(year=current_date.year + 1, day=28)
             else:
                 return None
-
+                
             return next_date.strftime("%d.%m.%Y")
         except Exception as e:
             print(f"[CALENDAR] Calendar parse error: {e}")
             return None
 
-    def delete_item(self, guild_id, item_num):
+    async def sync_from_gcal(self, default_guild_id=None):
         """
-        Delete a calendar item by its number in the list.
-        Uses days=90 to match format_list so numbers stay consistent.
-
-        Returns:
-            (success, item_title)
+        Pull events from Google Calendar and sync to local store
         """
-        guild_key = str(guild_id)
+        if not self.gcal_enabled or not self.gcal.is_configured():
+            return 0
 
-        if guild_key not in self.items:
-            return False, None
+        print("[CAL] Syncing from Google Calendar...")
+        gcal_events = self.gcal.list_upcoming_events(days=30)
+        if gcal_events is None:
+            return 0
 
-        items = self.get_upcoming(guild_id, days=90, include_completed=False)
+        added_count = 0
+        updated_count = 0
 
-        idx = item_num - 1
-        if 0 <= idx < len(items):
-            item = items[idx]
-            item_id = item["id"]
+        # Build a map of gcal_event_id -> (guild_id, item) for quick lookup
+        gcal_map = {}
+        for guild_id, items in self.items.items():
+            for item in items:
+                if item.get("gcal_event_id"):
+                    gcal_map[item["gcal_event_id"]] = (guild_id, item)
 
-            # Find and remove from storage
-            for i, stored_item in enumerate(self.items[guild_key]):
-                if stored_item["id"] == item_id:
-                    title = stored_item["title"]
-                    # Also delete from GCal if synced
-                    gcal_id = stored_item.get("gcal_event_id")
-                    if self.gcal_enabled and gcal_id:
-                        try:
-                            self.gcal.delete_event(gcal_id)
-                        except Exception as e:
-                            print(f"[CALENDAR] GCal delete failed: {e}")
-                    self.items[guild_key].pop(i)
-                    self._save_items()
-                    return True, title
-
-        return False, None
-
-    def delete_item_by_title(self, guild_id, title):
-        """Delete the first calendar item matching the title (case-insensitive).
-
-        Returns:
-            (success, item_title)
-        """
-        guild_key = str(guild_id)
-        if guild_key not in self.items:
-            return False, None
-
-        items = self.get_upcoming(guild_id, days=90, include_completed=False)
-        for item in items:
-            if title.lower() in item["title"].lower():
-                item_id = item["id"]
-                for i, stored_item in enumerate(self.items[guild_key]):
-                    if stored_item["id"] == item_id:
-                        gcal_id = stored_item.get("gcal_event_id")
-                        if self.gcal_enabled and gcal_id:
-                            try:
-                                self.gcal.delete_event(gcal_id)
-                            except Exception as e:
-                                print(f"[CALENDAR] GCal delete failed: {e}")
-                        title_actual = stored_item["title"]
-                        self.items[guild_key].pop(i)
-                        self._save_items()
-                        return True, title_actual
-
-        return False, None
-
-    def delete_items_by_title(self, guild_id, title):
-        """Delete ALL calendar items matching the title (case-insensitive).
-
-        Returns:
-            (count, deleted_titles) where count is number deleted
-        """
-        guild_key = str(guild_id)
-        if guild_key not in self.items:
-            return 0, []
-
-        items = self.get_upcoming(guild_id, days=90, include_completed=False)
-        matches = []
-        for item in items:
-            if title.lower() in item["title"].lower():
-                matches.append(item)
-
-        if not matches:
-            return 0, []
-
-        deleted_titles = []
-        # Use a set of IDs to track what we already deleted
-        deleted_ids = set()
-        for item in matches:
-            item_id = item["id"]
-            if item_id in deleted_ids:
+        for event in gcal_events:
+            gcal_id = event.get("id")
+            if not gcal_id:
                 continue
-            deleted_ids.add(item_id)
-            for i, stored_item in enumerate(list(self.items[guild_key])):
-                if stored_item["id"] == item_id:
-                    gcal_id = stored_item.get("gcal_event_id")
-                    if self.gcal_enabled and gcal_id:
-                        try:
-                            self.gcal.delete_event(gcal_id)
-                        except Exception as e:
-                            print(f"[CALENDAR] GCal delete failed: {e}")
-                    deleted_titles.append(stored_item["title"])
-                    self.items[guild_key].pop(i)
-                    break
 
-        if deleted_titles:
-            self._save_items()
-        return len(deleted_titles), deleted_titles
+            summary = event.get("summary", "Uten tittel")
+            
+            # Check if marked as completed in GCal
+            gcal_completed = summary.endswith(" [FERDIG]")
+            if gcal_completed:
+                summary = summary.replace(" [FERDIG]", "").strip()
 
-    def complete_item_by_title(self, guild_id, title):
-        """Complete the first matching incomplete item by partial title match.
-
-        Returns:
-            (success, item_title, next_date)
-        """
-        guild_key = str(guild_id)
-        if guild_key not in self.items:
-            return False, None, None
-
-        items = self.get_upcoming(guild_id, days=90, include_completed=False)
-        for item in items:
-            if title.lower() in item["title"].lower():
-                item_id = item["id"]
-                return self.complete_item(guild_id, item_id=item_id)
-
-        return False, None, None
-
-    def complete_items_by_title(self, guild_id, title):
-        """Complete ALL matching calendar items by partial title match.
-
-        Returns:
-            (count, completed_titles, has_recurring) where count is number marked done
-        """
-        guild_key = str(guild_id)
-        if guild_key not in self.items:
-            return 0, [], False
-
-        items = self.get_upcoming(guild_id, days=90, include_completed=False)
-        matches = []
-        for item in items:
-            if title.lower() in item["title"].lower():
-                matches.append(item)
-
-        if not matches:
-            return 0, [], False
-
-        completed_titles = []
-        has_recurring = False
-        completed_ids = set()
-
-        for item in matches:
-            item_id = item["id"]
-            if item_id in completed_ids:
-                continue
-            completed_ids.add(item_id)
+            start = event.get("start", {})
+            
+            # Parse date and time from GCal
+            date_str = ""
+            time_str = None
+            
             try:
-                success, t, next_date = self.complete_item(guild_id, item_id=item_id)
-                if success:
-                    completed_titles.append(t)
-                    if next_date:
-                        has_recurring = True
+                if "dateTime" in start:
+                    # ISO format: 2024-04-24T10:00:00+02:00
+                    dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
+                    from zoneinfo import ZoneInfo
+                    local_dt = dt.astimezone(ZoneInfo("Europe/Oslo"))
+                    date_str = local_dt.strftime("%d.%m.%Y")
+                    time_str = local_dt.strftime("%H:%M")
+                else:
+                    # Date only: 2024-04-24
+                    d_str = start.get("date", "")
+                    if d_str:
+                        dt = datetime.strptime(d_str, "%Y-%m-%d")
+                        date_str = dt.strftime("%d.%m.%Y")
             except Exception as e:
-                print(f"[CALENDAR] Bulk complete error: {e}")
+                print(f"[CAL] Error parsing GCal date for {summary}: {e}")
+                continue
 
-        return len(completed_titles), completed_titles, has_recurring
+            if not date_str:
+                continue
+
+            if gcal_id in gcal_map:
+                # Existing item, check for updates
+                guild_id, item = gcal_map[gcal_id]
+                changed = False
+                
+                if item["title"] != summary:
+                    item["title"] = summary
+                    changed = True
+                if item["date"] != date_str:
+                    item["date"] = date_str
+                    changed = True
+                if item.get("time") != time_str:
+                    item["time"] = time_str
+                    changed = True
+                
+                # Check if it was marked as completed in GCal
+                if gcal_completed and not item.get("completed"):
+                    item["completed"] = True
+                    changed = True
+                
+                if changed:
+                    updated_count += 1
+            else:
+                # New item from GCal
+                guild_id = default_guild_id or (list(self.items.keys())[0] if self.items else "global")
+                
+                await self.add_item(
+                    guild_id=guild_id,
+                    user_id="gcal_sync",
+                    username="Google Calendar",
+                    title=summary,
+                    date_str=date_str,
+                    time_str=time_str,
+                    gcal_event_id=gcal_id,
+                    gcal_link=event.get("htmlLink"),
+                )
+                
+                # If it was completed, mark it so (add_item defaults to False)
+                if gcal_completed:
+                    self.items[str(guild_id)][-1]["completed"] = True
+                
+                added_count += 1
+
+        if added_count > 0 or updated_count > 0:
+            await self._save_data()
+            print(f"[CAL] Sync complete: {added_count} added, {updated_count} updated")
+        
+        return added_count + updated_count
 
     def get_upcoming(self, guild_id, days=30, include_completed=False):
         """
         Get upcoming calendar items
-
-        Args:
-            guild_id: Discord guild ID
-            days: Number of days to look ahead
-            include_completed: Whether to include completed items
-
-        Returns:
-            List of item dicts sorted by date
         """
         guild_key = str(guild_id)
 
@@ -415,10 +428,6 @@ class CalendarManager:
     def format_list(self, guild_id, days=90, show_completed=False, footer=None):
         """
         Format calendar items for display
-        Shows next 3 months by default to capture future events
-
-        Args:
-            footer: Override footer text (defaults to complete hint)
         """
         items = self.get_upcoming(guild_id, days=days, include_completed=False)
 
@@ -430,7 +439,6 @@ class CalendarManager:
         for i, item in enumerate(items[:10], 1):
             time_str = f" kl. {item['time']}" if item.get("time") else ""
 
-            # Status indicator: 📅 = GCal synced, 📌 = local only, ✓ = completed
             if item.get("completed"):
                 status_indicator = "✓"
             elif item.get("gcal_event_id") or item.get("gcal_link"):
@@ -438,7 +446,6 @@ class CalendarManager:
             else:
                 status_indicator = "📌"
 
-            # Recurrence indicator
             recurrence_str = ""
             if item.get("recurrence"):
                 labels = {
@@ -452,7 +459,6 @@ class CalendarManager:
                 else:
                     recurrence_str = f" 🔄 {labels.get(item['recurrence'], '')}"
 
-            # Strike through completed items
             title_display = (
                 f"~~{item['title']}~~" if item.get("completed") else item["title"]
             )
@@ -461,7 +467,6 @@ class CalendarManager:
                 f"{status_indicator} **{i}.** {title_display} - {item['date']}{time_str}{recurrence_str}"
             )
 
-        # Show recently completed if requested
         if show_completed:
             all_items = self.items.get(str(guild_id), [])
             completed = [i for i in all_items if i.get("completed")][:3]
@@ -470,7 +475,6 @@ class CalendarManager:
                 for item in completed:
                     lines.append(f"  ✓ ~~{item['title']}~~")
 
-        # Neutral footer - handlers add context-specific hints
         return "\n".join(lines)
 
     def format_single_item(self, item):
@@ -509,6 +513,14 @@ class CalendarManager:
         lines.append("— *Bruk `@inebotten kalender` for å se alt*")
 
         return "\n".join(lines)
+
+    def _validate_date_format(self, date_str):
+        """Validate DD.MM.YYYY format"""
+        try:
+            datetime.strptime(date_str, "%d.%m.%Y")
+            return True
+        except (ValueError, TypeError):
+            return False
 
 
 if __name__ == "__main__":

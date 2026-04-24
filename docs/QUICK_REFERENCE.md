@@ -9,12 +9,11 @@
 ### Starte Botten
 
 ```bash
-# Alt sammen (anbefalt)
-python3 run_both.py
+# 1. Kjør interaktivt oppsett (anbefalt)
+python3 setup.py
 
-# Eller separat:
-python3 hermes_bridge_server.py  # Terminal 1 - AI-bridge
-python3 selfbot_runner.py        # Terminal 2 - Discord-bot
+# 2. Start botten
+python3 run_both.py
 ```
 
 ---
@@ -92,7 +91,7 @@ Gjentagende elementer (`hver uke`, `annenhver uke`, `hver måned`, `hvert år`) 
 Boten sender automatisk påminnelser når kalender-elementer nærmer seg:
 
 - **30 minutter før:** Boten pinger deg i kanalen der elementet ble opprettet
-- **Morgen-digest kl 09:00:** Boten poster dagens plan med tider hvis tilgjengelig
+- **Dagens Briefing kl 09:00:** Boten poster dagens plan, vær, markedsoppdatering og bursdager.
 
 Du trenger ikke be om påminnelser - de skjer automatisk!
 
@@ -165,8 +164,21 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 |----------|-------------|
 | `@inebotten sitat` | Tilfeldig inspirerende sitat |
 | `@inebotten dagens ord` | Norsk ord med definisjon |
+| `@inebotten daglig oppsummering` | Omfattende briefing (Vær, marked, kalender) |
 | `@inebotten kompliment` | Send et kompliment |
 | `@inebotten shorten [url]` | Forkort en URL |
+| `@inebotten nordlys` | Nordlysvarsel (Aurora) |
+
+---
+
+## 👤 Profilhåndtering
+
+| Kommando | Eksempel | Beskrivelse |
+|----------|----------|-------------|
+| `@inebotten status [s]` | `@inebotten status dnd` | online, idle, dnd, invisible |
+| `@inebotten bio [t]` | `@inebotten bio Koding er livet` | Endre din "About Me" |
+| `@inebotten spiller [t]` | `@inebotten spiller CS2` | Endre aktivitet |
+| `@inebotten ser på [t]` | `@inebotten ser på Netflix` | Endre aktivitet |
 
 ---
 

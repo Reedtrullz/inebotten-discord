@@ -14,6 +14,8 @@ Tracks sent reminders in a JSON file to avoid duplicate pings.
 
 import json
 import time
+import asyncio
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -40,13 +42,13 @@ class ReminderChecker:
         self.calendar = calendar_manager
         self.reminders = reminder_manager
         self.events = event_manager
-        self.get_channel = get_channel_func      # (channel_id) -> discord.abc.Messageable
+        self.get_channel = get_channel_func
         self.send_channel_message = send_channel_message_func
         self.send_ping_message = send_ping_message_func
         self.running = False
-        self._morning_digest_sent = False  # per-day reset
+        self._morning_digest_sent = False
+        self._last_gcal_sync = 0
 
-        # Statistics
         self.stats = {
             "30min_sent": 0,
             "now_sent": 0,
@@ -60,11 +62,18 @@ class ReminderChecker:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.sent_log = self._load_sent_log()
+        self.sent_log = {"reminders_sent": {}, "digest_log": {}}
 
-    def _load_sent_log(self):
-        """Load log of sent reminders to avoid duplicate pings"""
-        if self.storage_path.exists():
+    async def setup(self):
+        """Async initialization"""
+        self.sent_log = await self._load_sent_log()
+
+    async def _load_sent_log(self):
+        """Load log of sent reminders asynchronously"""
+        if not self.storage_path.exists():
+            return {"reminders_sent": {}, "digest_log": {}}
+
+        def _read():
             try:
                 with open(self.storage_path, "r", encoding="utf-8") as f:
                     return json.load(f)
@@ -72,30 +81,40 @@ class ReminderChecker:
                 print(f"[REMIND] Sent log load error: {e}")
                 return {"reminders_sent": {}, "digest_log": {}}
 
-        return {"reminders_sent": {}, "digest_log": {}}
+        return await asyncio.to_thread(_read)
 
-    def _save_sent_log(self):
-        """Save sent log"""
-        # Prune old entries (> 2 days old) to keep file small
-        cutoff_key = int(time.time()) - 172800  # 48 hours
-        reminders_sent = self.sent_log.get("reminders_sent", {})
-        reminders_sent = {
-            k: v for k, v in reminders_sent.items()
-            if isinstance(v, (int, float)) and v > cutoff_key
-        }
-        self.sent_log["reminders_sent"] = reminders_sent
+    async def _save_sent_log(self):
+        """Save sent log atomically and asynchronously"""
+        def _write():
+            # Prune old entries (> 2 days old) to keep file small
+            cutoff_key = int(time.time()) - 172800
+            reminders_sent = self.sent_log.get("reminders_sent", {})
+            reminders_sent = {
+                k: v for k, v in reminders_sent.items()
+                if isinstance(v, (int, float)) and v > cutoff_key
+            }
+            self.sent_log["reminders_sent"] = reminders_sent
 
-        # Keep only last 30 days of digest logs
-        today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
-        digest_log = self.sent_log.get("digest_log", {})
-        digest_log = {
-            k: v for k, v in digest_log.items()
-            if k >= today_key - timedelta(days=30).strftime("%Y-%m-%d")
-        }
-        self.sent_log["digest_log"] = digest_log
+            # Keep only last 30 days of digest logs
+            today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
+            digest_log = self.sent_log.get("digest_log", {})
+            digest_log = {
+                k: v for k, v in digest_log.items()
+                if k >= (datetime.now(ZoneInfo("Europe/Oslo")) - timedelta(days=30)).strftime("%Y-%m-%d")
+            }
+            self.sent_log["digest_log"] = digest_log
 
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.sent_log, f, ensure_ascii=False, indent=2)
+            temp_path = self.storage_path.with_suffix(".tmp")
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(self.sent_log, f, ensure_ascii=False, indent=2)
+                os.replace(temp_path, self.storage_path)
+            except Exception as e:
+                print(f"[REMIND] Sent log save error: {e}")
+                if temp_path.exists():
+                    os.remove(temp_path)
+
+        await asyncio.to_thread(_write)
 
     def _has_been_sent(self, item_id, remind_type):
         """Check if a reminder was already sent for this item+type"""
@@ -110,11 +129,11 @@ class ReminderChecker:
         self.sent_log["reminders_sent"][key] = int(time.time())
         return True
 
-    def _mark_sent(self, item_id, remind_type):
+    async def _mark_sent(self, item_id, remind_type):
         """Mark a reminder as sent"""
         key = f"{item_id}:{remind_type}"
         self.sent_log.setdefault("reminders_sent", {})[key] = int(time.time())
-        self._save_sent_log()
+        await self._save_sent_log()
 
     def _digest_already_sent_today(self, guild_id, channel_id):
         key = f"{guild_id}:{channel_id}"
@@ -122,11 +141,11 @@ class ReminderChecker:
         digest_log = self.sent_log.get("digest_log", {})
         return digest_log.get(key) == today_key
 
-    def _mark_digest_sent_today(self, guild_id, channel_id):
+    async def _mark_digest_sent_today(self, guild_id, channel_id):
         key = f"{guild_id}:{channel_id}"
         today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
         self.sent_log.setdefault("digest_log", {})[key] = today_key
-        self._save_sent_log()
+        await self._save_sent_log()
 
     # ---- 30-min warning ----
 
@@ -293,7 +312,7 @@ class ReminderChecker:
 
                 digest = self._format_morning_digest(items, now)
                 await self._send_to_channel(channel_id, digest)
-                self._mark_digest_sent_today(guild_id, channel_id)
+                await self._mark_digest_sent_today(guild_id, channel_id)
 
     # ---- Helpers ----
 
@@ -399,7 +418,7 @@ class ReminderChecker:
             message = f"⏰ **{item['title']}** - {label}{time_str}"
 
         await self._send_mentions_item(channel_id, item, message)
-        self._mark_sent(item["id"], remind_type)
+        await self._mark_sent(item["id"], remind_type)
         
         # Update statistics
         if remind_type == "30min":
@@ -439,7 +458,7 @@ class ReminderChecker:
         else:
             print(f"[REMIND] No channel_id for reminder: {reminder['text']}")
 
-        self._mark_sent(reminder["id"], remind_type)
+        await self._mark_sent(reminder["id"], remind_type)
         
         # Update statistics
         if remind_type == "30min":
@@ -453,9 +472,12 @@ class ReminderChecker:
         """Send a message mentioning the item creator"""
         # Try to mention the original creator via Discord user ID
         user_id = item.get("user_id")
-        if user_id:
+        if user_id and user_id != "gcal_sync":
             mention = f"<@{user_id}>"
             message = f"{mention}\n\n{message}"
+        elif user_id == "gcal_sync":
+            # For GCal items, maybe just add a header
+            message = f"📅 **Google Calendar Sync**\n\n{message}"
 
         await self._send_to_channel(channel_id, message)
 
@@ -493,6 +515,16 @@ class ReminderChecker:
                 await self.check_event_now()
                 await self.check_event_passed()
                 await self.check_morning_digest()
+
+                # Periodic Google Calendar sync (every 15 minutes)
+                if self.calendar and self.calendar.gcal_enabled:
+                    now_ts = time.time()
+                    if now_ts - self._last_gcal_sync > 900:  # 900 seconds = 15 min
+                        try:
+                            await self.calendar.sync_from_gcal()
+                            self._last_gcal_sync = now_ts
+                        except Exception as e:
+                            print(f"[REMIND] GCal sync error: {e}")
             except Exception as e:
                 print(f"[REMIND] Error in checker loop: {e}")
                 self.stats["errors"] += 1

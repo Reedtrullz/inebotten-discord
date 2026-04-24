@@ -29,6 +29,9 @@ SCHOOL_HOLIDAYS_KEYWORDS = [
 DAILY_DIGEST_KEYWORDS = [
     "daglig oppsummering", "daily digest", "oppsummering", "summary"
 ]
+PROFILE_KEYWORDS = [
+    "status", "bio", "om meg", "about me", "endre navn", "spiller", "ser på"
+]
 HELP_KEYWORDS = [
     "hjelp", "help", "kommandoer", "commands",
     "hva kan du gjøre", "hva kan du", "hva gjør du",
@@ -111,7 +114,13 @@ class MessageMonitor:
         self.calculator = CalculatorManager()
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
-        self.daily_digest = DailyDigestManager(self.calendar)
+        self.daily_digest = DailyDigestManager(
+            event_manager=self.calendar,
+            birthday_manager=None,  # Will be set in setup()
+            crypto_manager=self.crypto,
+            aurora_manager=self.aurora,
+            watchlist_manager=self.watchlist
+        )
 
         self.parse_poll_command = parse_poll_command
         self.parse_vote = parse_vote
@@ -129,9 +138,20 @@ class MessageMonitor:
         self.response_count = 0
         self.error_count = 0
 
-        # Handler Registry
         self.handlers = {}
         self._register_handlers()
+
+    async def setup(self):
+        """Async initialization of managers"""
+        await self.calendar.setup()
+        await self.user_memory.setup()
+        
+        # Inject birthday manager into daily digest after initialization
+        from features.birthday_manager import BirthdayManager
+        self.birthdays = BirthdayManager()
+        self.daily_digest.birthday_manager = self.birthdays
+        
+        print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
 
     def is_mention(self, message):
         """Check if message mentions the bot"""
@@ -336,6 +356,12 @@ class MessageMonitor:
             await self.handlers["help"].handle_help(message)
             return
 
+        # Check for profile/status commands
+        if any(word in content_lower for word in PROFILE_KEYWORDS):
+            print("[MONITOR] Checking profile command...")
+            if await self.handlers["profile"].handle_profile_command(message):
+                return
+
         # Generate and send AI response
         print("[MONITOR] No command matched, falling back to AI response...")
         await self._send_ai_response(message)
@@ -366,7 +392,7 @@ class MessageMonitor:
         )
 
         # Update user memory
-        self.user_memory.update_last_interaction(
+        await self.user_memory.update_last_interaction(
             message.author.id,
             topic=self.conversation.get_conversation_summary(guild_id),
             username=message.author.name,
@@ -386,7 +412,7 @@ class MessageMonitor:
             # Fall back to AI if no dialect match and hermes is available
             if not response_text and self.hermes:
                 try:
-                    user_context = self.user_memory.format_context_for_prompt(
+                    user_context = await self.user_memory.format_context_for_prompt(
                         message.author.id, message.author.name
                     )
                     conversation_context = self.conversation.get_context(
@@ -535,6 +561,7 @@ class MessageMonitor:
             "school_holidays": SchoolHolidaysHandler(self),
             "help": HelpHandler(self),
             "daily_digest": DailyDigestHandler(self),
+            "profile": __import__('features.profile_handler', fromlist=['ProfileHandler']).ProfileHandler(self),
         }
 
 
@@ -571,10 +598,12 @@ class SelfbotClient(discord.Client):
             rate_limiter=self.rate_limiter,
             response_generator=self.response_gen,
         )
+        await self.monitor.setup()
 
         # Initialize and start calendar reminder checker
         self.reminder_checker = self._create_reminder_checker()
         if self.reminder_checker:
+            await self.reminder_checker.setup()
             asyncio.create_task(self.reminder_checker.start())
             print("[BOT] Calendar reminder checker started")
 

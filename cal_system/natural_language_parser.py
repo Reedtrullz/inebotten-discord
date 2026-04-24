@@ -496,6 +496,10 @@ class NaturalLanguageParser:
 
         return False
     
+    def _format_date(self, day: int, month: int, year: int) -> str:
+        """Format as DD.MM.YYYY with leading zeros"""
+        return f"{day:02d}.{month:02d}.{year}"
+    
     def _extract_date(self, content):
         """
         Extract date from content

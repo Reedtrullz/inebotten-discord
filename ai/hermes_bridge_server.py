@@ -612,9 +612,10 @@ class HermesBridgeServer:
         request_id = self.request_count
 
         try:
-            data = await reader.read(8192)
-            request_text = data.decode("utf-8", errors="ignore")
-            lines = request_text.split("\r\n")
+            # Read header first
+            header_data = await reader.readuntil(b"\r\n\r\n")
+            header_text = header_data.decode("utf-8", errors="ignore")
+            lines = header_text.split("\r\n")
 
             if not lines:
                 await self._send_response(writer, 400, {"error": "Empty request"})
@@ -627,16 +628,21 @@ class HermesBridgeServer:
                 return
 
             method, path = parts[0], parts[1]
+            headers = self._parse_headers(lines[1:])
 
-            if method != "GET":
-                await self._send_response(writer, 405, {"error": "Method not allowed"})
-                return
+            # Handle body if POST
+            body = None
+            if method == "POST":
+                content_length = int(headers.get("Content-Length", 0))
+                if content_length > 0:
+                    body_data = await reader.readexactly(content_length)
+                    body = body_data.decode("utf-8", errors="ignore")
 
             parsed = urlparse(path)
             query = parse_qs(parsed.query)
 
             if parsed.path == "/api/chat":
-                await self._handle_chat(writer, query)
+                await self._handle_chat(writer, method, query, body)
             elif parsed.path == "/health":
                 lm_available = await self._check_lm_studio()
                 await self._send_response(
@@ -662,30 +668,46 @@ class HermesBridgeServer:
             else:
                 await self._send_response(writer, 404, {"error": "Not found"})
 
+        except asyncio.IncompleteReadError:
+            pass # Connection closed
         except Exception as e:
             self.error_count += 1
             logger.error(f"[{request_id}] Error: {e}")
             await self._send_response(writer, 500, {"error": str(e)})
         finally:
             try:
-                await writer.drain()
                 writer.close()
-            except Exception as e:
-                print(f"[BRIDGE] Cleanup error: {e}")
+                await writer.wait_closed()
+            except:
+                pass
 
-    async def _handle_chat(self, writer, query):
-        data_param = query.get("data", [""])[0]
+    def _parse_headers(self, lines):
+        headers = {}
+        for line in lines:
+            if ": " in line:
+                k, v = line.split(": ", 1)
+                headers[k] = v
+        return headers
 
-        if not data_param:
-            await self._send_response(
-                writer, 400, {"error": "Missing 'data' parameter"}
-            )
-            return
+    async def _handle_chat(self, writer, method, query, body):
+        payload = {}
+        if method == "POST" and body:
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                await self._send_response(writer, 400, {"error": "Invalid JSON body"})
+                return
+        else:
+            data_param = query.get("data", [""])[0]
+            if data_param:
+                try:
+                    payload = json.loads(unquote(data_param))
+                except json.JSONDecodeError:
+                    await self._send_response(writer, 400, {"error": "Invalid data parameter"})
+                    return
 
-        try:
-            payload = json.loads(unquote(data_param))
-        except json.JSONDecodeError as e:
-            await self._send_response(writer, 400, {"error": f"Invalid JSON: {e}"})
+        if not payload:
+            await self._send_response(writer, 400, {"error": "Missing payload"})
             return
 
         message = payload.get("message", "")

@@ -11,6 +11,7 @@ import subprocess
 import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Suppress requests/urllib3 version warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="requests")
@@ -291,11 +292,75 @@ class GoogleCalendarManager:
         if not self.enabled:
             return False
 
-        result = self._run_calendar_command(
-            "delete", event_id, "--calendar", self.calendar_id
-        )
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
 
-        return result is not None and result.get("status") == "deleted"
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+            )
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                self._save_credentials(creds)
+
+            service = build("calendar", "v3", credentials=creds)
+            service.events().delete(
+                calendarId=self.calendar_id, eventId=event_id
+            ).execute()
+            return True
+        except Exception as e:
+            print(f"[GCAL] Error deleting event {event_id}: {e}")
+            return False
+
+    def update_event(self, event_id, title=None, description=None, completed=False):
+        """
+        Update an event in Google Calendar
+        """
+        if not self.enabled:
+            return None
+
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
+
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+            )
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                self._save_credentials(creds)
+
+            service = build("calendar", "v3", credentials=creds)
+
+            # Get existing event
+            event = (
+                service.events()
+                .get(calendarId=self.calendar_id, eventId=event_id)
+                .execute()
+            )
+
+            # Update fields
+            if title:
+                event["summary"] = title
+            
+            if completed and not event["summary"].endswith(" [FERDIG]"):
+                event["summary"] += " [FERDIG]"
+            
+            if description:
+                event["description"] = description
+
+            result = (
+                service.events()
+                .update(calendarId=self.calendar_id, eventId=event_id, body=event)
+                .execute()
+            )
+
+            return result
+        except Exception as e:
+            print(f"[GCAL] Error updating event {event_id}: {e}")
+            return None
 
     def sync_local_event(self, event_data):
         """

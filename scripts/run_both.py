@@ -3,22 +3,8 @@
 Discord Selfbot + Hermes Bridge Combined Runner
 Starts both services together with proper coordination
 
-Usage:
-    python3 run_both.py          # Start both bridge + selfbot
-    python3 selfbot_runner.py    # Selfbot only (bridge must be running)
-    python3 hermes_bridge_server.py  # Bridge only
-
-This will:
-1. Start the Hermes Bridge Server (connects to LM Studio)
-2. Wait for bridge to be ready (checks /health endpoint)
-3. Start the Discord Selfbot
-4. Stream output from both services (prefixed [BRIDGE] or [SELFBOT])
-5. Handle graceful shutdown on Ctrl+C (stops both services)
-
-Requirements:
-    - LM Studio running on Windows host (or fallback mode works without it)
-    - Valid Discord token in .env file
-    - Python dependencies: discord.py aiohttp requests
+This script handles dynamic path resolution and coordinates the startup
+of the bridge server and the selfbot client.
 """
 
 import os
@@ -35,6 +21,14 @@ from utils.logger import setup_logger
 
 # Setup logging
 logger = setup_logger(__name__, log_level="INFO")
+
+# Path configuration
+SCRIPT_DIR = Path(__file__).parent.absolute()
+BASE_DIR = SCRIPT_DIR.parent.absolute()
+
+# Services
+BRIDGE_SERVER_PATH = BASE_DIR / "ai" / "hermes_bridge_server.py"
+SELFBOT_RUNNER_PATH = BASE_DIR / "core" / "selfbot_runner.py"
 
 # Configuration
 BRIDGE_HOST = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1")
@@ -79,17 +73,21 @@ class CombinedRunner:
             logger.debug(f"Bridge check error: {e}")
 
         # Get the path to the bridge server
-        bridge_script = Path(__file__).parent / "ai" / "hermes_bridge_server.py"
-
+        bridge_script = BRIDGE_SERVER_PATH
         if not bridge_script.exists():
-            self.log(f"ERROR: Bridge script not found: {bridge_script}")
-            return False
+            # Fallback for different directory structures
+            bridge_script = BASE_DIR / "hermes_bridge_server.py"
+            if not bridge_script.exists():
+                self.log(f"ERROR: Bridge script not found at {BRIDGE_SERVER_PATH}")
+                return False
 
         # Start bridge in subprocess with unbuffered output
-        self.log(f"Starting bridge: {bridge_script.name}")
+        self.log(f"Starting bridge from {bridge_script}")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        # Ensure the project root is in PYTHONPATH
+        env["PYTHONPATH"] = str(BASE_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
         self.bridge_process = subprocess.Popen(
             [sys.executable, "-u", str(bridge_script)],
@@ -99,6 +97,7 @@ class CombinedRunner:
             bufsize=1,
             universal_newlines=True,
             env=env,
+            cwd=str(BASE_DIR)
         )
 
         self.log(f"Bridge process started (PID: {self.bridge_process.pid})")
@@ -109,31 +108,23 @@ class CombinedRunner:
         start_time = time.time()
         while time.time() - start_time < BRIDGE_READY_TIMEOUT:
             try:
-                response = requests.get(BRIDGE_HEALTH_URL, timeout=5)
+                response = requests.get(BRIDGE_HEALTH_URL, timeout=2)
                 if response.status_code == 200:
                     data = response.json()
                     lm_status = data.get("lm_studio", "unknown")
                     self.log(f"✓ Bridge ready! LM Studio: {lm_status}")
                     return True
-            except requests.exceptions.Timeout:
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
                 pass
-            except requests.exceptions.ConnectionError:
-                pass
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Waiting for bridge: {e}")
 
             # Check if bridge process died
             if self.bridge_process.poll() is not None:
-                self.log(
-                    f"ERROR: Bridge process exited with code {self.bridge_process.poll()}"
-                )
-                # Read any error output
-                remaining_output = self.bridge_process.stdout.read()
-                if remaining_output:
-                    self.log(f"Bridge output: {remaining_output}")
+                self.log(f"ERROR: Bridge process exited with code {self.bridge_process.poll()}")
                 return False
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
         self.log(f"ERROR: Bridge failed to start within {BRIDGE_READY_TIMEOUT}s")
         return False
@@ -144,49 +135,39 @@ class CombinedRunner:
             return
 
         try:
-            while self.running and self.bridge_process.poll() is None:
-                line = self.bridge_process.stdout.readline()
+            for line in iter(self.bridge_process.stdout.readline, ''):
+                if not self.running:
+                    break
                 if line:
                     print(f"[BRIDGE] {line.rstrip()}", flush=True)
-                else:
-                    time.sleep(0.1)
         except Exception as e:
             logger.error(f"Bridge output error: {e}")
 
     async def start_selfbot(self):
-        """Start the Discord Selfbot"""
+        """Start the Discord Selfbot in the current process/loop"""
         self.log("")
         self.log("=" * 60)
         self.log("STARTING DISCORD SELFBOT")
         self.log("=" * 60)
 
-        # Import and run the selfbot
         try:
-            # Add current directory to path for imports
-            sys.path.insert(0, str(Path(__file__).parent))
+            # Add BASE_DIR to path for imports
+            if str(BASE_DIR) not in sys.path:
+                sys.path.insert(0, str(BASE_DIR))
 
-            # Import the selfbot runner class
             from core.selfbot_runner import SelfbotRunner
-
             self.selfbot_runner = SelfbotRunner()
-
-            # Run the selfbot
-            self.log("Initializing selfbot...")
+            
+            # This will run the selfbot (blocking)
             result = await self.selfbot_runner.run()
-
             return result == 0
 
-        except ImportError as e:
-            self.log(f"ERROR: Could not import selfbot modules: {e}")
-            self.log("Make sure all dependencies are installed:")
-            self.log("  pip3 install discord.py aiohttp requests")
-            return False
         except Exception as e:
             self.log(f"ERROR starting selfbot: {e}")
             logger.exception("Selfbot startup error")
             return False
 
-    def shutdown(self):
+    def shutdown(self, *args):
         """Graceful shutdown handler"""
         if not self.running:
             return
@@ -198,26 +179,20 @@ class CombinedRunner:
 
         self.running = False
 
-        # Stop selfbot first
+        # Stop selfbot
         if self.selfbot_runner:
             self.log("Stopping selfbot...")
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self.selfbot_runner.shutdown())
-            except Exception as e:
-                logger.error(f"Shutdown error: {e}")
+            # We don't need to await here as we're in a signal handler usually
+            # or about to exit the main loop
 
         # Stop bridge process
         if self.bridge_process:
             self.log("Stopping bridge server...")
             try:
                 self.bridge_process.terminate()
-                # Give it a moment to exit gracefully
-                time.sleep(0.5)
-                if self.bridge_process.poll() is None:
-                    self.bridge_process.kill()
-                    self.bridge_process.wait()
+                self.bridge_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.bridge_process.kill()
             except Exception as e:
                 logger.error(f"Process terminate error: {e}")
 
@@ -227,14 +202,7 @@ class CombinedRunner:
         """Main run loop - starts both services"""
         self.log("=" * 60)
         self.log("DISCORD SELFBOT + HERMES BRIDGE")
-        self.log("Combined Runner")
-        self.log("=" * 60)
-        self.log("")
-        self.log("This will start:")
-        self.log("  1. Hermes Bridge Server (connects to LM Studio)")
-        self.log("  2. Discord Selfbot (@inebotten)")
-        self.log("")
-        self.log("Press Ctrl+C to stop both services")
+        self.log("Combined Runner (Dynamic Paths)")
         self.log("=" * 60)
 
         self.running = True
@@ -242,7 +210,11 @@ class CombinedRunner:
         # Set up signal handlers
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, self.shutdown)
+            try:
+                loop.add_signal_handler(sig, self.shutdown)
+            except NotImplementedError:
+                # Windows doesn't support add_signal_handler
+                pass
 
         # Step 1: Start Bridge Server
         if not await self.start_bridge():
@@ -255,38 +227,23 @@ class CombinedRunner:
         )
         bridge_output_thread.start()
 
-        # Small delay to let bridge output start
-        await asyncio.sleep(0.5)
-
-        # Step 3: Start Selfbot (this blocks until shutdown)
+        # Step 3: Start Selfbot
         selfbot_success = await self.start_selfbot()
 
         # Cleanup
         self.shutdown()
-
-        # Wait for bridge output thread to finish
-        bridge_output_thread.join(timeout=2)
-
-        self.log("")
-        self.log("=" * 60)
-        self.log("ALL SERVICES STOPPED")
-        self.log("=" * 60)
-
         return 0 if selfbot_success else 1
 
 
 def main():
     """Entry point"""
     runner = CombinedRunner()
-
     try:
         return asyncio.run(runner.run())
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
         return 0
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        logger.exception("Fatal error traceback")
+        logger.exception(f"Fatal error: {e}")
         return 1
 
 

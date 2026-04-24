@@ -5,6 +5,8 @@ Stores preferences, conversation history, and personal details per user
 """
 
 import json
+import asyncio
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,30 +24,45 @@ class UserMemory:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.memory = self._load_memory()
+        self.memory = {}
 
-    def _load_memory(self):
-        """Load memory from storage"""
-        if self.storage_path.exists():
+    async def setup(self):
+        """Async initialization"""
+        self.memory = await self._load_memory()
+
+    async def _load_memory(self):
+        """Load memory from storage asynchronously"""
+        if not self.storage_path.exists():
+            return {}
+
+        def _read():
             try:
                 with open(self.storage_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 print(f"[MEMORY] User memory load error: {e}")
                 return {}
-        return {}
 
-    def _save_memory(self):
-        """Save memory to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.memory, f, ensure_ascii=False, indent=2)
+        return await asyncio.to_thread(_read)
 
-    def get_user(self, user_id, username=None):
+    async def _save_memory(self):
+        """Save memory to storage atomically and asynchronously"""
+        def _write():
+            temp_path = self.storage_path.with_suffix(".tmp")
+            try:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(self.memory, f, ensure_ascii=False, indent=2)
+                os.replace(temp_path, self.storage_path)
+            except Exception as e:
+                print(f"[MEMORY] User memory save error: {e}")
+                if temp_path.exists():
+                    os.remove(temp_path)
+
+        await asyncio.to_thread(_write)
+
+    async def get_user(self, user_id, username=None):
         """
         Get or create user memory
-
-        Returns:
-            User memory dict
         """
         user_key = str(user_id)
 
@@ -54,67 +71,63 @@ class UserMemory:
                 "username": username,
                 "first_seen": datetime.now().isoformat(),
                 "preferences": {
-                    "formality": "casual",  # casual, formal
-                    "humor_style": "friendly",  # friendly, sarcastic, dry
-                    "response_length": "medium",  # short, medium, long
-                    "use_dialect": True,  # Use Norwegian dialect words
+                    "formality": "casual",
+                    "humor_style": "friendly",
+                    "response_length": "medium",
+                    "use_dialect": True,
                 },
                 "interests": [],
                 "location": None,
-                "last_topics": [],  # Last 5 conversation topics
+                "last_topics": [],
                 "conversation_count": 0,
                 "last_interaction": None,
                 "favorite_commands": [],
                 "birthday": None,
                 "timezone": "Europe/Oslo",
             }
-            self._save_memory()
+            await self._save_memory()
 
-        # Update username if provided
         if username and not self.memory[user_key].get("username"):
             self.memory[user_key]["username"] = username
-            self._save_memory()
+            await self._save_memory()
 
         return self.memory[user_key]
 
-    def update_last_interaction(self, user_id, topic=None, username=None):
-        """
-        Update last interaction time and optionally topic
-        """
-        user = self.get_user(user_id, username)
+    async def update_last_interaction(self, user_id, topic=None, username=None):
+        """Update last interaction time and optionally topic"""
+        user = await self.get_user(user_id, username)
         user["last_interaction"] = datetime.now().isoformat()
         user["conversation_count"] = user.get("conversation_count", 0) + 1
 
         if topic:
-            # Add to last_topics, keep only last 5
             user["last_topics"] = ([topic] + user.get("last_topics", []))[:5]
 
-        self._save_memory()
+        await self._save_memory()
 
-    def add_interest(self, user_id, interest):
-        """Add an interest for a user (if not already present)"""
-        user = self.get_user(user_id)
+    async def add_interest(self, user_id, interest):
+        """Add an interest for a user"""
+        user = await self.get_user(user_id)
         if interest.lower() not in [i.lower() for i in user.get("interests", [])]:
             user["interests"].append(interest)
-            self._save_memory()
+            await self._save_memory()
 
-    def set_preference(self, user_id, key, value):
+    async def set_preference(self, user_id, key, value):
         """Set a user preference"""
-        user = self.get_user(user_id)
+        user = await self.get_user(user_id)
         if "preferences" not in user:
             user["preferences"] = {}
         user["preferences"][key] = value
-        self._save_memory()
+        await self._save_memory()
 
-    def set_location(self, user_id, location):
+    async def set_location(self, user_id, location):
         """Set user location"""
-        user = self.get_user(user_id)
+        user = await self.get_user(user_id)
         user["location"] = location
-        self._save_memory()
+        await self._save_memory()
 
-    def get_days_since_last_chat(self, user_id):
+    async def get_days_since_last_chat(self, user_id):
         """Get number of days since last interaction"""
-        user = self.get_user(user_id)
+        user = await self.get_user(user_id)
         last = user.get("last_interaction")
         if not last:
             return None
@@ -127,12 +140,10 @@ class UserMemory:
             print(f"[MEMORY] Date parse error: {e}")
             return None
 
-    def get_personalized_greeting(self, user_id, username=None):
-        """
-        Generate a personalized greeting based on user memory
-        """
-        user = self.get_user(user_id, username)
-        days_since = self.get_days_since_last_chat(user_id)
+    async def get_personalized_greeting(self, user_id, username=None):
+        """Generate a personalized greeting"""
+        user = await self.get_user(user_id, username)
+        days_since = await self.get_days_since_last_chat(user_id)
 
         greetings = []
         name = user.get("username") or username or ""
@@ -168,11 +179,9 @@ class UserMemory:
 
         return " ".join(greetings)
 
-    def format_context_for_prompt(self, user_id, username=None):
-        """
-        Format user memory as context for AI prompt
-        """
-        user = self.get_user(user_id, username)
+    async def format_context_for_prompt(self, user_id, username=None):
+        """Format user memory as context for AI prompt"""
+        user = await self.get_user(user_id, username)
 
         context_parts = []
 

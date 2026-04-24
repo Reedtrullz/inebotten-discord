@@ -145,10 +145,10 @@ to ensure consistent access to shared state like rate limiting and
             int or None: The extracted number
         """
         # Remove Discord mentions
-        content_clean = re.sub(r"<@!?\\d+>", "", content).strip()
+        content_clean = re.sub(r"<@!?\d+>", "", content).strip()
 
         # Extract number
-        num_match = re.search(r"\\b(\\d+)\\b", content_clean)
+        num_match = re.search(r"\b(\d+)\b", content_clean)
         if num_match:
             return int(num_match.group(1))
         return None

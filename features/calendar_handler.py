@@ -71,7 +71,7 @@ class CalendarHandler(BaseHandler):
                     self.log(f"GCal sync failed: {e}")
 
             # Add to calendar
-            item = self.calendar.add_item(
+            item = await self.calendar.add_item(
                 guild_id=guild_id,
                 user_id=message.author.id,
                 username=message.author.name,
@@ -99,33 +99,35 @@ class CalendarHandler(BaseHandler):
 
     def _sync_to_gcal(self, item_data: Dict[str, Any]) -> Optional[Dict]:
         """
-        Sync a calendar item to Google Calendar.
-
-        Args:
-            item_data: The parsed calendar item data
-
-        Returns:
-            GCal API result or None if failed
+        Sync a calendar item to Google Calendar with proper timezone support.
         """
-        day, month, year = item_data["date"].split(".")
-        time_str = item_data.get("time", "09:00")
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        
+        try:
+            day, month, year = map(int, item_data["date"].split("."))
+            time_parts = item_data.get("time", "09:00").split(":")
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
 
-        start_iso = f"{year}-{month.zfill(2)}-{day.zfill(2)}T{time_str}:00"
+            # Create start datetime in local timezone
+            local_tz = ZoneInfo("Europe/Oslo")
+            start_dt = datetime(year, month, day, hour, minute, tzinfo=local_tz)
+            
+            # End time is 1 hour later
+            end_dt = start_dt + timedelta(hours=1)
 
-        # Calculate end time (1 hour later)
-        hour = int(time_str.split(":")[0])
-        minute = time_str.split(":")[1] if ":" in time_str else "00"
-        end_time = f"{hour + 1:02d}:{minute}"
-        end_iso = f"{year}-{month.zfill(2)}-{day.zfill(2)}T{end_time}:00"
-
-        return self.calendar.gcal.create_event(
-            title=item_data["title"],
-            start_time=start_iso,
-            end_time=end_iso,
-            description=item_data["title"],
-            recurrence=item_data.get("recurrence"),
-            rrule_day=item_data.get("rrule_day"),
-        )
+            return self.calendar.gcal.create_event(
+                title=item_data["title"],
+                start_time=start_dt.isoformat(),
+                end_time=end_dt.isoformat(),
+                description=item_data.get("description", item_data["title"]),
+                recurrence=item_data.get("recurrence"),
+                rrule_day=item_data.get("rrule_day"),
+            )
+        except Exception as e:
+            self.log(f"Error preparing GCal sync: {e}")
+            return None
 
     async def handle_list(self, message) -> None:
         """Handle listing calendar items."""
@@ -162,7 +164,7 @@ class CalendarHandler(BaseHandler):
                 bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)", lower_text)
                 if bulk_match:
                     bulk_title = bulk_match.group(2).strip()
-                    count, deleted = self.calendar.delete_items_by_title(guild_id, bulk_title)
+                    count, deleted = await self.calendar.delete_items_by_title(guild_id, bulk_title)
                     if count > 0:
                         titles = ", ".join(deleted) if count <= 3 else f"{count} stykker"
                         await self.send_response(message, f"✅ **Slettet {count} stykker!**\n{titles}")
@@ -171,14 +173,14 @@ class CalendarHandler(BaseHandler):
                     return
                 else:
                     # Single delete by title
-                    success, title = self.calendar.delete_item_by_title(guild_id, search_text)
+                    success, title = await self.calendar.delete_item_by_title(guild_id, search_text)
                     if success:
                         await self.send_response(message, f"✅ **Slettet! {title}**")
                         return
                     # Fall through to number/list behavior if no match
 
             if item_num:
-                success, title = self.calendar.delete_item(guild_id, item_num)
+                success, title = await self.calendar.delete_item(guild_id, item_num)
 
                 if success:
                     response_text = f"✅ **Slettet! {title}**"
@@ -223,7 +225,7 @@ class CalendarHandler(BaseHandler):
                 bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)", lower_text)
                 if bulk_match:
                     bulk_title = bulk_match.group(2).strip()
-                    count, completed, has_recurring = self.calendar.complete_items_by_title(
+                    count, completed, has_recurring = await self.calendar.complete_items_by_title(
                         guild_id, bulk_title
                     )
                     if count > 0:
@@ -238,7 +240,7 @@ class CalendarHandler(BaseHandler):
                     return
                 else:
                     # Single complete by title
-                    success, title, next_date = self.calendar.complete_item_by_title(
+                    success, title, next_date = await self.calendar.complete_item_by_title(
                         guild_id, search_text
                     )
                     if success:
@@ -258,7 +260,7 @@ class CalendarHandler(BaseHandler):
                     # Fall through
 
             if item_num:
-                success, title, next_date = self.calendar.complete_item(
+                success, title, next_date = await self.calendar.complete_item(
                     guild_id, item_num
                 )
 

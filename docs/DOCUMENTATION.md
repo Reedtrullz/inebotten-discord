@@ -122,6 +122,7 @@
 
 | Fil | Formål | Bruk |
 |-----|--------|------|
+| `setup.py` | Interaktivt førstegangsoppsett | `python3 setup.py` |
 | `run_both.py` | Starter bridge + selfbot samtidig | `python3 run_both.py` |
 | `selfbot_runner.py` | Kun selfbot (bridge må kjøre) | `python3 selfbot_runner.py` |
 | `hermes_bridge_server.py` | Kun bridge | `python3 hermes_bridge_server.py` |
@@ -282,7 +283,9 @@ Gjentagende elementer flyttes til neste dato når du fullfører dem. Bruk `slett
 - Lagrer GCal event-ID for fremtidige oppdateringer
 - Viser 📅 indikator for synkroniserte elementer
 - Viser 📌 for kun lokale elementer
-- Sletter fra GCal når element slettes i bot
+- Sletter fra GCal når element slettes i bot (Toveis-synk)
+- Oppdaterer GCal når elementer markeres som [FERDIG]
+- Bakgrunnssynk hvert 15. minutt for å hente eksterne endringer
 - Starter med direkte API-kall (ingen subprocess)
 
 **GCal-slett:** Når du sletter et element i boten som er synkronisert til Google Calendar, slettes det også fra GCal automatisk.
@@ -385,6 +388,7 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 | **Komplimenter** | `compliments_manager.py` | `@inebotten kompliment` |
 | **URL-forkorter** | `url_shortener.py` | `@inebotten shorten [url]` |
 | **Nordlys** | `aurora_forecast.py` | `@inebotten nordlys` |
+| **Profil** | `profile_handler.py` | `@inebotten status [s]`, `@inebotten bio [t]` |
 
 ### 7. Utility-komponenter
 
