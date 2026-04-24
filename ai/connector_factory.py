@@ -5,8 +5,14 @@ Creates the appropriate AI connector based on configuration
 Supports both LM Studio (local) and OpenRouter (cloud) providers
 """
 
-from typing import Union
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Union
 from utils.logger import LoggerMixin
+
+if TYPE_CHECKING:
+    from ai.hermes_connector import HermesConnector
+    from ai.openrouter_connector import OpenRouterConnector
 
 
 class AIConnectorFactory(LoggerMixin):

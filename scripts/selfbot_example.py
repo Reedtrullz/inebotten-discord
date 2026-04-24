@@ -7,13 +7,15 @@ Catches mentions in real channels/text
 import os
 import sys
 from pathlib import Path
+
+import discord
 from discord.ext import commands
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 hermes_root = f"{dir_path}/../../.."
 
 intents = discord.Intents.default()
-bot = Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 @bot.event
 async def on_ready():
