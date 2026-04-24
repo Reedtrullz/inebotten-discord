@@ -14,7 +14,7 @@ class ProfileHandler(BaseHandler):
     def __init__(self, monitor):
         super().__init__(monitor)
         self.client = monitor.client
-        self.token = monitor.client.config.DISCORD_USER_TOKEN
+        self.token = monitor.client.config.DISCORD_TOKEN
 
     async def handle_status(self, message, status: str) -> None:
         """

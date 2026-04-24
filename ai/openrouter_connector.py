@@ -243,30 +243,29 @@ class OpenRouterConnector(LoggerMixin):
         Returns:
             (success, response_text or error_message)
         """
-        # Build messages array
-        messages = []
-        
-        # Add system prompt
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        elif self.default_system_prompt:
-            messages.append({"role": "system", "content": self.default_system_prompt})
-        
         # Add context about the conversation
         context = f"User {author_name} in {channel_type} channel"
         if is_mention:
             context += " (mentioned you)"
-        
-        messages.append({
-            "role": "system",
-            "content": f"Context: {context}. Respond in Norwegian."
-        })
-        
-        # Add user message
-        messages.append({
-            "role": "user",
-            "content": message_content
-        })
+
+        prompt = system_prompt or self.default_system_prompt
+        context_prompt = f"Context: {context}. Respond in Norwegian."
+
+        # Google Gemma models on OpenRouter reject system/developer instructions.
+        if self.model.startswith("google/gemma"):
+            messages = [{
+                "role": "user",
+                "content": (
+                    f"{prompt}\n\n{context_prompt}\n\n"
+                    f"User message:\n{message_content}"
+                )
+            }]
+        else:
+            messages = []
+            if prompt:
+                messages.append({"role": "system", "content": prompt})
+            messages.append({"role": "system", "content": context_prompt})
+            messages.append({"role": "user", "content": message_content})
 
         # Build request payload
         payload = {

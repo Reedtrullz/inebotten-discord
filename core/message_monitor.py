@@ -155,6 +155,9 @@ class MessageMonitor:
 
     def is_mention(self, message):
         """Check if message mentions the bot"""
+        if isinstance(message.channel, discord.DMChannel):
+            return True
+
         content = message.content.lower()
 
         # Check for @inebotten mention
@@ -571,9 +574,8 @@ class SelfbotClient(discord.Client):
     def __init__(
         self, config, auth_handler, rate_limiter, hermes_connector, response_generator
     ):
-        # Set up intents (required in discord.py 2.0+)
-        intents = discord.Intents.all()
-        super().__init__(max_messages=10000, self_bot=True, intents=intents)
+        # discord.py-self does not expose/use the normal bot Intents API.
+        super().__init__(max_messages=10000, self_bot=True)
 
         self.config = config
         self.auth_handler = auth_handler
@@ -637,6 +639,10 @@ class SelfbotClient(discord.Client):
 
     async def on_message(self, message):
         """Called when a message is received"""
+        print(
+            f"[BOT] Message received from {message.author} "
+            f"in {type(message.channel).__name__}: {message.content[:80]}"
+        )
         if self.monitor:
             await self.monitor.handle_message(message)
 
