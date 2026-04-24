@@ -43,14 +43,20 @@ class SearchManager:
                 )
                 if response and response.get('results'):
                     print(f"[SEARCH] Tavily (Advanced) success for: {query}")
-                    # Extract raw content if available, otherwise use snippet
-                    return [
-                        {
-                            "title": r['title'], 
-                            "href": r['url'], 
-                            "body": r.get('raw_content') or r.get('content') or "Ingen detaljer funnet."
-                        } for r in response['results']
-                    ]
+                    results = []
+                    for r in response['results']:
+                        # Get the best content available
+                        content = r.get('raw_content') or r.get('content') or ""
+                        # Clean it up: remove excess whitespace and truncate
+                        cleaned_content = " ".join(content.split())
+                        truncated_content = cleaned_content[:3000] # Limit per result
+                        
+                        results.append({
+                            "title": r['title'],
+                            "href": r['url'],
+                            "body": truncated_content
+                        })
+                    return results
             except Exception as e:
                 print(f"[SEARCH] Tavily failed: {e}")
 
