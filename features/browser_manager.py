@@ -7,7 +7,6 @@ Uses Browserbase to fetch and "read" full web pages.
 import asyncio
 import os
 from typing import Optional
-from browserbase import Browserbase
 
 class BrowserManager:
     """
@@ -18,18 +17,26 @@ class BrowserManager:
         # Support both naming conventions (with and without underscore)
         self.api_key = os.getenv("BROWSERBASE_API_KEY") or os.getenv("BROWSER_BASE_API_KEY")
         self.project_id = os.getenv("BROWSERBASE_PROJECT_ID") or os.getenv("BROWSER_BASE_PROJECT_ID")
-        self.bb = None
-        if self.api_key and self.project_id:
-            self.bb = Browserbase(api_key=self.api_key, project_id=self.project_id)
-            print("[BROWSER] Browserbase initialized successfully")
-        else:
-            print("[BROWSER] Warning: Browserbase not fully configured (missing key or project ID)")
-            
+        self._bb = None
+        
+    def _get_bb(self):
+        if self._bb is None and self.api_key and self.project_id:
+            try:
+                from browserbase import Browserbase
+                self._bb = Browserbase(api_key=self.api_key, project_id=self.project_id)
+                print("[BROWSER] Browserbase initialized successfully")
+            except ImportError:
+                print("[BROWSER] Warning: browserbase library not installed")
+            except Exception as e:
+                print(f"[BROWSER] Error initializing Browserbase: {e}")
+        return self._bb
+
     async def fetch_page_content(self, url: str) -> Optional[str]:
         """
         Visits a URL and extracts the text content using Browserbase.
         """
-        if not self.bb:
+        bb = self._get_bb()
+        if not bb:
             return None
             
         try:
@@ -40,7 +47,7 @@ class BrowserManager:
             # Use the simple load method for content extraction
             content = await loop.run_in_executor(
                 None,
-                lambda: self.bb.load(url)
+                lambda: bb.load(url)
             )
             
             if content:

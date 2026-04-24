@@ -4,12 +4,11 @@ Search Manager for Inebotten
 Uses Tavily (AI-optimized) with Google and DuckDuckGo fallbacks.
 """
 
+# Core imports
 import asyncio
 import os
-from typing import List, Dict, Optional
 import re
-from googlesearch import search as google_search
-from duckduckgo_search import DDGS
+from typing import List, Dict, Optional
 
 class SearchManager:
     """
@@ -17,8 +16,9 @@ class SearchManager:
     """
     
     def __init__(self):
+        # Support both naming conventions (with and without underscore)
         self.tavily_api_key = os.getenv("TAVILY_API_KEY")
-        self.ddgs = DDGS()
+        self.ddgs = None # Initialize lazily
         
     async def search(self, query: str, max_results: int = 3, region: str = "no-no") -> List[Dict]:
         """
@@ -44,6 +44,7 @@ class SearchManager:
 
         # 2. Try Google (Reliable Scraper Fallback)
         try:
+            from googlesearch import search as google_search
             print(f"[SEARCH] Trying Google fallback for: {query}")
             loop = asyncio.get_event_loop()
             # googlesearch-python returns an iterator of URLs
@@ -58,6 +59,9 @@ class SearchManager:
 
         # 3. Try DuckDuckGo (Last resort)
         try:
+            from duckduckgo_search import DDGS
+            if not self.ddgs:
+                self.ddgs = DDGS()
             print(f"[SEARCH] Trying DuckDuckGo last resort for: {query}")
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
