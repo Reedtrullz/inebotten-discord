@@ -758,10 +758,10 @@ class SelfbotClient(discord.Client):
     """Custom Discord client with selfbot functionality"""
 
     def __init__(
-        self, config, auth_handler, rate_limiter, hermes_connector, response_generator, intents=None
+        self, config, auth_handler, rate_limiter, hermes_connector, response_generator
     ):
-        # Initialize with provided intents if any, otherwise use defaults
-        super().__init__(max_messages=10000, self_bot=True, intents=intents)
+        # discord.py-self does not expose/use the normal bot Intents API.
+        super().__init__(max_messages=10000, self_bot=True)
 
         self.config = config
         self.auth_handler = auth_handler
