@@ -24,7 +24,7 @@ class OpenRouterConnector(LoggerMixin):
         api_key: str,
         model: str = "google/gemma-3-4b-it:free",
         temperature: float = 0.7,
-        max_tokens: int = 200,
+        max_tokens: int = 500,
         base_url: str = "https://openrouter.ai/api/v1"
     ):
         """

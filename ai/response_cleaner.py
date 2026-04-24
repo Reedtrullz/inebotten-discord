@@ -56,8 +56,8 @@ def clean_thinking_response(text):
         if is_thinking:
             continue
         
-        # Skip very short lines (less than 3 words)
-        if len(line.split()) < 3:
+        # Skip very short lines (less than 3 words) unless it contains a link
+        if len(line.split()) < 3 and "[" not in line:
             continue
         
         # Skip lines that are just punctuation or emojis
@@ -81,7 +81,7 @@ def clean_thinking_response(text):
     if sentences:
         return sentences[-1] + '.'
     
-    return text[:100]  # Return first 100 chars as fallback
+    return text[:500]  # Return first 500 chars as fallback
 
 
 if __name__ == "__main__":

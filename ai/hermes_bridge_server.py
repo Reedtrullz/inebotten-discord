@@ -258,14 +258,15 @@ class HermesBridgeServer:
             "gemma-2" in LM_STUDIO_MODEL.lower() and "2b" in LM_STUDIO_MODEL.lower()
         )
         # Reasoning/thinking models need special handling
+        is_gemma_3 = "gemma-3" in LM_STUDIO_MODEL.lower()
         is_reasoning_model = any(
             x in LM_STUDIO_MODEL.lower()
             for x in ["reasoning", "thinking", "opus", "claude"]
         )
 
         # Use custom system prompt if provided (but truncate for problematic small models)
-        # Note: Qwen and Gemma 2 2B handle long prompts well even when small
-        needs_simplification = is_small_model and not is_qwen and not is_gemma_2b
+        # Note: Qwen, Gemma 2 2B, and Gemma 3 handle long prompts well even when small
+        needs_simplification = is_small_model and not is_qwen and not is_gemma_2b and not is_gemma_3
 
         if custom_system_prompt:
             if needs_simplification and len(custom_system_prompt) > 800:
@@ -538,8 +539,8 @@ class HermesBridgeServer:
                                 ):
                                     continue
 
-                                # Skip very short lines
-                                if len(line.split()) < 2:
+                                # Skip very short lines (less than 3 words) unless it contains a link
+                                if len(line.split()) < 3 and "[" not in line:
                                     continue
 
                                 # Skip lines that are mostly punctuation
@@ -560,7 +561,7 @@ class HermesBridgeServer:
                                     return max(
                                         good_candidates, key=len
                                     )  # Longest good candidate
-                                return candidates[-1]  # Last candidate as fallback
+                                return text[:500]  # Return first 500 chars as fallback
 
                             return text[:500] if text else ""
 
