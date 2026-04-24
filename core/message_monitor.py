@@ -149,19 +149,8 @@ class MessageMonitor:
         self.loc = get_localization()
 
         # Initialize feature managers
-        from features.countdown_manager import CountdownManager
-        from features.poll_manager import PollManager, parse_poll_command, parse_vote
-        from features.watchlist_manager import WatchlistManager, parse_watchlist_command
-        from features.word_of_day import WordOfTheDay
-        from features.quote_manager import QuoteManager, parse_quote_command
-        from features.crypto_manager import CryptoManager, parse_price_command
-        from features.compliments_manager import ComplimentsManager, parse_compliment_command
-        from features.horoscope_manager import HoroscopeManager, parse_horoscope_command
-        from features.calculator_manager import CalculatorManager, parse_calculator_command
-        from features.url_shortener import URLShortener, parse_shorten_command
-        from features.aurora_forecast import AuroraForecast
-        from features.daily_digest_manager import DailyDigestManager
         from features.search_manager import SearchManager, detect_search_intent
+        from features.browser_manager import BrowserManager
 
         self.countdown = CountdownManager()
         self.poll = PollManager()
@@ -175,6 +164,7 @@ class MessageMonitor:
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
         self.search_manager = SearchManager()
+        self.browser_manager = BrowserManager()
         self.detect_search_intent = detect_search_intent
         self.daily_digest = DailyDigestManager(
             event_manager=self.calendar,
@@ -563,6 +553,16 @@ class MessageMonitor:
                         if search_results:
                             search_context = self.search_manager.format_results_for_ai(search_results)
                             print(f"[MONITOR] Found {len(search_results)} search results")
+                            
+                            # DEEP RESEARCH: If Browserbase is configured and we have a top result, visit it
+                            if self.browser_manager.is_configured() and len(search_results) > 0:
+                                top_url = search_results[0].get('href') or search_results[0].get('url')
+                                if top_url:
+                                    print(f"[MONITOR] Deep Research: Reading top page via Browserbase...")
+                                    page_content = await self.browser_manager.fetch_page_content(top_url)
+                                    if page_content:
+                                        search_context += f"\n\nDETALJERT INNHOLD FRA TOPP-KILDEN ({top_url}):\n{page_content}\n"
+                                        print("[MONITOR] Deep Research: Successfully read page content")
 
                     system_prompt = self.get_system_prompt(
                         user_context=user_context,

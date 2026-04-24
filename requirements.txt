@@ -27,7 +27,8 @@ google-auth-oauthlib>=1.0.0
 google-auth-httplib2>=0.1.0
 google-api-python-client>=2.0.0
 
-# Search capabilities
-duckduckgo-search>=6.0.0
+# Browser and Scraping
+browserbase>=0.1.0
 tavily-python>=0.3.0
 googlesearch-python>=1.2.0
+duckduckgo-search>=6.0.0
