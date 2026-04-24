@@ -9,6 +9,13 @@ import sys
 import shutil
 from pathlib import Path
 
+# Try to import dotenv, but don't fail if it's missing (we'll handle it later)
+try:
+    from dotenv import load_dotenv, set_key
+    HAS_DOTENV = True
+except ImportError:
+    HAS_DOTENV = False
+
 # ANSI colors for better UX
 class Colors:
     HEADER = '\033[95m'
@@ -109,7 +116,8 @@ def setup_discord():
     print("  4. Find 'token' (may need to toggle filter or reload)")
     print(f"  {Colors.WARNING}WARNING: NEVER share your token with anyone!{Colors.ENDC}")
     
-    token = get_input("Enter your Discord User Token", required=True)
+    default_token = os.getenv("DISCORD_USER_TOKEN", "")
+    token = get_input("Enter your Discord User Token", default=default_token, required=True)
     return token
 
 def setup_ai():
@@ -123,11 +131,14 @@ def setup_ai():
     config = {}
     if choice == "2":
         config['AI_PROVIDER'] = "openrouter"
-        config['OPENROUTER_API_KEY'] = get_input("Enter your OpenRouter API Key", required=True)
-        config['OPENROUTER_MODEL'] = get_input("Enter model name", "google/gemma-3-4b-it:free")
+        default_key = os.getenv("OPENROUTER_API_KEY", "")
+        config['OPENROUTER_API_KEY'] = get_input("Enter your OpenRouter API Key", default=default_key, required=True)
+        default_model = os.getenv("OPENROUTER_MODEL", "google/gemma-3-4b-it:free")
+        config['OPENROUTER_MODEL'] = get_input("Enter model name", default_model)
     else:
         config['AI_PROVIDER'] = "lm_studio"
-        config['HERMES_API_URL'] = get_input("LM Studio API URL", "http://127.0.0.1:3000/api/chat")
+        default_url = os.getenv("HERMES_API_URL", "http://127.0.0.1:3000/api/chat")
+        config['HERMES_API_URL'] = get_input("LM Studio API URL", default_url)
     
     return config
 
@@ -201,6 +212,17 @@ def main():
     clear_screen()
     print_header()
     
+    if os.path.exists(".env"):
+        if HAS_DOTENV:
+            load_dotenv()
+        else:
+            # Simple fallback parser if dotenv is missing
+            with open(".env", "r") as f:
+                for line in f:
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+
     try:
         check_dependencies()
         
