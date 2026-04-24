@@ -39,6 +39,8 @@ class ConversationContext:
         r'\bkjekt\b', r'\btøft\b', r'\brått\b',
         r'\bskikkelig\b', r'\bkult\b', r'\bstilig\b',
         r'\bkempe', r'\bsupert\b', r'\bflott\b',
+        r'\bskal\b', r'\bvil\b', r'\bblir\b', r'\bønsker\b',
+        r'\bhva skjer\b', r'\bhva driver\b',
     ]
     
     def __init__(self, max_history=10, expiry_minutes=30):
@@ -153,8 +155,8 @@ class ConversationContext:
             if len(recent_msgs) > 1:
                 return False, "ongoing_conversation"
         
-        # Default: show dashboard for unknown intent (backwards compatible)
-        return True, "default"
+        # Default: chat instead of showing dashboard
+        return False, "default"
     
     def get_conversation_summary(self, channel_id):
         """

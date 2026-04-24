@@ -442,57 +442,41 @@ class NaturalLanguageParser:
             if keyword in content_lower:
                 strong_indicators += 2  # Calendar keywords are strong signals
 
-        # 2. Task indicators (husk, jeg må, etc.)
-        for indicator in self.task_indicators:
-            if indicator in content_lower:
+        # 2. Task indicators (husk, jeg må, skal, etc.)
+        task_indicators = [
+            'jeg må', 'jeg skal', 'må', 'skal', 'vil', 'bør', 'trenger å',
+            'eg må', 'eg skal', 'minn meg', 'husk', 'huske'
+        ]
+        for indicator in task_indicators:
+            # Match indicator as whole word
+            if re.search(rf'\b{re.escape(indicator)}\b', content_lower):
                 strong_indicators += 2
 
-        # 3. Explicit time patterns (kl 14, 14:00)
+        # 3. Explicit time patterns (kl 14, 14:00, kveld, morgen)
         if re.search(r'(?:kl\.?|klokken)\s*\d{1,2}', content_lower):
             strong_indicators += 2
         if re.search(r'\b\d{1,2}:\d{2}\b', content):
             strong_indicators += 2
+            
+        time_words = ['kveld', 'morgen', 'ettermiddag', 'formiddag', 'natt', 'lunsj', 'middag']
+        for word in time_words:
+            if re.search(rf'\b{word}\b', content_lower):
+                strong_indicators += 1
 
         # 4. Numeric dates (DD.MM.YYYY or DD.MM)
         if re.search(r'\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?', content):
             strong_indicators += 2
 
-        # 4b. Month name dates (15. mai, 20 desember)
-        month_pattern = r'\d{1,2}\s*[.-]?\s*(?:januar|februar|mars|april|mai|juni|juli|august|september|oktober|november|desember|jan|feb|mar|apr|jun|jul|aug|sep|okt|nov|des|january|february|march|may|june|july|august|september|october|november|december)'
-        if re.search(month_pattern, content_lower):
-            strong_indicators += 2
-
-        # 4c. "den X" pattern (den 5., den 15. mai)
-        den_pattern = r'den\s*\d{1,2}\s*\.?(?:\s*(?:januar|februar|mars|april|mai|juni|juli|august|september|oktober|november|desember|jan|feb|mar|apr|jun|jul|aug|sep|okt|nov|des))?'
-        if re.search(den_pattern, content_lower):
-            strong_indicators += 2
-
-        # 5. Recurrence patterns (hver uke, etc.)
-        for pattern in self.recurrence_patterns:
-            if pattern in content_lower:
+        # 5. Day names (Mandag, Fredag, etc.) are now VERY strong indicators
+        for day in self.days:
+            if day in content_lower:
                 strong_indicators += 2
 
         # If we have strong indicators, it's likely a calendar command
         if strong_indicators >= 2:
             return True
 
-        # Weak indicators (date words like "i dag", "i morgen")
-        # These alone are NOT enough - they're too common in conversation
-        weak_indicators = 0
-
-        for word in self.date_words:
-            if word in content_lower:
-                weak_indicators += 1
-
-        for day in self.days:
-            if day in content_lower:
-                weak_indicators += 1
-
-        # Only accept weak indicators if we have multiple AND the message is short
-        # (short messages with date words are more likely to be calendar commands)
-        word_count = len(content.split())
-        if weak_indicators >= 1 and word_count <= 5:
-            return True
+        return False
 
         return False
     
