@@ -229,11 +229,23 @@ def main():
             load_dotenv()
         else:
             # Simple fallback parser if dotenv is missing
-            with open(".env", "r") as f:
-                for line in f:
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+            try:
+                with open(".env", "r") as f:
+                    for line in f:
+                        if "=" in line:
+                            k, v = line.split("=", 1)
+                            os.environ[k.strip()] = v.strip().strip('"').strip("'")
+            except PermissionError:
+                print(f"{Colors.WARNING}Warning: Permission denied when reading .env file. Skipping...{Colors.ENDC}")
+            except Exception as e:
+                print(f"{Colors.WARNING}Warning: Could not read .env file: {e}{Colors.ENDC}")
+
+    # Check for write permissions early
+    if not os.access(".", os.W_OK):
+        print(f"\n{Colors.FAIL}Error: You do not have write permissions in this directory.{Colors.ENDC}")
+        print(f"{Colors.WARNING}Hint: Since you are in /opt, you might need to run this with sudo or change ownership:{Colors.ENDC}")
+        print(f"  {Colors.CYAN}sudo chown -R $USER:$USER {os.getcwd()}{Colors.ENDC}")
+        sys.exit(1)
 
     try:
         check_dependencies()
