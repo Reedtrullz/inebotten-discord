@@ -138,7 +138,7 @@ def setup_ai():
         config['AI_PROVIDER'] = "openrouter"
         default_key = os.getenv("OPENROUTER_API_KEY", "")
         config['OPENROUTER_API_KEY'] = get_input("Enter your OpenRouter API Key", default=default_key, required=True)
-        default_model = os.getenv("OPENROUTER_MODEL", "google/gemma-3-4b-it:free")
+        default_model = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
         config['OPENROUTER_MODEL'] = get_input("Enter model name", default_model)
     else:
         config['AI_PROVIDER'] = "lm_studio"

@@ -67,11 +67,13 @@ class Config:
             Path.home() / '.hermes' / 'discord' / '.env',  # User home
         ]
         
+        self.env_file_loaded = None
         for env_path in env_paths:
             if env_path.exists():
                 try:
-                    load_dotenv(env_path)
-                    print(f"[CONFIG] Loaded settings from {env_path}")
+                    # override=True ensures .env wins over pre-set environment variables
+                    load_dotenv(env_path, override=True)
+                    self.env_file_loaded = str(env_path)
                     break
                 except Exception as e:
                     print(f"[CONFIG] Warning: Could not load .env file: {e}")
@@ -99,8 +101,12 @@ class Config:
                 print("  Falling back to LM Studio...")
                 self.AI_PROVIDER = 'lm_studio'
             else:
+                if self.env_file_loaded:
+                    print(f"[CONFIG] Settings loaded from {self.env_file_loaded}")
                 print(f"[CONFIG] Using OpenRouter API (model: {self.OPENROUTER_MODEL})")
         else:
+            if self.env_file_loaded:
+                print(f"[CONFIG] Settings loaded from {self.env_file_loaded}")
             print(f"[CONFIG] Using LM Studio (URL: {self.HERMES_API_URL})")
     
     def get_hermes_url(self):
