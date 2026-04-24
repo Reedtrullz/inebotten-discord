@@ -126,6 +126,8 @@
 | `run_both.py` | Starter bridge + selfbot samtidig | `python3 run_both.py` |
 | `selfbot_runner.py` | Kun selfbot (bridge må kjøre) | `python3 selfbot_runner.py` |
 | `hermes_bridge_server.py` | Kun bridge | `python3 hermes_bridge_server.py` |
+| `Dockerfile` | Docker image definition | `docker build .` |
+| `docker-compose.yml` | Container orchestration | `docker-compose up` |
 
 ### 2. Bridge Layer (`hermes_bridge_server.py`)
 

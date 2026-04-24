@@ -131,6 +131,13 @@ python setup.py
 
 # 4. Start botten
 python scripts/run_both.py
+
+#### Docker (Alternativ)
+
+```bash
+docker-compose up -d
+```
+Det er alt! Botten vil kjøre i bakgrunnen og starte automatisk ved omstart.
 ```
 
 ---

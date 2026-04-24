@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  inebotten:
+    build: .
+    container_name: inebotten-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Persistent storage for calendar, memory, and tokens
+      - ./data:/root/.hermes
+    environment:
+      - HERMES_BRIDGE_HOST=0.0.0.0
+      - HERMES_BRIDGE_PORT=3000
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  data:
