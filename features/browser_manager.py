@@ -24,11 +24,11 @@ class BrowserManager:
 
     def _get_bb(self):
         """Lazy loader for the SDK to prevent startup crashes."""
-        if self._bb is None and self.is_configured():
+        if self._bb is None and self.api_key:
             try:
                 from browserbase import Browserbase
-                # The SDK handles auth and headers internally
-                self._bb = Browserbase(api_key=self.api_key, project_id=self.project_id)
+                # The SDK only takes api_key in the constructor
+                self._bb = Browserbase(api_key=self.api_key)
                 print("[BROWSER] SDK initialized successfully")
             except Exception as e:
                 print(f"[BROWSER] SDK initialization failed: {e}")
