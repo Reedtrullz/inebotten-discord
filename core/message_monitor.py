@@ -149,6 +149,16 @@ class MessageMonitor:
         self.loc = get_localization()
 
         # Initialize feature managers
+        from features.countdown_manager import CountdownManager
+        from features.poll_manager import PollManager, parse_poll_command, parse_vote
+        from features.watchlist_manager import WatchlistManager, parse_watchlist_command
+        from features.word_of_day import WordOfTheDay
+        from features.quote_manager import QuoteManager, parse_quote_command
+        from features.crypto_manager import CryptoManager, parse_price_command
+        from features.compliments_manager import ComplimentsManager, parse_compliment_command
+        from features.horoscope_manager import HoroscopeManager, parse_horoscope_command
+        from features.calculator_manager import CalculatorManager, parse_calculator_command
+        from features.url_shortener import URLShortener, parse_shorten_command
         from features.aurora_forecast import AuroraForecast
         from features.daily_digest_manager import DailyDigestManager
         from features.search_manager import SearchManager, detect_search_intent
