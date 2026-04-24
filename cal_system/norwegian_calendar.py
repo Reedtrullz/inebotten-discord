@@ -581,15 +581,34 @@ def get_sunrise_sunset(day_of_year=None, latitude=59.9, longitude=10.7):
     # Calculate daylight hours using sine wave
     # Peak at day ~172 (June 21)
     avg_daylight = 12.25
-    amplitude = 6.25  # variation from average
+    
+    # Amplitude increases with latitude (simplified for Norway)
+    # Oslo (60N) ~ 6.25, Tromsø (70N) ~ 11.5
+    amplitude = 6.25 + 0.5 * (latitude - 59.9)
+    amplitude = max(0, min(11.75, amplitude)) # Clamp to avoid > 24h
+    
     daylight_hours = avg_daylight + amplitude * math.sin(day_rad - 1.39)
+    daylight_hours = max(0, min(24, daylight_hours))
 
     # Calculate sunrise/sunset from daylight hours (approximate)
-    sunrise_hour = 12 - (daylight_hours / 2)
-    sunset_hour = 12 + (daylight_hours / 2)
+    # Shift based on longitude (15 degrees per hour)
+    # Oslo is at 10.7E. Every degree east of Oslo is -4 minutes for solar noon.
+    longitude_shift = (longitude - 10.7) / 15.0
+    
+    solar_noon = 12.0 - longitude_shift
+    sunrise_hour = solar_noon - (daylight_hours / 2)
+    sunset_hour = solar_noon + (daylight_hours / 2)
 
-    sunrise = f"{int(sunrise_hour):02d}:{int((sunrise_hour % 1) * 60):02d}"
-    sunset = f"{int(sunset_hour):02d}:{int((sunset_hour % 1) * 60):02d}"
+    # Handle polar day/night
+    if daylight_hours >= 23.9:
+        sunrise = "00:00"
+        sunset = "23:59"
+    elif daylight_hours <= 0.1:
+        sunrise = "--:--"
+        sunset = "--:--"
+    else:
+        sunrise = f"{int(sunrise_hour % 24):02d}:{int((sunrise_hour % 1) * 60):02d}"
+        sunset = f"{int(sunset_hour % 24):02d}:{int((sunset_hour % 1) * 60):02d}"
 
     daylight = f"{int(daylight_hours)}t {int((daylight_hours % 1) * 60):02d}m"
 

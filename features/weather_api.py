@@ -7,6 +7,7 @@ Free to use with proper attribution
 
 import aiohttp
 import asyncio
+import re
 from datetime import datetime
 
 
@@ -211,7 +212,24 @@ NORWEGIAN_CITIES = {
     'kristiansand': {'lat': 58.1467, 'lon': 7.9956, 'name': 'Kristiansand'},
     'bodø': {'lat': 67.2804, 'lon': 14.4049, 'name': 'Bodø'},
     'ålesund': {'lat': 62.4722, 'lon': 6.1549, 'name': 'Ålesund'},
+    'skien': {'lat': 59.2096, 'lon': 9.6090, 'name': 'Skien'},
+    'drammen': {'lat': 59.7439, 'lon': 10.2045, 'name': 'Drammen'},
+    'fredrikstad': {'lat': 59.2205, 'lon': 10.9347, 'name': 'Fredrikstad'},
+    'sandnes': {'lat': 58.8524, 'lon': 5.7352, 'name': 'Sandnes'},
+    'larvik': {'lat': 59.0533, 'lon': 10.0271, 'name': 'Larvik'},
 }
+
+
+def extract_city(text):
+    """
+    Extract a city name from text if it exists in NORWEGIAN_CITIES
+    """
+    text_lower = text.lower()
+    for city_key in NORWEGIAN_CITIES:
+        # Match whole word using word boundaries
+        if re.search(rf'\b{re.escape(city_key)}\b', text_lower):
+            return city_key
+    return None
 
 
 async def get_weather_for_city(city_name='oslo'):

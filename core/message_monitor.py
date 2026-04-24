@@ -465,6 +465,14 @@ class MessageMonitor:
         )
         print(f"[MONITOR] Intent detection: wants_dashboard={wants_dashboard}, reason={reason}")
 
+        # Extract city if dashboard is wanted
+        city_name = None
+        if wants_dashboard:
+            from features.weather_api import extract_city
+            city_name = extract_city(message.content)
+            if city_name:
+                print(f"[MONITOR] Specific city detected: {city_name}")
+
         # Update conversation history
         self.conversation.add_message(
             channel_id=guild_id,
@@ -527,7 +535,7 @@ class MessageMonitor:
         # Fallback: dashboard or basic response
         if not response_text:
             if wants_dashboard:
-                response_text = await self._generate_dashboard(guild_id)
+                response_text = await self._generate_dashboard(guild_id, city_name=city_name)
             else:
                 from ai.personality_config import get_fallback_response
                 response_text = get_fallback_response("general")
@@ -577,23 +585,40 @@ class MessageMonitor:
         )
         await self._send_response(message, response_text)
 
-    async def _generate_dashboard(self, guild_id: int) -> str:
+    async def _generate_dashboard(self, guild_id: int, city_name: str = None) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
-        from features.weather_api import METWeatherAPI
+        from features.weather_api import METWeatherAPI, NORWEGIAN_CITIES
 
         norwegian_data = get_todays_info()
         weather_api = METWeatherAPI()
-        weather_data = await weather_api.get_weather()
+        
+        # Get coordinates for city if provided, otherwise default to Oslo
+        city_info = NORWEGIAN_CITIES.get(city_name.lower()) if city_name else NORWEGIAN_CITIES['oslo']
+        
+        weather_data = await weather_api.get_weather(
+            lat=city_info['lat'],
+            lon=city_info['lon'],
+            location_name=city_info['name']
+        )
         await weather_api.close()
 
         if weather_data:
             weather_formatted = {
                 "conditions": weather_data["condition"],
                 "temp": weather_data["temp"],
+                "location": weather_data["location"],
+                "lat": city_info['lat'],
+                "lon": city_info['lon']
             }
         else:
-            weather_formatted = {"conditions": "Delvis skyet", "temp": 8}
+            weather_formatted = {
+                "conditions": "Delvis skyet", 
+                "temp": 8, 
+                "location": city_info['name'],
+                "lat": city_info['lat'],
+                "lon": city_info['lon']
+            }
 
         upcoming_items = self.calendar.get_upcoming(guild_id, days=7)
 

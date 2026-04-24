@@ -26,7 +26,9 @@ class ConversationalResponseGenerator:
             norwegian_data = get_todays_info()
         
         # Get sunrise/sunset for a natural mention
-        sunrise, sunset, daylight = get_sunrise_sunset()
+        lat = weather_data.get('lat', 59.9) if weather_data else 59.9
+        lon = weather_data.get('lon', 10.7) if weather_data else 10.7
+        sunrise, sunset, daylight = get_sunrise_sunset(latitude=lat, longitude=lon)
         
         lines = []
         
@@ -53,7 +55,8 @@ class ConversationalResponseGenerator:
         
         # Weather - conversational
         if weather_data:
-            lines.append(f"\n🌤️ **Været:** {weather_data['conditions']}, {weather_data['temp']}°C")
+            location_str = f" i {weather_data['location']}" if weather_data.get('location') else ""
+            lines.append(f"\n🌤️ **Været{location_str}:** {weather_data['conditions']}, {weather_data['temp']}°C")
             if weather_data['conditions'].lower() in ['sol', 'klarvær']:
                 lines.append("Nydelig dag for å være ute! ☀️")
             elif weather_data['conditions'].lower() in ['regn', 'regnfullt']:
@@ -62,7 +65,8 @@ class ConversationalResponseGenerator:
                 lines.append("Litt mystisk vær i dag 🌫️")
         
         # Sunrise/sunset - quick mention
-        lines.append(f"\n☀️ Solen går ned {sunset} i dag")
+        location_suffix = f" i {weather_data['location']}" if weather_data and weather_data.get('location') else " i dag"
+        lines.append(f"\n☀️ Solen går ned {sunset}{location_suffix}")
         
         # Moon
         moon_phase, moon_emoji, _ = get_moon_phase()
