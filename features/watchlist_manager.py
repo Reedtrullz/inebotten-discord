@@ -364,9 +364,13 @@ def parse_watchlist_command(message_content):
                 content_type = "movie"
             elif any(
                 word in content_lower
-                for word in ["serie", "series", "serieforslag", "tv show"]
+                for word in ["serie", "series", "serieforslag", "tv show", "program"]
             ):
                 content_type = "series"
+
+            # If it's a general 'recommend' without movie/series context, skip it
+            if keyword in ["recommend", "anbefaling"] and not content_type:
+                continue
 
             # Check for genre
             genre = None

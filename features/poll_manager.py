@@ -184,10 +184,19 @@ def parse_poll_command(message_content):
         else "en"
     )
 
-    # Check for poll keywords
-    poll_keywords = ["avstemning", "poll", "stemme", "vote", "avstemnning", "voting"]
-    if not any(word in content_lower for word in poll_keywords):
+    # Check for poll keywords - must be more specific to avoid false positives
+    # "stemme" alone is too common in Norwegian (means both "vote" and "voice")
+    poll_triggers = ["avstemning", "poll", "lag poll", "create poll", "ny poll"]
+    is_explicit = any(word in content_lower for word in poll_triggers)
+    
+    # Also allow if it has multiple options separated by /
+    has_options = "/" in content and len(content.split("/")) >= 2
+    
+    if not (is_explicit or has_options):
         return None
+
+    # Use the full list for keyword removal
+    poll_keywords = ["avstemning", "poll", "stemme", "vote", "avstemnning", "voting"]
 
     # Remove poll keyword
     for keyword in poll_keywords:

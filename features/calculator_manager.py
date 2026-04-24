@@ -84,22 +84,30 @@ class CalculatorManager:
         content_lower = content_lower.replace("@inebotten", "").strip()
 
         # Currency conversion
-        # Pattern: "100 USD til NOK", "convert 50 EUR to USD"
+        # Require "konverter" OR recognized currency units to avoid "10 venner til middag"
         currency_pattern = (
-            r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(\w+)\s+(?:til|to)\s+(\w+)"
+            r"(?:(?:konverter|convert|omgjør)\s+)?(\d+(?:\.\d+)?)\s*(\w+)\s+(?:til|to)\s+(\w+)"
         )
         match = re.search(currency_pattern, content_lower)
         if match:
-            return {
-                "type": "currency",
-                "amount": float(match.group(1)),
-                "from": match.group(2),
-                "to": match.group(3),
-            }
+            amount = float(match.group(1))
+            from_unit = match.group(2)
+            to_unit = match.group(3)
+            
+            is_recognized = (from_unit in self.exchange_rates or to_unit in self.exchange_rates)
+            is_explicit = any(w in content_lower for w in ["konverter", "convert", "omgjør"])
+            
+            if is_recognized or is_explicit:
+                return {
+                    "type": "currency",
+                    "amount": amount,
+                    "from": from_unit,
+                    "to": to_unit,
+                }
 
         # Temperature conversion
-        # Pattern: "25C til F", "convert 100 fahrenheit to celsius"
-        temp_pattern = r"(?:(?:konverter|convert)\s+)?(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin)?"
+        # Require "konverter" or explicit temperature units
+        temp_pattern = r"(?:(?:konverter|convert|omgjør)\s+)(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)(?:\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin))?"
         match = re.search(temp_pattern, content_lower)
         if match:
             return {

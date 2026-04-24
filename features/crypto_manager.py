@@ -106,7 +106,7 @@ class CryptoManager:
         crypto_patterns = [
             r'(\w+)\s+(?:pris|price|verdi|value|kurs)',
             r'(?:pris|price|verdi|value|kurs)\s+(?:på|for|of|til)?\s*(\w+)',
-            r'hva\s+(?:koster|er)\s+(\w+)',
+            r'hva\s+koster\s+(\w+)',
             r'kor\s+mykje\s+kostar\s+(\w+)',
         ]
         

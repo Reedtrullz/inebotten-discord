@@ -669,6 +669,10 @@ class MessageMonitor:
     async def _send_response(self, message, response_text):
         """Send response with proper channel handling."""
         try:
+            if not response_text:
+                print("[MONITOR] Warning: Attempted to send empty response. Skipping.")
+                return
+
             if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
                 await message.channel.send(response_text)
             else:

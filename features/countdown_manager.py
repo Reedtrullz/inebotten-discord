@@ -107,15 +107,19 @@ class CountdownManager:
         # Remove @inebotten
         content_lower = content_lower.replace("@inebotten", "").strip()
 
+        # Harden trigger: ensure specific countdown keywords are present
+        if not any(keyword in content_lower for keyword in ["hvor lenge", "hvor mange dager", "nedtelling", "når er det", "dager til", "how long", "how many days", "countdown", "when is the", "days until", "days to"]):
+            return None
+
         # Patterns to match (Norwegian and English)
         patterns = [
             # Norwegian
             r"(?:hvor lenge|hvor mange dager|nedtelling)\s+(?:til|før)\s+(.+)",
-            r"når er\s+(.+)",
+            r"når er det\s+(.+)", # Added "det" to make it more specific to events
             r"dager til\s+(.+)",
             # English
             r"(?:how long|how many days|countdown)\s+(?:to|until|till)\s+(.+)",
-            r"when is\s+(.+)",
+            r"when is the\s+(.+)", # Added "the" to make it more specific
             r"days until\s+(.+)",
             r"days to\s+(.+)",
         ]
