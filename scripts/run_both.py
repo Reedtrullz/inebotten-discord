@@ -16,15 +16,17 @@ import subprocess
 import threading
 import requests
 from pathlib import Path
-from datetime import datetime
+
+# Path configuration - MUST be before project imports
+SCRIPT_DIR = Path(__file__).parent.absolute()
+BASE_DIR = SCRIPT_DIR.parent.absolute()
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 from utils.logger import setup_logger
 
 # Setup logging
 logger = setup_logger(__name__, log_level="INFO")
-
-# Path configuration
-SCRIPT_DIR = Path(__file__).parent.absolute()
-BASE_DIR = SCRIPT_DIR.parent.absolute()
 
 # Services
 BRIDGE_SERVER_PATH = BASE_DIR / "ai" / "hermes_bridge_server.py"
