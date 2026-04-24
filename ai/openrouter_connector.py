@@ -22,9 +22,9 @@ class OpenRouterConnector(LoggerMixin):
     def __init__(
         self,
         api_key: str,
-        model: str = "google/gemma-3-4b-it:free",
+        model: str = "google/gemma-4-31b-it:free",
         temperature: float = 0.7,
-        max_tokens: int = 500,
+        max_tokens: int = 600,
         base_url: str = "https://openrouter.ai/api/v1"
     ):
         """
@@ -341,9 +341,9 @@ def create_openrouter_connector(config) -> OpenRouterConnector:
         OpenRouterConnector instance
     """
     api_key = getattr(config, 'OPENROUTER_API_KEY', None)
-    model = getattr(config, 'OPENROUTER_MODEL', 'google/gemma-3-4b-it:free')
+    model = getattr(config, 'OPENROUTER_MODEL', 'google/gemma-4-31b-it:free')
     temperature = getattr(config, 'OPENROUTER_TEMPERATURE', 0.7)
-    max_tokens = getattr(config, 'OPENROUTER_MAX_TOKENS', 200)
+    max_tokens = getattr(config, 'OPENROUTER_MAX_TOKENS', 600)
     base_url = getattr(config, 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
     
     if not api_key:

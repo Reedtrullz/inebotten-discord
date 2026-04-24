@@ -35,9 +35,9 @@ class Config:
         
         # OpenRouter Configuration
         self.OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-        self.OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'google/gemma-3-4b-it:free')
+        self.OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'google/gemma-4-31b-it:free')
         self.OPENROUTER_TEMPERATURE = float(os.getenv('OPENROUTER_TEMPERATURE', '0.7'))
-        self.OPENROUTER_MAX_TOKENS = int(os.getenv('OPENROUTER_MAX_TOKENS', '500'))
+        self.OPENROUTER_MAX_TOKENS = int(os.getenv('OPENROUTER_MAX_TOKENS', '600'))
         self.OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
         
         # Google Calendar Configuration
