@@ -28,4 +28,4 @@ google-auth-httplib2>=0.1.0
 google-api-python-client>=2.0.0
 
 # Search capabilities
-duckduckgo-search>=4.0.0
+duckduckgo-search>=6.0.0

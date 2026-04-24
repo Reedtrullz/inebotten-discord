@@ -28,9 +28,7 @@ PORT = int(os.getenv("HERMES_BRIDGE_PORT", "3000"))
 
 # LM Studio Configuration (Windows host from WSL)
 LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = (
-    "gemma-3-4b"  # Gemma 3 4B - Google's model, good multilingual support
-)
+LM_STUDIO_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
 
 # Model-specific settings
 MODEL_CONFIG = {
