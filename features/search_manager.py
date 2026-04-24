@@ -43,7 +43,7 @@ class SearchManager:
 
     async def get_news(self, query: str = "", max_results: int = 3, region: str = "no-no") -> List[Dict]:
         """
-        Perform a news search
+        Perform a news search with fallback to text search
         """
         try:
             loop = asyncio.get_event_loop()
@@ -53,8 +53,9 @@ class SearchManager:
             )
             return results
         except Exception as e:
-            print(f"[SEARCH] Error performing news search: {e}")
-            return []
+            print(f"[SEARCH] News search failed ({e}). Falling back to general web search...")
+            # Fallback to general text search if news fails (often news is more rate-limited)
+            return await self.search(f"nyheter {query}", max_results=max_results, region=region)
 
     def format_results_for_ai(self, results: List[Dict]) -> str:
         """
