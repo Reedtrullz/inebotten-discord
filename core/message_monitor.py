@@ -465,12 +465,13 @@ class MessageMonitor:
         )
         print(f"[MONITOR] Intent detection: wants_dashboard={wants_dashboard}, reason={reason}")
 
+        content_lower = message.content.lower()
+        
         # Extract city if dashboard is wanted
         city_name = None
         show_navnedag = False
         if wants_dashboard:
             from features.weather_api import extract_city
-            content_lower = message.content.lower()
             city_name = extract_city(message.content)
             if city_name:
                 print(f"[MONITOR] Specific city detected: {city_name}")
