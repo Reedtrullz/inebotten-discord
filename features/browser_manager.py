@@ -15,11 +15,15 @@ class BrowserManager:
     """
     
     def __init__(self):
-        self.api_key = os.getenv("BROWSERBASE_API_KEY")
-        self.project_id = os.getenv("BROWSERBASE_PROJECT_ID")
+        # Support both naming conventions (with and without underscore)
+        self.api_key = os.getenv("BROWSERBASE_API_KEY") or os.getenv("BROWSER_BASE_API_KEY")
+        self.project_id = os.getenv("BROWSERBASE_PROJECT_ID") or os.getenv("BROWSER_BASE_PROJECT_ID")
         self.bb = None
         if self.api_key and self.project_id:
             self.bb = Browserbase(api_key=self.api_key, project_id=self.project_id)
+            print("[BROWSER] Browserbase initialized successfully")
+        else:
+            print("[BROWSER] Warning: Browserbase not fully configured (missing key or project ID)")
             
     async def fetch_page_content(self, url: str) -> Optional[str]:
         """
