@@ -34,11 +34,23 @@ class SearchManager:
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
                     None,
-                    lambda: client.search(query=query, search_depth="basic", max_results=max_results)
+                    lambda: client.search(
+                        query=query, 
+                        search_depth="advanced", 
+                        max_results=max_results,
+                        include_raw_content=True
+                    )
                 )
                 if response and response.get('results'):
-                    print(f"[SEARCH] Tavily success for: {query}")
-                    return [{"title": r['title'], "href": r['url'], "body": r['content']} for r in response['results']]
+                    print(f"[SEARCH] Tavily (Advanced) success for: {query}")
+                    # Extract raw content if available, otherwise use snippet
+                    return [
+                        {
+                            "title": r['title'], 
+                            "href": r['url'], 
+                            "body": r.get('raw_content') or r.get('content') or "Ingen detaljer funnet."
+                        } for r in response['results']
+                    ]
             except Exception as e:
                 print(f"[SEARCH] Tavily failed: {e}")
 
