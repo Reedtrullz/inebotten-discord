@@ -41,12 +41,16 @@ class NaturalLanguageParser:
         self.time_words = {
             'i morges': 'morning',
             'i formiddag': 'morning',
+            'formiddag': 'morning',
             'på formiddagen': 'morning',
             'i ettermiddag': 'afternoon',
+            'ettermiddag': 'afternoon',
             'på ettermiddagen': 'afternoon',
             'i kveld': 'evening',
+            'kveld': 'evening',
             'på kvelden': 'evening',
             'i natt': 'night',
+            'natt': 'night',
             'på natten': 'night',
             'midnatt': '00:00',
             'midnight': '00:00',
@@ -665,6 +669,7 @@ class NaturalLanguageParser:
         
         # Remove any remaining Discord mentions
         title = re.sub(r'<@!?\d+>', '', title)
+        title = re.sub(r':[A-Za-z0-9_+-]+:', '', title)
         
         # Remove prefixes and task indicators from start of title
         all_prefixes = self.prefixes + self.task_indicators

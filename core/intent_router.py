@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 from typing import Any, Dict, Optional
 
 
@@ -195,7 +196,61 @@ class IntentRouter:
             return IntentResult(BotIntent.AI_CHAT, 0.2, {"error": str(exc)}, "calendar_parser_error")
 
         if parsed:
+            parsed = self._resolve_calendar_followup(content, parsed)
             return IntentResult(BotIntent.CALENDAR_ITEM, 0.86, {"calendar_item": parsed}, "calendar_nlp")
+        return None
+
+    def _resolve_calendar_followup(self, content: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace vague follow-up titles like "det" with the recent offered reminder topic."""
+        title = str(parsed.get("title", "")).strip()
+        content_lower = content.lower()
+        vague_title = re.fullmatch(r"(det|that|dette|den|it)(?:\s+.*)?", title.lower() or "") is not None
+        reminder_followup = any(phrase in content_lower for phrase in ["minn meg", "påminn meg", "remind me"])
+
+        if not (vague_title and reminder_followup):
+            return parsed
+
+        topic = self._infer_recent_reminder_topic()
+        if topic:
+            parsed = dict(parsed)
+            parsed["title"] = topic[0].upper() + topic[1:]
+            parsed["type"] = "task"
+        return parsed
+
+    def _infer_recent_reminder_topic(self) -> Optional[str]:
+        conversation = getattr(self.monitor, "conversation", None)
+        threads = getattr(conversation, "threads", None)
+        if not threads:
+            return None
+
+        recent_messages = []
+        for messages in threads.values():
+            recent_messages.extend(messages[-6:])
+
+        recent_messages.sort(key=lambda msg: msg.get("timestamp"), reverse=True)
+        for msg in recent_messages:
+            if not msg.get("is_bot"):
+                continue
+            topic = self._extract_reminder_offer_topic(str(msg.get("content", "")))
+            if topic:
+                return topic
+        return None
+
+    def _extract_reminder_offer_topic(self, text: str) -> Optional[str]:
+        patterns = [
+            r"påminnelse\s+om\s+å\s+([^?!.:\n]+)",
+            r"minne\s+deg\s+på\s+å\s+([^?!.:\n]+)",
+            r"reminder\s+to\s+([^?!.:\n]+)",
+            r"remind\s+you\s+to\s+([^?!.:\n]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            topic = re.sub(r"\s+", " ", match.group(1)).strip(" -–—,")
+            topic = re.sub(r"\s+(eller|or)\s+.*$", "", topic, flags=re.IGNORECASE).strip(" -–—,")
+            if len(topic) >= 2:
+                return topic
         return None
 
     def _is_status_command(self, content_lower: str) -> bool:

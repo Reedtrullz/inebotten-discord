@@ -2,6 +2,7 @@
 """Regression tests for central intent routing."""
 
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 
 from cal_system.natural_language_parser import NaturalLanguageParser
@@ -15,7 +16,10 @@ class DummyMonitor:
         self.poll = SimpleNamespace(
             get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
         )
-        self.conversation = SimpleNamespace(should_show_dashboard=self._should_show_dashboard)
+        self.conversation = SimpleNamespace(
+            should_show_dashboard=self._should_show_dashboard,
+            threads={},
+        )
         self.detect_search_intent = self._detect_search_intent
 
         self.parse_poll_command = self._parse_poll
@@ -73,8 +77,9 @@ class DummyMonitor:
 
 
 class IntentRouterTests(unittest.TestCase):
-    def route(self, text, active_polls=False):
-        return IntentRouter(DummyMonitor(active_polls=active_polls)).route(text, guild_id=123)
+    def route(self, text, active_polls=False, monitor=None):
+        monitor = monitor or DummyMonitor(active_polls=active_polls)
+        return IntentRouter(monitor).route(text, guild_id=123)
 
     def test_conversational_future_prompt_stays_ai_chat(self):
         result = self.route("jeg skal bare høre hva du synes om RBK i morgen")
@@ -95,6 +100,25 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
         self.assertEqual(result.payload["calendar_item"]["time"], "15:00")
         self.assertEqual(result.payload["calendar_item"]["title"], "Meeting")
+
+    def test_contextual_reminder_followup_uses_recent_offer(self):
+        monitor = DummyMonitor()
+        monitor.conversation.threads[123] = [
+            {
+                "user_id": None,
+                "username": "Inebotten",
+                "content": "Skal jeg hjelpe deg med å legge inn en påminnelse om å bestille billettene, eller kanskje du vil planlegge turen?",
+                "is_bot": True,
+                "timestamp": datetime.now(),
+            }
+        ]
+
+        result = self.route("minn meg på det imorgen kveld :Pog:", monitor=monitor)
+
+        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
+        self.assertEqual(result.payload["calendar_item"]["type"], "task")
+        self.assertEqual(result.payload["calendar_item"]["title"], "Bestille billettene")
+        self.assertEqual(result.payload["calendar_item"]["time"], "19:00")
 
     def test_vague_hva_skjer_stays_ai_chat(self):
         result = self.route("hva skjer?")
