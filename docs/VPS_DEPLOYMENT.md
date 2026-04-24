@@ -33,13 +33,20 @@ Kjøringsdata skal ligge utenfor Git:
 
 ```bash
 sudo apt update
-sudo apt install -y git docker.io docker-compose-plugin python3 openssl
+sudo apt install -y git docker.io docker-compose-plugin python3 python3-pip python3-full openssl
 
+# Sett opp eierskap (viktig for setup.py)
 sudo git clone https://github.com/Reedtrullz/inebotten-discord.git /opt/inebotten-discord
+sudo chown -R $USER:$USER /opt/inebotten-discord
 cd /opt/inebotten-discord
-sudo cp .env.example .env
-sudo nano .env
 
+# Installer avhengigheter (bruk --break-system-packages hvis ikke i venv)
+pip install --break-system-packages -r requirements.txt
+
+# Kjør setup wizard
+python3 setup.py
+
+# Start med Docker
 sudo docker compose up -d --build
 ```
 

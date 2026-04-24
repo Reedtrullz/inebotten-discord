@@ -124,10 +124,12 @@ cd inebotten-discord
 
 # 2. Installer avhengigheter
 pip install -r requirements.txt
+# Tips: Hvis du får "externally-managed-environment" feil på nyere Linux/macOS:
+# pip install --break-system-packages -r requirements.txt
 
 # 3. Kjør interaktivt oppsett
 python setup.py
-# Følg instruksjonene for å legge til Discord-token og konfigurere AI
+# Følg instruksjonene for å legge til Discord-token, konfigurere AI og Google Calendar
 
 # 4. Start botten
 python scripts/run_both.py
