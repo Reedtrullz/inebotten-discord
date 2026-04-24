@@ -571,7 +571,9 @@ class SelfbotClient(discord.Client):
     def __init__(
         self, config, auth_handler, rate_limiter, hermes_connector, response_generator
     ):
-        super().__init__(max_messages=10000, self_bot=True)
+        # Set up intents (required in discord.py 2.0+)
+        intents = discord.Intents.all()
+        super().__init__(max_messages=10000, self_bot=True, intents=intents)
 
         self.config = config
         self.auth_handler = auth_handler
