@@ -16,7 +16,10 @@ import discord
 CALENDAR_KEYWORDS = [
     "kalender", "calendar", "arrangementer", "events",
     "kommende", "planlagt", "påminnelser", "huskeliste",
+    "synk", "sync", "synkroniser", "gcal",
 ]
+
+SYNC_KEYWORDS = ["synk", "sync", "synkroniser", "hent fra google", "oppdater fra google"]
 
 DELETE_KEYWORDS = ["slett", "delete", "fjern"]
 COMPLETE_KEYWORDS = ["ferdig", "done", "complete", "fullført"]
@@ -113,8 +116,16 @@ class MessageMonitor:
         # Initialize unified calendar manager
         from cal_system.calendar_manager import CalendarManager
         from cal_system.natural_language_parser import NaturalLanguageParser
+        from cal_system.google_calendar_manager import GoogleCalendarManager
 
-        self.calendar = CalendarManager()
+        # Initialize GCal manager if token exists
+        gcal = GoogleCalendarManager()
+        if not gcal.is_configured():
+            gcal = None
+        else:
+            print("[MONITOR] Google Calendar integration enabled")
+
+        self.calendar = CalendarManager(gcal_manager=gcal)
         self.nlp_parser = NaturalLanguageParser()
 
         # Initialize personality and memory systems
@@ -193,11 +204,22 @@ class MessageMonitor:
         """Async initialization of managers"""
         await self.calendar.setup()
         await self.user_memory.setup()
+        await self.conversation.setup()
         
         # Inject birthday manager into daily digest after initialization
         from features.birthday_manager import BirthdayManager
         self.birthdays = BirthdayManager()
+        await self.birthdays.setup()
         self.daily_digest.birthday_manager = self.birthdays
+
+        # Auto-sync from GCal on startup if enabled
+        if self.calendar.gcal_enabled:
+            print("[MONITOR] Performing initial Google Calendar sync...")
+            try:
+                # Use a background task so we don't block startup
+                asyncio.create_task(self.calendar.sync_from_gcal())
+            except Exception as e:
+                print(f"[MONITOR] Initial GCal sync failed: {e}")
         
         print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
 
@@ -315,27 +337,23 @@ class MessageMonitor:
 
         # Check for calendar list command
         if any(word in content_lower for word in CALENDAR_KEYWORDS):
-            print("[MONITOR] Matched: calendar list command")
-            await self.handlers["calendar"].handle_list(message)
-            return
-
-        # Check for delete item command
-        if any(phrase in content_lower for phrase in DELETE_KEYWORDS):
-            print("[MONITOR] Matched: delete item command")
-            await self.handlers["calendar"].handle_delete(message)
-            return
-
-        # Check for complete item command
-        if any(word in content_lower for word in COMPLETE_KEYWORDS):
-            print("[MONITOR] Matched: complete item command")
-            await self.handlers["calendar"].handle_complete(message)
-            return
-
-        # Check for edit event command
-        if any(phrase in content_lower for phrase in EDIT_KEYWORDS):
-            print("[MONITOR] Matched: edit event command")
-            await self.handlers["calendar"].handle_edit(message)
-            return
+            print("[MONITOR] Matched: calendar command block")
+            if any(keyword in content_lower for keyword in DELETE_KEYWORDS):
+                await self.handlers["calendar"].handle_delete(message)
+                return
+            elif any(keyword in content_lower for keyword in COMPLETE_KEYWORDS):
+                await self.handlers["calendar"].handle_complete(message)
+                return
+            elif any(keyword in content_lower for keyword in EDIT_KEYWORDS):
+                await self.handlers["calendar"].handle_edit(message)
+                return
+            elif any(keyword in content_lower for keyword in SYNC_KEYWORDS):
+                await self.handlers["calendar"].handle_sync(message)
+                return
+            else:
+                # Default behavior for calendar keyword is to list
+                await self.handlers["calendar"].handle_list(message)
+                return
 
         # Check for countdown queries
         print("[MONITOR] Checking countdown...")

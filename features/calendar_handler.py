@@ -332,3 +332,30 @@ class CalendarHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error editing event: {e}")
+
+    async def handle_sync(self, message) -> None:
+        """Handle manual sync from Google Calendar."""
+        try:
+            guild_id = self.get_guild_id(message)
+            
+            if not self.calendar.gcal_enabled:
+                await self.send_response(
+                    message, 
+                    "❌ Google Calendar er ikke konfigurert eller koblet til ennå."
+                )
+                return
+
+            await self.send_response(message, "🔄 Synkroniserer med Google Calendar...")
+            
+            # Use sync_from_gcal with the current channel ID as default
+            count = await self.calendar.sync_from_gcal(default_guild_id=guild_id)
+            
+            if count > 0:
+                await self.send_response(message, f"✅ Ferdig! Hentet {count} nye/oppdaterte elementer fra Google Calendar.")
+                # Show the updated list
+                await self.handle_list(message)
+            else:
+                await self.send_response(message, "✅ Synkronisering ferdig. Ingen nye endringer funnet i Google Calendar.")
+        except Exception as e:
+            self.log(f"Error syncing calendar: {e}")
+            await self.send_response(message, "❌ Beklager, det oppstod en feil under synkronisering med Google Calendar.")
