@@ -491,26 +491,15 @@ class MessageMonitor:
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
 
-        guild_id = message.guild.id if message.guild else message.channel.id
-        wants_dashboard, reason = self.conversation.should_show_dashboard(
-            message.content, guild_id
-        )
-        print(f"[MONITOR] Intent detection: wants_dashboard={wants_dashboard}, reason={reason}")
-
-        content_lower = message.content.lower()
-        
-        # Extract city if dashboard is wanted
+        # AI Router Mode: We default to chat and let the AI decide if a dashboard/action is needed.
+        # But we still check for explicit city names if the user MIGHT want weather.
         city_name = None
-        show_navnedag = False
-        if wants_dashboard:
-            from features.weather_api import extract_city
-            city_name = extract_city(message.content)
-            if city_name:
-                print(f"[MONITOR] Specific city detected: {city_name}")
-            
-            # Show navnedag only if explicitly asked or in a summary/brief
-            show_navnedag = any(word in content_lower for word in ['navnedag', 'oppsummering', 'brief', 'status'])
-            print(f"[MONITOR] show_navnedag={show_navnedag}")
+        from features.weather_api import extract_city
+        city_name = extract_city(message.content)
+        if city_name:
+            print(f"[MONITOR] Specific city detected for context: {city_name}")
+        
+        show_navnedag = any(word in content_lower for word in ['navnedag', 'oppsummering', 'brief', 'status'])
 
 
         # Update conversation history
@@ -603,8 +592,9 @@ class MessageMonitor:
                     )
 
                     if success and ai_response:
-                        response_text = ai_response
                         print("[MONITOR] Using personalized AI response")
+                        # Parse and execute actions before sending
+                        response_text = await self._parse_and_execute_actions(ai_response, message)
                 except Exception as e:
                     print(f"[MONITOR] Personalized AI failed: {e}")
 
@@ -618,6 +608,47 @@ class MessageMonitor:
 
         # Send the response
         await self._send_response(message, response_text)
+
+    async def _parse_and_execute_actions(self, response_text, message):
+        """
+        Parses AI response for [ACTION] tags and executes them.
+        Returns the cleaned response text.
+        """
+        cleaned_text = response_text
+        
+        # 1. Handle [SAVE_EVENT: Title | Date | Time]
+        event_match = re.search(r'\[SAVE_EVENT:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]', cleaned_text)
+        if event_match:
+            title, date, time = event_match.groups()
+            print(f"[ROUTER] Detected SAVE_EVENT action: {title} on {date} at {time}")
+            
+            # Execute the save using the calendar handler
+            if "calendar" in self.handlers:
+                try:
+                    # Parse specific fields
+                    await self.handlers["calendar"].handle_save_request(message, title, date, time)
+                except Exception as e:
+                    print(f"[ROUTER] Failed to save event: {e}")
+            
+            cleaned_text = cleaned_text.replace(event_match.group(0), "").strip()
+
+        # 2. Handle [SHOW_DASHBOARD]
+        if '[SHOW_DASHBOARD]' in cleaned_text:
+            print("[ROUTER] Detected SHOW_DASHBOARD action")
+            try:
+                guild_id = message.guild.id if message.guild else message.channel.id
+                # Get location from user memory
+                user_mem = await self.user_memory.get_memory(message.author.id)
+                city_name = user_mem.get("location", "Oslo")
+                
+                dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
+                await self._send_response(message, dashboard_text)
+            except Exception as e:
+                print(f"[ROUTER] Failed to show dashboard: {e}")
+            
+            cleaned_text = cleaned_text.replace('[SHOW_DASHBOARD]', "").strip()
+            
+        return cleaned_text
 
     def _is_status_command(self, content_lower):
         """Return True for bot health/status commands, not profile status changes."""
