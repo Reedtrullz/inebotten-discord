@@ -235,10 +235,37 @@ class ConversationalResponseGenerator:
     def format_error(self, message="Jeg skjønte ikke helt..."):
         """Friendly error message"""
         responses = [
-            f"{message} 🤔\n\nPrøv noe som:\n• \"@inebotten kamp i kveld kl 20\"\n• \"@inebotten påminnelse ringe mamma\"",
-            f"{message} 😅\n\nDu kan si for eksempel:\n• \"@inebotten møte i morgen kl 10\"\n• \"@inebotten bursdag 15.05\"",
+            f"{message} 🤔\n\nPrøv noe som:\n• \"@inebotten kamp i kveld kl 20\"\n• \"@inebotten påminnelse ringe mamma\"\n\nSi \"@inebotten kalender hjelp\" for full oversikt!",
+            f"{message} 😅\n\nDu kan si for eksempel:\n• \"@inebotten møte i morgen kl 10\"\n• \"@inebotten bursdag 15.05\"\n\nPrøv \"@inebotten kalender hjelp\" hvis du er usikker!",
         ]
         return random.choice(responses)
+
+    def get_calendar_help(self):
+        """Help text for calendar commands"""
+        return "\n".join([
+            "📅 **Kalender-hjelp**",
+            "",
+            "Du kan styre kalenderen ved å snakke naturlig til meg. Her er noen eksempler:",
+            "",
+            "**Legge til:**",
+            "• \"@inebotten møte med Ola i morgen kl 14\"",
+            "• \"@inebotten bursdag til Lise 15. mai\"",
+            "• \"@inebotten lønningspils hver siste fredag i måneden\"",
+            "• \"@inebotten fotballtrening hver tirsdag kl 18\"",
+            "",
+            "**Se og slette:**",
+            "• \"@inebotten hva skjer denne uka?\"",
+            "• \"@inebotten slett arrangement 1\"",
+            "• \"@inebotten tøm kalenderen min\" (krever bekreftelse)",
+            "",
+            "**Huskeliste:**",
+            "• \"@inebotten påminnelse om å kjøpe melk\"",
+            "• \"@inebotten hva har jeg på huskelista?\"",
+            "• \"@inebotten ferdig med oppgave 1\"",
+            "",
+            "💡 **Tips:** Jeg skjønner både norsk og engelsk, og prøver mitt beste å forstå tidspunkter!",
+            f"\n{self.personality.get_signoff()}"
+        ])
 
 
 # Singleton

@@ -14,7 +14,7 @@ import discord
 
 # Keyword sets for command matching
 CALENDAR_KEYWORDS = [
-    "kalender", "calendar", "arrangementer", "events",
+    "kalender", "calendar", "arrangementer", "events", "hjelp", "help",
     "kommende", "planlagt", "påminnelser", "huskeliste",
 ]
 
@@ -478,6 +478,13 @@ class MessageMonitor:
             # Show navnedag only if explicitly asked or in a summary/brief
             show_navnedag = any(word in content_lower for word in ['navnedag', 'oppsummering', 'brief', 'status'])
             print(f"[MONITOR] show_navnedag={show_navnedag}")
+
+        # Calendar help check
+        if "kalender" in content_lower and any(word in content_lower for word in ["hjelp", "help", "guide"]):
+            from ai.conversational_responses import get_conversational_generator
+            response_text = get_conversational_generator().get_calendar_help()
+            await self._send_response(message, response_text)
+            return
 
         # Update conversation history
         self.conversation.add_message(
