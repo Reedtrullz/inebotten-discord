@@ -73,6 +73,11 @@ improved_prompt_*.txt
 # AI agent temporary files
 .hermes/
 .sisyphus/
+.codex-ssh/
+
+# Deployment secrets
+inebotten-webhook.env
+webhook-secret*
 
 # Build artifacts
 *.spec

@@ -6,6 +6,8 @@
 
 ## 🚀 Komme i Gang
 
+Inebotten er mention-gated: hun ser og svarer bare på meldinger der hun er eksplisitt tagget, også i DM og gruppe-DM.
+
 ### Starte Botten
 
 ```bash
@@ -179,6 +181,26 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 | `@inebotten bio [t]` | `@inebotten bio Koding er livet` | Endre din "About Me" |
 | `@inebotten spiller [t]` | `@inebotten spiller CS2` | Endre aktivitet |
 | `@inebotten ser på [t]` | `@inebotten ser på Netflix` | Endre aktivitet |
+
+---
+
+## 🩺 Drift
+
+| Kommando | Eksempel | Beskrivelse |
+|----------|----------|-------------|
+| `@inebotten bot status` | `@inebotten bot status` | Vis uptime, AI-status, handlers og rate-limit |
+| `@inebotten health` | `@inebotten health` | Kort helsesjekk for botten |
+
+På VPS brukes systemd og Docker Compose:
+
+```bash
+sudo systemctl status inebotten-webhook.service --no-pager
+sudo systemctl status inebotten-update.timer --no-pager
+sudo tail -f /var/log/inebotten-autoupdate.log
+sudo docker compose ps
+```
+
+Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) for auto-update-oppsett.
 
 ---
 

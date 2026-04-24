@@ -105,13 +105,13 @@ SAFE_INTERVAL=1         # Minst 1 sekund mellom meldinger
 
 #### 4. Kun Svar Ved Mention
 
-Botten er konfigurert til å kun respondere når @inebotten blir nevnt:
+Botten er konfigurert til å kun behandle meldinger når @inebotten blir eksplisitt nevnt. Dette gjelder også DM og gruppe-DM. Untagged meldinger skal ikke logges, routes, lagres i minne, sendes til AI eller brukes i digest.
 
 ```python
 # I message_monitor.py
 def is_mention(self, message):
-    """Sjekk om meldingen mentioner botten."""
-    return self.user.mentioned_in(message)
+    """Check if message explicitly mentions the bot."""
+    ...
 ```
 
 Dette reduserer synlighet og risiko.
@@ -134,6 +134,13 @@ git pull origin master
 # Les changelog før oppdatering
 git log --oneline -5
 ```
+
+På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md). Viktige sikkerhetsregler for auto-update:
+
+- Bruk en GitHub webhook secret.
+- Ikke commit `/etc/inebotten-webhook.env`, `.env`, tokens eller `data/`.
+- Ikke gjør manuelle kodeendringer i `/opt/inebotten-discord`; auto-update bruker `git reset --hard origin/master`.
+- Sjekk `/var/log/inebotten-autoupdate.log` etter feil.
 
 ---
 

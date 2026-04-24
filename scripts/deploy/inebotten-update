@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${INEBOTTEN_REPO:-/opt/inebotten-discord}"
+BRANCH="${INEBOTTEN_BRANCH:-master}"
+LOG="${INEBOTTEN_UPDATE_LOG:-/var/log/inebotten-autoupdate.log}"
+LOCK="${INEBOTTEN_UPDATE_LOCK:-/run/inebotten-update.lock}"
+
+exec 9>"$LOCK"
+if ! flock -n 9; then
+  echo "[$(date -Is)] Update already running" >> "$LOG"
+  exit 0
+fi
+
+{
+  echo "[$(date -Is)] Starting update"
+  cd "$REPO"
+
+  before="$(git rev-parse HEAD)"
+  git fetch origin "$BRANCH"
+  after="$(git rev-parse "origin/$BRANCH")"
+
+  if [ "$before" = "$after" ]; then
+    echo "[$(date -Is)] Already up to date at $before"
+    exit 0
+  fi
+
+  echo "[$(date -Is)] Updating $before -> $after"
+  git reset --hard "origin/$BRANCH"
+
+  docker compose up -d --build --remove-orphans
+  docker image prune -f >/dev/null || true
+
+  echo "[$(date -Is)] Update complete at $(git rev-parse HEAD)"
+} >> "$LOG" 2>&1

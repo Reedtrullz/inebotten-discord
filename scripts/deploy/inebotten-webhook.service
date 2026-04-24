@@ -1,0 +1,15 @@
+[Unit]
+Description=GitHub webhook listener for Inebotten auto updates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/inebotten-webhook.env
+ExecStart=/usr/bin/python3 /opt/inebotten-autoupdate/webhook.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

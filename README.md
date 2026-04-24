@@ -131,6 +131,7 @@ python setup.py
 
 # 4. Start botten
 python scripts/run_both.py
+```
 
 #### Docker (Alternativ)
 
@@ -138,7 +139,17 @@ python scripts/run_both.py
 docker-compose up -d
 ```
 Det er alt! Botten vil kjøre i bakgrunnen og starte automatisk ved omstart.
+
+#### VPS med auto-update
+
+For Vultr/VPS-oppsett med Docker Compose, GitHub webhook og systemd fallback-timer:
+
+```bash
+cd /opt/inebotten-discord
+sudo WEBHOOK_PORT=9000 ./scripts/deploy/install-autoupdate.sh
 ```
+
+Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md) for komplett oppsett.
 
 ---
 
@@ -180,6 +191,7 @@ inebotten-discord/
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
 | **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
 | **[docs/GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
+| **[docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md)** | VPS, Docker og auto-update via GitHub webhook | Drift |
 | **[docs/RELEASE.md](docs/RELEASE.md)** | Hvordan lage releases med pre-built apps | Utviklere |
 | **[mac_app/README.md](mac_app/README.md)** | macOS app dokumentasjon | macOS-brukere |
 | **[windows_app/README.md](windows_app/README.md)** | Windows app dokumentasjon | Windows-brukere |

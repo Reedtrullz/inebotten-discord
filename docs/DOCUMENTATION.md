@@ -128,6 +128,7 @@
 | `hermes_bridge_server.py` | Kun bridge | `python3 hermes_bridge_server.py` |
 | `Dockerfile` | Docker image definition | `docker build .` |
 | `docker-compose.yml` | Container orchestration | `docker-compose up` |
+| `scripts/deploy/install-autoupdate.sh` | Installerer VPS auto-update | `sudo ./scripts/deploy/install-autoupdate.sh` |
 
 ### 2. Bridge Layer (`hermes_bridge_server.py`)
 
@@ -513,6 +514,31 @@ DISCORD_TOKEN=***
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` | Brukerpreferanser |
 | GCal Token | `~/.gcal_token.pickle` | Google OAuth token |
 | GCal Credentials | `~/.gcal_credentials.json` | Google OAuth credentials |
+
+---
+
+## VPS Drift
+
+VPS-oppsettet bruker Docker Compose for botten og systemd for auto-update.
+
+| Komponent | Formål |
+|-----------|--------|
+| `inebotten-webhook.service` | Lytter på GitHub webhook og køer update-jobb |
+| `inebotten-update.service` | Henter siste `origin/master`, bygger Docker image og restarter container |
+| `inebotten-update.timer` | Fallback som poller GitHub hvert 5. minutt |
+| `/var/log/inebotten-autoupdate.log` | Update-logg |
+
+Nyttige kommandoer:
+
+```bash
+sudo systemctl status inebotten-webhook.service --no-pager
+sudo systemctl status inebotten-update.timer --no-pager
+sudo systemctl start inebotten-update.service
+sudo tail -f /var/log/inebotten-autoupdate.log
+sudo docker logs --tail=200 inebotten-bot
+```
+
+Full guide: [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md).
 
 ---
 

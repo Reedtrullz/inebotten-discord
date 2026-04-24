@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll GitHub for Inebotten updates every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=inebotten-update.service
+
+[Install]
+WantedBy=timers.target
