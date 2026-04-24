@@ -12,7 +12,7 @@
 4. [Datastrøm](#datastrøm)
 5. [Kalendersystem](#kalendersystem)
 6. [Personlighetssystem](#personlighetssystem)
-7. [Features](#features)
+7. [Funksjoner](#funksjoner)
 8. [Konfigurasjon](#konfigurasjon)
 9. [Utvikling](#utvikling)
 10. [Feilsøking](#feilsøking)
@@ -21,10 +21,10 @@
 
 ## Oversikt
 
-**Inebotten** er en feature-rik norsk Discord selfbot som kombinerer AI-drevne samtaler med praktiske verktøy. Arkitekturen er modulær og designet for:
+**Inebotten** er en funksjonsrik norsk Discord selfbot som kombinerer AI-drevne samtaler med praktiske verktøy. Arkitekturen er modulær og designet for:
 
 - **Pålitelighet** - Lokale fallbacks når AI er utilgjengelig
-- **Skalerbarhet** - Enkel å utvide med nye features
+- **Skalerbarhet** - Enkel å utvide med nye funksjoner
 - **Personalisering** - Husker brukere og tilpasser seg
 - **Naturlig språk** - Ingen rigid kommando-struktur
 
@@ -184,8 +184,8 @@ Du pratar med {author_name}.
 
 **Lagring:** `~/.hermes/discord/data/calendar.json`
 
-**Features:**
-- Events + påminnelser i ett system
+**Funksjoner:**
+- Hendelser + påminnelser i ett system
 - Gjentagende elementer (ukentlig, annenhver uke, månedlig, årlig)
 - Fullføringssporing
 - Google Calendar sync-støtte
@@ -332,7 +332,7 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 | `last_interaction` | ISO-tidsstempel |
 | `preferences` | {formality, humor_style, use_dialect} |
 
-**Features:**
+**Funksjoner:**
 - Personlige hilsener ("Hei Rune! Lenge siden sist - 3 dager!")
 - Dager-siden-sist-chat sporing
 - Interesse-baserte samtalestartere
@@ -341,11 +341,11 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 
 **Formål:** Vedlikeholder samtaletråder og detekterer intensjon
 
-**Intent-deteksjon:**
+**Intensjonsdeteksjon:**
 
 | Type | Eksempler |
 |------|-----------|
-| Small talk (ikke vis dashboard) | "Hei!", "Hvordan går det?", "Hva synes du om RBK?" |
+| Småprat (ikke vis dashboard) | "Hei!", "Hvordan går det?", "Hva synes du om RBK?" |
 | Dashboard-forespørsler | "Hva er været?", "Vis meg kalenderen", "Hva skjer i dag?" |
 
 **Samtalehistorikk:**
@@ -364,21 +364,21 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 | Trekk | Bruker dialekt (imårra, serr), fotballmeninger (RBK) |
 | Stil | Hjelpsom men ikke påtrengende, ikke robotaktig |
 
-**DO:**
+**Gjør:**
 - Varier hilsener
 - Referer til tidligere samtaler
 - Bruk humor og personlighet
 - Vis at du husker brukeren
 
-**DON'T:**
+**Unngå:**
 - Start med vær med mindre spurt
 - List opp kalender uten å bli spurt
 - Vær robotaktig eller over-hjelpsom
 - Bruk "Som en AI..." fraser
 
-### 6. Andre Features
+### 6. Andre funksjoner
 
-| Feature | Fil | Kommando |
+| Funksjon | Fil | Kommando |
 |---------|-----|----------|
 | **Avstemninger** | `poll_manager.py` | `@inebotten avstemning Tittel? Alt1, Alt2` |
 | **Nedtellinger** | `countdown_manager.py` | `@inebotten nedtelling til [dato]` |
@@ -552,28 +552,30 @@ python3 tests/test_selfbot_comprehensive.py # Full test-suite
 python3 -m py_compile *.py                 # Syntaks-sjekk alle filer
 ```
 
-### Legge til Nye Features
+### Legge til nye funksjoner
 
 Se [DEVELOPMENT.md](DEVELOPMENT.md) for komplett guide.
 
 Kortversjon:
 
-1. Lag `feature_manager.py` med kommandoparsing
-2. Legg til i `message_monitor.py` imports og initialisering
-3. Legg til kommandomatcher i `process_message()`
-4. Legg til handler-metode `_handle_feature_command()`
-5. Oppdater denne dokumentasjonen
+1. Lag manager med ren domenelogikk.
+2. Lag handler hvis funksjonen skal svare i Discord.
+3. Registrer handleren i `MessageMonitor._register_handlers()`.
+4. Legg intent-regel i `core/intent_router.py` når prompten skal rutes direkte.
+5. Legg tester i `tests/test_intent_router.py` og relevante handler-tester.
+6. Oppdater dokumentasjon.
 
 ---
 
 ## Arkitekturstyrker
 
-1. **Modulær Design** - Hver feature er selvstendig
-2. **Graceful Degradation** - Fungerer uten AI (lokale fallbacks)
+1. **Modulær design** - Hver funksjon er selvstendig
+2. **Robust fallback** - Fungerer uten AI når lokale svar finnes
 3. **Enhetlig Kalender** - Ett system for events + påminnelser
 4. **Naturlig Språk** - Ingen rigid kommando-syntaks
 5. **Google Integrasjon** - Syncer med ekte kalender
 6. **Personlighetssystem** - Kontekstbevisst, personlig tilpasset
+7. **Sentral intent-router** - Én testbar beslutning per prompt
 
 ---
 
@@ -582,7 +584,7 @@ Kortversjon:
 1. **Bridge System Prompt** - Broen ignorerer botens personlige system_prompt
 2. **Selfbot Nature** - Krever user token (ikke bot token), mot Discord ToS for produksjon
 3. **Ingen Persistent AI-minne** - AI husker ikke på tvers av omstarter (men user_memory.json gjør)
-4. **Single Guild Fokus** - Noen features fungerer best med én Discord-server
+4. **Én-server-fokus** - Noen funksjoner fungerer best med én Discord-server
 
 ---
 

@@ -1,26 +1,29 @@
 ---
-name: Feature request
-about: Suggest an idea for this project
-title: '[FEATURE] '
+name: Funksjonsønske
+about: Foreslå en ny funksjon eller forbedring
+title: "[Funksjon]: "
 labels: enhancement
-assignees: ''
-
+assignees: ""
 ---
 
-**Is your feature request related to a problem?**
-A clear and concise description of what the problem is.
-Example: "I wish the bot could..."
+## Problem eller behov
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+Hva prøver du å få til?
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+## Ønsket løsning
 
-**Example usage**
+Hvordan bør Inebotten oppføre seg?
+
+## Eksempel på bruk
+
+```text
+@inebotten ...
 ```
-@inebotten <your proposed command here>
-```
 
-**Additional context**
-Add any other context or screenshots about the feature request here.
+## Alternativer
+
+Har du vurdert andre løsninger?
+
+## Ekstra kontekst
+
+Legg ved detaljer, skjermbilder eller lenker hvis nyttig.

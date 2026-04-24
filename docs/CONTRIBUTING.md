@@ -12,7 +12,7 @@
 4. [Commit-meldinger](#commit-meldinger)
 5. [Pull Request-prosess](#pull-request-prosess)
 6. [Rapportere Bugs](#rapportere-bugs)
-7. [Foreslå Features](#foreslå-features)
+7. [Foreslå funksjoner](#foreslå-funksjoner)
 8. [Sikkerhet](#sikkerhet)
 9. [Kommunikasjon](#kommunikasjon)
 
@@ -23,10 +23,10 @@
 Det er mange måter å bidra på:
 
 - 🐛 **Rapportere bugs** - Hjelper oss å forbedre
-- 💡 **Foreslå features** - Del dine ideer
+- 💡 **Foreslå funksjoner** - Del dine ideer
 - 📝 **Forbedre dokumentasjon** - Gjør det klarere
 - 🔧 **Fikse bugs** - Hopp på et [good first issue](../../issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-- ✨ **Legge til features** - Utvid funksjonaliteten
+- ✨ **Legge til funksjoner** - Utvid funksjonaliteten
 - 🎨 **UI/UX forbedringer** - Gjør det penere
 
 ---
@@ -192,7 +192,7 @@ Fixes #123
 Add aurora forecast feature
 
 Fetch aurora data from NOAA SWPC API
-Support location-based queries (latitude/longitude)
+Støtt stedsbaserte spørringer (breddegrad/lengdegrad)
 Add visualization with Kp-index scale
 Cache results for 1 hour to reduce API calls
 
@@ -270,7 +270,7 @@ Lagt til ny funksjon X som gjør Y.
 - [ ] Breaking change
 - [ ] Dokumentasjon
 
-## Testing
+## Test
 - [x] Testet lokalt
 - [x] Lagt til enhetstester
 - [ ] Testet i Discord
@@ -342,11 +342,11 @@ IndexError: list index out of range
 
 ---
 
-## Foreslå Features
+## Foreslå funksjoner
 
-Bruk [feature request template](../../issues/new?template=feature_request.md).
+Bruk [malen for funksjonsønsker](../../issues/new?template=feature_request.md).
 
-### God feature-request inneholder:
+### Et godt funksjonsønske inneholder:
 
 1. **Problem** - Hva er problemet du vil løse?
 2. **Løsning** - Din foreslåtte løsning
@@ -356,7 +356,7 @@ Bruk [feature request template](../../issues/new?template=feature_request.md).
 ### Eksempel
 
 ```markdown
-**Er din feature-request relatert til et problem?**
+**Er funksjonsønsket relatert til et problem?**
 Jeg glemmer alltid å sjekke været før jeg går ut.
 
 **Beskriv løsningen**
@@ -407,8 +407,8 @@ Legg til "daglig værmelding" som sendes automatisk hver morgen.
 ### Kanaler
 
 - 💬 **GitHub Discussions** - Spørsmål, ideer, vis frem
-- 🐛 **GitHub Issues** - Bugs og features
-- 🔒 **Security** - Sikkerhetsproblemer (ikke offentlig!)
+- 🐛 **GitHub Issues** - Feil og funksjonsønsker
+- 🔒 **Sikkerhet** - Sikkerhetsproblemer (ikke offentlig!)
   - Send e-post til: [your-email@example.com]
 
 ### Retningslinjer

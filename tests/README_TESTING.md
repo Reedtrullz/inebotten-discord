@@ -150,4 +150,4 @@ Sett opp cron-job for daglig testing:
 
 ---
 
-**Happy testing!** 🧪🤖🇳🇴
+God testing! 🧪🤖🇳🇴

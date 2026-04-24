@@ -1,37 +1,40 @@
 ---
-name: Bug report
-about: Create a report to help us improve
-title: '[BUG] '
+name: Feilrapport
+about: Meld fra om en feil i Inebotten
+title: "[Feil]: "
 labels: bug
-assignees: ''
-
+assignees: ""
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## Beskrivelse
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Mention the bot with '...'
-2. Send message '....'
-3. See error
+Hva skjedde?
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Slik gjenskaper du feilen
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+1.
+2.
+3.
 
-**Environment:**
- - OS: [e.g. Windows 11, Ubuntu 22.04]
- - Python version: [e.g. 3.10.6]
- - Discord.py version: [e.g. 2.3.0]
- - LM Studio version (if using AI):
+## Forventet oppførsel
 
-**Logs**
-```
-Paste relevant log output here
-```
+Hva forventet du at skulle skje?
 
-**Additional context**
-Add any other context about the problem here.
+## Faktisk oppførsel
+
+Hva skjedde i stedet?
+
+## Miljø
+
+- OS:
+- Python-versjon:
+- Kjøring: CLI, Docker, macOS-app eller Windows-app
+- AI-leverandør: LM Studio eller OpenRouter
+
+## Logger/skjermbilder
+
+Lim inn relevante utdrag uten token eller API-nøkler.
+
+## Ekstra kontekst
+
+Andre detaljer som kan hjelpe.

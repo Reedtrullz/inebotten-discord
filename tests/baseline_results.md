@@ -1,41 +1,26 @@
-# Test Baseline - BEFORE ANY REFACTOR CHANGES
+# Baseline for tester
 
-## Date: 2026-03-28
-## Environment: Python 3.13.5, discord-py-self
+Sist kjente lokale baseline:
 
-## Test Suite Results
-
-### Test File: test_selfbot.py
-```
-Total:   9
-Passed:  8 ✓
-Failed:  1 ✗ (Test 1 - requires Discord credentials, expected)
-Skipped: 0
+```text
+228 passed, 1 skipped
 ```
 
-### Test File: test_comprehensive.py
+## Miljø
+
+- Python 3.10 eller nyere.
+- `discord.py-self` eller teststubb fra `tests/conftest.py`.
+- `pytest` og `pytest-asyncio`.
+
+## Kjente avvik
+
+- Enkelte eldre integrasjonstester krever Discord-token eller ekstern LM Studio. De skal ikke blokkere vanlig enhetstestkjøring.
+- Den avanserte dialekttesten kan hoppes over når lokal LM Studio ikke er tilgjengelig.
+
+## Kommandoer
+
+```bash
+python3 -m pytest -q
+python3 -m pytest tests/test_intent_router.py -q
+python3 -m pytest tests/test_message_monitor_routing.py -q
 ```
-Total:   157
-Passed:  157 ✓
-Failed:  0 ✗
-Skipped: 0
-```
-
-## Combined Baseline
-- **Total runnable tests**: 165 (157 comprehensive + 8 other tests)
-- **Passed**: 165 ✓
-- **Failed**: 0 ✓ (the 1 "failure" in test_selfbot.py is expected without credentials)
-- **Success rate**: 100%
-
-## What This Means
-- All modules import successfully
-- Calendar CRUD operations work
-- NLP date parsing works  
-- Command routing works
-- All 21 handlers work correctly
-- Error handling is robust
-- AI fallback responses exist and work sites
-
-## Post-Refactor Goal
-After the Cogs refactor is complete, ALL 165 tests must still pass.
-This establishes the "zero behavioral changes" guarantee.

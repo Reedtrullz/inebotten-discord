@@ -7,9 +7,9 @@
 ## 📋 Innholdsfortegnelse
 
 1. [Komme i Gang](#komme-i-gang)
-2. [Legge til Ny Feature](#legge-til-ny-feature)
+2. [Legge til ny funksjon](#legge-til-ny-funksjon)
 3. [Kode-stil](#kode-stil)
-4. [Testing](#testing)
+4. [Test](#test)
 5. [Vanlige Mønstre](#vanlige-mønstre)
 6. [Debug-tips](#debug-tips)
 7. [Git-workflow](#git-workflow)
@@ -59,7 +59,7 @@ inebotten-discord/
 │   ├── message_monitor.py
 │   ├── rate_limiter.py
 │   └── config.py
-├── features/               # Feature-managers
+├── features/               # Funksjons-managers
 │   ├── weather_api.py
 │   ├── poll_manager.py
 │   └── ...
@@ -72,18 +72,18 @@ inebotten-discord/
 
 ---
 
-## Legge til Ny Feature
+## Legge til ny funksjon
 
-### Steg-for-Steg Guide
+### Steg-for-steg-guide
 
-#### Steg 1: Lag Feature Manager
+#### Steg 1: Lag funksjonsmanager
 
 Opprett `features/my_feature_manager.py`:
 
 ```python
 #!/usr/bin/env python3
 """
-MyFeature Manager - [Beskrivelse av din feature]
+MyFeature-manager - [beskrivelse av funksjonen]
 """
 
 import json
@@ -94,7 +94,7 @@ from typing import Tuple, Optional, Dict, Any
 
 class MyFeatureManager:
     """
-    Manager for [feature] funksjonalitet.
+    Manager for [funksjon].
     
     Ansvar:
     - [Ansvar 1]
@@ -107,7 +107,7 @@ class MyFeatureManager:
         Initialiser MyFeatureManager.
         
         Args:
-            storage_path: Sti til lagringsfil. Default: ~/.hermes/discord/data/my_feature.json
+            storage_path: Sti til lagringsfil. Standard: ~/.hermes/discord/data/my_feature.json
         """
         if storage_path is None:
             storage_path = Path.home() / '.hermes' / 'discord' / 'data' / 'my_feature.json'
@@ -320,31 +320,35 @@ self.handlers = {
 }
 ```
 
-**2.2. Legg til kommandomatcher:**
+**2.2. Legg til intent-regel:**
 
-I `handle_message()`, legg til før AI-fallback:
+Nye prompt-regler skal normalt legges i `core/intent_router.py`, ikke som en ny hardkodet sjekk i `MessageMonitor`. Routeren skal returnere én `IntentResult` med intent, confidence, payload og reason.
 
 ```python
-# Sjekk for myfeature-kommando
-parsed = self.parse_my_feature_command(content)
-if parsed:
-    self.log("Matched: myfeature command")
-    await self.handlers["my_feature"].handle_my_feature(message, parsed)
-    return
+if "myfeature" in content_lower:
+    return IntentResult(
+        intent=BotIntent.UTILITY,
+        confidence=0.9,
+        payload={"feature": "my_feature"},
+        reason="Eksplisitt myfeature-kommando",
+    )
 ```
+
+Deretter lar `MessageMonitor` kalle riktig handler basert på router-resultatet.
 
 **Fordeler med ny arkitektur:**
 - ✅ **send_response()** håndterer automatisk DM/Group/Guild kanaler
 - ✅ **Rate limiting** skjer automatisk
-- ✅ **Error handling** konsistent på tvers av alle handlers
+- ✅ **Feilhåndtering** er konsistent på tvers av alle handlere
 - ✅ **Enklere testing** - kan mocke BaseHandler
 - ✅ **Mindre kode** - ingen duplisert respons-håndtering
+- ✅ **Strammere intent-ruting** - falske positive kan testes ett sted
 
 #### Steg 3: Oppdater Dokumentasjon
 
 **3.1. Legg til i `docs/DOCUMENTATION.md`:**
 
-Finn feature-tabellen og legg til:
+Finn funksjonstabellen og legg til:
 
 ```markdown
 | **MyFeature** | `features/my_feature_manager.py` | `@inebotten myfeature [add/list]` |
@@ -364,6 +368,7 @@ Finn "Andre kommandoer"-tabellen og legg til:
 # Syntaks-sjekk
 python3 -m py_compile features/my_feature_manager.py
 python3 -m py_compile core/message_monitor.py
+python3 -m py_compile core/intent_router.py
 
 # Enhetstest
 python3 -c "
@@ -392,6 +397,8 @@ print('\n✅ All tests passed!')
 python3 run_both.py
 # I Discord: "@inebotten myfeature add test"
 ```
+
+Legg også inn minst én positiv og én negativ case i `tests/test_intent_router.py`.
 
 #### BaseHandler Referanse
 
@@ -478,7 +485,7 @@ error_message = "Item not found with that number."  # Blanding av språk
 
 ---
 
-## Testing
+## Test
 
 ### Enhetstest-mal
 
@@ -831,7 +838,7 @@ git log --oneline -10
 
 ---
 
-## Best Practices
+## Beste praksis
 
 ### ✅ Gjør
 

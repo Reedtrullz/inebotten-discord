@@ -11,7 +11,7 @@
 3. [Steg 1: Google Cloud Console](#steg-1-google-cloud-console)
 4. [Steg 2: OAuth-oppsett](#steg-2-oauth-oppsett)
 5. [Steg 3: Autentisering](#steg-3-autentisering)
-6. [Steg 4: Testing](#steg-4-testing)
+6. [Steg 4: Test](#steg-4-test)
 7. [Dele Kalenderen](#dele-kalenderen)
 8. [Feilsøking](#feilsøking)
 
@@ -194,7 +194,7 @@ python3 utils/sync_calendar_to_gcal.py --setup
 
 ---
 
-## Steg 4: Testing
+## Steg 4: Test
 
 ### 4.1 Verifiser Oppsett
 

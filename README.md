@@ -2,9 +2,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/discord-selfbot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Selfbot">
-  <img src="https://img.shields.io/badge/AI-LM%20Studio-green?style=for-the-badge&logo=openai&logoColor=white" alt="AI Powered">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey?style=for-the-badge&logo=apple&logoColor=white" alt="Platform">
+  <img src="https://img.shields.io/badge/discord-selfbot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord selfbot">
+  <img src="https://img.shields.io/badge/AI-LM%20Studio%20%7C%20OpenRouter-green?style=for-the-badge&logo=openai&logoColor=white" alt="AI">
+  <img src="https://img.shields.io/badge/plattform-macOS%20%7C%20Windows-lightgrey?style=for-the-badge&logo=apple&logoColor=white" alt="Plattform">
 </p>
 
 <p align="center">
@@ -12,295 +12,187 @@
     <img src="https://github.com/Reedtrullz/inebotten-discord/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
+    <img src="https://img.shields.io/badge/lisens-MIT-yellow.svg" alt="MIT-lisens">
   </a>
   <a href="https://github.com/Reedtrullz/inebotten-discord/releases">
-    <img src="https://img.shields.io/github/v/release/Reedtrullz/inebotten-discord" alt="Latest Release">
+    <img src="https://img.shields.io/github/v/release/Reedtrullz/inebotten-discord" alt="Siste utgivelse">
   </a>
 </p>
 
----
+> En norsk Discord-selfbot for kalender, påminnelser, nyttefunksjoner og korte AI-samtaler.
 
-> **Din personlige norske Discord-kalenderbot med AI-personlighet**
+Inebotten er laget for praktisk hverdagsbruk i Discord: skriv naturlig norsk, så prøver botten å forstå om du vil lagre noe i kalenderen, se status, lage avstemning, slå opp vær, eller bare chatte. Den nye intent-routeren gjør rutingen mer konservativ, slik at samtaler som "jeg skal bare høre hva du synes om RBK i morgen" ikke blir tolket som kalenderoppgaver.
 
-Inebotten er en feature-rik Discord selfbot som kombinerer AI-drevne samtaler med praktiske verktøy som kalenderhåndtering, vær, avstemninger og mye mer.
+## Hovedfunksjoner
 
----
+| Område | Hva botten kan |
+|--------|----------------|
+| Samtale | AI-chat via LM Studio lokalt eller OpenRouter i skyen |
+| Kalender | Hendelser, oppgaver, gjentakelser, fullføring, sletting og Google Calendar-synk |
+| Intent-ruting | Sentral router som prioriterer eksplisitte kommandoer før naturlig språk og AI-chat |
+| Norsk språk | Bokmål, nynorskvarianter, vanlige dialektformer og grunnleggende engelsk |
+| Verktøy | Vær, kalkulator, valuta/temperatur, krypto, URL-forkorter og søk/dashboard |
+| Sosialt | Avstemninger, sitater, dagens ord, komplimenter, horoskop og nordlysvarsel |
+| Drift | Rate limiting, mention-gate, helsesjekk, Docker/VPS-oppsett og desktop-launchere |
 
-## ✨ Features
+## Hurtigstart
 
-<table>
-<tr>
-<td width="50%">
+### Ferdig app
 
-### 🤖 AI & Personlighet
-- **AI-drevne samtaler** via LM Studio (gemma-3-4b)
-- **Personlighetsystem** som husker deg
-- **Naturlig språkforståelse** på norsk
-- **Kontekstbevisst** - følger samtalen
+Last ned siste pakke fra [GitHub-utgivelser](https://github.com/Reedtrullz/inebotten-discord/releases):
 
-</td>
-<td width="50%">
+- macOS: `Inebotten-macos.zip`
+- Windows: `Inebotten.exe`
 
-### 📅 Kalender & Planlegging
-- **Enhetlig kalender** for events og påminnelser
-- **Google Calendar-sync** (To-veis automatisk synkronisering)
-- **Gjentagende events** (ukentlig, månedlig, årlig)
-- **Norsk kalender** med helligdager og flaggdager
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🛠️ Verktøy & Utilities
-- **Vær fra MET.no** (norsk værtjeneste)
-- **Avstemninger** i kanaler
-- **Nedtellinger** til viktige datoer
-- **Kryptopriser** (BTC, ETH, etc.)
-- **Kalkulator** for raske utregninger
-
-</td>
-<td width="50%">
-
-### 🎯 Moro & Underholdning
-- **Dagens ord** - norske ord og uttrykk
-- **Sitater** - inspirerende og morsomme
-- **Komplimenter** - for å glede noen
-- **Horoskop** - dagens stjernetegn
-- **Nordlysvarsel** - for nordlysjegere
-
-</td>
-</tr>
-</table>
-
----
-
-## 🚀 Hurtigstart
-
-### 📥 Last ned Pre-built Apps (Enkelst)
-
-Last ned ferdige desktop-apper fra [Releases](https://github.com/Reedtrullz/inebotten-discord/releases):
-
-- **macOS:** `Inebotten-macos.zip` - Pakk ut og åpne `Inebotten.app`
-- **Windows:** `Inebotten.exe` - Dobbeltklikk for å kjøre
-
-⚠️ **macOS Gatekeeper-advarsel:** Hvis du ser "Inebotten.app is damaged and can't be opened", høyreklikk appen og velg "Open". Se [mac_app/README.md](mac_app/README.md#troubleshooting) for detaljer.
-
-Se [docs/RELEASE.md](docs/RELEASE.md) for hvordan du lager nye releases.
-
-### Bygg Lokalt
-
-**macOS:**
-```bash
-cd mac_app
-./build.sh
-open dist/Inebotten.app
-```
-
-**Windows:**
-```bash
-cd windows_app
-python build.py
-dist\Inebotten.exe
-```
-
-Se [mac_app/README.md](mac_app/README.md) eller [windows_app/README.md](windows_app/README.md) for detaljert instruksjoner.
+macOS kan vise en Gatekeeper-advarsel fordi appen ikke er notarized. Høyreklikk `Inebotten.app`, velg `Åpne`, og bekreft. Se [mac_app/README.md](mac_app/README.md) for detaljer.
 
 ### Kommandolinje
 
-#### Forutsetninger
-
-- Python 3.10+
-- Discord bruker-token ([hvordan finne](#-discord-token))
-- LM Studio (valgfritt, for AI-funksjonalitet)
-
-#### Installasjon
-
 ```bash
-# 1. Klon repoet
 git clone https://github.com/Reedtrullz/inebotten-discord.git
 cd inebotten-discord
 
-# 2. Installer avhengigheter
-pip install -r requirements.txt
-# Tips: Hvis du får "externally-managed-environment" feil på nyere Linux/macOS:
-# pip install --break-system-packages -r requirements.txt
-
-# 3. Kjør interaktivt oppsett
-python setup.py
-# Følg instruksjonene for å legge til Discord-token, konfigurere AI og Google Calendar
-
-# 4. Start botten
-python scripts/run_both.py
+python3 -m pip install -r requirements.txt
+python3 setup.py
+python3 scripts/run_both.py
 ```
 
-#### Docker (Alternativ)
+På systemer med `externally-managed-environment` kan du bruke virtuelt miljø:
 
 ```bash
-docker-compose up -d
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
 ```
-Det er alt! Botten vil kjøre i bakgrunnen og starte automatisk ved omstart.
 
-#### VPS med auto-oppdatering
+### Docker/VPS
 
-For Vultr/VPS-oppsett med Docker Compose, GitHub-webhook og systemd-fallback-timer:
+```bash
+docker compose up -d
+```
+
+For VPS med webhook-basert auto-oppdatering:
 
 ```bash
 cd /opt/inebotten-discord
 sudo WEBHOOK_PORT=9000 ./scripts/deploy/install-autoupdate.sh
 ```
 
-Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md) for komplett oppsett.
+Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 
----
+## Eksempler
 
-## 📁 Project Structure
+### Kalender og oppgaver
 
-```
-inebotten-discord/
-├── ai/                    # AI integration and personality
-├── cal_system/            # Calendar management system
-├── core/                  # Core bot functionality
-├── features/             # Feature handlers
-├── memory/                # Memory management
-├── utils/                 # Utility functions
-├── docs/                  # Documentation
-│   ├── ARCHITECTURE.md
-│   ├── DEVELOPMENT.md
-│   ├── DOCUMENTATION.md
-│   └── ...
-├── scripts/               # Utility scripts
-│   ├── run_both.py
-│   ├── create-release.sh
-│   └── ...
-├── tests/                 # Test files
-├── mac_app/               # macOS desktop app
-├── windows_app/           # Windows desktop app
-├── .env.example           # Mal for miljøvariabler
-├── requirements.txt       # Python dependencies
-└── README.md             # Denne filen
-```
-
----
-
-## 📖 Dokumentasjon
-
-| Dokument | Beskrivelse | For hvem |
-|----------|-------------|----------|
-| **[docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md)** | Hurtigreferanse for alle kommandoer | Brukere |
-| **[docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)** | Komplett teknisk dokumentasjon | Utviklere |
-| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
-| **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
-| **[docs/GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
-| **[docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md)** | VPS, Docker og auto-oppdatering via GitHub-webhook | Drift |
-| **[docs/RELEASE.md](docs/RELEASE.md)** | Hvordan lage releases med pre-built apps | Utviklere |
-| **[mac_app/README.md](mac_app/README.md)** | macOS app dokumentasjon | macOS-brukere |
-| **[windows_app/README.md](windows_app/README.md)** | Windows app dokumentasjon | Windows-brukere |
-
----
-
-## 💬 Eksempler på Bruk
-
-### Kalender med naturlig språk
-
-```
+```text
 @inebotten møte med Ola i morgen kl 14
-@inebotten husk å ringe mamma på lørdag
-@inebotten RBK-kamp 12.04 kl 18:30 hver uke
+@inebotten husk å kjøpe melk på mandag
 @inebotten lunsj hver fredag kl 12
-@inebotten regninger den 5. hver måned
-@inebotten julebord 20 desember kl 18:00
-@inebotten møte 15. mai kl 10:00
+@inebotten møte 15. mai kl 10
+@inebotten meeting tomorrow at 3pm
+@inebotten kalender
+@inebotten ferdig 2
+@inebotten slett alle tannlege
 ```
 
-### Vanlig chatting
+### Samtale
 
-```
-@inebotten Hei! Hvordan går det?
-@inebotten Hva synes du om RBK?
-@inebotten Fortell en vits
+```text
+@inebotten hei, hvordan går det?
+@inebotten hva synes du om RBK i morgen?
+@inebotten fortell en kort vits
 ```
 
 ### Andre kommandoer
 
-```
-@inebotten vær                    # Værmelding
-@inebotten avstemning Pizza?       # Lag avstemning
-@inebotten nedtelling til 17. mai  # Nedtelling
-@inebotten pris BTC                # Kryptopris
-@inebotten horoskop væren          # Horoskop
-@inebotten daglig oppsummering     # Dagens briefing (Vær, marked, kalender)
-@inebotten status dnd              # Endre online-status
-@inebotten bio Din nye kule bio    # Endre din "About Me"
-@inebotten spiller Elden Ring      # Endre aktivitet
-```
-
-### 👥 Bruk i Group DMs og DMs
-
-Botten er fullt støttet i både private meldinger (DMs) og gruppesamtaler (Group DMs).
-
-1. **Legg til botten:** Sørg for at kontoen botten kjører på er lagt til i gruppesamtalen.
-2. **Nevn botten:** For at botten skal svare i en gruppe, må du starte meldingen med `@inebotten`.
-3. **I private meldinger:** Her trenger du ikke nødvendigvis å nevne botten hvis den er konfigurert til å lytte (men standard er å bruke `@inebotten`).
-
-Alle funksjoner som kalender, avstemninger og AI-chat fungerer sømløst i grupper.
-
----
-
-## 🏗️ Arkitektur
-
-```
-┌─────────────┐      ┌─────────────────┐      ┌──────────────┐
-│  Discord    │──────▶  Message Monitor │──────▶   Handlers  │
-│  (Brukere)  │      │  (Ruting)       │      │  (Kalender,  │
-└─────────────┘      └────────┬────────┘      │   Vær, etc)  │
-                              │               └──────────────┘
-                              │                      │
-                              ▼                      ▼
-                    ┌─────────────────┐      ┌──────────────┐
-                    │  Hermes Bridge  │──────▶  LM Studio   │
-                    │  (HTTP Bridge)  │      │  (gemma-3-4b)│
-                    └─────────────────┘      └──────────────┘
+```text
+@inebotten hjelp
+@inebotten bot status
+@inebotten vær i Trondheim
+@inebotten avstemning Pizza? Pepperoni, Margherita, Kebab
+@inebotten stem 1
+@inebotten nedtelling til 17. mai
+@inebotten pris BTC
+@inebotten 100 USD til NOK
+@inebotten nordlys
+@inebotten daglig oppsummering
 ```
 
-**Handler-arkitektur:** Alle 10 handlers arver `BaseHandler` for enhetlig respons-håndtering, rate limiting og logging.
+## Hvordan botten forstår meldinger
 
-Se [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full detaljering.
+`core/intent_router.py` gir én strukturert beslutning per prompt. Standard prioritet er:
 
----
+1. Hjelp, status, profil og eksplisitte kalenderkommandoer.
+2. Aktiv avstemning og stemmegivning.
+3. Nedtelling, watchlist, sitat/moro og nytteverktøy.
+4. Konservativ kalender-/oppgaveforståelse med tydelig dato, tid eller påminnelsessignal.
+5. Søk/dashboard når meldingen faktisk ber om kontekst utenfra.
+6. AI-chat som trygg fallback.
 
-## 🛡️ Sikkerhet
+AI-genererte `[SAVE_EVENT: ...]`-tagger valideres gjennom samme dato-/tidparser før noe lagres.
 
-> ⚠️ **Viktig:** Discord selfbots er mot [Discord's Terms of Service](https://discord.com/terms). Bruk på egen risiko.
+## Prosjektstruktur
 
-- **Bruk en dedikert konto** - aldri på hovedkontoen din
-- **Hold token hemmelig** - aldri commit .env-filen
-- **Konservative rate limits** - maks 5 meldinger/sekund
-- **Kun svar ved mention** - botten responderer kun når @inebotten blir nevnt
+```text
+inebotten-discord/
+├── ai/                    # AI-koblinger, prompt og personlighet
+├── cal_system/            # Kalender, Google Calendar og norsk dato-parser
+├── core/                  # Konfig, auth, rate limit, intent-router og meldingsmonitor
+├── features/              # Funksjoner og handlere
+├── memory/                # Samtalekontekst og brukerminne
+├── docs/                  # Norsk dokumentasjon
+├── scripts/               # Start-, test- og deploy-skript
+├── tests/                 # Enhets- og rutingtester
+├── mac_app/               # macOS-launcher
+└── windows_app/           # Windows-launcher
+```
 
-Se [docs/SECURITY.md](docs/SECURITY.md) for mer informasjon.
+## Dokumentasjon
 
----
+| Dokument | Innhold |
+|----------|---------|
+| [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) | Kort kommandooversikt |
+| [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md) | Komplett teknisk gjennomgang |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Arkitektur, dataflyt og designvalg |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Utviklingsguide og testpraksis |
+| [docs/SECURITY.md](docs/SECURITY.md) | Sikkerhetsmodell og hemmeligheter |
+| [docs/GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md) | Google Calendar-oppsett |
+| [docs/OPENROUTER_SETUP.md](docs/OPENROUTER_SETUP.md) | OpenRouter-oppsett |
+| [docs/LM_STUDIO_SETUP.md](docs/LM_STUDIO_SETUP.md) | LM Studio-oppsett |
+| [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md) | VPS, Docker og auto-oppdatering |
+| [docs/RELEASE.md](docs/RELEASE.md) | Utgivelser og desktop-bygg |
 
-## 🤝 Bidragsytere
+## Utvikling og test
 
-Vi setter pris på alle bidrag! Se [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for hvordan du kan hjelpe til.
+```bash
+python3 -m pip install -r requirements.txt -r requirements-dev.txt
+python3 -m pytest -q
+```
 
----
+Nyttige måltester:
 
-## 📄 Lisens
+```bash
+python3 -m pytest tests/test_intent_router.py -q
+python3 -m pytest tests/test_message_monitor_routing.py -q
+python3 -m pytest tests/test_comprehensive.py -q
+```
 
-Dette prosjektet er lisensiert under MIT License - se [LICENSE](LICENSE) for detaljer.
+## Sikkerhet
 
----
+Discord selfbots bryter med Discords vilkår. Bruk en dedikert testkonto, hold token og API-nøkler unna git, og bruk botten på egen risiko.
+
+Launcher-konfigurasjon skal bare inneholde ikke-hemmelige preferanser. Hemmeligheter lagres via sikker lagring eller `.env` med stramme filrettigheter.
+
+## Bidra
+
+Les [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) før du sender endringer. For sikkerhetsfunn, følg [docs/SECURITY.md](docs/SECURITY.md) og ikke åpne offentlig issue.
+
+## Lisens
+
+MIT. Se [LICENSE](LICENSE).
 
 <p align="center">
-  <b>Versjon:</b> 2.0 (April 2026) &nbsp;|&nbsp;
-  <b>Modell:</b> gemma-3-4b &nbsp;|&nbsp;
-  <b>Språk:</b> Norsk (bokmål/nynorsk)
-</p>
-
-<p align="center">
-  Utviklet med ❤️ av <a href="https://github.com/Reedtrullz">reedtrullz</a>
+  <b>Språk:</b> norsk først &nbsp;|&nbsp;
+  <b>AI:</b> LM Studio eller OpenRouter &nbsp;|&nbsp;
+  <b>Status:</b> aktivt utviklet
 </p>

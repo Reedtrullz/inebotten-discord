@@ -1,129 +1,39 @@
-# FEATURES MODULE
+# Funksjonsmodulen
 
-**Parent:** ./AGENTS.md
+Denne mappen inneholder botfunksjoner og handlers for Discord-kommandoer.
 
-## OVERVIEW
-30 Python files implementing bot commands. Modular handler architecture with BaseHandler base class.
+## Struktur
 
-## STRUCTURE
-```
+```text
 features/
-├── base_handler.py          # Base class for all handlers (NEW)
-├── __init__.py              # Exports all handlers
-├── *_handler.py             # 10 modular handler classes
-└── *_manager.py             # 20 feature managers
+├── base_handler.py          # felles svar, guild-id, logging og rate limit
+├── calendar_handler.py      # kalenderkommandoer
+├── polls_handler.py         # avstemninger og stemmer
+├── utility_handler.py       # kalkulator, krypto og URL
+├── fun_handler.py           # sitater, dagens ord, horoskop og komplimenter
+├── *_manager.py             # domenelogikk uten Discord-avhengighet
+└── *_handler.py             # Discord-tilpasning rundt manager
 ```
 
-## HANDLER CLASSES (10)
+## Viktig mønster
 
-All handlers extend `BaseHandler` from `features/base_handler.py`:
+- Manager-filer skal kunne testes uten Discord.
+- Handler-filer arver `BaseHandler`.
+- Ruting skal gå via `core/intent_router.py` og `MessageMonitor`, ikke via tilfeldig parsing i nye handlers.
+- Nye kalenderlignende prompts skal være konservative og dekkes av regresjonstester.
 
-| Handler | File | Purpose | BaseHandler Methods Used |
-|---------|------|---------|-------------------------|
-| FunHandler | fun_handler.py | word_of_day, quote, horoscope, compliment | send_response, log |
-| UtilityHandler | utility_handler.py | calculator, price, shorten | send_response, check_rate_limit |
-| CountdownHandler | countdown_handler.py | Event countdowns | send_response |
-| PollsHandler | polls_handler.py | Create polls, voting | send_response, get_guild_id |
-| CalendarHandler | calendar_handler.py | Calendar CRUD | send_response, get_guild_id, extract_number |
-| WatchlistHandler | watchlist_handler.py | Watchlist management | send_response |
-| AuroraHandler | aurora_handler.py | Nordlys forecasts | send_response |
-| SchoolHolidaysHandler | school_holidays.py | Norwegian school holidays | send_response |
-| HelpHandler | help_handler.py | Help command | send_response |
-| DailyDigestHandler | daily_digest_handler.py | Daily summaries | send_response, get_guild_id |
+## Legge til ny funksjon
 
-## BASEHANDLER REFERENCE
+1. Lag en manager med ren domenelogikk.
+2. Lag en handler hvis funksjonen trenger Discord-svar.
+3. Registrer handleren i `MessageMonitor`.
+4. Legg intent-regel i `IntentRouter` hvis prompten skal rutes direkte.
+5. Legg tester for positivt treff og minst én falsk positiv.
 
-```python
-class BaseHandler:
-    def __init__(self, monitor):
-        self.monitor = monitor           # Access to all bot state
-        self.rate_limiter = monitor.rate_limiter
-        self.loc = monitor.loc           # Localization
-        self.client = monitor.client     # Discord client
-    
-    async def send_response(self, message, content, mention_author=False):
-        """Unified response - handles DM/Group/Guild automatically"""
-        # Also records rate_limiter stats
-    
-    def get_guild_id(self, message) -> int:
-        """Get guild ID (or channel ID for DMs)"""
-    
-    def extract_number(self, content: str) -> Optional[int]:
-        """Extract first number from message (removes mentions first)"""
-    
-    async def check_rate_limit(self) -> Tuple[bool, Optional[str]]:
-        """Check if we can send"""
-    
-    async def wait_if_needed(self) -> bool:
-        """Wait for rate limit if needed"""
-    
-    def get_channel_type(self, channel) -> str:
-        """Returns: DM, GROUP_DM, GUILD_TEXT, UNKNOWN"""
-    
-    def log(self, message: str) -> None:
-        """Log with handler name prefix"""
-```
-
-## MANAGERS (20+)
-
-Feature managers contain business logic:
-
-- poll_manager.py, watchlist_manager.py, birthday_manager.py
-- weather_api.py, crypto_manager.py, word_of_day.py
-- quote_manager.py, horoscope_manager.py, compliments_manager.py
-- calculator_manager.py, url_shortener.py, countdown_manager.py
-- aurora_forecast.py, school_holidays.py, daily_digest_manager.py
-
-## ADDING NEW FEATURE
-
-### Step 1: Create Manager (if needed)
-```python
-# features/my_feature_manager.py
-class MyFeatureManager:
-    def do_something(self):
-        return "result"
-```
-
-### Step 2: Create Handler
-```python
-# features/my_handler.py
-from features.base_handler import BaseHandler
-
-class MyHandler(BaseHandler):
-    def __init__(self, monitor):
-        super().__init__(monitor)
-        self.my_manager = MyFeatureManager()
-    
-    async def handle_my_command(self, message):
-        result = self.my_manager.do_something()
-        await self.send_response(message, result)
-```
-
-### Step 3: Register in MessageMonitor
-```python
-# core/message_monitor.py in _register_handlers()
-from features.my_handler import MyHandler
-self.handlers["my_feature"] = MyHandler(self)
-```
-
-### Step 4: Add Routing
-```python
-# core/message_monitor.py in handle_message()
-if "my_keyword" in content_lower:
-    await self.handlers["my_feature"].handle_my_command(message)
-    return
-```
-
-## CONVENTIONS
-
-- All handlers **MUST** extend `BaseHandler`
-- Use `self.send_response()` for all replies (handles rate limiting)
-- Never use `print()` - use `self.log()` instead
-- Access managers via initialization, not directly from monitor
-- Type hints recommended for all public methods
-
-## TESTING
+## Tester
 
 ```bash
-python3 -m pytest tests/test_comprehensive.py -v
+python3 -m pytest tests/test_intent_router.py -q
+python3 -m pytest tests/test_message_monitor_routing.py -q
+python3 -m pytest -q
 ```

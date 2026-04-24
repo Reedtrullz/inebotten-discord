@@ -22,10 +22,10 @@
 
 Inebotten er bygget med en **lagdelt arkitektur** som skiller bekymringer og muliggjør:
 
-- **Uavhengig utvikling** av features
-- **Graceful degradation** når eksterne tjenester feiler
+- **Uavhengig utvikling** av funksjoner
+- **Robust fallback** når eksterne tjenester feiler
 - **Enkel testing** av isolerte komponenter
-- **Skalerbarhet** for nye features
+- **Skalerbarhet** for nye funksjoner
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
@@ -64,40 +64,40 @@ Inebotten er bygget med en **lagdelt arkitektur** som skiller bekymringer og mul
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Modular Handler Arkitektur
+### Modulær handler-arkitektur
 
 Boten bruker et modulært handler-mønster basert på **BaseHandler**-klassen:
 
 ```
-Handler Architecture
+Handler-arkitektur
 ├── BaseHandler (features/base_handler.py)
-│   ├── send_response()     # Unified DM/Group/Guild replies
-│   ├── get_guild_id()      # DM-safe guild ID extraction
-│   ├── extract_number()    # Parse numbers from messages
-│   ├── check_rate_limit()  # Rate limiting
-│   └── log()               # Structured logging
+│   ├── send_response()     # enhetlige svar i DM, gruppe-DM og server
+│   ├── get_guild_id()      # trygg guild-id også uten server
+│   ├── extract_number()    # henter tall fra meldinger
+│   ├── check_rate_limit()  # rate limiting
+│   └── log()               # strukturert logging
 │
-└── 10 Feature Handlers (all extend BaseHandler)
+└── Feature-handlere (alle arver BaseHandler)
     ├── FunHandler          # word_of_day, quote, horoscope, compliment
     ├── UtilityHandler      # calculator, price, shorten
-    ├── CountdownHandler    # Event countdowns
-    ├── PollsHandler        # Polls and voting
-    ├── CalendarHandler     # Calendar CRUD operations
-    ├── WatchlistHandler    # Watchlist management
-    ├── AuroraHandler       # Aurora forecasts
-    ├── SchoolHolidaysHandler  # Norwegian school holidays
-    ├── HelpHandler         # Help command
-    └── DailyDigestHandler  # Daily summaries
+    ├── CountdownHandler    # nedtellinger
+    ├── PollsHandler        # avstemninger og stemmer
+    ├── CalendarHandler     # kalender-CRUD
+    ├── WatchlistHandler    # watchlist
+    ├── AuroraHandler       # nordlysvarsel
+    ├── SchoolHolidaysHandler  # norske skoleferier
+    ├── HelpHandler         # hjelp
+    └── DailyDigestHandler  # daglig oppsummering
 ```
 
-**Key Benefits:**
-- **Code reuse:** All handlers share common utilities via BaseHandler
-- **Consistent behavior:** Rate limiting and error handling in one place
-- **Simplified testing:** Mock BaseHandler for isolated handler tests
-- **Type safety:** All handlers implement same interface
+**Fordeler:**
+- **Gjenbruk:** Alle handlere deler verktøy via BaseHandler
+- **Lik oppførsel:** Rate limiting og feilhåndtering ligger ett sted
+- **Enklere testing:** BaseHandler kan mockes i isolerte handler-tester
+- **Lik kontrakt:** Handlere følger samme grensesnitt
 
-**Registration:**
-Handlers are registered in `MessageMonitor._register_handlers()` and accessed via `self.handlers` dict.
+**Registrering:**
+Handlere registreres i `MessageMonitor._register_handlers()` og brukes via `self.handlers`.
 
 ---
 
@@ -128,29 +128,31 @@ class MessageMonitor:
     Hovedansvar:
     - Detektere @mentions
     - Rute kommandoer til riktig handler
-    - Koordinere mellom AI og lokale features
+    - Koordinere mellom AI og lokale funksjoner
     - Håndtere rate limiting
     """
 ```
 
-**Kommandoprioritet:**
+#### 2.2 Intent Router
+
+**Rolle:** Én sentral beslutning per prompt før meldingen sendes til handler eller AI.
+
+`core/intent_router.py` returnerer `IntentResult(intent, confidence, payload, reason)`. Dette erstatter spredt keyword-ruting i `MessageMonitor` og gjør prioritetene lettere å teste.
+
+**Standard prioritet:**
 
 ```
-1. Kalenderkommandoer (høyest prioritet)
-   ├─ Naturlig språk parser
-   ├─ Spesifikke kommandoer (kalender, ferdig, slett)
-   └─ Sync-kommando
-   
-2. Feature-kommandoer
-   ├─ Vær, avstemning, nedtelling
-   ├─ Krypto, horoskop, kalkulator
-   └─ Sitater, dagens ord, komplimenter
-   
-3. AI-fallback (lavest prioritet)
-   └─ Generell chat via LM Studio
+1. Eksplisitt hjelp, status, profil og kalender-CRUD
+2. Aktiv avstemning og stemmegivning
+3. Nedtelling, watchlist, sitat/moro og nytteverktøy
+4. Konservativ kalender-/oppgaveparser
+5. Søk eller dashboard når prompten ber om ekstern kontekst
+6. AI-chat som fallback
 ```
 
-#### 2.2 Natural Language Parser
+Kalender-NLP krever tydelig kommandohensikt pluss dato, tid eller gjentakelsessignal. Bare "jeg skal", "jeg vil" eller "jeg bør" er ikke nok alene.
+
+#### 2.3 Natural Language Parser
 
 **Rolle:** Transformere norsk tekst til strukturerte data
 
@@ -476,8 +478,8 @@ run_both.py
 
 ### Avhengighetsregler
 
-1. **Message Monitor** kan ikke avhenge av features som avhenger av den
-2. **Calendar Manager** er sentral - mange features kan lese, få skrive
+1. **Message Monitor** kan ikke avhenge av funksjoner som avhenger av den
+2. **Calendar Manager** er sentral - mange funksjoner kan lese, få skrive
 3. **Bridge** må starte før selfbot
 4. **User Memory** kan leses av alle, skrives av AI-flow
 
@@ -539,11 +541,11 @@ run_both.py
 - Husker tidligere samtaler
 - Konsekvent karakter
 
-### 5. Graceful Degradation
+### 5. Robust fallback
 
 **Problem:** Bot bør fungere selv når AI er nede.
 
-**Løsning:** Lokale fallbacks for alle AI-avhengige features.
+**Løsning:** Lokale fallbacks for alle AI-avhengige funksjoner.
 
 **Fordeler:**
 - Pålitelighet

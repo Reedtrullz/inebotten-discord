@@ -9,9 +9,9 @@
 1. [Støttede Versjoner](#støttede-versjoner)
 2. [Rapportere Sårbarheter](#rapportere-sårbarheter)
 3. [Sikkerhetshensyn for Brukere](#sikkerhetshensyn-for-brukere)
-4. [Best Practices](#best-practices)
+4. [Beste praksis](#beste-praksis)
 5. [Token-lekkasje](#token-lekkasje)
-6. [Sikkerhetsfeatures](#sikkerhetsfeatures)
+6. [Sikkerhetsfunksjoner](#sikkerhetsfunksjoner)
 
 ---
 
@@ -144,7 +144,7 @@ På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMEN
 
 ---
 
-## Best Practices
+## Beste praksis
 
 ### Fil-beskyttelse
 
@@ -221,7 +221,7 @@ git rev-list --all | xargs git grep -l "MTQ3N"
 
 ---
 
-## Sikkerhetsfeatures
+## Sikkerhetsfunksjoner
 
 ### Implementert
 
