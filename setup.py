@@ -78,6 +78,8 @@ def check_dependencies():
                 __import__('google_auth_httplib2')
             elif lib == 'discord.py-self':
                 __import__('discord')
+            elif lib == 'python-dotenv':
+                __import__('dotenv')
             else:
                 __import__(lib.replace('-', '_'))
             print(f"  {Colors.GREEN}✓{Colors.ENDC} {lib} is installed")
@@ -163,12 +165,15 @@ def setup_google_calendar():
             shutil.copy(path, hermes_data / "client_secret.json")
             print(f"{Colors.GREEN}✓ Credential file copied to {hermes_data}{Colors.ENDC}")
             print(f"You will need to run 'python3 scripts/auth_gcal.py' later to authorize.")
+            
+            cal_id = get_input("Enter your Google Calendar ID (usually your email)", "primary")
+            return {'GCAL_ENABLED': 'True', 'GOOGLE_CALENDAR_ID': cal_id}
         else:
             print(f"{Colors.WARNING}Skipping credential copy. You can do this manually later.{Colors.ENDC}")
-        return True
-    return False
+        return {'GCAL_ENABLED': 'False'}
+    return {'GCAL_ENABLED': 'False'}
 
-def generate_env(discord_token, ai_config):
+def generate_env(discord_token, ai_config, gcal_config):
     print(f"\n{Colors.BOLD}Step 5: Generating .env file{Colors.ENDC}")
     
     env_path = Path(".env")
@@ -203,6 +208,10 @@ def generate_env(discord_token, ai_config):
             new_lines.append(f"OPENROUTER_MODEL={ai_config['OPENROUTER_MODEL']}\n")
         elif line.startswith("HERMES_API_URL=") and 'HERMES_API_URL' in ai_config:
             new_lines.append(f"HERMES_API_URL={ai_config['HERMES_API_URL']}\n")
+        elif line.startswith("GCAL_ENABLED="):
+            new_lines.append(f"GCAL_ENABLED={gcal_config.get('GCAL_ENABLED', 'False')}\n")
+        elif line.startswith("GOOGLE_CALENDAR_ID="):
+            new_lines.append(f"GOOGLE_CALENDAR_ID={gcal_config.get('GOOGLE_CALENDAR_ID', 'primary')}\n")
         else:
             new_lines.append(line)
 
@@ -231,9 +240,9 @@ def main():
         
         token = setup_discord()
         ai_config = setup_ai()
-        gcal_enabled = setup_google_calendar()
+        gcal_config = setup_google_calendar()
         
-        generate_env(token, ai_config)
+        generate_env(token, ai_config, gcal_config)
         
         print(f"\n{Colors.BOLD}{Colors.GREEN}============================================================{Colors.ENDC}")
         print(f"{Colors.BOLD}{Colors.GREEN}       SETUP COMPLETE! Inebotten is ready to roll.          {Colors.ENDC}")

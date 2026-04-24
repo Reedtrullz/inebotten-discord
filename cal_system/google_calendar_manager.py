@@ -11,7 +11,19 @@ import subprocess
 import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    # Fallback for Python < 3.9
+    try:
+        from backports.zoneinfo import ZoneInfo
+    except ImportError:
+        # Last resort: simplified mock or dateutil
+        from dateutil.tz import gettz
+        class ZoneInfo:
+            def __new__(cls, name):
+                return gettz(name)
 
 # Suppress requests/urllib3 version warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="requests")
@@ -39,10 +51,8 @@ class GoogleCalendarManager:
     """
 
     def __init__(self):
+        self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
         self.enabled = self._check_auth()
-        self.calendar_id = (
-            "inebotten@gmail.com"  # Inebotten's calendar (named "Degenerert Almanakk")
-        )
 
     def _check_auth(self):
         """Check if Google authentication is set up and actually works"""

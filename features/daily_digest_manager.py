@@ -55,9 +55,15 @@ class DailyDigestManager:
         
         # Today's date
         today = datetime.now()
+        from cal_system.norwegian_calendar import get_todays_info
+        norwegian_data = get_todays_info()
+        
         if lang == 'no':
             date_str = today.strftime('%d.%m.%Y')
             lines.append(f"📅 **Dato:** {date_str}")
+            if norwegian_data.get('navnedag'):
+                names = " og ".join(norwegian_data['navnedag'][:2])
+                lines.append(f"🎉 **Navnedag:** {names}")
         else:
             date_str = today.strftime('%B %d, %Y')
             lines.append(f"📅 **Date:** {date_str}")

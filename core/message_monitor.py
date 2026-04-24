@@ -467,11 +467,17 @@ class MessageMonitor:
 
         # Extract city if dashboard is wanted
         city_name = None
+        show_navnedag = False
         if wants_dashboard:
             from features.weather_api import extract_city
+            content_lower = message.content.lower()
             city_name = extract_city(message.content)
             if city_name:
                 print(f"[MONITOR] Specific city detected: {city_name}")
+            
+            # Show navnedag only if explicitly asked or in a summary/brief
+            show_navnedag = any(word in content_lower for word in ['navnedag', 'oppsummering', 'brief', 'status'])
+            print(f"[MONITOR] show_navnedag={show_navnedag}")
 
         # Update conversation history
         self.conversation.add_message(
@@ -535,7 +541,7 @@ class MessageMonitor:
         # Fallback: dashboard or basic response
         if not response_text:
             if wants_dashboard:
-                response_text = await self._generate_dashboard(guild_id, city_name=city_name)
+                response_text = await self._generate_dashboard(guild_id, city_name=city_name, show_navnedag=show_navnedag)
             else:
                 from ai.personality_config import get_fallback_response
                 response_text = get_fallback_response("general")
@@ -585,7 +591,7 @@ class MessageMonitor:
         )
         await self._send_response(message, response_text)
 
-    async def _generate_dashboard(self, guild_id: int, city_name: str = None) -> str:
+    async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
         from features.weather_api import METWeatherAPI, NORWEGIAN_CITIES
@@ -627,6 +633,7 @@ class MessageMonitor:
             events=upcoming_items,
             reminders=[],
             norwegian_data=norwegian_data,
+            show_navnedag=show_navnedag,
         )
 
         return dashboard

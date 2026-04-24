@@ -21,6 +21,7 @@ class ConversationContext:
         'hva skjer', 'hva skal', 'hva har jeg',
         'oversikt', 'status', 'dashboard',
         'påminnelse', 'huskeliste', 'gjøremål',
+        'navnedag',
     ]
     
     # Small talk patterns

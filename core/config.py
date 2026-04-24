@@ -40,6 +40,10 @@ class Config:
         self.OPENROUTER_MAX_TOKENS = int(os.getenv('OPENROUTER_MAX_TOKENS', '200'))
         self.OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
         
+        # Google Calendar Configuration
+        self.GCAL_ENABLED = os.getenv('GCAL_ENABLED', 'False').lower() == 'true'
+        self.GOOGLE_CALENDAR_ID = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+        
         # Rate Limiting (conservative to avoid flags)
         self.MAX_MSGS_PER_SECOND = int(os.getenv('MAX_MSGS_PER_SEC', 5))
         self.DAILY_QUOTA = int(os.getenv('DAILY_QUOTA', 10000))

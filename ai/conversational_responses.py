@@ -18,7 +18,7 @@ class ConversationalResponseGenerator:
     def __init__(self):
         self.personality = get_personality()
     
-    def generate_dashboard(self, weather_data=None, events=None, reminders=None, norwegian_data=None):
+    def generate_dashboard(self, weather_data=None, events=None, reminders=None, norwegian_data=None, show_navnedag=False):
         """
         Generate a conversational dashboard response
         """
@@ -44,8 +44,8 @@ class ConversationalResponseGenerator:
         # Date with personality
         lines.append(f"I dag er det {norwegian_data['formatted_date']}")
         
-        # Name day (if exists)
-        if norwegian_data.get('navnedag'):
+        # Name day (if exists and requested)
+        if show_navnedag and norwegian_data.get('navnedag'):
             names = " og ".join(norwegian_data['navnedag'][:2])  # Max 2 names
             lines.append(f"Vi feirer {names} i dag! 🎉")
         
