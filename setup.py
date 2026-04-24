@@ -81,13 +81,22 @@ def check_dependencies():
         choice = get_input("Would you like to install them now?", "y").lower()
         if choice == 'y':
             import subprocess
-            print(f"Running: pip install {' '.join(missing)}...")
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
                 print(f"{Colors.GREEN}Dependencies installed successfully!{Colors.ENDC}")
+            except subprocess.CalledProcessError as e:
+                print(f"\n{Colors.FAIL}Failed to install dependencies.{Colors.ENDC}")
+                print(f"{Colors.WARNING}Hint: Your system may be protecting its Python environment.{Colors.ENDC}")
+                print(f"Try one of these solutions:")
+                print(f"  1. Use a virtual environment (Recommended):")
+                print(f"     {Colors.CYAN}python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt{Colors.ENDC}")
+                print(f"  2. Use the --break-system-packages flag (Quick fix):")
+                print(f"     {Colors.CYAN}pip install --break-system-packages -r requirements.txt{Colors.ENDC}")
+                print(f"\nAfter fixing dependencies, run this setup script again.")
+                sys.exit(1)
             except Exception as e:
-                print(f"{Colors.FAIL}Failed to install dependencies: {e}{Colors.ENDC}")
-                print(f"Please run: pip install -r requirements.txt manually.")
+                print(f"{Colors.FAIL}An unexpected error occurred: {e}{Colors.ENDC}")
+                sys.exit(1)
     else:
         print(f"{Colors.GREEN}All core dependencies are satisfied.{Colors.ENDC}")
 
