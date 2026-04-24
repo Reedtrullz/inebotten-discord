@@ -29,3 +29,5 @@ google-api-python-client>=2.0.0
 
 # Search capabilities
 duckduckgo-search>=6.0.0
+tavily-python>=0.3.0
+googlesearch-python>=1.2.0

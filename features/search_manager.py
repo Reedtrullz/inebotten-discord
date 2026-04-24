@@ -1,36 +1,64 @@
 #!/usr/bin/env python3
 """
 Search Manager for Inebotten
-Uses DuckDuckGo to fetch real-time information and news.
+Uses Tavily (AI-optimized) with Google and DuckDuckGo fallbacks.
 """
 
 import asyncio
+import os
 from typing import List, Dict, Optional
-from duckduckgo_search import DDGS
 import re
+from googlesearch import search as google_search
+from duckduckgo_search import DDGS
 
 class SearchManager:
     """
-    Manages web search queries using DuckDuckGo
+    Manages web search queries using multiple providers for maximum reliability.
     """
     
     def __init__(self):
+        self.tavily_api_key = os.getenv("TAVILY_API_KEY")
         self.ddgs = DDGS()
         
     async def search(self, query: str, max_results: int = 3, region: str = "no-no") -> List[Dict]:
         """
-        Perform a web search
-        
-        Args:
-            query: Search terms
-            max_results: Number of results to return
-            region: Search region (default Norway)
-            
-        Returns:
-            List of dicts with 'title', 'href', and 'body'
+        Perform a web search with multiple fallbacks.
+        Order: Tavily (if key) -> Google -> DuckDuckGo
         """
+        # 1. Try Tavily (Pro AI Search)
+        if self.tavily_api_key:
+            try:
+                from tavily import TavilyClient
+                client = TavilyClient(api_key=self.tavily_api_key)
+                # Tavily is blocking, run in executor
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: client.search(query=query, search_depth="basic", max_results=max_results)
+                )
+                if response and response.get('results'):
+                    print(f"[SEARCH] Tavily success for: {query}")
+                    return [{"title": r['title'], "href": r['url'], "body": r['content']} for r in response['results']]
+            except Exception as e:
+                print(f"[SEARCH] Tavily failed: {e}")
+
+        # 2. Try Google (Reliable Scraper Fallback)
         try:
-            # ddgs is not naturally async, so we run it in a thread to avoid blocking
+            print(f"[SEARCH] Trying Google fallback for: {query}")
+            loop = asyncio.get_event_loop()
+            # googlesearch-python returns an iterator of URLs
+            urls = await loop.run_in_executor(
+                None,
+                lambda: list(google_search(query, num_results=max_results, lang="no"))
+            )
+            if urls:
+                return [{"title": "Søkeresultat", "href": url, "body": "Se kilde for detaljer."} for url in urls]
+        except Exception as e:
+            print(f"[SEARCH] Google search failed: {e}")
+
+        # 3. Try DuckDuckGo (Last resort)
+        try:
+            print(f"[SEARCH] Trying DuckDuckGo last resort for: {query}")
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None, 
@@ -38,24 +66,30 @@ class SearchManager:
             )
             return results
         except Exception as e:
-            print(f"[SEARCH] Error performing search: {e}")
+            print(f"[SEARCH] All search providers failed: {e}")
             return []
 
     async def get_news(self, query: str = "", max_results: int = 3, region: str = "no-no") -> List[Dict]:
         """
-        Perform a news search with fallback to text search
+        Perform a news search with Tavily news or fallbacks.
         """
-        try:
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None, 
-                lambda: list(self.ddgs.news(query, region=region, max_results=max_results))
-            )
-            return results
-        except Exception as e:
-            print(f"[SEARCH] News search failed ({e}). Falling back to general web search...")
-            # Fallback to general text search if news fails (often news is more rate-limited)
-            return await self.search(f"nyheter {query}", max_results=max_results, region=region)
+        if self.tavily_api_key:
+            try:
+                from tavily import TavilyClient
+                client = TavilyClient(api_key=self.tavily_api_key)
+                loop = asyncio.get_event_loop()
+                # Tavily doesn't have a separate news endpoint in basic, but we can prefix query
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: client.search(query=f"news {query}", search_depth="basic", max_results=max_results)
+                )
+                if response and response.get('results'):
+                    return [{"title": r['title'], "href": r['url'], "body": r['content']} for r in response['results']]
+            except Exception as e:
+                print(f"[SEARCH] Tavily news failed: {e}")
+
+        # Fallback to general search with "nyheter" prefix
+        return await self.search(f"siste nytt {query}", max_results=max_results, region=region)
 
     def format_results_for_ai(self, results: List[Dict]) -> str:
         """
@@ -67,7 +101,7 @@ class SearchManager:
         formatted = "HER ER SANNTIDSINFORMASJON FRA NETTET (Bruk dette som din kilde!):\n\n"
         for i, res in enumerate(results, 1):
             title = res.get('title', 'Ingen tittel')
-            body = res.get('body', res.get('snippet', 'Ingen beskrivelse'))
+            body = res.get('body', res.get('snippet', 'Se kilde for detaljer.'))
             url = res.get('href', res.get('link', ''))
             
             formatted += f"[{i}] {title}\n"
@@ -85,13 +119,13 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     """
     content_lower = content.lower()
     
-    # News keywords
+    # News triggers
     news_triggers = [
         r"nyheter", r"hva skjer i verden", r"siste nytt", 
         r"overskrifter", r"hva er det siste om", r"nytt om", r"news"
     ]
     
-    # Information/Fact keywords that imply real-time need
+    # Information/Fact triggers
     info_triggers = [
         r"hvem vant", r"resultatet", r"hvordan gikk det",
         r"hva er status", r"hvor mye koster", r"søk på nett",
@@ -102,14 +136,12 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     query_type = None
     matched_pattern = None
     
-    # Check for news first
     for pattern in news_triggers:
         if re.search(pattern, content_lower):
             query_type = "news"
             matched_pattern = pattern
             break
 
-    # Check for general info
     if not query_type:
         for pattern in info_triggers:
             if re.search(pattern, content_lower):
@@ -118,19 +150,14 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
                 break
     
     if query_type:
-        # Better query cleaning:
-        # 1. Remove @inebotten
         query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE)
-        # 2. Remove the matched trigger phrase
         query = re.sub(matched_pattern, "", query, flags=re.IGNORECASE)
-        # 3. Remove common filler words
+        # Remove common filler words
         fillers = [r"\bhva er\b", r"\bom\b", r"\ber\b", r"\bdet\b", r"\bi\b", r"\bpå\b"]
         for filler in fillers:
             query = re.sub(filler, "", query, flags=re.IGNORECASE)
         
         query = query.strip("? .!,").strip()
-        
-        # If query is too short after cleaning, use the original message (minus mention)
         if len(query) < 3:
             query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE).strip("? .!,").strip()
             
