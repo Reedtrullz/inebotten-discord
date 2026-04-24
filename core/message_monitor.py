@@ -289,6 +289,9 @@ class MessageMonitor:
         self.loc.set_language(lang)
         print(f"[MONITOR] Detected language: {lang}")
 
+        # Get lowercase content once for all keyword checks
+        content_lower = message.content.lower()
+
         # Check for calendar help specifically (before general keyword matches)
         if "kalender" in content_lower and any(word in content_lower for word in ["hjelp", "help", "guide"]):
             print("[MONITOR] Matched: calendar help command")
@@ -309,8 +312,6 @@ class MessageMonitor:
         except (ValueError, KeyError, AttributeError) as e:
             print(f"[MONITOR] Calendar parser error: {e}")
 
-        # Get lowercase content once for all keyword checks
-        content_lower = message.content.lower()
 
         # Check for calendar list command
         if any(word in content_lower for word in CALENDAR_KEYWORDS):
