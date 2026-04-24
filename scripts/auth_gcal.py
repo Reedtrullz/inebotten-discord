@@ -53,18 +53,16 @@ def main():
             
             flow = InstalledAppFlow.from_client_secrets_file(str(target_cred), SCOPES)
             
-            # Use local server for the OAuth flow
+            # Use local server for the OAuth flow; fallback to console flow for headless environments
             try:
-                print("Attempting to open your browser for authorization...")
+                print("Attempting to open your browser for authorization (local server flow)...")
                 creds = flow.run_local_server(port=0, open_browser=True)
             except Exception as e:
                 print(f"Local server flow failed: {e}")
-                print("\nTo authorize in a headless environment (like a VPS):")
-                print("1. Ensure you are running this on your local machine first.")
-                print(f"2. Copy the resulting {TOKEN_PATH.name} to the server.")
-                print("\nIf you are on a desktop but the browser didn't open, try running:")
-                print(f"  {sys.executable} {sys.argv[0]} --noauth_local_webserver")
-                sys.exit(1)
+                print("Falling back to console (copy‑paste) authentication flow...")
+                # Console flow prints a URL that the user can open on any machine and paste the verification code
+                creds = flow.run_console()
+
 
         # Save the credentials for the next run
         HERMES_HOME.mkdir(parents=True, exist_ok=True)
