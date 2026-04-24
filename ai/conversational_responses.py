@@ -55,8 +55,8 @@ class ConversationalResponseGenerator:
         
         # Weather - conversational
         if weather_data:
-            location_str = f" i {weather_data['location']}" if weather_data.get('location') else ""
-            lines.append(f"\n🌤️ **Været{location_str}:** {weather_data['conditions']}, {weather_data['temp']}°C")
+            location_str = f" i **{weather_data['location']}**" if weather_data.get('location') else ""
+            lines.append(f"\n🌤️ **Været{location_str}:** {weather_data['conditions']}, **{weather_data['temp']}°C**")
             if weather_data['conditions'].lower() in ['sol', 'klarvær']:
                 lines.append("Nydelig dag for å være ute! ☀️")
             elif weather_data['conditions'].lower() in ['regn', 'regnfullt']:
@@ -65,8 +65,8 @@ class ConversationalResponseGenerator:
                 lines.append("Litt mystisk vær i dag 🌫️")
         
         # Sunrise/sunset - quick mention
-        location_suffix = f" i {weather_data['location']}" if weather_data and weather_data.get('location') else " i dag"
-        lines.append(f"\n☀️ Solen går ned {sunset}{location_suffix}")
+        location_suffix = f" i **{weather_data['location']}**" if weather_data and weather_data.get('location') else " i dag"
+        lines.append(f"\n☀️ Solen går ned _{sunset}_{location_suffix}")
         
         # Moon
         moon_phase, moon_emoji, _ = get_moon_phase()

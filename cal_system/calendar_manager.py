@@ -464,7 +464,7 @@ class CalendarManager:
             )
 
             lines.append(
-                f"{status_indicator} **{i}.** {title_display} - {item['date']}{time_str}{recurrence_str}"
+                f"{status_indicator} **{i}.** {title_display} — _{item['date']}{time_str}_{recurrence_str}"
             )
 
         if show_completed:
@@ -506,8 +506,7 @@ class CalendarManager:
 
         if item.get("gcal_link"):
             lines.append("")
-            lines.append(f"📅 Synkronisert med Google Calendar")
-            lines.append(f"🔗 {item['gcal_link']}")
+            lines.append(f"📅 [Se i Google Calendar]({item['gcal_link']})")
 
         lines.append("")
         lines.append("— *Bruk `@inebotten kalender` for å se alt*")

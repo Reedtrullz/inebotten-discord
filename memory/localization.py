@@ -27,8 +27,8 @@ class Localization:
                 'en': '🤖 **{bot_name} Dashboard**'
             },
             'last_update': {
-                'no': '_Sist oppdatert: {time}_',
-                'en': '_Last updated: {time}_'
+                'no': '— _Sist oppdatert: {time}_',
+                'en': '— _Last updated: {time}_'
             },
             'events_section': {
                 'no': '📅 **Arrangementer ({count})**',
@@ -39,12 +39,12 @@ class Localization:
                 'en': '⏰ **Reminders ({count})**'
             },
             'no_events': {
-                'no': '_Ingen kommende arrangementer_',
-                'en': '_No upcoming events_'
+                'no': '*Ingen kommende arrangementer*',
+                'en': '*No upcoming events*'
             },
             'no_reminders': {
-                'no': '_Ingen aktive påminnelser_',
-                'en': '_No active reminders_'
+                'no': '*Ingen aktive påminnelser*',
+                'en': '*No active reminders*'
             },
             'birthdays_section': {
                 'no': '🎂 **Bursdager**',
@@ -139,8 +139,8 @@ class Localization:
                 'en': '📭 No active reminders'
             },
             'reminder_item': {
-                'no': '{num}. {text}',
-                'en': '{num}. {text}'
+                'no': '• {text}',
+                'en': '• {text}'
             },
             
             # Birthday commands
