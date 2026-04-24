@@ -52,7 +52,7 @@ COMMAND_REGISTRY = [
     {"name": "status", "aliases": STATUS_KEYWORDS, "priority": 20, "scope": "any"},
     {
         "name": "calendar",
-        "aliases": CALENDAR_KEYWORDS,
+        "aliases": CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS,
         "priority": 30,
         "scope": "any",
     },
@@ -341,13 +341,26 @@ class MessageMonitor:
             print(f"[MONITOR] Calendar parser error: {e}")
 
 
-        # Check for calendar list command
-        if any(word in content_lower for word in CALENDAR_KEYWORDS):
+        # Check for calendar commands (including delete/complete)
+        if any(word in content_lower for word in CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS):
             print("[MONITOR] Matched: calendar command block")
-            if any(keyword in content_lower for keyword in DELETE_KEYWORDS):
+            # List command
+            if any(word in content_lower for word in ["liste", "vis", "se", "oversikt"]) or content_lower.strip() in CALENDAR_KEYWORDS:
+                await self.handlers["calendar"].handle_list(message)
+                return
+            
+            # Sync command
+            if any(word in content_lower for word in SYNC_KEYWORDS):
+                await self.handlers["calendar"].handle_sync(message)
+                return
+                
+            # Delete command
+            if any(word in content_lower for word in DELETE_KEYWORDS):
                 await self.handlers["calendar"].handle_delete(message)
                 return
-            elif any(keyword in content_lower for keyword in COMPLETE_KEYWORDS):
+                
+            # Complete command
+            if any(word in content_lower for word in COMPLETE_KEYWORDS):
                 await self.handlers["calendar"].handle_complete(message)
                 return
             elif any(keyword in content_lower for keyword in EDIT_KEYWORDS):

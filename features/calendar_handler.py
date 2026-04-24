@@ -44,6 +44,26 @@ class CalendarHandler(BaseHandler):
                     return rest
         return None
 
+    async def handle_save_request(self, message, title, date, time):
+        """
+        Special entry point for AI-generated save requests.
+        Ensures the title is clean and the event is created correctly.
+        """
+        # Final safety scrub of the title
+        clean_title = title.strip()
+        # Remove common leftover particles if they are at the end
+        clean_title = re.sub(r'\s+(på|kl|i|ved|om)\s*$', '', clean_title, flags=re.IGNORECASE)
+        # Remove leading particles
+        clean_title = re.sub(r'^(å|at|om)\s+', '', clean_title, flags=re.IGNORECASE)
+        
+        item_data = {
+            "title": clean_title[0].upper() + clean_title[1:] if clean_title else "Uten tittel",
+            "date": date,
+            "time": time if time and ":" in str(time) else "09:00"
+        }
+        
+        await self.handle_calendar_item(message, item_data)
+
     async def handle_calendar_item(self, message, item_data: Dict[str, Any]) -> None:
         """
         Handle natural language calendar item creation (unified events + tasks).
