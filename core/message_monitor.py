@@ -567,15 +567,19 @@ class MessageMonitor:
                             search_context = self.search_manager.format_results_for_ai(search_results)
                             print(f"[MONITOR] Found {len(search_results)} search results")
                             
-                            # WEB LOOKUP: Use Browserbase for all searches if configured
-                            if self.browser_manager.is_configured() and len(search_results) > 0:
+                            # WEB LOOKUP: Only use Browserbase if we don't have deep content yet
+                            has_deep_content = any(len(res.get('body', '')) > 500 for res in search_results)
+                            
+                            if not has_deep_content and self.browser_manager.is_configured() and len(search_results) > 0:
                                 top_url = search_results[0].get('href') or search_results[0].get('url')
                                 if top_url:
-                                    print(f"[MONITOR] Web Lookup: Reading page via Browserbase for better accuracy...")
+                                    print(f"[MONITOR] Web Lookup: Tavily content was shallow. Using Browserbase fallback for: {top_url}")
                                     page_content = await self.browser_manager.fetch_page_content(top_url)
                                     if page_content:
                                         search_context += f"\n\nDETALJERT INFORMASJON FRA KILDEN ({top_url}):\n{page_content}\n"
-                                        print("[MONITOR] Web Lookup: Successfully read page content")
+                                        print("[MONITOR] Web Lookup: Browserbase fallback successful")
+                            elif has_deep_content:
+                                print("[MONITOR] Web Lookup: Tavily provided deep content. Skipping Browserbase.")
 
                     system_prompt = self.get_system_prompt(
                         user_context=user_context,
