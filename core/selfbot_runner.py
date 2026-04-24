@@ -131,12 +131,20 @@ class SelfbotRunner:
     
     def create_client(self):
         """Create the Discord client"""
+        # Configure intents for self-bot functionality
+        intents = discord.Intents.default()
+        intents.messages = True
+        intents.guilds = True
+        intents.direct_messages = True
+        intents.group_messages = True
+        
         self.client = SelfbotClient(
             config=self.config,
             auth_handler=self.auth_handler,
             rate_limiter=self.rate_limiter,
             hermes_connector=self.ai_connector,  # Can be None
-            response_generator=self.response_gen
+            response_generator=self.response_gen,
+            intents=intents
         )
         
         # Set up signal handlers

@@ -236,6 +236,16 @@ inebotten-discord/
 @inebotten spiller Elden Ring      # Endre aktivitet
 ```
 
+### 👥 Bruk i Group DMs og DMs
+
+Botten er fullt støttet i både private meldinger (DMs) og gruppesamtaler (Group DMs).
+
+1. **Legg til botten:** Sørg for at kontoen botten kjører på er lagt til i gruppesamtalen.
+2. **Nevn botten:** For at botten skal svare i en gruppe, må du starte meldingen med `@inebotten`.
+3. **I private meldinger:** Her trenger du ikke nødvendigvis å nevne botten hvis den er konfigurert til å lytte (men standard er å bruke `@inebotten`).
+
+Alle funksjoner som kalender, avstemninger og AI-chat fungerer sømløst i grupper.
+
 ---
 
 ## 🏗️ Arkitektur
