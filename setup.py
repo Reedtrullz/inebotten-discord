@@ -63,7 +63,7 @@ def get_input(prompt, default=None, required=False):
 def check_dependencies():
     print(f"\n{Colors.BOLD}Step 1: Checking Dependencies{Colors.ENDC}")
     required = [
-        'discord', 'aiohttp', 'python-dotenv', 'google-api-python-client',
+        'discord.py-self', 'aiohttp', 'python-dotenv', 'google-api-python-client',
         'google-auth-oauthlib', 'google-auth-httplib2'
     ]
     missing = []
@@ -76,6 +76,8 @@ def check_dependencies():
                 __import__('google_auth_oauthlib')
             elif lib == 'google-auth-httplib2':
                 __import__('google_auth_httplib2')
+            elif lib == 'discord.py-self':
+                __import__('discord')
             else:
                 __import__(lib.replace('-', '_'))
             print(f"  {Colors.GREEN}✓{Colors.ENDC} {lib} is installed")
