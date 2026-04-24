@@ -20,9 +20,13 @@ sys.path.insert(0, str(SCRIPT_DIR))  # Add core/ for local imports
 try:
     import discord
 except ImportError:
-    print("[SETUP] Installing discord.py...")
+    print("[SETUP] Installing discord.py-self...")
     import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "-q", "discord.py"])
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "discord.py-self"])
+    except subprocess.CalledProcessError:
+        # Fallback for systems that require --break-system-packages (like newer Debian/Ubuntu)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--break-system-packages", "discord.py-self"])
     import discord
 
 from core.config import get_config
