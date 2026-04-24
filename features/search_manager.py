@@ -61,9 +61,9 @@ class SearchManager:
         Format search results as a string for AI context
         """
         if not results:
-            return "Ingen søkeresultater funnet."
+            return "Ingen søkeresultater funnet. Vennligst svar basert på det du vet, men nevn at du ikke fant noe nytt på nettet akkurat nå."
             
-        formatted = "Her er informasjon jeg fant på nettet:\n\n"
+        formatted = "HER ER SANNTIDSINFORMASJON FRA NETTET (Bruk dette som din kilde!):\n\n"
         for i, res in enumerate(results, 1):
             title = res.get('title', 'Ingen tittel')
             body = res.get('body', res.get('snippet', 'Ingen beskrivelse'))
@@ -94,21 +94,44 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     info_triggers = [
         r"hvem vant", r"hva ble resultatet", r"hvordan gikk det med",
         r"hva er status på", r"hvor mye koster en", r"søk på nett etter",
-        r"hva skjer med", r"hvor mye er"
+        r"hva skjer med", r"hvor mye er", r"fortell meg om", r"hva vet du om"
     ]
+    
+    query_type = None
+    matched_pattern = None
     
     # Check for news first
     for pattern in news_triggers:
         if re.search(pattern, content_lower):
-            query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE)
-            query = re.sub(pattern, "", query, flags=re.IGNORECASE).strip("? .!,").strip()
-            return {"query": query if query else "siste nyheter norge", "type": "news"}
+            query_type = "news"
+            matched_pattern = pattern
+            break
 
     # Check for general info
-    for pattern in info_triggers:
-        if re.search(pattern, content_lower):
-            query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE)
-            query = re.sub(pattern, "", query, flags=re.IGNORECASE).strip("? .!,").strip()
-            return {"query": query, "type": "web"}
+    if not query_type:
+        for pattern in info_triggers:
+            if re.search(pattern, content_lower):
+                query_type = "web"
+                matched_pattern = pattern
+                break
+    
+    if query_type:
+        # Better query cleaning:
+        # 1. Remove @inebotten
+        query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE)
+        # 2. Remove the matched trigger phrase
+        query = re.sub(matched_pattern, "", query, flags=re.IGNORECASE)
+        # 3. Remove common filler words
+        fillers = [r"\bhva er\b", r"\bom\b", r"\ber\b", r"\bdet\b", r"\bi\b", r"\bpå\b"]
+        for filler in fillers:
+            query = re.sub(filler, "", query, flags=re.IGNORECASE)
+        
+        query = query.strip("? .!,").strip()
+        
+        # If query is too short after cleaning, use the original message (minus mention)
+        if len(query) < 3:
+            query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE).strip("? .!,").strip()
+            
+        return {"query": query if query else "siste nyheter norge", "type": query_type}
             
     return None
