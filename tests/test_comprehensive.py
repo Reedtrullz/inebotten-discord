@@ -17,6 +17,7 @@ Run with: cd /home/reed/.hermes/discord && python3 -m pytest tests/test_comprehe
 
 import os
 import sys
+import asyncio
 import unittest
 import json
 import tempfile
@@ -1313,9 +1314,29 @@ class TestFeatureCommands(unittest.TestCase):
         from features.aurora_forecast import AuroraForecast
 
         manager = AuroraForecast()
-        result = manager.get_forecast()
+
+        async def fake_fetch_noaa_data():
+            return [
+                ["time_tag", "kp"],
+                [
+                    (datetime.now() - timedelta(hours=1)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                    "4",
+                ],
+                [
+                    (datetime.now() + timedelta(hours=2)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                    "5",
+                ],
+            ]
+
+        manager._fetch_noaa_data = fake_fetch_noaa_data
+        result = asyncio.run(manager.get_forecast())
 
         self.assertIsNotNone(result)
+        self.assertEqual(result["kp_index"], 4.0)
 
     def test_87_school_holidays(self):
         """Test 87: School holidays: 'skoleferie oslo'"""
@@ -1647,14 +1668,17 @@ class TestNorwegianDialogue(unittest.TestCase):
         """Test 117: Conversation context user memory"""
         from memory.user_memory import UserMemory
 
-        memory = UserMemory()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = UserMemory(storage_path=Path(tmpdir) / "user_memory.json")
 
-        # Store and retrieve
-        memory.add_interest("test_user", "fotball")
-        memory.set_location("test_user", "Oslo")
+            # Store and retrieve
+            asyncio.run(memory.add_interest("test_user", "fotball"))
+            asyncio.run(memory.set_location("test_user", "Oslo"))
 
-        user = memory.get_user("test_user")
-        self.assertIsNotNone(user)
+            user = asyncio.run(memory.get_user("test_user"))
+            self.assertIsNotNone(user)
+            self.assertIn("fotball", user["interests"])
+            self.assertEqual(user["location"], "Oslo")
 
     def test_118_dashboard_generation(self):
         """Test 118: Dashboard generation"""

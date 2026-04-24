@@ -241,20 +241,19 @@ def get_user_memory():
 
 
 if __name__ == "__main__":
-    # Test
-    mem = UserMemory(storage_path="/tmp/test_user_memory.json")
+    async def main():
+        mem = UserMemory(storage_path="/tmp/test_user_memory.json")
 
-    # Simulate user interactions
-    mem.update_last_interaction("user1", "RBK-kamp", username="Ola")
-    mem.add_interest("user1", "fotball")
-    mem.add_interest("user1", "RBK")
-    mem.set_location("user1", "Trondheim")
+        # Simulate user interactions
+        await mem.update_last_interaction("user1", "RBK-kamp", username="Ola")
+        await mem.add_interest("user1", "fotball")
+        await mem.add_interest("user1", "RBK")
+        await mem.set_location("user1", "Trondheim")
 
-    print("User memory:", mem.get_user("user1"))
-    print("\nGreeting:", mem.get_personalized_greeting("user1"))
-    print("\nContext:", mem.format_context_for_prompt("user1"))
+        print("User memory:", await mem.get_user("user1"))
+        print("\nGreeting:", await mem.get_personalized_greeting("user1"))
+        print("\nContext:", await mem.format_context_for_prompt("user1"))
 
-    # Cleanup
-    import os
+        Path("/tmp/test_user_memory.json").unlink(missing_ok=True)
 
-    os.remove("/tmp/test_user_memory.json")
+    asyncio.run(main())
