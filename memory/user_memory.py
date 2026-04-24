@@ -100,7 +100,15 @@ class UserMemory:
         user["conversation_count"] = user.get("conversation_count", 0) + 1
 
         if topic:
-            user["last_topics"] = ([topic] + user.get("last_topics", []))[:5]
+            if isinstance(topic, list):
+                # Flatten the list of topics
+                current_topics = user.get("last_topics", [])
+                for t in reversed(topic): # Add them in order
+                    if t not in current_topics:
+                        current_topics = [t] + current_topics
+                user["last_topics"] = current_topics[:5]
+            else:
+                user["last_topics"] = ([topic] + user.get("last_topics", []))[:5]
 
         await self._save_memory()
 

@@ -77,14 +77,17 @@ REGLER:
             # String format (from format_context_for_prompt)
             prompt += f"Du vet: {user_context}\n"
     
-    # Add minimal conversation history
-    if conversation_history and len(conversation_history) > 0:
-        prompt += "\nNylig samtale:\n"
-        for msg in conversation_history[-3:]:  # Only last 3 for small model
-            if isinstance(msg, dict):
-                role = "Bruker" if msg.get('role') == 'user' else "Deg"
-                content = msg.get('content', '')[:100]  # Truncate long messages
-                prompt += f"{role}: {content}\n"
+    # Add conversation history
+    if conversation_history:
+        if isinstance(conversation_history, list) and len(conversation_history) > 0:
+            prompt += "\nNylig samtale:\n"
+            for msg in conversation_history[-3:]:  # Only last 3 for small model
+                if isinstance(msg, dict):
+                    role = "Bruker" if msg.get('role') == 'user' else "Deg"
+                    content = msg.get('content', '')[:100]  # Truncate long messages
+                    prompt += f"{role}: {content}\n"
+        elif isinstance(conversation_history, str) and conversation_history.strip():
+            prompt += f"\nNylig samtale:\n{conversation_history}\n"
     
     # Simple time-based greeting suggestion
     if time_of_day == "morning":
