@@ -85,7 +85,7 @@ Last ned ferdige desktop-apper fra [Releases](https://github.com/Reedtrullz/ineb
 - **macOS:** `Inebotten-macos.zip` - Pakk ut og åpne `Inebotten.app`
 - **Windows:** `Inebotten.exe` - Dobbeltklikk for å kjøre
 
-⚠️ **macOS Gatekeeper Warning:** If you see "Inebotten.app is damaged and can't be opened", right-click the app and select "Open". See [mac_app/README.md](mac_app/README.md#troubleshooting) for details.
+⚠️ **macOS Gatekeeper-advarsel:** Hvis du ser "Inebotten.app is damaged and can't be opened", høyreklikk appen og velg "Open". Se [mac_app/README.md](mac_app/README.md#troubleshooting) for detaljer.
 
 Se [docs/RELEASE.md](docs/RELEASE.md) for hvordan du lager nye releases.
 
@@ -140,9 +140,9 @@ docker-compose up -d
 ```
 Det er alt! Botten vil kjøre i bakgrunnen og starte automatisk ved omstart.
 
-#### VPS med auto-update
+#### VPS med auto-oppdatering
 
-For Vultr/VPS-oppsett med Docker Compose, GitHub webhook og systemd fallback-timer:
+For Vultr/VPS-oppsett med Docker Compose, GitHub-webhook og systemd-fallback-timer:
 
 ```bash
 cd /opt/inebotten-discord
@@ -175,9 +175,9 @@ inebotten-discord/
 ├── tests/                 # Test files
 ├── mac_app/               # macOS desktop app
 ├── windows_app/           # Windows desktop app
-├── .env.example           # Environment template
+├── .env.example           # Mal for miljøvariabler
 ├── requirements.txt       # Python dependencies
-└── README.md             # This file
+└── README.md             # Denne filen
 ```
 
 ---
@@ -191,7 +191,7 @@ inebotten-discord/
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Systemarkitektur og dataflyt | Utviklere |
 | **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Guide for å legge til nye features | Bidragsytere |
 | **[docs/GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md)** | Oppsett av Google Calendar-sync | Brukere |
-| **[docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md)** | VPS, Docker og auto-update via GitHub webhook | Drift |
+| **[docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md)** | VPS, Docker og auto-oppdatering via GitHub-webhook | Drift |
 | **[docs/RELEASE.md](docs/RELEASE.md)** | Hvordan lage releases med pre-built apps | Utviklere |
 | **[mac_app/README.md](mac_app/README.md)** | macOS app dokumentasjon | macOS-brukere |
 | **[windows_app/README.md](windows_app/README.md)** | Windows app dokumentasjon | Windows-brukere |
@@ -252,7 +252,7 @@ inebotten-discord/
                     └─────────────────┘      └──────────────┘
 ```
 
-**Handler Architecture:** All 10 handlers extend `BaseHandler` for unified response handling, rate limiting, and logging.
+**Handler-arkitektur:** Alle 10 handlers arver `BaseHandler` for enhetlig respons-håndtering, rate limiting og logging.
 
 Se [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full detaljering.
 

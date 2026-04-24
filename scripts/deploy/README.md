@@ -1,20 +1,20 @@
-# Deployment Scripts
+# Deploy-skript
 
-These files install Inebotten's VPS auto-update flow.
+Disse filene installerer VPS-flyten for Inebotten med auto-oppdatering.
 
-Use from a server checkout:
+Bruk fra et checkout på serveren:
 
 ```bash
 cd /opt/inebotten-discord
 sudo WEBHOOK_PORT=9000 ./scripts/deploy/install-autoupdate.sh
 ```
 
-Installed components:
+Installerte komponenter:
 
-- `inebotten-update`: fetches `origin/master`, hard-resets the checkout, rebuilds Docker Compose, and restarts the bot.
-- `inebotten-webhook.py`: verifies GitHub webhook signatures and starts the update service on push.
-- `inebotten-update.service`: one-shot systemd update job.
-- `inebotten-update.timer`: 5-minute fallback polling timer.
-- `inebotten-webhook.service`: long-running webhook listener.
+- `inebotten-update`: henter `origin/master`, hard-resetter checkouten, bygger Docker Compose på nytt og starter botten på nytt.
+- `inebotten-webhook.py`: verifiserer GitHub-webhook-signaturer og starter oppdateringstjenesten ved push.
+- `inebotten-update.service`: engangs systemd-jobb for oppdatering.
+- `inebotten-update.timer`: fallback-timer som sjekker hvert 5. minutt.
+- `inebotten-webhook.service`: langkjørende webhook-lytter.
 
-See `../../docs/VPS_DEPLOYMENT.md` for the full operational guide.
+Se `../../docs/VPS_DEPLOYMENT.md` for hele driftsguiden.

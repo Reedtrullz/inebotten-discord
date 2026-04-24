@@ -1,35 +1,35 @@
-# VPS Deployment and Auto-Update
+# VPS-oppsett og auto-oppdatering
 
-This guide documents the production-style VPS setup for Inebotten using Docker Compose, systemd, and a GitHub webhook.
+Denne guiden dokumenterer VPS-oppsettet for Inebotten med Docker Compose, systemd og en GitHub-webhook.
 
-The intended flow is:
+Flyten er slik:
 
-1. GitHub receives a push to `master`.
-2. GitHub calls the VPS webhook.
-3. The VPS runs `inebotten-update.service`.
-4. The update service fetches `origin/master`, hard-resets the checkout, rebuilds Docker, and restarts the container.
-5. A 5-minute systemd timer also checks GitHub as a fallback.
+1. GitHub mottar en push til `master`.
+2. GitHub kaller webhooken på VPS-en.
+3. VPS-en kjører `inebotten-update.service`.
+4. Oppdateringstjenesten henter `origin/master`, hard-resetter checkouten, bygger Docker på nytt og starter containeren på nytt.
+5. En systemd-timer på 5 minutter sjekker også GitHub som fallback.
 
-## Server Layout
+## Serveroppsett
 
-Recommended paths:
+Anbefalte stier:
 
 ```bash
-/opt/inebotten-discord          # Git checkout
-/opt/inebotten-autoupdate       # Webhook listener
+/opt/inebotten-discord          # Git-checkout
+/opt/inebotten-autoupdate       # Webhook-lytter
 /usr/local/sbin/inebotten-update
-/etc/inebotten-webhook.env      # Webhook secret and settings
+/etc/inebotten-webhook.env      # Webhook-secret og innstillinger
 /var/log/inebotten-autoupdate.log
 ```
 
-Runtime data should stay outside Git:
+Kjøringsdata skal ligge utenfor Git:
 
 ```bash
 /opt/inebotten-discord/.env
 /opt/inebotten-discord/data/
 ```
 
-## Initial VPS Setup
+## Første Oppsett
 
 ```bash
 sudo apt update
@@ -43,47 +43,47 @@ sudo nano .env
 sudo docker compose up -d --build
 ```
 
-Verify:
+Verifiser:
 
 ```bash
 sudo docker compose ps
 sudo docker logs -f inebotten-bot
 ```
 
-## Install Auto-Update
+## Installer Auto-Update
 
-From the repo checkout on the server:
+Fra repo-checkoutet på serveren:
 
 ```bash
 cd /opt/inebotten-discord
 sudo WEBHOOK_PORT=9000 ./scripts/deploy/install-autoupdate.sh
 ```
 
-The installer prints:
+Installasjonsskriptet skriver ut:
 
 ```text
 Webhook URL: http://<server-ip>:9000/github-webhook
 Webhook secret: <generated-secret>
 ```
 
-Keep the secret private. It is stored on the server in `/etc/inebotten-webhook.env`.
+Hold secreten privat. Den lagres på serveren i `/etc/inebotten-webhook.env`.
 
-## GitHub Webhook
+## GitHub-webhook
 
-In GitHub:
+I GitHub:
 
-1. Open `Settings -> Webhooks -> Add webhook`.
-2. Set **Payload URL** to `http://<server-ip>:9000/github-webhook`.
-3. Set **Content type** to `application/json`.
-4. Set **Secret** to the generated secret from the installer.
-5. Select **Just the push event**.
-6. Enable **Active**.
+1. Åpne `Settings -> Webhooks -> Add webhook`.
+2. Sett **Payload URL** til `http://<server-ip>:9000/github-webhook`.
+3. Sett **Content type** til `application/json`.
+4. Sett **Secret** til hemmeligheten fra installasjonsskriptet.
+5. Velg **Just the push event**.
+6. Slå på **Active**.
 
-GitHub should receive `pong` for the ping event. Pushes to `master` should receive `202 update queued`.
+GitHub skal få `pong` for ping-eventen. Push til `master` skal få `202 update queued`.
 
-## Operations
+## Drift
 
-Check services:
+Sjekk tjenester:
 
 ```bash
 sudo systemctl status inebotten-webhook.service --no-pager
@@ -91,46 +91,46 @@ sudo systemctl status inebotten-update.timer --no-pager
 sudo systemctl list-timers inebotten-update.timer --no-pager
 ```
 
-Run an update manually:
+Kjør en oppdatering manuelt:
 
 ```bash
 sudo systemctl start inebotten-update.service
 ```
 
-Read updater logs:
+Les oppdateringsloggen:
 
 ```bash
 sudo tail -f /var/log/inebotten-autoupdate.log
 ```
 
-Check webhook health:
+Sjekk webhook-helsen:
 
 ```bash
 curl http://127.0.0.1:9000/health
 ```
 
-Restart the bot:
+Start botten på nytt:
 
 ```bash
 cd /opt/inebotten-discord
 sudo docker compose up -d --build
 ```
 
-## Security Notes
+## Sikkerhetsnotater
 
-- Do not commit `.env`, Discord tokens, webhook secrets, or `data/`.
-- Use the GitHub webhook secret. Unsigned webhook calls are rejected.
-- The update service intentionally uses `git reset --hard origin/master`; do not keep manual code edits on the VPS.
-- Keep persistent runtime data in `data/`, which is mounted into the Docker container.
-- If a firewall is active, open only the webhook port you need, usually `9000/tcp`.
+- Ikke commit `.env`, Discord-tokens, webhook-secrets eller `data/`.
+- Bruk GitHub-webhook-secret. Usignerte webhook-kall blir avvist.
+- Oppdateringstjenesten bruker med vilje `git reset --hard origin/master`; ikke behold manuelle kodeendringer på VPS-en.
+- Behold varige kjøringsdata i `data/`, som mountes inn i Docker-containeren.
+- Hvis en brannmur er aktiv, åpne bare webhook-porten du trenger, vanligvis `9000/tcp`.
 
-## Troubleshooting
+## Feilsøking
 
-| Problem | Check |
+| Problem | Sjekk |
 |---------|-------|
-| GitHub webhook returns 403 | Secret mismatch or missing `X-Hub-Signature-256` |
-| GitHub webhook times out | Firewall, port, or `inebotten-webhook.service` |
-| Push does not deploy | `sudo journalctl -u inebotten-webhook.service -n 100 --no-pager` |
-| Timer does not run | `sudo systemctl list-timers inebotten-update.timer --no-pager` |
-| Docker rebuild fails | `sudo tail -100 /var/log/inebotten-autoupdate.log` |
-| Bot starts then exits | `sudo docker logs --tail=200 inebotten-bot` |
+| GitHub-webhooken returnerer 403 | Secret matcher ikke, eller `X-Hub-Signature-256` mangler |
+| GitHub-webhooken timeouter | Brannmur, port eller `inebotten-webhook.service` |
+| Push deployer ikke | `sudo journalctl -u inebotten-webhook.service -n 100 --no-pager` |
+| Timeren kjører ikke | `sudo systemctl list-timers inebotten-update.timer --no-pager` |
+| Docker-bygg feiler | `sudo tail -100 /var/log/inebotten-autoupdate.log` |
+| Botten starter og avslutter | `sudo docker logs --tail=200 inebotten-bot` |
