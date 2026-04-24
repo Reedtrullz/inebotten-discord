@@ -14,7 +14,7 @@ import discord
 
 # Keyword sets for command matching
 CALENDAR_KEYWORDS = [
-    "kalender", "calendar", "arrangementer", "events", "hjelp", "help",
+    "kalender", "calendar", "arrangementer", "events",
     "kommende", "planlagt", "påminnelser", "huskeliste",
 ]
 
@@ -289,6 +289,13 @@ class MessageMonitor:
         self.loc.set_language(lang)
         print(f"[MONITOR] Detected language: {lang}")
 
+        # Check for calendar help specifically (before general keyword matches)
+        if "kalender" in content_lower and any(word in content_lower for word in ["hjelp", "help", "guide"]):
+            print("[MONITOR] Matched: calendar help command")
+            help_text = self.conv_gen.get_calendar_help()
+            await self._send_response(message, help_text)
+            return
+
         try:
             # Check for natural language calendar items
             parsed = self.nlp_parser.parse_task_with_recurrence(message.content)
@@ -480,12 +487,6 @@ class MessageMonitor:
             show_navnedag = any(word in content_lower for word in ['navnedag', 'oppsummering', 'brief', 'status'])
             print(f"[MONITOR] show_navnedag={show_navnedag}")
 
-        # Calendar help check
-        if "kalender" in content_lower and any(word in content_lower for word in ["hjelp", "help", "guide"]):
-            from ai.conversational_responses import get_conversational_generator
-            response_text = get_conversational_generator().get_calendar_help()
-            await self._send_response(message, response_text)
-            return
 
         # Update conversation history
         self.conversation.add_message(
