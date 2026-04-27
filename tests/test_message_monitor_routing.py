@@ -85,7 +85,10 @@ class RecordingPollsHandler:
 class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
     def make_monitor(self, wants_dashboard=False, active_polls=False):
         monitor = MessageMonitor.__new__(MessageMonitor)
-        monitor.client = SimpleNamespace(user=SimpleNamespace(id=42))
+        monitor.client = SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            config=SimpleNamespace(ALLOWED_USERS=[], ALLOWED_CHANNELS=[])
+        )
         monitor.bot_name = "inebotten"
         monitor.bot_mention = "@inebotten"
         monitor.processed_messages = []
