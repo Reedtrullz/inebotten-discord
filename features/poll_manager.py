@@ -190,7 +190,15 @@ def parse_poll_command(message_content):
     is_explicit = any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in poll_triggers)
     
     # Also allow if it has multiple options separated by /
-    has_options = "/" in content and len(content.split("/")) >= 2
+    slash_parts = content.split("/")
+    has_options = False
+    if len(slash_parts) >= 2:
+        if is_explicit:
+            has_options = True
+        else:
+            # Implicit: require at least 3 parts (2 slashes) OR spaces around the single slash
+            has_spaces = " / " in content or content.endswith(" /") or content.startswith("/ ")
+            has_options = len(slash_parts) >= 3 or has_spaces
     
     if not (is_explicit or has_options):
         return None

@@ -115,6 +115,10 @@ class IntentRouter:
         if calendar_command:
             return calendar_command
 
+        calendar_item = self._route_calendar_item(content)
+        if calendar_item and calendar_item.confidence >= 0.94:
+            return calendar_item
+
         poll_cmd = self.monitor.parse_poll_command(content)
         if poll_cmd:
             return IntentResult(BotIntent.POLL_CREATE, 0.95, {"poll": poll_cmd}, "poll_parser")
@@ -167,7 +171,6 @@ class IntentRouter:
         if self._contains_any_word(content_lower, DAILY_DIGEST_KEYWORDS):
             return IntentResult(BotIntent.DAILY_DIGEST, 0.9, reason="daily_digest_keyword")
 
-        calendar_item = self._route_calendar_item(content)
         if calendar_item:
             return calendar_item
 
@@ -215,7 +218,17 @@ class IntentRouter:
 
         if parsed:
             parsed = self._resolve_calendar_followup(content, parsed)
-            return IntentResult(BotIntent.CALENDAR_ITEM, 0.86, {"calendar_item": parsed}, "calendar_nlp")
+            
+            # Boost confidence for strong matches
+            confidence = 0.86
+            # If we have a title AND a date/recurrence, it's a very strong match
+            if (parsed.get("date") or parsed.get("recurrence")) and parsed.get("title"):
+                confidence = 0.97
+            # "husk" is a very strong keyword indicator for calendar
+            if self._contains_any_word(content.lower(), ["husk", "remind", "påminn"]):
+                confidence = max(confidence, 0.95)
+                
+            return IntentResult(BotIntent.CALENDAR_ITEM, confidence, {"calendar_item": parsed}, "calendar_nlp")
         return None
 
     def _route_location_command(self, content: str) -> Optional[IntentResult]:
