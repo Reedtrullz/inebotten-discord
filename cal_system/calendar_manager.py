@@ -233,6 +233,30 @@ class CalendarManager:
 
         return count, deleted_titles
 
+    async def clear_calendar(self, guild_id):
+        """Delete all items from the calendar for a guild"""
+        guild_key = str(guild_id)
+        if guild_key not in self.items or not self.items[guild_key]:
+            return 0
+
+        deleted_count = 0
+        items_to_delete = list(self.items[guild_key])
+        
+        # Clear local items first to be responsive
+        self.items[guild_key] = []
+        await self._save_data()
+        
+        # Then clean up GCal if enabled
+        for item in items_to_delete:
+            deleted_count += 1
+            if self.gcal_enabled and item.get("gcal_event_id"):
+                try:
+                    self.gcal.delete_event(item["gcal_event_id"])
+                except Exception as e:
+                    print(f"[CAL] GCal clear delete failed for {item.get('title')}: {e}")
+        
+        return deleted_count
+
     def complete_item(self, guild_id, item_num=None, item_id=None):
         """Mark an item as complete (or move to next date if recurring)"""
         guild_key = str(guild_id)

@@ -166,15 +166,26 @@ class NaturalLanguageParser:
         if self._is_conversational_false_positive(content):
             return None
         
+        # 1. Check for quoted title (prioritize exact match)
+        quoted_match = re.search(r'["\'](.*?)["\']', content)
+        quoted_title = None
+        if quoted_match:
+            quoted_title = quoted_match.group(1).strip()
+            # Remove quoted part from content for further parsing of date/time
+            content_for_parsing = content.replace(quoted_match.group(0), ' ').strip()
+            content_for_parsing = re.sub(r'\s+', ' ', content_for_parsing)
+        else:
+            content_for_parsing = content
+
         # Check if it looks like an event (has time indicator or date)
-        if not self._has_time_indicator(content):
+        if not self._has_time_indicator(content_for_parsing):
             return None
         
         # Extract date
-        date_str, days_offset = self._extract_date(content)
+        date_str, days_offset = self._extract_date(content_for_parsing)
         
         # If no date found but recurrence is present, default to today
-        recurrence_data = self._extract_recurrence(content)
+        recurrence_data = self._extract_recurrence(content_for_parsing)
         if not date_str and days_offset is None:
             if recurrence_data:
                 # Default to today for recurrence-only patterns like "regninger hver måned"
@@ -186,10 +197,13 @@ class NaturalLanguageParser:
                 return None
         
         # Extract time
-        time_str = self._extract_time(content)
+        time_str = self._extract_time(content_for_parsing)
         
-        # Extract title by removing date/time/recurrence parts
-        title = self._extract_title(content, date_str, time_str, recurrence_data)
+        # Extract title
+        if quoted_title:
+            title = quoted_title
+        else:
+            title = self._extract_title(content, date_str, time_str, recurrence_data)
         
         if not title or len(title) < 2:
             return None
@@ -281,8 +295,19 @@ class NaturalLanguageParser:
         idx = content.lower().find(matched_indicator)
         remaining = content[idx + len(matched_indicator):].strip()
         
+        # NEW: Check for quoted title (prioritize exact match)
+        quoted_match = re.search(r'["\'](.*?)["\']', remaining)
+        quoted_title = None
+        if quoted_match:
+            quoted_title = quoted_match.group(1).strip()
+            # Remove quoted part from remaining for further parsing of date/time
+            remaining_for_parsing = remaining.replace(quoted_match.group(0), ' ').strip()
+            remaining_for_parsing = re.sub(r'\s+', ' ', remaining_for_parsing)
+        else:
+            remaining_for_parsing = remaining
+
         # Clean up common particles after indicator
-        remaining = re.sub(r'^(å|at|om|på)\s+', '', remaining, flags=re.IGNORECASE)
+        remaining_for_parsing = re.sub(r'^(å|at|om|på)\s+', '', remaining_for_parsing, flags=re.IGNORECASE)
         
         # Step 2: Look for date with day name
         # Try multiple patterns to be flexible with word order
@@ -291,7 +316,7 @@ class NaturalLanguageParser:
         day_names_pattern = '|'.join(self.days.keys())
         date_match = re.search(
             r'(' + day_names_pattern + r')\s+(\d{1,2})[.\s]+([a-zæøå]+)(?:\s+(\d{4}))?',
-            remaining,
+            remaining_for_parsing,
             re.IGNORECASE
         )
         
@@ -299,7 +324,7 @@ class NaturalLanguageParser:
         if not date_match:
             date_match = re.search(
                 r'(\d{1,2})[.\s]+([a-zæøå]+)(?:\s+(\d{4}))?',
-                remaining,
+                remaining_for_parsing,
                 re.IGNORECASE
             )
             if date_match:
@@ -340,30 +365,33 @@ class NaturalLanguageParser:
         
         # Step 3: Extract time if present (look for "kl" or "klokken" before the date)
         time_str = None
-        time_match = re.search(r'kl\.?\s*(\d{1,2})(?::(\d{2}))?', remaining[:date_match.start()], re.IGNORECASE)
+        time_match = re.search(r'kl\.?\s*(\d{1,2})(?::(\d{2}))?', remaining_for_parsing[:date_match.start()], re.IGNORECASE)
         if time_match:
             hour = time_match.group(1)
             minute = time_match.group(2) if time_match.group(2) else '00'
             time_str = f"{hour}:{minute}"
         
         # Step 4: Extract task text (everything before date/time indicators)
-        # Find where the task text ends (before time or date)
-        task_end = date_match.start()
-        if time_match:
-            task_end = min(task_end, time_match.start())
-        
-        task_text = remaining[:task_end].strip()
-        
-        # Clean up task text - remove common prepositions at start and end
-        task_text = re.sub(r'^(å|at|om|på)\s+', '', task_text, flags=re.IGNORECASE)
-        task_text = re.sub(r'\s+(på|om|å|at)$', '', task_text, flags=re.IGNORECASE)
-        task_text = re.sub(r'\s+', ' ', task_text).strip()
+        if quoted_title:
+            task_text = quoted_title
+        else:
+            # Find where the task text ends (before time or date)
+            task_end = date_match.start()
+            if time_match:
+                task_end = min(task_end, time_match.start())
+            
+            task_text = remaining_for_parsing[:task_end].strip()
+            
+            # Clean up task text - remove common prepositions at start and end
+            task_text = re.sub(r'^(å|at|om|på)\s+', '', task_text, flags=re.IGNORECASE)
+            task_text = re.sub(r'\s+(på|om|å|at)$', '', task_text, flags=re.IGNORECASE)
+            task_text = re.sub(r'\s+', ' ', task_text).strip()
         
         if not task_text or len(task_text) < 2:
             return None
         
         # Step 5: Look for recurrence pattern after the date
-        remaining_after_date = remaining[date_match.end():]
+        remaining_after_date = remaining_for_parsing[date_match.end():]
         
         # Check for continuation words + recurrence
         recurrence_data = None

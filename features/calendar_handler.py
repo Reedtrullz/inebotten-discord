@@ -172,6 +172,23 @@ class CalendarHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error listing calendar: {e}")
 
+    async def handle_clear(self, message) -> None:
+        """Handle clearing the entire calendar."""
+        try:
+            guild_id = self.get_guild_id(message)
+            
+            # Double check with the user? For now, just do it as requested.
+            count = await self.calendar.clear_calendar(guild_id)
+            
+            if count > 0:
+                await self.send_response(message, f"🗑️ **Kalenderen er tømt!** Slettet {count} elementer.")
+            else:
+                await self.send_response(message, "📭 Kalenderen er allerede tom.")
+                
+        except Exception as e:
+            self.log(f"Error clearing calendar: {e}")
+            await self.send_response(message, "❌ Beklager, det oppstod en feil under tømming av kalenderen.")
+
     async def handle_delete(self, message) -> None:
         """Handle calendar item deletion."""
         try:

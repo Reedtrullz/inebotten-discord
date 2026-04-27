@@ -17,6 +17,7 @@ class BotIntent(Enum):
     CALENDAR_DELETE = "calendar_delete"
     CALENDAR_COMPLETE = "calendar_complete"
     CALENDAR_EDIT = "calendar_edit"
+    CALENDAR_CLEAR = "calendar_clear"
     CALENDAR_ITEM = "calendar_item"
     POLL_CREATE = "poll_create"
     POLL_VOTE = "poll_vote"
@@ -68,6 +69,7 @@ DELETE_KEYWORDS = ["slett", "delete", "fjern"]
 COMPLETE_KEYWORDS = ["ferdig", "done", "complete", "fullført"]
 EDIT_KEYWORDS = ["endre", "edit", "oppdater"]
 LIST_KEYWORDS = ["liste", "vis", "se", "oversikt"]
+CLEAR_KEYWORDS = ["tøm", "clear", "empty", "slett alt", "fjern alt"]
 
 PROFILE_KEYWORDS = [
     "status", "bio", "om meg", "about me", "endre navn", "spiller", "ser på",
@@ -177,7 +179,7 @@ class IntentRouter:
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
     def _route_calendar_command(self, content_lower: str) -> Optional[IntentResult]:
-        if not any(word in content_lower for word in CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS):
+        if not any(word in content_lower for word in CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS + CLEAR_KEYWORDS):
             return None
 
         if any(word in content_lower for word in SYNC_KEYWORDS):
@@ -188,6 +190,8 @@ class IntentRouter:
             return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_complete_keyword")
         if any(word in content_lower for word in EDIT_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_EDIT, 0.95, reason="calendar_edit_keyword")
+        if any(word in content_lower for word in CLEAR_KEYWORDS):
+            return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
         if any(word in content_lower for word in LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
             return IntentResult(BotIntent.CALENDAR_LIST, 0.92, reason="calendar_list_keyword")
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")

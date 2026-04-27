@@ -367,6 +367,8 @@ class MessageMonitor:
             await self.handlers["calendar"].handle_complete(message)
         elif route.intent == BotIntent.CALENDAR_EDIT:
             await self.handlers["calendar"].handle_edit(message)
+        elif route.intent == BotIntent.CALENDAR_CLEAR:
+            await self.handlers["calendar"].handle_clear(message)
         elif route.intent == BotIntent.CALENDAR_ITEM:
             await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
         elif route.intent == BotIntent.POLL_CREATE:
