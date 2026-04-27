@@ -182,6 +182,7 @@ def generate_env(discord_token, ai_config, gcal_config):
     if env_path.exists():
         backup = env_path.with_suffix(".env.bak")
         shutil.copy(env_path, backup)
+        os.chmod(backup, 0o600)
         print(f"  {Colors.WARNING}Existing .env backed up to .env.bak{Colors.ENDC}")
 
     # Read example or create new
@@ -217,6 +218,7 @@ def generate_env(discord_token, ai_config, gcal_config):
 
     with open(env_path, "w") as f:
         f.writelines(new_lines)
+    os.chmod(env_path, 0o600)
     
     print(f"  {Colors.GREEN}✓ .env file generated successfully!{Colors.ENDC}")
 

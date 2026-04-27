@@ -63,7 +63,7 @@ jobs:
             exit 1
           fi
 
-          if find . -maxdepth 2 \( -name '.env' -o -path './data/*.json' \) | grep -q .; then
+          if find . \( -name '.env' -o -name '.env.bak' -o -path './data/*' \) | grep -q .; then
             echo "Sensitive local data file found in the repository."
             exit 1
           fi

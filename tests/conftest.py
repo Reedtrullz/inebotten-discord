@@ -2,12 +2,18 @@
 
 import inspect
 import os
+import shutil
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 
+_TEST_HOME = Path(tempfile.mkdtemp(prefix="inebotten-tests-"))
+os.environ["HOME"] = str(_TEST_HOME)
+os.environ.setdefault("HERMES_HOME", str(_TEST_HOME / ".hermes"))
 os.environ.setdefault("DISCORD_USER_TOKEN", "test_token_1234567890.abc.defghijklmnopqrstuvwxyz")
 
 try:
@@ -62,3 +68,7 @@ def pytest_collection_modifyitems(items):
         obj = getattr(item, "obj", None)
         if obj is not None and inspect.iscoroutinefunction(obj):
             item.add_marker(pytest.mark.asyncio)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    shutil.rmtree(_TEST_HOME, ignore_errors=True)

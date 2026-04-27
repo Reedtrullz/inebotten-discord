@@ -35,10 +35,12 @@ ENV/
 
 # Discord selfbot specific
 .env
+.env.bak
 .env.local
 .env.*.local
 
 # Data files (contain sensitive tokens, user data)
+data/
 data/tokens.json
 data/user_memory.json
 data/calendar.json

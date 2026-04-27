@@ -834,12 +834,17 @@ class SelfbotClient(discord.Client):
             asyncio.create_task(self.reminder_checker.start())
             print("[BOT] Calendar reminder checker started")
 
-        # Check Hermes health
+        # Check AI connector health
+        if not self.hermes:
+            print("[BOT] WARNING: AI connector missing")
+            print("[BOT] Will use local response generator as fallback")
+            return
+
         healthy, message = await self.hermes.check_health()
         if healthy:
-            print(f"[BOT] Hermes API: {message}")
+            print(f"[BOT] AI connector: {message}")
         else:
-            print(f"[BOT] WARNING: Hermes API issue - {message}")
+            print(f"[BOT] WARNING: AI connector issue - {message}")
             print("[BOT] Will use local response generator as fallback")
 
     def _create_reminder_checker(self):
@@ -887,7 +892,7 @@ class SelfbotClient(discord.Client):
             "guilds": len(self.guilds),
             "uptime": str(self.get_uptime()),
             "rate_limiter": self.rate_limiter.get_stats(),
-            "hermes": self.hermes.get_stats(),
+            "hermes": self.hermes.get_stats() if self.hermes else {},
         }
 
         if self.monitor:

@@ -5,6 +5,7 @@ discord.py-self>=2.0.0
 
 # HTTP client for API calls
 aiohttp>=3.8.0
+requests>=2.31.0
 
 # Date/time utilities
 python-dateutil>=2.8.0
