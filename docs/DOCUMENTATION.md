@@ -325,7 +325,7 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 | Felt | Beskrivelse |
 |------|-------------|
 | `username` | Discord visningsnavn |
-| `location` | Brukerens lokasjon |
+| `location` | Brukerens faste lokasjon (brukes for vær/dashboard) |
 | `interests` | Automatisk ekstraherte interesser |
 | `last_topics` | Nylige samtaleemner |
 | `conversation_count` | Totalt antall interaksjoner |
@@ -477,8 +477,9 @@ Bruker: @inebotten kalender
 ### Utility-kommandoer
 
 ```
-@inebotten vær                          # Nåværende vær
-@inebotten været i Oslo                 # Vær for lokasjon
+@inebotten vær                          # Nåværende vær (bruker lagret lokasjon)
+@inebotten været i Oslo                 # Vær for spesifikt sted
+@inebotten Jeg bor i Trondheim          # Lagre fast lokasjon
 @inebotten avstemning Pizza eller burger?  # Lag avstemning
 @inebotten stem 1                        # Stem på avstemning
 @inebotten nedtelling til 17. mai       # Start nedtelling

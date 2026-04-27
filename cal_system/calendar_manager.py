@@ -505,9 +505,11 @@ class CalendarManager:
             title_display = (
                 f"~~{item['title']}~~" if item.get("completed") else item["title"]
             )
+            
+            creator_str = f" ({item.get('username', 'Ukjent')})"
 
             lines.append(
-                f"{status_indicator} **{i}.** {title_display} — _{item['date']}{time_str}_{recurrence_str}"
+                f"{status_indicator} **{i}.** {title_display} — _{item['date']}{time_str}_{creator_str}{recurrence_str}"
             )
 
         if show_completed:
@@ -529,6 +531,7 @@ class CalendarManager:
             "",
             f"📌 **{item['title']}**",
             f"📅 {item['date']}{time_str}",
+            f"👤 Lagt til av: {item.get('username', 'Ukjent')}",
         ]
 
         if item.get("recurrence"):

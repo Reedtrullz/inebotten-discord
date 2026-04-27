@@ -381,7 +381,8 @@ class ReminderChecker:
         ]
         for item in items[:8]:
             time_str = f" kl. {item['time']}" if item.get("time") else ""
-            lines.append(f"  {item['title']}{time_str}")
+            creator_str = f" ({item.get('username', 'Ukjent')})"
+            lines.append(f"  {item['title']}{time_str}{creator_str}")
 
         if len(items) > 8:
             lines.append(f"  ...og {len(items) - 8} til. Bruk @inebotten kalender for hele listen.")

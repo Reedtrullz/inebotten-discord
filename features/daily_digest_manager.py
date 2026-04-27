@@ -111,7 +111,8 @@ class DailyDigestManager:
                 else:
                     lines.append(f"📋 **Today's events ({len(today_events)}):**")
                 for event in today_events[:5]:
-                    lines.append(f"• {event['title']} kl {event.get('time', '??:??')}")
+                    creator_str = f" ({event.get('username', 'Ukjent')})"
+                    lines.append(f"• {event['title']} kl {event.get('time', '??:??')}{creator_str}")
                 lines.append("")
         
         # 4. Market Update (Crypto)

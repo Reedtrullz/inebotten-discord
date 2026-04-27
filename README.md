@@ -115,6 +115,7 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 @inebotten pris BTC
 @inebotten 100 USD til NOK
 @inebotten nordlys
+@inebotten Jeg bor i Trondheim
 @inebotten daglig oppsummering
 ```
 

@@ -364,7 +364,7 @@ All persistent lagring.
 │  Felt                         │  Beskrivelse                                │
 ├───────────────────────────────┼─────────────────────────────────────────────┤
 │  username: str                │  Discord visningsnavn                       │
-│  location: str                │  Brukerens lokasjon                         │
+│  location: str                │  Brukerens faste lokasjon                   │
 │  interests: [str]             │  Ekstraherte interesser                     │
 │  last_topics: [str]           │  Nylige samtaleemner                        │
 │  conversation_count: int      │  Totalt antall interaksjoner                │

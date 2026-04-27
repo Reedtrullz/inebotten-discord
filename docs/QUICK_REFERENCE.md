@@ -105,10 +105,12 @@ Du trenger ikke be om påminnelser - de skjer automatisk!
 |----------|-------------|
 | `@inebotten vær` | Værmelding for din lokasjon |
 | `@inebotten været i [sted]` | Vær for spesifikt sted |
+| `@inebotten Jeg bor i [sted]` | Lagre din faste lokasjon (for brief/dashboard) |
 
 **Eksempel:**
 ```
-@inebotten været i Trondheim
+@inebotten Jeg bor i Trondheim
+@inebotten vær
 ```
 
 ---
