@@ -6,6 +6,7 @@ Manages movie and series recommendations from Discord channels
 
 import json
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -335,12 +336,10 @@ def parse_watchlist_command(message_content):
     content_lower = message_content.lower()
 
     # Detect language
+    lang_keywords = ["filmforslag", "serieforslag", "anbefaling", "hva skal vi se"]
     lang = (
         "no"
-        if any(
-            word in content_lower
-            for word in ["filmforslag", "serieforslag", "anbefaling", "hva skal vi se"]
-        )
+        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in lang_keywords)
         else "en"
     )
 
@@ -357,13 +356,13 @@ def parse_watchlist_command(message_content):
     ]
 
     for keyword in suggestion_keywords:
-        if keyword in content_lower:
+        if re.search(rf'\b{re.escape(keyword)}\b', content_lower):
             # Determine type
             content_type = None
-            if any(word in content_lower for word in ["film", "movie", "filmforslag"]):
+            if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in ["film", "movie", "filmforslag"]):
                 content_type = "movie"
             elif any(
-                word in content_lower
+                re.search(rf'\b{re.escape(word)}\b', content_lower)
                 for word in ["serie", "series", "serieforslag", "tv show", "program"]
             ):
                 content_type = "series"
@@ -384,7 +383,7 @@ def parse_watchlist_command(message_content):
                 "horror",
             ]
             for g in genres:
-                if g in content_lower:
+                if re.search(rf'\b{re.escape(g)}\b', content_lower):
                     genre = g
                     break
 
@@ -396,14 +395,13 @@ def parse_watchlist_command(message_content):
             }
 
     # Check for watchlist status
-    if any(word in content_lower for word in ["watchlist", "watchlista", "hva har vi"]):
+    status_keywords = ["watchlist", "watchlista", "hva har vi"]
+    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in status_keywords):
         return {"action": "status", "lang": lang}
 
     # Check for adding item
-    if any(
-        phrase in content_lower
-        for phrase in ["legg til", "add to watchlist", "husk å se"]
-    ):
+    add_phrases = ["legg til", "add to watchlist", "husk å se"]
+    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in add_phrases):
         return {"action": "add", "lang": lang}
 
     return None

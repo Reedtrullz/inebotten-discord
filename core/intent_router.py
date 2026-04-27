@@ -88,17 +88,24 @@ class IntentRouter:
     def __init__(self, monitor):
         self.monitor = monitor
 
+    def _contains_any_word(self, content: str, words: list) -> bool:
+        """Check if content contains any of the words as whole words."""
+        for word in words:
+            if re.search(rf'\b{re.escape(word)}\b', content, re.IGNORECASE):
+                return True
+        return False
+
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
         content_lower = content.lower().strip()
 
         # Explicit operational/help/calendar commands first.
-        if "kalender" in content_lower and any(word in content_lower for word in ["hjelp", "help", "guide"]):
+        if self._contains_any_word(content_lower, ["kalender", "calendar"]) and self._contains_any_word(content_lower, ["hjelp", "help", "guide"]):
             return IntentResult(BotIntent.CALENDAR_HELP, 0.99, reason="calendar_help_keyword")
 
         if self._is_status_command(content_lower):
             return IntentResult(BotIntent.STATUS, 0.99, reason="status_keyword")
 
-        if any(keyword in content_lower for keyword in HELP_KEYWORDS):
+        if self._contains_any_word(content_lower, HELP_KEYWORDS):
             return IntentResult(BotIntent.HELP, 0.96, reason="help_keyword")
 
         if self._is_profile_command(content_lower):
@@ -124,17 +131,17 @@ class IntentRouter:
         if watchlist_cmd:
             return IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": watchlist_cmd}, "watchlist_parser")
 
-        if any(phrase in content_lower for phrase in WORD_OF_DAY_KEYWORDS):
+        if self._contains_any_word(content_lower, WORD_OF_DAY_KEYWORDS):
             return IntentResult(BotIntent.WORD_OF_DAY, 0.95, reason="word_of_day_keyword")
 
         quote_cmd = self.monitor.parse_quote_command(content)
         if quote_cmd:
             return IntentResult(BotIntent.QUOTE, 0.9, {"quote": quote_cmd}, "quote_parser")
 
-        if any(word in content_lower for word in AURORA_KEYWORDS):
+        if self._contains_any_word(content_lower, AURORA_KEYWORDS):
             return IntentResult(BotIntent.AURORA, 0.9, reason="aurora_keyword")
 
-        if any(phrase in content_lower for phrase in SCHOOL_HOLIDAYS_KEYWORDS):
+        if self._contains_any_word(content_lower, SCHOOL_HOLIDAYS_KEYWORDS):
             return IntentResult(BotIntent.SCHOOL_HOLIDAYS, 0.9, reason="school_holidays_keyword")
 
         price_cmd = self.monitor.parse_price_command(content)
@@ -157,7 +164,7 @@ class IntentRouter:
         if shorten_cmd:
             return IntentResult(BotIntent.SHORTEN_URL, 0.9, {"shorten": shorten_cmd}, "shorten_parser")
 
-        if any(phrase in content_lower for phrase in DAILY_DIGEST_KEYWORDS):
+        if self._contains_any_word(content_lower, DAILY_DIGEST_KEYWORDS):
             return IntentResult(BotIntent.DAILY_DIGEST, 0.9, reason="daily_digest_keyword")
 
         calendar_item = self._route_calendar_item(content)
@@ -179,20 +186,22 @@ class IntentRouter:
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
     def _route_calendar_command(self, content_lower: str) -> Optional[IntentResult]:
-        if not any(word in content_lower for word in CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS + CLEAR_KEYWORDS):
-            return None
+        if not self._contains_any_word(content_lower, ["kalender", "calendar"]):
+            # Special case for "synk" / "sync" which can be used without "kalender"
+            if not self._contains_any_word(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
+                return None
 
-        if any(word in content_lower for word in SYNC_KEYWORDS):
+        if self._contains_any_word(content_lower, SYNC_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_SYNC, 0.98, reason="calendar_sync_keyword")
-        if any(word in content_lower for word in DELETE_KEYWORDS):
+        if self._contains_any_word(content_lower, DELETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_DELETE, 0.98, reason="calendar_delete_keyword")
-        if any(word in content_lower for word in COMPLETE_KEYWORDS):
+        if self._contains_any_word(content_lower, COMPLETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_complete_keyword")
-        if any(word in content_lower for word in EDIT_KEYWORDS):
-            return IntentResult(BotIntent.CALENDAR_EDIT, 0.95, reason="calendar_edit_keyword")
-        if any(word in content_lower for word in CLEAR_KEYWORDS):
+        if self._contains_any_word(content_lower, EDIT_KEYWORDS):
+            return IntentResult(BotIntent.CALENDAR_EDIT, 0.98, reason="calendar_edit_keyword")
+        if self._contains_any_word(content_lower, CLEAR_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
-        if any(word in content_lower for word in LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
+        if self._contains_any_word(content_lower, LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
             return IntentResult(BotIntent.CALENDAR_LIST, 0.92, reason="calendar_list_keyword")
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")
 

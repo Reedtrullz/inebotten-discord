@@ -6,6 +6,7 @@ Saves funny quotes and messages from the group
 
 import json
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -158,9 +159,10 @@ def parse_quote_command(message_content):
     content_lower = message_content.lower()
 
     # Detect language
+    no_keywords = ["husk", "lagre", "gullkorn", "sitat"]
     lang = (
         "no"
-        if any(word in content_lower for word in ["husk", "lagre", "gullkorn", "sitat"])
+        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in no_keywords)
         else "en"
     )
 
@@ -174,11 +176,14 @@ def parse_quote_command(message_content):
         "quote this",
     ]
 
-    if any(phrase in content_lower for phrase in save_phrases_no + save_phrases_en):
+    all_save_phrases = save_phrases_no + save_phrases_en
+    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in all_save_phrases):
         # Extract text after the command
         text = message_content
-        for phrase in save_phrases_no + save_phrases_en + ["@inebotten"]:
-            text = text.replace(phrase, "").replace(phrase.title(), "").strip()
+        for phrase in all_save_phrases + ["@inebotten"]:
+            # Use regex for replacement to ensure word boundaries if needed, but here simple replace is usually fine for extraction
+            # though regex is safer.
+            text = re.sub(rf'\b{re.escape(phrase)}\b', '', text, flags=re.IGNORECASE).strip()
 
         # Remove colon if present at start
         text = text.lstrip(":").strip()
@@ -190,7 +195,8 @@ def parse_quote_command(message_content):
     get_words_no = ["sitat", "husk hva", "hva sa"]
     get_words_en = ["quote", "random quote", "show quote"]
 
-    if any(word in content_lower for word in get_words_no + get_words_en):
+    all_get_words = get_words_no + get_words_en
+    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in all_get_words):
         return {"action": "get", "lang": lang}
 
     return None

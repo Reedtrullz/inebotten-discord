@@ -106,7 +106,7 @@ class CalculatorManager:
                 }
 
         # Temperature conversion with explicit temperature units.
-        temp_pattern = r"(?:(?:konverter|convert|omgjør)\s+)?(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)(?:\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin))?"
+        temp_pattern = r"(?:(?:konverter|convert|omgjør)\s+)?(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)\b(?:\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin)\b)?"
         match = re.search(temp_pattern, content_lower)
         if match:
             return {
@@ -117,7 +117,7 @@ class CalculatorManager:
             }
 
         # Length conversion
-        length_pattern = r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(m|km|cm|mm|ft|foot|feet|in|inch|inches|yd|yard|yards|mi|mile|miles)\s+(?:til|to)\s+(m|km|cm|mm|ft|foot|feet|in|inch|inches|yd|yard|yards|mi|mile|miles)"
+        length_pattern = r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(m|km|cm|mm|ft|foot|feet|in|inch|inches|yd|yard|yards|mi|mile|miles)\b\s+(?:til|to)\s+(m|km|cm|mm|ft|foot|feet|in|inch|inches|yd|yard|yards|mi|mile|miles)\b"
         match = re.search(length_pattern, content_lower)
         if match:
             return {
@@ -128,7 +128,7 @@ class CalculatorManager:
             }
 
         # Weight conversion
-        weight_pattern = r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(kg|kilogram|g|gram|lb|pound|pounds|oz|ounce|ounces|stone|stones)\s+(?:til|to)\s+(kg|kilogram|g|gram|lb|pound|pounds|oz|ounce|ounces|stone|stones)"
+        weight_pattern = r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(kg|kilogram|g|gram|lb|pound|pounds|oz|ounce|ounces|stone|stones)\b\s+(?:til|to)\s+(kg|kilogram|g|gram|lb|pound|pounds|oz|ounce|ounces|stone|stones)\b"
         match = re.search(weight_pattern, content_lower)
         if match:
             return {

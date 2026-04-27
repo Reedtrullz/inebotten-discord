@@ -178,16 +178,16 @@ def parse_poll_command(message_content):
     content = re.sub(r"@inebotten\s*", "", message_content, flags=re.IGNORECASE).strip()
 
     # Detect language
+    lang_keywords = ["avstemning", "stemme", "eller"]
     lang = (
         "no"
-        if any(word in content_lower for word in ["avstemning", "stemme", "eller"])
+        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in lang_keywords)
         else "en"
     )
 
     # Check for poll keywords - must be more specific to avoid false positives
-    # "stemme" alone is too common in Norwegian (means both "vote" and "voice")
     poll_triggers = ["avstemning", "poll", "lag poll", "create poll", "ny poll"]
-    is_explicit = any(word in content_lower for word in poll_triggers)
+    is_explicit = any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in poll_triggers)
     
     # Also allow if it has multiple options separated by /
     has_options = "/" in content and len(content.split("/")) >= 2
