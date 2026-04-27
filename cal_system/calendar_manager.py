@@ -400,11 +400,11 @@ class CalendarManager:
             gcal_username = ext_props.get("discord_username")
             gcal_user_id = ext_props.get("discord_user_id") or "gcal_sync"
 
-            if not gcal_username:
+            if not gcal_username or gcal_username.lower() == "inebotten":
                 # Fallback to Display Name > Email > Default
                 gcal_username = creator.get("displayName") or organizer.get("displayName")
                 
-                if not gcal_username:
+                if not gcal_username or gcal_username.lower() == "inebotten":
                     email = creator.get("email") or organizer.get("email")
                     if email and self.owner_email and email.lower() == self.owner_email.lower() and self.owner_name:
                         gcal_username = self.owner_name
@@ -413,8 +413,8 @@ class CalendarManager:
                     else:
                         gcal_username = email or self.owner_name or "Google Calendar"
                 
-            # Final fallback if still empty
-            if not gcal_username or gcal_username == "Google Calendar":
+            # Final fallback if still empty or generic
+            if not gcal_username or gcal_username.lower() in ["google calendar", "inebotten"]:
                 gcal_username = self.owner_name or "Google Calendar"
 
             if gcal_id in gcal_map:
