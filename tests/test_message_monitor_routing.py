@@ -144,7 +144,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_dashboard_fallback_has_defined_context(self):
         monitor = self.make_monitor(wants_dashboard=True)
 
-        async def fake_dashboard(guild_id, city_name=None, show_navnedag=False):
+        async def fake_dashboard(guild_id, city_name=None, show_navnedag=False, user_id=None):
             return f"dashboard:{guild_id}:{show_navnedag}"
 
         monitor._generate_dashboard = fake_dashboard
