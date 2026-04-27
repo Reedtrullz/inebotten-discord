@@ -63,11 +63,31 @@ class CalendarManager:
         self.gcal_enabled = gcal_manager is not None
         self.owner_email = owner_email
         self.owner_name = owner_name
-        self.items = {}  # {guild_id: [item1, item2, ...]}
+        self.SHARED_KEY = "shared"
+        self.items = {}  # Will be transitioned to {self.SHARED_KEY: [...]}
 
     async def setup(self):
-        """Async initialization"""
+        """Async initialization and migration to shared calendar"""
         self.items = await self._load_data()
+        
+        # Migration to shared calendar if multiple buckets exist or if only old guild-specific buckets exist
+        keys = list(self.items.keys())
+        if self.items and (len(keys) > 1 or (len(keys) == 1 and keys[0] != self.SHARED_KEY)):
+            print(f"[CAL] Migrating {len(keys)} channel-specific calendars to one grand shared calendar...")
+            merged = []
+            seen_ids = set()
+            
+            # Extract all items from all buckets
+            for guild_id, guild_items in self.items.items():
+                for item in guild_items:
+                    if item.get("id") not in seen_ids:
+                        merged.append(item)
+                        seen_ids.add(item.get("id"))
+            
+            self.items = {self.SHARED_KEY: merged}
+            await self._save_data()
+            print(f"[CAL] Migration complete: {len(merged)} items moved to '{self.SHARED_KEY}'")
+            
         print(f"[CAL] Calendar system initialized with {sum(len(v) for v in self.items.values())} items")
 
     async def _load_data(self) -> Dict:
@@ -126,7 +146,7 @@ class CalendarManager:
                 except ValueError:
                     pass
 
-        guild_key = str(guild_id)
+        guild_key = self.SHARED_KEY
         if guild_key not in self.items:
             self.items[guild_key] = []
 
@@ -151,9 +171,9 @@ class CalendarManager:
         return AwaitableDict(item)
 
     def delete_item(self, guild_id, item_num):
-        """Delete an item by its list number"""
-        guild_key = str(guild_id)
-        items = self.get_upcoming(guild_id, days=365)
+        """Delete an item by its list number (ignoring guild_id for shared calendar)"""
+        guild_key = self.SHARED_KEY
+        items = self.get_upcoming(guild_key, days=365)
 
         if item_num is not None and 1 <= item_num <= len(items):
             item_to_delete = items[item_num - 1]
@@ -178,8 +198,8 @@ class CalendarManager:
         return AwaitableValue((False, None))
 
     async def delete_item_by_title(self, guild_id, title_search):
-        """Delete a single item by title matching"""
-        guild_key = str(guild_id)
+        """Delete a single item by title matching (ignoring guild_id for shared calendar)"""
+        guild_key = self.SHARED_KEY
         if guild_key not in self.items:
             return False, None
 
@@ -203,8 +223,8 @@ class CalendarManager:
         return False, None
 
     async def delete_items_by_title(self, guild_id, title_search):
-        """Delete multiple items by title matching"""
-        guild_key = str(guild_id)
+        """Delete multiple items by title matching (ignoring guild_id for shared calendar)"""
+        guild_key = self.SHARED_KEY
         if guild_key not in self.items:
             return 0, []
 
@@ -234,8 +254,8 @@ class CalendarManager:
         return count, deleted_titles
 
     async def clear_calendar(self, guild_id):
-        """Delete all items from the calendar for a guild"""
-        guild_key = str(guild_id)
+        """Delete all items from the shared calendar (ignoring guild_id)"""
+        guild_key = self.SHARED_KEY
         if guild_key not in self.items or not self.items[guild_key]:
             return 0
 
@@ -258,9 +278,9 @@ class CalendarManager:
         return deleted_count
 
     def complete_item(self, guild_id, item_num=None, item_id=None):
-        """Mark an item as complete (or move to next date if recurring)"""
-        guild_key = str(guild_id)
-        items = self.get_upcoming(guild_id, days=365)
+        """Mark an item as complete (ignoring guild_id for shared calendar)"""
+        guild_key = self.SHARED_KEY
+        items = self.get_upcoming(guild_key, days=365)
 
         if item_id:
             for item in items:
@@ -275,9 +295,9 @@ class CalendarManager:
         return AwaitableValue((False, None, None))
 
     async def complete_item_by_title(self, guild_id, title_search):
-        """Mark an item as complete by title matching"""
-        guild_key = str(guild_id)
-        items = self.get_upcoming(guild_id, days=365)
+        """Mark an item as complete by title matching (ignoring guild_id for shared calendar)"""
+        guild_key = self.SHARED_KEY
+        items = self.get_upcoming(guild_key, days=365)
 
         title_search = title_search.lower()
         for item in items:
@@ -287,9 +307,9 @@ class CalendarManager:
         return False, None, None
 
     async def complete_items_by_title(self, guild_id, title_search):
-        """Mark multiple items as complete by title matching"""
-        guild_key = str(guild_id)
-        items = self.get_upcoming(guild_id, days=365)
+        """Mark multiple items as complete by title matching (ignoring guild_id for shared calendar)"""
+        guild_key = self.SHARED_KEY
+        items = self.get_upcoming(guild_key, days=365)
 
         title_search = title_search.lower()
         count = 0
@@ -491,7 +511,7 @@ class CalendarManager:
                     updated_count += 1
             else:
                 # New item from GCal
-                guild_id = default_guild_id or (list(self.items.keys())[0] if self.items else "global")
+                guild_id = self.SHARED_KEY
                 
                 await self.add_item(
                     guild_id=guild_id,
@@ -518,9 +538,9 @@ class CalendarManager:
 
     def get_upcoming(self, guild_id, days=30, include_completed=False):
         """
-        Get upcoming calendar items
+        Get upcoming calendar items (ignoring guild_id for shared calendar)
         """
-        guild_key = str(guild_id)
+        guild_key = self.SHARED_KEY
 
         if guild_key not in self.items:
             return []
@@ -548,9 +568,9 @@ class CalendarManager:
 
     def format_list(self, guild_id, days=90, show_completed=False, footer=None):
         """
-        Format calendar items for display
+        Format calendar items for display (ignoring guild_id for shared calendar)
         """
-        items = self.get_upcoming(guild_id, days=days, include_completed=False)
+        items = self.get_upcoming(self.SHARED_KEY, days=days, include_completed=False)
 
         if not items:
             return None
