@@ -389,6 +389,11 @@ class CalendarManager:
             if not date_str:
                 continue
 
+            # Extract creator information if available
+            creator = event.get("creator", {})
+            organizer = event.get("organizer", {})
+            gcal_username = creator.get("displayName") or organizer.get("displayName") or "Google Calendar"
+
             if gcal_id in gcal_map:
                 # Existing item, check for updates
                 guild_id, item = gcal_map[gcal_id]
@@ -402,6 +407,11 @@ class CalendarManager:
                     changed = True
                 if item.get("time") != time_str:
                     item["time"] = time_str
+                    changed = True
+                
+                # Update username if it's currently generic and we found a better one
+                if item.get("username") == "Google Calendar" and gcal_username != "Google Calendar":
+                    item["username"] = gcal_username
                     changed = True
                 
                 # Check if it was marked as completed in GCal
@@ -418,7 +428,7 @@ class CalendarManager:
                 await self.add_item(
                     guild_id=guild_id,
                     user_id="gcal_sync",
-                    username="Google Calendar",
+                    username=gcal_username,
                     title=summary,
                     date_str=date_str,
                     time_str=time_str,
