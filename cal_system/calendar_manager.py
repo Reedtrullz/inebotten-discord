@@ -187,6 +187,15 @@ class CalendarManager:
         for i, item in enumerate(self.items[guild_key]):
             if title_search in item["title"].lower():
                 title = item["title"]
+                
+                # Remove from GCal if enabled
+                if self.gcal_enabled and item.get("gcal_event_id"):
+                    try:
+                        self.gcal.delete_event(item["gcal_event_id"])
+                        print(f"[CAL] Deleted from GCal: {title}")
+                    except Exception as e:
+                        print(f"[CAL] GCal delete failed: {e}")
+
                 self.items[guild_key].pop(i)
                 await self._save_data()
                 return True, title
@@ -206,6 +215,14 @@ class CalendarManager:
         for item in self.items[guild_key]:
             if title_search in item["title"].lower():
                 deleted_titles.append(item["title"])
+                
+                # Remove from GCal if enabled
+                if self.gcal_enabled and item.get("gcal_event_id"):
+                    try:
+                        self.gcal.delete_event(item["gcal_event_id"])
+                        print(f"[CAL] Deleted from GCal (bulk): {item['title']}")
+                    except Exception as e:
+                        print(f"[CAL] GCal delete failed: {e}")
             else:
                 to_keep.append(item)
 
