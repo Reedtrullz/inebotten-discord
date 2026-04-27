@@ -173,7 +173,9 @@ class NaturalLanguageParser:
             quoted_title = quoted_match.group(1).strip()
             # Remove quoted part from content for further parsing of date/time
             content_for_parsing = content.replace(quoted_match.group(0), ' ').strip()
-            content_for_parsing = re.sub(r'\s+', ' ', content_for_parsing)
+            # Clean up separators like dashes and extra whitespace
+            content_for_parsing = re.sub(r'^[-–—\s]+', '', content_for_parsing)
+            content_for_parsing = re.sub(r'\s+', ' ', content_for_parsing).strip()
         else:
             content_for_parsing = content
 
@@ -302,7 +304,9 @@ class NaturalLanguageParser:
             quoted_title = quoted_match.group(1).strip()
             # Remove quoted part from remaining for further parsing of date/time
             remaining_for_parsing = remaining.replace(quoted_match.group(0), ' ').strip()
-            remaining_for_parsing = re.sub(r'\s+', ' ', remaining_for_parsing)
+            # Clean up separators like dashes and extra whitespace
+            remaining_for_parsing = re.sub(r'^[-–—\s]+', '', remaining_for_parsing)
+            remaining_for_parsing = re.sub(r'\s+', ' ', remaining_for_parsing).strip()
         else:
             remaining_for_parsing = remaining
 
@@ -320,7 +324,22 @@ class NaturalLanguageParser:
             re.IGNORECASE
         )
         
-        # Pattern 2: "[number].[month]" without day name
+        # Pattern 2: Numeric date "DD.MM.YYYY" or "DD.MM"
+        if not date_match:
+            date_match = re.search(
+                r'(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?',
+                remaining_for_parsing
+            )
+            if date_match:
+                day_num = date_match.group(1)
+                month_num = date_match.group(2)
+                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(datetime.now().year)
+                if len(year) == 2:
+                    year = '20' + year
+                start_date = f"{int(day_num):02d}.{int(month_num):02d}.{year}"
+                day_name = None
+        
+        # Pattern 3: "[number].[month]" with month name (no day name)
         if not date_match:
             date_match = re.search(
                 r'(\d{1,2})[.\s]+([a-zæøå]+)(?:\s+(\d{4}))?',
@@ -333,39 +352,42 @@ class NaturalLanguageParser:
                 year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(datetime.now().year)
                 day_name = None
         else:
-            day_name = date_match.group(1).lower()
-            day_num = date_match.group(2)
-            month_name = date_match.group(3).lower()
-            year = date_match.group(4) if date_match.lastindex >= 4 and date_match.group(4) else str(datetime.now().year)
+            # If we matched Pattern 1, extract components
+            if not locals().get('start_date'):
+                day_name = date_match.group(1).lower()
+                day_num = date_match.group(2)
+                month_name = date_match.group(3).lower()
+                year = date_match.group(4) if date_match.lastindex >= 4 and date_match.group(4) else str(datetime.now().year)
         
         if not date_match:
             return None
         
-        # Convert month name to number
-        month_map = {
-            'januar': 1, 'january': 1, 'jan': 1,
-            'februar': 2, 'february': 2, 'feb': 2,
-            'mars': 3, 'march': 3, 'mar': 3,
-            'april': 4, 'apr': 4,
-            'mai': 5, 'may': 5,
-            'juni': 6, 'june': 6, 'jun': 6,
-            'juli': 7, 'july': 7, 'jul': 7,
-            'august': 8, 'aug': 8,
-            'september': 9, 'sep': 9, 'sept': 9,
-            'oktober': 10, 'october': 10, 'okt': 10, 'oct': 10,
-            'november': 11, 'nov': 11,
-            'desember': 12, 'december': 12, 'des': 12, 'dec': 12,
-        }
+        if not locals().get('start_date'):
+            # Convert month name to number
+            month_map = {
+                'januar': 1, 'january': 1, 'jan': 1,
+                'februar': 2, 'february': 2, 'feb': 2,
+                'mars': 3, 'march': 3, 'mar': 3,
+                'april': 4, 'apr': 4,
+                'mai': 5, 'may': 5,
+                'juni': 6, 'june': 6, 'jun': 6,
+                'juli': 7, 'july': 7, 'jul': 7,
+                'august': 8, 'aug': 8,
+                'september': 9, 'sep': 9, 'sept': 9,
+                'oktober': 10, 'october': 10, 'okt': 10, 'oct': 10,
+                'november': 11, 'nov': 11,
+                'desember': 12, 'december': 12, 'des': 12, 'dec': 12,
+            }
+            
+            month_num = month_map.get(month_name.lower())
+            if not month_num:
+                return None
+            
+            start_date = f"{int(day_num):02d}.{int(month_num):02d}.{year}"
         
-        month_num = month_map.get(month_name.lower())
-        if not month_num:
-            return None
-        
-        start_date = f"{day_num}.{month_num}.{year}"
-        
-        # Step 3: Extract time if present (look for "kl" or "klokken" before the date)
+        # Step 3: Extract time if present
         time_str = None
-        time_match = re.search(r'kl\.?\s*(\d{1,2})(?::(\d{2}))?', remaining_for_parsing[:date_match.start()], re.IGNORECASE)
+        time_match = re.search(r'kl\.?\s*(\d{1,2})(?::(\d{2}))?', remaining_for_parsing, re.IGNORECASE)
         if time_match:
             hour = time_match.group(1)
             minute = time_match.group(2) if time_match.group(2) else '00'
