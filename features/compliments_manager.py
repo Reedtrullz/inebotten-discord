@@ -84,13 +84,15 @@ class ComplimentsManager:
         content_lower = message_content.lower()
         
         # Check for compliments
-        if any(word in content_lower for word in ['kompliment', 'compliment', 'ros', 'praise']):
+        compliment_keywords = ['kompliment', 'compliment', 'ros', 'praise']
+        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in compliment_keywords):
             # Extract username if mentioned
             user = self._extract_user(message_content)
             return {'action': 'compliment', 'user': user}
         
         # Check for roasts (friendly)
-        if any(word in content_lower for word in ['roast', 'diss', 'drit', 'kjøl deg ned']):
+        roast_keywords = ['roast', 'diss', 'drit', 'kjøl deg ned']
+        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in roast_keywords):
             user = self._extract_user(message_content)
             return {'action': 'roast', 'user': user}
         
