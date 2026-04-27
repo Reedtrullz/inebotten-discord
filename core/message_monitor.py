@@ -127,7 +127,11 @@ class MessageMonitor:
         else:
             print("[MONITOR] Google Calendar integration enabled")
 
-        self.calendar = CalendarManager(gcal_manager=gcal)
+        self.calendar = CalendarManager(
+            gcal_manager=gcal,
+            owner_email=getattr(self.client.config, 'DISCORD_EMAIL', None),
+            owner_name=getattr(self.client.config, 'CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
+        )
         self.nlp_parser = NaturalLanguageParser()
 
         # Initialize personality and memory systems

@@ -144,6 +144,8 @@ class CalendarHandler(BaseHandler):
                 description=item_data.get("description", item_data["title"]),
                 recurrence=item_data.get("recurrence"),
                 rrule_day=item_data.get("rrule_day"),
+                discord_user_id=message.author.id,
+                discord_username=message.author.name,
             )
         except Exception as e:
             self.log(f"Error preparing GCal sync: {e}")

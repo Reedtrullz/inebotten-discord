@@ -165,6 +165,8 @@ class GoogleCalendarManager:
         attendees=None,
         recurrence=None,
         rrule_day=None,
+        discord_user_id=None,
+        discord_username=None,
     ):
         """
         Create a new event in Google Calendar
@@ -222,10 +224,13 @@ class GoogleCalendarManager:
             description=description,
             location=location,
             rrule=rrule,
+            discord_user_id=discord_user_id,
+            discord_username=discord_username,
         )
 
     def _create_event_api(
-        self, title, start_time, end_time, description=None, location=None, rrule=None
+        self, title, start_time, end_time, description=None, location=None, rrule=None,
+        discord_user_id=None, discord_username=None
     ):
         """
         Create an event using direct Google Calendar API (handles both recurring and non-recurring)
@@ -271,6 +276,15 @@ class GoogleCalendarManager:
                 event_body["location"] = location
             if rrule:
                 event_body["recurrence"] = [rrule]
+            
+            # Add Discord metadata to extended properties
+            if discord_user_id or discord_username:
+                event_body["extendedProperties"] = {
+                    "private": {
+                        "discord_user_id": str(discord_user_id) if discord_user_id else "",
+                        "discord_username": discord_username or ""
+                    }
+                }
 
             result = (
                 service.events()
@@ -415,6 +429,8 @@ class GoogleCalendarManager:
                 description=event_data.get("description", ""),
                 recurrence=event_data.get("recurrence"),
                 rrule_day=event_data.get("rrule_day"),
+                discord_user_id=event_data.get("user_id"),
+                discord_username=event_data.get("username"),
             )
 
         except Exception as e:

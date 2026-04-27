@@ -51,7 +51,7 @@ class CalendarManager:
     Manages calendar items - everything is just something happening on a date
     """
 
-    def __init__(self, storage_path=None, gcal_manager=None):
+    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None):
         if storage_path is None:
             storage_path = (
                 Path.home() / ".hermes" / "discord" / "data" / "calendar.json"
@@ -61,6 +61,8 @@ class CalendarManager:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.gcal = gcal_manager
         self.gcal_enabled = gcal_manager is not None
+        self.owner_email = owner_email
+        self.owner_name = owner_name
         self.items = {}  # {guild_id: [item1, item2, ...]}
 
     async def setup(self):
@@ -392,7 +394,28 @@ class CalendarManager:
             # Extract creator information if available
             creator = event.get("creator", {})
             organizer = event.get("organizer", {})
-            gcal_username = creator.get("displayName") or organizer.get("displayName") or "Google Calendar"
+            
+            # Check for Discord metadata in extended properties first
+            ext_props = event.get("extendedProperties", {}).get("private", {})
+            gcal_username = ext_props.get("discord_username")
+            gcal_user_id = ext_props.get("discord_user_id") or "gcal_sync"
+
+            if not gcal_username:
+                # Fallback to Display Name > Email > Default
+                gcal_username = creator.get("displayName") or organizer.get("displayName")
+                
+                if not gcal_username:
+                    email = creator.get("email") or organizer.get("email")
+                    if email and self.owner_email and email.lower() == self.owner_email.lower() and self.owner_name:
+                        gcal_username = self.owner_name
+                    elif email and "@" in email:
+                        gcal_username = email.split("@")[0]
+                    else:
+                        gcal_username = email or self.owner_name or "Google Calendar"
+                
+            # Final fallback if still empty
+            if not gcal_username or gcal_username == "Google Calendar":
+                gcal_username = self.owner_name or "Google Calendar"
 
             if gcal_id in gcal_map:
                 # Existing item, check for updates
@@ -409,9 +432,13 @@ class CalendarManager:
                     item["time"] = time_str
                     changed = True
                 
-                # Update username if it's currently generic and we found a better one
+                # Update username/user_id if it's currently generic and we found better info
                 if item.get("username") == "Google Calendar" and gcal_username != "Google Calendar":
                     item["username"] = gcal_username
+                    changed = True
+                
+                if item.get("user_id") == "gcal_sync" and gcal_user_id != "gcal_sync":
+                    item["user_id"] = gcal_user_id
                     changed = True
                 
                 # Check if it was marked as completed in GCal
@@ -427,7 +454,7 @@ class CalendarManager:
                 
                 await self.add_item(
                     guild_id=guild_id,
-                    user_id="gcal_sync",
+                    user_id=gcal_user_id,
                     username=gcal_username,
                     title=summary,
                     date_str=date_str,

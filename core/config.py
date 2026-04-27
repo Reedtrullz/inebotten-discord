@@ -52,6 +52,7 @@ class Config:
         # Access Control
         self.ALLOWED_USERS = [int(u.strip()) for u in os.getenv('ALLOWED_USERS', '175509051822702593,314840446171873281,247794473805938690').split(',') if u.strip()]
         self.ALLOWED_CHANNELS = [int(c.strip()) for c in os.getenv('ALLOWED_CHANNELS', '1178146867540930601').split(',') if c.strip()]
+        self.CALENDAR_OWNER_NAME = os.getenv('CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
         
         # Monitoring
         self.POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', 8))  # seconds
