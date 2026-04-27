@@ -28,8 +28,8 @@ python3 run_both.py
 
 ```
 @inebotten møte med Ola i morgen kl 14
-@inebotten husk å ringe mamma på lørdag
-@inebotten RBK-kamp 12.04 kl 18:30
+@inebotten husk "Viktig møte" på lørdag kl 10:00
+@inebotten "RBK - Bodø/Glimt" — 12.04 kl 18:30
 @inebotten lunsj hver fredag kl 12
 @inebotten bursdag til mamma 15.05 hvert år
 @inebotten tannlege neste tirsdag kl 09:00
@@ -52,6 +52,7 @@ python3 run_both.py
 | `@inebotten slett [nummer]` | Slett hendelse etter nummer | `@inebotten slett 2` |
 | `@inebotten slett [tittel]` | Slett første treff på delvis tittel | `@inebotten slett spaghetti` |
 | `@inebotten slett alle [tittel]` | Slett ALLE treff | `@inebotten slett alle spaghetti` |
+| `@inebotten tøm kalenderen min` | Slett alt (krever bekreftelse) | `@inebotten tøm kalenderen min` |
 
 ### Fullføre
 
@@ -64,6 +65,15 @@ python3 run_both.py
 ### Gjentagende Oppføringer
 
 Gjentagende elementer (`hver uke`, `annenhver uke`, `hver måned`, `hvert år`) blir ikke slettet når du fullfører dem - de flyttes til neste dato. Bruk `slett` for å fjerne dem permanent.
+
+### 🌍 Delt Kalender
+
+Inebotten bruker nå **én felles kalender** for alle dine kanaler, grupper og DMs. Det betyr at en avtale du legger til i en DM vil være synlig når du skriver `@inebotten kalender` i en gruppechat, og omvendt.
+
+### 💡 Tips for presisjon
+
+Hvis du vil sikre at botten forstår nøyaktig hva som er tittelen på arrangementet ditt, sett det i hermetegn:
+`@inebotten husk "Fisketur med gjengen" i morgen kl 08:00`
 
 ### Nøkkelord for Datoer
 

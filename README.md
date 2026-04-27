@@ -86,11 +86,11 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 
 ```text
 @inebotten møte med Ola i morgen kl 14
-@inebotten husk å kjøpe melk på mandag
-@inebotten lunsj hver fredag kl 12
+@inebotten husk "RBK - Bodø/Glimt" på søndag kl 18:00
+@inebotten lunsj hver fredag kl 12:00
 @inebotten møte 15. mai kl 10
 @inebotten meeting tomorrow at 3pm
-@inebotten kalender
+@inebotten kalender (Delt på tvers av alle kanaler og DMs!)
 @inebotten ferdig 2
 @inebotten slett alle tannlege
 ```
