@@ -82,7 +82,7 @@ class CalendarHandler(BaseHandler):
             if self.calendar.gcal_enabled:
                 try:
                     self.log(f"Syncing to Google Calendar: {item_data['title']}")
-                    gcal_result = self._sync_to_gcal(item_data)
+                    gcal_result = self._sync_to_gcal(item_data, message)
                     if gcal_result:
                         gcal_event_id = gcal_result.get("id")
                         gcal_link = gcal_result.get("htmlLink")
@@ -117,7 +117,7 @@ class CalendarHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error handling calendar item: {e}")
 
-    def _sync_to_gcal(self, item_data: Dict[str, Any]) -> Optional[Dict]:
+    def _sync_to_gcal(self, item_data: Dict[str, Any], message) -> Optional[Dict]:
         """
         Sync a calendar item to Google Calendar with proper timezone support.
         """
