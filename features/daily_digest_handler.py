@@ -27,7 +27,11 @@ class DailyDigestHandler(BaseHandler):
             guild_id = self.get_guild_id(message)
             lang = self.loc.current_lang
 
-            response_text = await self.daily_digest.generate_digest(guild_id, lang)
+            response_text = await self.daily_digest.generate_digest(
+                guild_id, 
+                lang, 
+                user_id=message.author.id
+            )
             await self.send_response(message, response_text)
 
         except Exception as e:

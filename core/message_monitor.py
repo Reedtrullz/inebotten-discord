@@ -378,6 +378,8 @@ class MessageMonitor:
             await self.handlers["utility"].handle_shorten(message, payload["shorten"])
         elif route.intent == BotIntent.DAILY_DIGEST:
             await self.handlers["daily_digest"].handle_daily_digest(message)
+        elif route.intent == BotIntent.SET_LOCATION:
+            await self._handle_set_location(message, payload["city"])
         else:
             await self._send_ai_response(message)
 
@@ -507,7 +509,12 @@ class MessageMonitor:
         # Fallback: dashboard or basic response
         if not response_text:
             if wants_dashboard:
-                response_text = await self._generate_dashboard(guild_id, city_name=city_name, show_navnedag=show_navnedag)
+                response_text = await self._generate_dashboard(
+                    guild_id, 
+                    city_name=city_name, 
+                    show_navnedag=show_navnedag,
+                    user_id=message.author.id
+                )
             else:
                 from ai.personality_config import get_fallback_response
                 response_text = get_fallback_response("general")
@@ -558,6 +565,23 @@ class MessageMonitor:
             
         return cleaned_text
 
+    async def _handle_set_location(self, message, city):
+        """Handle setting the user's location."""
+        try:
+            from features.weather_api import NORWEGIAN_CITIES
+            city_info = NORWEGIAN_CITIES.get(city.lower())
+            
+            if city_info:
+                await self.user_memory.set_location(message.author.id, city_info['name'])
+                response = f"✅ Den er grei! Jeg har lagret at du bor i **{city_info['name']}**. Jeg skal bruke dette når jeg henter været for deg framover. 😊"
+            else:
+                response = f"❌ Beklager, jeg kjenner ikke til \"{city}\" ennå. Jeg kan foreløpig bare store norske byer."
+            
+            await self._send_response(message, response)
+        except Exception as e:
+            print(f"[MONITOR] Error setting location: {e}")
+            await self._send_response(message, "❌ Beklager, det oppstod en feil da jeg prøvde å lagre lokasjonen din.")
+
     def _is_status_command(self, content_lower):
         """Return True for bot health/status commands, not profile status changes."""
         normalized = content_lower.strip()
@@ -600,7 +624,7 @@ class MessageMonitor:
         )
         await self._send_response(message, response_text)
 
-    async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False) -> str:
+    async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False, user_id: int = None) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
         from features.weather_api import METWeatherAPI, NORWEGIAN_CITIES
@@ -608,6 +632,13 @@ class MessageMonitor:
         norwegian_data = get_todays_info()
         weather_api = METWeatherAPI()
         
+        # If no city name provided, check user memory
+        if not city_name and user_id:
+            user_mem = await self.user_memory.get_user(user_id)
+            if user_mem.get("location"):
+                city_name = user_mem["location"]
+                print(f"[MONITOR] Using stored location for dashboard: {city_name}")
+
         # Get coordinates for city if provided, otherwise default to Oslo
         city_info = NORWEGIAN_CITIES.get(city_name.lower()) if city_name else NORWEGIAN_CITIES['oslo']
         

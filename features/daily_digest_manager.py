@@ -18,7 +18,7 @@ class DailyDigestManager:
         self.aurora_manager = aurora_manager
         self.watchlist_manager = watchlist_manager
     
-    async def generate_digest(self, guild_id, lang='no'):
+    async def generate_digest(self, guild_id, lang='no', user_id=None):
         """
         Generate a comprehensive daily briefing for a guild
         """
@@ -71,7 +71,17 @@ class DailyDigestManager:
         
         # 1. Weather Section
         from features.weather_api import get_weather_for_city, METWeatherAPI
-        weather = await get_weather_for_city('oslo') # Default to Oslo
+        
+        # Determine city for weather
+        city_name = 'oslo'
+        if user_id:
+            from memory.user_memory import get_user_memory
+            user_mem = await get_user_memory().get_user(user_id)
+            if user_mem.get("location"):
+                city_name = user_mem["location"]
+                print(f"[DIGEST] Using user location for weather: {city_name}")
+
+        weather = await get_weather_for_city(city_name)
         if weather:
             emoji = METWeatherAPI().get_weather_emoji(weather['symbol_code'])
             if lang == 'no':

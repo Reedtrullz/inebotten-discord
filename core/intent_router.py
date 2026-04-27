@@ -34,6 +34,7 @@ class BotIntent(Enum):
     DAILY_DIGEST = "daily_digest"
     SEARCH = "search"
     DASHBOARD = "dashboard"
+    SET_LOCATION = "set_location"
     AI_CHAT = "ai_chat"
 
 
@@ -169,6 +170,10 @@ class IntentRouter:
         if wants_dashboard:
             return IntentResult(BotIntent.DASHBOARD, 0.7, {"dashboard_reason": dashboard_reason}, "dashboard_intent")
 
+        location_cmd = self._route_location_command(content)
+        if location_cmd:
+            return location_cmd
+
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
     def _route_calendar_command(self, content_lower: str) -> Optional[IntentResult]:
@@ -198,6 +203,28 @@ class IntentRouter:
         if parsed:
             parsed = self._resolve_calendar_followup(content, parsed)
             return IntentResult(BotIntent.CALENDAR_ITEM, 0.86, {"calendar_item": parsed}, "calendar_nlp")
+        return None
+
+    def _route_location_command(self, content: str) -> Optional[IntentResult]:
+        """Detect when a user is setting their location."""
+        content_lower = content.lower()
+        
+        # Phrases like "Jeg bor i Trondheim", "Min lokasjon er Oslo", "Sett lokasjon til Bergen"
+        patterns = [
+            r"(?:jeg bor i|min lokasjon er|sett (?:min )?lokasjon(?:en)? til|jeg er fra|jeg holder til i)\s+([a-zæøå\s]+)",
+            r"(?:i'm from|i live in|my location is|set (?:my )?location to)\s+([a-z\s]+)"
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, content_lower)
+            if match:
+                city = match.group(1).strip()
+                # Validate if it's a known city or at least seems like one
+                from features.weather_api import extract_city
+                found_city = extract_city(city)
+                if found_city:
+                    return IntentResult(BotIntent.SET_LOCATION, 0.95, {"city": found_city}, "location_pattern")
+        
         return None
 
     def _resolve_calendar_followup(self, content: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
