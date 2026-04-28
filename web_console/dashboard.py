@@ -243,11 +243,11 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
     <div class="grid grid-cols-2 gap-4">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Status</div>
-        <div class="text-lg font-bold text-[var(--text-primary)] break-words">{escape(str(bridge_status))}</div>
+        <div class="text-lg font-bold text-[var(--text-primary)] truncate">{escape(str(bridge_status))}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">LM Studio</div>
-        <div class="text-lg font-bold text-[var(--text-primary)] break-words" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
+        <div class="text-lg font-bold text-[var(--text-primary)] truncate" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Forespørsler</div>
@@ -414,8 +414,8 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
         table_html = '<div class="text-sm text-[var(--text-muted)] text-center py-6">Ingen rate-limit-data</div>'
 
     return f"""<section class="card" id="rate-limits">
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)] whitespace-nowrap">Rate Limits</h2>
+  <div class="flex items-center justify-between gap-2 mb-4">
+    <h2 class="text-lg font-semibold text-[var(--text-primary)] truncate">Rate Limits</h2>
     <span class="text-sm text-[var(--text-muted)] whitespace-nowrap"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
   <div class="card-body">
@@ -457,8 +457,8 @@ def _render_intents_section(data: dict[str, Any]) -> str:
         table_html = '<div class="text-sm text-[var(--text-muted)] text-center py-6">Ingen intent-data</div>'
 
     return f"""<section class="card" id="intents">
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Intents</h2>
+  <div class="flex items-center justify-between gap-2 mb-4">
+    <h2 class="text-lg font-semibold text-[var(--text-primary)] truncate">Intents</h2>
     <span class="badge {fallback_badge_class} whitespace-nowrap">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
   <div class="card-body">
