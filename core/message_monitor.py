@@ -382,6 +382,8 @@ class MessageMonitor:
             await self.handlers["polls"].handle_poll_delete(message, payload["poll_delete"])
         elif route.intent == BotIntent.POLL_CLOSE:
             await self.handlers["polls"].handle_poll_close(message, payload["poll_close"])
+        elif route.intent == BotIntent.POLL_LIST:
+            await self.handlers["polls"].handle_poll_list(message)
         elif route.intent == BotIntent.COUNTDOWN:
             await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
         elif route.intent == BotIntent.WATCHLIST:

@@ -19,6 +19,33 @@ class PollsHandler(BaseHandler):
         super().__init__(monitor)
         self.poll = monitor.poll
 
+    async def handle_poll_list(self, message) -> None:
+        """
+        Handle listing active polls.
+
+        Args:
+            message: The Discord message
+        """
+        try:
+            guild_id = self.get_guild_id(message)
+            active_polls = self.poll.get_active_polls(guild_id)
+
+            if not active_polls:
+                response_text = self.loc.t("no_active_polls")
+            else:
+                lines = [self.loc.t("poll_list_title")]
+                lines.append("")
+                for i, poll in enumerate(active_polls, start=1):
+                    lines.append(self.loc.t("poll_list_item", num=i, question=poll.get("question", "?")))
+                lines.append("")
+                lines.append(self.loc.t("poll_list_hint"))
+                response_text = "\n".join(lines)
+
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error listing polls: {e}")
+
     async def handle_poll(self, message, poll_cmd: Dict[str, Any]) -> None:
         """
         Handle poll creation.

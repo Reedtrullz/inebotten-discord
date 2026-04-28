@@ -219,6 +219,23 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(message.replies, ["dashboard:100:False"])
 
+    async def test_poll_list_routes_to_handler(self):
+        monitor = self.make_monitor(active_polls=True)
+
+        calls = []
+
+        async def fake_handle_poll_list(message):
+            calls.append(message)
+
+        monitor.handlers["polls"].handle_poll_list = fake_handle_poll_list
+        message = RecordingMessage("@inebotten polls")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].content, "polls")
+        self.assertEqual(monitor.intent_stats[BotIntent.POLL_LIST.value]["count"], 1)
+
     async def test_active_poll_vote_routes_before_ai(self):
         monitor = self.make_monitor(active_polls=True)
         message = RecordingMessage("@inebotten 1")

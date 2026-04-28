@@ -46,6 +46,7 @@ class BotIntent(Enum):
     POLL_EDIT = "poll_edit"
     POLL_DELETE = "poll_delete"
     POLL_CLOSE = "poll_close"
+    POLL_LIST = "poll_list"
     COUNTDOWN = "countdown"
     WATCHLIST = "watchlist"
     WORD_OF_DAY = "word_of_day"
@@ -102,6 +103,9 @@ class IntentRouter:
         calendar_item = self._route_calendar_item(content, guild_id)
         if calendar_item and calendar_item.confidence >= 0.94:
             return calendar_item
+
+        if has_any_keyword(content_lower, ("polls", "avstemninger", "active polls", "vis poll", "vis avstemning", "list poll", "poll liste", "poll list", "avstemning liste")) and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_LIST, 0.95, {}, "poll_list_keyword")
 
         poll_cmd = self.monitor.parse_poll_command(content)
         if poll_cmd:

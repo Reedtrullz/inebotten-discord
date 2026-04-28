@@ -236,6 +236,18 @@ class Localization:
                 'no': '🔒 Avstemningen er allerede lukket.',
                 'en': '🔒 Poll is already closed.'
             },
+            'poll_list_title': {
+                'no': '📊 **Aktive avstemninger**',
+                'en': '📊 **Active Polls**'
+            },
+            'poll_list_item': {
+                'no': '{num}. {question}',
+                'en': '{num}. {question}'
+            },
+            'poll_list_hint': {
+                'no': 'Bruk "@inebotten stem [nummer]" for å stemme',
+                'en': 'Use "@inebotten vote [number]" to vote'
+            },
             'poll_no_permission': {
                 'no': '🚫 Du har ikke tilgang til å gjøre dette.',
                 'en': '🚫 You don\'t have permission to do that.'

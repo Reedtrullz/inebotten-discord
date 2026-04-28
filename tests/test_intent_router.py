@@ -147,6 +147,15 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(self.route("1", active_polls=False).intent, BotIntent.AI_CHAT)
         self.assertEqual(self.route("1", active_polls=True).intent, BotIntent.POLL_VOTE)
 
+    def test_poll_list_routes_when_active_polls_exist(self):
+        result = self.route("polls", active_polls=True)
+        self.assertEqual(result.intent, BotIntent.POLL_LIST)
+        self.assertEqual(result.confidence, 0.95)
+
+    def test_poll_list_falls_through_when_no_active_polls(self):
+        result = self.route("polls", active_polls=False)
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+
     def test_prompt_priority_examples(self):
         examples = {
             "hjelp": BotIntent.HELP,
