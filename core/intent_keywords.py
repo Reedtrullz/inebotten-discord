@@ -27,8 +27,7 @@ LIST_KEYWORDS = ("liste", "vis", "se", "oversikt")
 CLEAR_KEYWORDS = ("tøm", "clear", "empty", "slett alt", "fjern alt")
 
 PROFILE_KEYWORDS = (
-    "status", "bio", "om meg", "about me", "endre navn", "spiller", "ser på",
-    "playing", "watching",
+    "status", "spiller", "ser på", "playing", "watching",
 )
 
 WORD_OF_DAY_KEYWORDS = ("dagens ord", "word of the day", "lære meg et ord")

@@ -424,7 +424,7 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 
 | Funksjon | Fil | Kommando |
 |---------|-----|----------|
-| **Avstemninger** | `poll_manager.py` | `@inebotten avstemning Tittel? Alt1, Alt2` |
+| **Avstemninger** | `poll_manager.py` | `@inebotten avstemning Tittel? Alt1, Alt2`, `@inebotten polls`, `@inebotten slett poll` |
 | **Nedtellinger** | `countdown_manager.py` | `@inebotten nedtelling til [dato]` |
 | **Watchlist** | `watchlist_manager.py` | `@inebotten watchlist add [symbol]` |
 | **Krypto** | `crypto_manager.py` | `@inebotten pris BTC` |
@@ -435,7 +435,7 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 | **Komplimenter** | `compliments_manager.py` | `@inebotten kompliment` |
 | **URL-forkorter** | `url_shortener.py` | `@inebotten shorten [url]` |
 | **Nordlys** | `aurora_forecast.py` | `@inebotten nordlys` |
-| **Profil** | `profile_handler.py` | `@inebotten status [s]`, `@inebotten bio [t]` |
+| **Profil** | `profile_handler.py` | `@inebotten status [s]`, `@inebotten spiller [t]`, `@inebotten ser på [t]` |
 
 ### 7. Utility-komponenter
 
@@ -572,6 +572,9 @@ Bruker: @inebotten kalender
 @inebotten Jeg bor i Trondheim          # Lagre fast lokasjon
 @inebotten avstemning Pizza eller burger?  # Lag avstemning
 @inebotten stem 1                        # Stem på avstemning
+@inebotten polls                         # Vis aktive avstemninger
+@inebotten slett poll                    # Slett siste avstemning
+@inebotten lukk poll                     # Lukk siste avstemning
 @inebotten nedtelling til 17. mai       # Start nedtelling
 @inebotten dagens ord                    # Norsk ord for dagen
 @inebotten horoskop væren                # Dagens horoskop

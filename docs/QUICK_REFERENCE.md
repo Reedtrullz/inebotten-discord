@@ -141,7 +141,10 @@ Du trenger ikke be om påminnelser - de skjer automatisk!
 |----------|-------------|----------|
 | `@inebotten avstemning [tittel]? [alt1], [alt2]` | Lag avstemning | `@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab` |
 | `@inebotten stem [nummer]` | Stem på alternativ | `@inebotten stem 1` |
-| `@inebotten resultat` | Se resultater | `@inebotten resultat` |
+| `@inebotten polls` | Vis aktive avstemninger | `@inebotten polls` |
+| `@inebotten endre poll` | Endre siste avstemning | `@inebotten endre poll` |
+| `@inebotten slett poll` | Slett siste avstemning | `@inebotten slett poll` |
+| `@inebotten lukk poll` | Lukk siste avstemning | `@inebotten lukk poll` |
 
 ---
 
@@ -200,7 +203,6 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 | Kommando | Eksempel | Beskrivelse |
 |----------|----------|-------------|
 | `@inebotten status [s]` | `@inebotten status dnd` | online, idle, dnd, invisible |
-| `@inebotten bio [t]` | `@inebotten bio Koding er livet` | Endre din "About Me" |
 | `@inebotten spiller [t]` | `@inebotten spiller CS2` | Endre aktivitet |
 | `@inebotten ser på [t]` | `@inebotten ser på Netflix` | Endre aktivitet |
 

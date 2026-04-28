@@ -312,8 +312,6 @@ class IntentRouter:
     def _is_profile_command(self, content_lower: str) -> bool:
         if self._is_status_command(content_lower):
             return False
-        if content_lower.startswith(("bio ", "about me ", "endre bio ")):
-            return True
         if content_lower.startswith(("spiller ", "playing ", "ser på ", "watching ")):
             return True
         if content_lower.startswith("status "):
