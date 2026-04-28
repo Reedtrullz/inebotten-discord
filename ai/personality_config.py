@@ -16,6 +16,39 @@ class ResponseStyle(Enum):
     WITTY = "witty"
 
 
+INTENT_DESCRIPTIONS = {
+    "help": "brukeren ber om hjelp/kommandoer",
+    "status": "brukeren ber om bot-status",
+    "profile": "brukeren vil endre profil/status",
+    "calendar_item": "brukeren vil legge til noe i kalenderen",
+    "search": "brukeren vil søke på nettet",
+    "ai_chat": "brukeren vil bare chatte",
+    "calendar_help": "brukeren ber om kalenderhjelp",
+    "calendar_list": "brukeren vil se kalenderlisten",
+    "calendar_sync": "brukeren vil synkronisere kalenderen",
+    "calendar_delete": "brukeren vil slette en kalenderhendelse",
+    "calendar_complete": "brukeren vil markere noe som fullført",
+    "calendar_edit": "brukeren vil redigere en kalenderhendelse",
+    "calendar_clear": "brukeren vil tømme kalenderen",
+    "poll_create": "brukeren vil lage en avstemning",
+    "poll_vote": "brukeren vil stemme på en avstemning",
+    "countdown": "brukeren vil ha en nedtelling",
+    "watchlist": "brukeren vil håndtere en watchlist",
+    "word_of_day": "brukeren vil ha dagens ord",
+    "quote": "brukeren vil ha et sitat",
+    "aurora": "brukeren vil ha nordlysvarsel",
+    "school_holidays": "brukeren vil ha informasjon om skoleferie",
+    "price": "brukeren vil ha prisinformasjon",
+    "horoscope": "brukeren vil ha horoskop",
+    "compliment": "brukeren vil ha et kompliment",
+    "calculator": "brukeren vil ha en utregning",
+    "shorten_url": "brukeren vil forkorte en URL",
+    "daily_digest": "brukeren vil ha daglig oppsummering",
+    "dashboard": "brukeren vil ha en oversikt",
+    "set_location": "brukeren vil sette sin lokasjon",
+}
+
+
 # SIMPLIFIED personality for small models
 def get_system_prompt(
     user_name: str = "",
@@ -23,7 +56,8 @@ def get_system_prompt(
     conversation_history: List = None,
     conversation_context: List = None,
     time_of_day: str = "day",
-    style: ResponseStyle = ResponseStyle.CASUAL
+    style: ResponseStyle = ResponseStyle.CASUAL,
+    routed_intent: str = None,
 ) -> str:
     """
     Generate a SIMPLE system prompt optimized for Llama 3.2 3B
@@ -59,12 +93,26 @@ REGLER:
   *VIKTIG: Tittelen skal kun inneholde HVA som skjer. Ikke inkluder ord som "lørdag", "på kveld", "kl 12" eller andre tidspunkter i selve tittelen.*
 - Hvis brukeren vil ha en oversikt over dagen, været, eller planen sin, inkluder:
   `[SHOW_DASHBOARD]`
+- Du kan også bruke JSON-format:
+  {"action": "SAVE_EVENT", "title": "Møte med Ola", "date": "01.05.2025", "time": "14:00"}
+  {"action": "SHOW_DASHBOARD"}
 - Handlingstags må stå på en egen linje eller på slutten av meldingen. De blir fjernet før brukeren ser dem.
 - Bruk Discord Markdown:
   * **fet skrift** for viktige ting
   * Bruk formatet [Tekst](URL) for lenker, men **kun hvis du er 100% sikker på at URL-en er ekte**.
 - Bruk emojis naturlig for å skape stemning ✨
 - Ikke list opp kommandoer med mindre noen spør spesifikt"""
+
+    # Add intent routing information if available
+    if routed_intent:
+        intent_value = routed_intent.value if hasattr(routed_intent, "value") else str(routed_intent)
+        description = INTENT_DESCRIPTIONS.get(intent_value, f"utføre handling: {intent_value}")
+        prompt += f"""
+SYSTEMINTENT: {intent_value}
+
+Systemet har analysert meldingen og bestemt at brukeren vil: {description}
+Hvis dette stemmer, fortsett med handlingen. Hvis ikke, svar naturlig.
+"""
 
     # Add user name if available (simple format)
     if user_name:

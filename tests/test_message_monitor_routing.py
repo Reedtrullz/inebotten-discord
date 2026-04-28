@@ -2,9 +2,10 @@
 """Async monitor routing regressions."""
 
 import unittest
+from collections import defaultdict
 from types import SimpleNamespace
 
-from core.intent_router import IntentRouter
+from core.intent_router import BotIntent, IntentRouter
 from core.message_monitor import MessageMonitor
 
 
@@ -94,6 +95,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.processed_messages = []
         monitor.mention_count = 0
         monitor.response_count = 0
+        monitor.error_count = 0
+        monitor.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
         monitor.rate_limiter = FakeRateLimiter()
         monitor.loc = SimpleNamespace(detect_language=lambda content: "no", set_language=lambda lang: None)
         monitor.nlp_parser = SimpleNamespace(
@@ -133,6 +136,65 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.intent_router = IntentRouter(monitor)
         monitor.recording_polls = polls
         return monitor
+
+    async def test_successful_routing_increments_intent_count(self):
+        monitor = self.make_monitor()
+
+        async def fake_help(message):
+            return None
+
+        monitor.handlers["help"].handle_help = fake_help
+        message = RecordingMessage("@inebotten hjelp")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(monitor.intent_stats[BotIntent.HELP.value]["count"], 1)
+
+    async def test_low_confidence_rejection_is_tracked(self):
+        monitor = self.make_monitor()
+
+        async def fake_ai_response(message):
+            return None
+
+        monitor._send_ai_response = fake_ai_response
+        route = SimpleNamespace(intent=BotIntent.SEARCH, confidence=0.0, payload=None)
+
+        await monitor._handle_intent(RecordingMessage("@inebotten hjelp"), route)
+
+        self.assertEqual(monitor.intent_stats[BotIntent.SEARCH.value]["low_confidence"], 1)
+
+    async def test_exception_handler_tracks_intent_errors(self):
+        monitor = self.make_monitor()
+
+        async def boom(message):
+            raise RuntimeError("boom")
+
+        monitor.handlers["help"].handle_help = boom
+        message = RecordingMessage("@inebotten hjelp")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(monitor.error_count, 1)
+        self.assertEqual(monitor.intent_stats[BotIntent.HELP.value]["errors"], 1)
+
+    async def test_status_response_includes_intent_stats(self):
+        monitor = self.make_monitor()
+        monitor.intent_stats["help"]["count"] = 3
+        monitor.intent_stats["help"]["low_confidence"] = 1
+        monitor.intent_stats["help"]["errors"] = 2
+
+        captured = {}
+
+        async def fake_send_response(message, response_text):
+            captured["text"] = response_text
+
+        monitor._send_response = fake_send_response
+
+        await monitor._send_status_response(RecordingMessage("@inebotten status"))
+
+        self.assertIn("Intent stats:", captured["text"])
+        self.assertIn("help: 3 (low: 1, err: 2)", captured["text"])
+        self.assertEqual(monitor.get_intent_stats()["help"]["count"], 3)
 
     async def test_ai_fallback_no_longer_crashes_on_chat(self):
         monitor = self.make_monitor()

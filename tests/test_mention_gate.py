@@ -92,6 +92,9 @@ class MentionGateTests(unittest.IsolatedAsyncioTestCase):
         monitor.processed_messages = []
         monitor.mention_count = 0
         monitor.response_count = 0
+        monitor.error_count = 0
+        from collections import defaultdict
+        monitor.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
         monitor.rate_limiter = FakeRateLimiter()
         monitor.loc = FakeLocalization()
         monitor.nlp_parser = FakeParser()

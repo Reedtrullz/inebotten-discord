@@ -6,48 +6,23 @@ Polls DMs and detects @inebotten mentions using discord.py
 
 import asyncio
 import re
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime
 
 import discord
 
 from core.intent_router import BotIntent, IntentRouter
+from core.intent_thresholds import CONFIDENCE_THRESHOLDS
+from core.intent_keywords import (
+    CALENDAR_KEYWORDS,
+    COMPLETE_KEYWORDS,
+    DELETE_KEYWORDS,
+    EDIT_KEYWORDS,
+    HELP_KEYWORDS,
+    LIST_KEYWORDS,
+    STATUS_KEYWORDS,
+)
 
-
-# Keyword sets for command matching
-CALENDAR_KEYWORDS = [
-    "kalender", "calendar", "arrangementer", "events",
-    "kommende", "planlagt", "påminnelser", "huskeliste",
-    "synk", "sync", "synkroniser", "gcal",
-]
-
-SYNC_KEYWORDS = ["synk", "sync", "synkroniser", "hent fra google", "oppdater fra google"]
-
-DELETE_KEYWORDS = ["slett", "delete", "fjern"]
-COMPLETE_KEYWORDS = ["ferdig", "done", "complete", "fullført"]
-EDIT_KEYWORDS = ["endre", "edit", "oppdater"]
-WORD_OF_DAY_KEYWORDS = ["dagens ord", "word of the day", "lære meg et ord"]
-AURORA_KEYWORDS = ["nordlys", "aurora", "nordly"]
-SCHOOL_HOLIDAYS_KEYWORDS = [
-    "skoleferie", "skoleferier", "vinterferie", "påskeferie"
-]
-DAILY_DIGEST_KEYWORDS = [
-    "daglig oppsummering", "daily digest", "oppsummering", "summary"
-]
-PROFILE_KEYWORDS = [
-    "status", "bio", "om meg", "about me", "endre navn", "spiller", "ser på"
-]
-HELP_KEYWORDS = [
-    "hjelp", "help", "kommandoer", "commands",
-    "hva kan du gjøre", "hva kan du", "hva gjør du",
-    "funksjoner", "features", "capabilities",
-    "hva er du", "hvem er du", "what can you do",
-]
-
-STATUS_KEYWORDS = [
-    "bot status", "status bot", "inebotten status",
-    "health", "helse", "diagnose", "diagnostics",
-]
 
 COMMAND_REGISTRY = [
     {"name": "help", "aliases": HELP_KEYWORDS, "priority": 10, "scope": "any"},
@@ -208,6 +183,7 @@ class MessageMonitor:
         self.mention_count = 0
         self.response_count = 0
         self.error_count = 0
+        self.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
 
         self.handlers = {}
         self._register_handlers()
@@ -340,13 +316,38 @@ class MessageMonitor:
         print(f"[MONITOR] Detected language: {lang}")
 
         guild_id = message.guild.id if message.guild else message.channel.id
-        route = self.intent_router.route(message.content, guild_id=guild_id)
-        print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
-        await self._handle_intent(message, route)
+        route = None
+        try:
+            route = self.intent_router.route(message.content, guild_id=guild_id)
+            self._last_routed_intent = route.intent
+            print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
+            await self._handle_intent(message, route)
+            self.intent_stats[route.intent.value]["count"] += 1
+        except Exception as exc:
+            import traceback
+
+            route_name = route.intent.value if route else "unknown"
+            print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
+            traceback.print_exc()
+            self.error_count += 1
+            self.intent_stats[route_name]["errors"] += 1
+            try:
+                await self._send_ai_response(message)
+            except Exception as ai_exc:
+                print(f"[MONITOR] AI fallback also failed: {ai_exc}")
 
     async def _handle_intent(self, message, route):
         """Execute the handler for a routed intent."""
         payload = route.payload
+
+        threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
+        if route.confidence < threshold:
+            print(
+                f"[MONITOR] Intent {route.intent.value} rejected: confidence {route.confidence:.2f} < threshold {threshold}"
+            )
+            self.intent_stats[route.intent.value]["low_confidence"] += 1
+            await self._send_ai_response(message)
+            return
 
         if route.intent == BotIntent.HELP:
             await self.handlers["help"].handle_help(message)
@@ -503,6 +504,7 @@ class MessageMonitor:
                         user_context=user_context,
                         conversation_context=conversation_context,
                         style=self.ResponseStyle.CASUAL,
+                        routed_intent=getattr(self, '_last_routed_intent', None),
                     )
                     
                     # Inject search results into system prompt if available
@@ -549,7 +551,48 @@ class MessageMonitor:
         Returns the cleaned response text.
         """
         cleaned_text = response_text
-        
+        import json
+
+        # 0. Try JSON format first
+        for line in cleaned_text.split('\n'):
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                try:
+                    action_data = json.loads(line)
+                    action_type = action_data.get('action')
+                    if action_type == 'SAVE_EVENT':
+                        title = action_data.get('title', '')
+                        date = action_data.get('date', '')
+                        time = action_data.get('time', '')
+                        print(f"[ROUTER] Detected SAVE_EVENT action (JSON): {title} on {date} at {time}")
+
+                        if "calendar" in self.handlers:
+                            try:
+                                parsed_event = self.nlp_parser.parse_event(f"{title} {date} {time}")
+                                if parsed_event:
+                                    await self.handlers["calendar"].handle_calendar_item(message, parsed_event)
+                                else:
+                                    print("[ROUTER] Ignored SAVE_EVENT action because parser could not validate it")
+                            except Exception as e:
+                                print(f"[ROUTER] Failed to save event: {e}")
+
+                        cleaned_text = cleaned_text.replace(line, '').strip()
+                    elif action_type == 'SHOW_DASHBOARD':
+                        print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
+                        try:
+                            guild_id = message.guild.id if message.guild else message.channel.id
+                            user_mem = await self.user_memory.get_memory(message.author.id)
+                            city_name = user_mem.get("location", "Oslo")
+
+                            dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
+                            await self._send_response(message, dashboard_text)
+                        except Exception as e:
+                            print(f"[ROUTER] Failed to show dashboard: {e}")
+
+                        cleaned_text = cleaned_text.replace(line, '').strip()
+                except json.JSONDecodeError:
+                    pass
+
         # 1. Handle [SAVE_EVENT: Title | Date | Time]
         event_match = re.search(r'\[SAVE_EVENT:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]', cleaned_text)
         if event_match:
@@ -643,6 +686,13 @@ class MessageMonitor:
                 f"Provider stats: {hermes_stats.get('provider', 'unknown')}",
             ]
         )
+        intent_stats_lines = []
+        for intent_name, stats in sorted(self.intent_stats.items()):
+            intent_stats_lines.append(
+                f"  {intent_name}: {stats['count']} (low: {stats['low_confidence']}, err: {stats['errors']})"
+            )
+        if intent_stats_lines:
+            response_text += "\nIntent stats:\n" + "\n".join(intent_stats_lines)
         await self._send_response(message, response_text)
 
     async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False, user_id: int = None) -> str:
@@ -751,6 +801,9 @@ class MessageMonitor:
             "errors": self.error_count,
             "messages_tracked": len(self.processed_messages),
         }
+
+    def get_intent_stats(self):
+        return dict(self.intent_stats)
 
     def get_handlers_status(self):
         """Get status of all handlers"""
