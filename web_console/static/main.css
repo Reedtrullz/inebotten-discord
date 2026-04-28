@@ -24,7 +24,10 @@
   --status-online: #22c55e;      /* green-500 */
   --status-warning: #f59e0b;     /* amber-500 */
   --status-error: #ef4444;       /* red-500 */
-  --status-info: #3b82f6;        /* blue-500 */
+  --status-info: #3b82f6;
+
+  --log-text-info: #cbd5e1;
+  --log-text-debug: #94a3b8;
   
   /* Borders */
   --border-color: #334155;
@@ -82,6 +85,9 @@
   --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
   --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
   --shadow-glow: 0 0 20px rgba(59,130,246,0.1);
+
+  --log-text-info: #475569;
+  --log-text-debug: #64748b;
 }
 
 /* Base styles */
@@ -125,11 +131,12 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: var(--space-4);
 }
 
 .card-footer {
   margin-top: auto;
-  padding-top: var(--space-4);
+  padding-top: var(--space-6);
   border-top: 1px solid var(--border-color);
 }
 
@@ -311,7 +318,7 @@ body {
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: var(--space-6);
+  gap: var(--space-8);
 }
 
 @media (min-width: 768px) {

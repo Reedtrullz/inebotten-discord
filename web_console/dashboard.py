@@ -140,13 +140,13 @@ def _render_log_block(log_lines: object) -> str:
     def _colorize_log(line: str) -> str:
         upper = line.upper()
         if "ERROR" in upper or "CRITICAL" in upper:
-            return f'<span class="text-red-500">{escape(line)}</span>'
+            return f'<span class="text-[var(--status-error)]">{escape(line)}</span>'
         elif "WARN" in upper:
-            return f'<span class="text-yellow-500">{escape(line)}</span>'
+            return f'<span class="text-[var(--status-warning)]">{escape(line)}</span>'
         elif "INFO" in upper:
-            return f'<span class="text-slate-400">{escape(line)}</span>'
+            return f'<span class="text-[var(--log-text-info)]">{escape(line)}</span>'
         else:
-            return f'<span class="text-slate-500">{escape(line)}</span>'
+            return f'<span class="text-[var(--log-text-debug)]">{escape(line)}</span>'
 
     colored_logs = "\n".join(_colorize_log(str(line)) for line in log_lines)
     return f'<pre class="whitespace-pre-wrap break-words">{colored_logs}</pre>'
@@ -190,20 +190,20 @@ def _render_status_section(data: dict[str, Any]) -> str:
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Oppetid</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Oppetid</div>
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Servere</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Servere</div>
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.guilds">{escape(guilds)}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Brukere</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Brukere</div>
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Discord</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Discord</div>
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
       </div>
     </div>
@@ -241,21 +241,21 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Status</div>
-        <div class="text-lg font-bold text-[var(--text-primary)] truncate">{escape(str(bridge_status))}</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Status</div>
+        <div class="text-xl font-bold text-[var(--text-primary)] truncate">{escape(str(bridge_status))}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">LM Studio</div>
-        <div class="text-lg font-bold text-[var(--text-primary)] truncate" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">LM Studio</div>
+        <div class="text-xl font-bold text-[var(--text-primary)] truncate" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Forespørsler</div>
-        <div class="text-lg font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Forespørsler</div>
+        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Feil</div>
-        <div class="text-lg font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Feil</div>
+        <div class="text-xl font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
       </div>
     </div>
   </div>
@@ -296,13 +296,13 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Hendelser</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="calendar.events">{escape(event_count)}</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Hendelser</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="calendar.events">{escape(event_count)}</div>
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Oppgaver</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="calendar.tasks">{escape(task_count)}</div>
+      <div class="metric min-w-0">
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Oppgaver</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="calendar.tasks">{escape(task_count)}</div>
       </div>
     </div>
 {upcoming_html}
@@ -354,7 +354,6 @@ def _render_polls_section(data: dict[str, Any]) -> str:
         </div>"""
                 )
         polls_html = f"""    <div class="mt-4">
-      <div class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">Aktive avstemninger</div>
 {chr(10).join(poll_items)}
     </div>"""
     else:
@@ -411,7 +410,7 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
       </table>
     </div>"""
     else:
-        table_html = '<div class="text-sm text-[var(--text-muted)] text-center py-6">Ingen rate-limit-data</div>'
+        table_html = '<div class="flex-1 flex items-center justify-center text-sm text-[var(--text-muted)]">Ingen rate-limit-data</div>'
 
     return f"""<section class="card" id="rate-limits">
   <div class="flex items-center justify-between gap-2 mb-4">
@@ -454,7 +453,7 @@ def _render_intents_section(data: dict[str, Any]) -> str:
       </table>
     </div>"""
     else:
-        table_html = '<div class="text-sm text-[var(--text-muted)] text-center py-6">Ingen intent-data</div>'
+        table_html = '<div class="flex-1 flex items-center justify-center text-sm text-[var(--text-muted)]">Ingen intent-data</div>'
 
     return f"""<section class="card" id="intents">
   <div class="flex items-center justify-between gap-2 mb-4">
@@ -481,12 +480,12 @@ def _render_memory_section(data: dict[str, Any]) -> str:
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
       <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
-        <div class="text-2xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
-        <div class="text-sm text-[var(--text-muted)] mt-1">Brukere</div>
+        <div class="text-3xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] mt-2">Brukere</div>
       </div>
       <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
-        <div class="text-2xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
-        <div class="text-sm text-[var(--text-muted)] mt-1">Samtaler</div>
+        <div class="text-3xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
+        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] mt-2">Samtaler</div>
       </div>
     </div>
   </div>
