@@ -329,8 +329,7 @@ const _registerConsoleApp = () => {
         memory: 'Minne',
         logs: 'Logger',
       };
-      const data = this.data[section];
-      if (!data) return;
+      const data = this.data[section] || {};
       let content = '';
       switch (section) {
         case 'status':

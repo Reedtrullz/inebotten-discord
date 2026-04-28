@@ -243,19 +243,19 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
     <div class="grid grid-cols-2 gap-4">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Status</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]">{escape(str(bridge_status))}</div>
+        <div class="text-lg font-bold text-[var(--text-primary)] break-words">{escape(str(bridge_status))}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">LM Studio</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
+        <div class="text-lg font-bold text-[var(--text-primary)] break-words" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Forespørsler</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
+        <div class="text-lg font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Feil</div>
-        <div class="text-xl font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
+        <div class="text-lg font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
       </div>
     </div>
   </div>
@@ -363,13 +363,9 @@ def _render_polls_section(data: dict[str, Any]) -> str:
     return f"""<section class="card" id="polls">
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold">Avstemninger</h2>
-    <span class="badge badge-info">{escape(active_polls)} aktive</span>
+    <span class="badge badge-info"><span data-metric="polls.active">{escape(active_polls)}</span> aktive</span>
   </div>
   <div class="card-body">
-    <div class="metric">
-      <div class="text-sm text-[var(--text-muted)]">Aktive avstemninger</div>
-      <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="polls.active">{escape(active_polls)}</div>
-    </div>
 {polls_html}
   </div>
   <div class="card-footer">
@@ -419,8 +415,8 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
 
     return f"""<section class="card" id="rate-limits">
   <div class="flex items-center justify-between mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Rate Limits</h2>
-    <span class="text-sm text-[var(--text-muted)]"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
+    <h2 class="text-lg font-semibold text-[var(--text-primary)] whitespace-nowrap">Rate Limits</h2>
+    <span class="text-sm text-[var(--text-muted)] whitespace-nowrap"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
   <div class="card-body">
     {table_html}
@@ -463,7 +459,7 @@ def _render_intents_section(data: dict[str, Any]) -> str:
     return f"""<section class="card" id="intents">
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Intents</h2>
-    <span class="badge {fallback_badge_class}">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
+    <span class="badge {fallback_badge_class} whitespace-nowrap">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
   <div class="card-body">
     {table_html}
