@@ -324,17 +324,39 @@ self.handlers = {
 
 Nye prompt-regler skal normalt legges i `core/intent_router.py`, ikke som en ny hardkodet sjekk i `MessageMonitor`. Routeren skal returnere én `IntentResult` med intent, confidence, payload og reason.
 
+**Bruk sentraliserte keywords og token-aware matching:**
+
 ```python
-if "myfeature" in content_lower:
+from core.intent_keywords import MY_FEATURE_KEYWORDS
+from core.intent_utils import has_any_keyword
+
+if has_any_keyword(content_lower, MY_FEATURE_KEYWORDS):
     return IntentResult(
-        intent=BotIntent.UTILITY,
+        intent=BotIntent.MY_FEATURE,
         confidence=0.9,
         payload={"feature": "my_feature"},
         reason="Eksplisitt myfeature-kommando",
     )
 ```
 
-Deretter lar `MessageMonitor` kalle riktig handler basert på router-resultatet.
+**Legg til keywords i `core/intent_keywords.py`:**
+
+```python
+MY_FEATURE_KEYWORDS = (
+    "myfeature", "my feature", "min funksjon",
+)
+```
+
+**Sett confidence-treshold hvis nødvendig:**
+
+```python
+from core.intent_thresholds import CONFIDENCE_THRESHOLDS
+from core.intent_router import BotIntent
+
+CONFIDENCE_THRESHOLDS[BotIntent.MY_FEATURE] = 0.85
+```
+
+Deretter lar `MessageMonitor` kalle riktig handler basert på router-resultatet. MessageMonitor sjekker automatisk confidence mot tresholden før dispatch.
 
 **Fordeler med ny arkitektur:**
 - ✅ **send_response()** håndterer automatisk DM/Group/Guild kanaler
@@ -574,17 +596,48 @@ if __name__ == "__main__":
 ### Kjøre Tester
 
 ```bash
-# Kjør alle tester
-python3 tests/test_selfbot.py
+# Kjør alle tester (anbefalt)
+python3 -m pytest -q
 
-# Kjør spesifikk test
-python3 tests/test_my_feature.py
+# Kjør spesifikk testfil
+python3 -m pytest tests/test_intent_router.py -q
+python3 -m pytest tests/test_message_monitor_routing.py -q
+python3 -m pytest tests/test_false_positives.py -q
 
-# Med pytest
-pytest tests/ -v
+# Kjør med verbose output
+python3 -m pytest tests/ -v
 
 # Coverage
-pytest tests/ --cov=. --cov-report=html
+python3 -m pytest tests/ --cov=. --cov-report=html
+```
+
+### Intent-tester
+
+Nye intents skal testes for både positive og negative cases:
+
+```python
+# tests/test_my_feature_intent.py
+from core.intent_router import IntentRouter, BotIntent
+from core.intent_utils import has_any_keyword
+
+class FakeMonitor:
+    pass
+
+def test_my_feature_positive():
+    router = IntentRouter(FakeMonitor())
+    result = router.route("@inebotten min funksjon test")
+    assert result.intent == BotIntent.MY_FEATURE
+    assert result.confidence >= 0.85
+
+def test_my_feature_negative():
+    router = IntentRouter(FakeMonitor())
+    result = router.route("@inebotten hei, hvordan går det?")
+    assert result.intent != BotIntent.MY_FEATURE
+
+def test_keyword_boundary():
+    # "feature" skal ikke matche inni "featuresome"
+    assert has_any_keyword("featuresome", ["feature"]) is False
+    assert has_any_keyword("my feature", ["feature"]) is True
 ```
 
 ---

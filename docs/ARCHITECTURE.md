@@ -137,7 +137,38 @@ class MessageMonitor:
 
 **Rolle:** Én sentral beslutning per prompt før meldingen sendes til handler eller AI.
 
-`core/intent_router.py` returnerer `IntentResult(intent, confidence, payload, reason)`. Dette erstatter spredt keyword-ruting i `MessageMonitor` og gjør prioritetene lettere å teste.
+`core/intent_router.py` returnerer `IntentResult(intent, confidence, payload, reason)`. Routeren importerer nå keywords fra `core/intent_keywords.py` og bruker token-aware utilities fra `core/intent_utils.py`. Dette erstatter spredt keyword-ruting i `MessageMonitor` og gjør prioritetene lettere å teste.
+
+**Intent-systemarkitektur:**
+
+```
+Intent-system
+├── core/intent_keywords.py     # Sentraliserte keyword-constants
+│   ├── HELP_KEYWORDS
+│   ├── CALENDAR_KEYWORDS
+│   ├── STATUS_KEYWORDS
+│   └── ... (13 eksporterte tupler)
+│
+├── core/intent_thresholds.py   # Confidence-grenser per intent
+│   └── CONFIDENCE_THRESHOLDS
+│       ├── CALENDAR_ITEM: 0.94
+│       ├── SEARCH: 0.80
+│       ├── PRICE: 0.85
+│       ├── HOROSCOPE: 0.85
+│       └── COMPLIMENT: 0.80
+│
+├── core/intent_utils.py        # Token-aware matching
+│   ├── has_keyword()           # Regex \b for hele ord
+│   ├── has_any_keyword()
+│   ├── has_all_keywords()
+│   └── extract_keywords()
+│
+├── core/intent_router.py       # Rutinglogikk
+│   └── route() → IntentResult
+│
+└── core/message_monitor.py     # Dispatch med confidence-sjekk
+    └── _handle_intent()
+```
 
 **Standard prioritet:**
 
@@ -150,7 +181,22 @@ class MessageMonitor:
 6. AI-chat som fallback
 ```
 
-Kalender-NLP krever tydelig kommandohensikt pluss dato, tid eller gjentakelsessignal. Bare "jeg skal", "jeg vil" eller "jeg bør" er ikke nok alene.
+**Confidence-tresholds:**
+
+`message_monitor.py` sjekker `route.confidence` mot `CONFIDENCE_THRESHOLDS` før dispatch. Hvis confidence er for lav, faller boten tilbake til AI-chat i stedet for å utføre en usikker handling. Kalender-NLP krever tydelig kommandohensikt pluss dato, tid eller gjentakelsessignal. Bare "jeg skal", "jeg vil" eller "jeg bør" er ikke nok alene.
+
+**Token-aware matching:**
+
+`core/intent_utils.py` bruker regex word boundaries (`\b`) slik at "tale" ikke matcher inni "avtale". Dette eliminerer falske positive fra delstreng-treff.
+
+**Structured Actions:**
+
+`ai/action_schema.py` definerer dataclasses for AI-genererte handlinger:
+- `SaveEventAction` — lagre kalenderhendelse
+- `ShowDashboardAction` — vise dashboard
+- `NoAction` — ingen handling
+
+AI kan returnere handlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Begge parses og valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
 
 #### 2.3 Natural Language Parser
 
@@ -452,6 +498,10 @@ run_both.py
 └── selfbot_runner.py
     ├── message_monitor.py
     │   ├── hermes_connector.py
+    │   ├── intent_router.py
+    │   │   ├── intent_keywords.py
+    │   │   ├── intent_thresholds.py
+    │   │   └── intent_utils.py
     │   ├── calendar_manager.py
     │   │   └── google_calendar_manager.py (valgfri)
     │   ├── natural_language_parser.py

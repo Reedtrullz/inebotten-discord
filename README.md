@@ -121,7 +121,9 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 
 ## Hvordan botten forstår meldinger
 
-`core/intent_router.py` gir én strukturert beslutning per prompt. Standard prioritet er:
+`core/intent_router.py` gir én strukturert beslutning per prompt. Routeren bruker sentraliserte keywords (`core/intent_keywords.py`) og token-aware matching (`core/intent_utils.py`) med regex word boundaries for å unngå falske positive.
+
+**Standard prioritet:**
 
 1. Hjelp, status, profil og eksplisitte kalenderkommandoer.
 2. Aktiv avstemning og stemmegivning.
@@ -130,7 +132,13 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 5. Søk/dashboard når meldingen faktisk ber om kontekst utenfra.
 6. AI-chat som trygg fallback.
 
-AI-genererte `[SAVE_EVENT: ...]`-tagger valideres gjennom samme dato-/tidparser før noe lagres.
+**Confidence-tresholds:**
+
+Usikre intents faller tilbake til AI-chat i stedet for å gjette. Kalender-NLP krever f.eks. confidence ≥ 0.94 før dispatch.
+
+**Structured actions:**
+
+AI kan returnere handlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Begge valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
 
 ## Prosjektstruktur
 
@@ -175,6 +183,8 @@ Nyttige måltester:
 ```bash
 python3 -m pytest tests/test_intent_router.py -q
 python3 -m pytest tests/test_message_monitor_routing.py -q
+python3 -m pytest tests/test_false_positives.py -q
+python3 -m pytest tests/test_action_schema.py -q
 python3 -m pytest tests/test_comprehensive.py -q
 ```
 

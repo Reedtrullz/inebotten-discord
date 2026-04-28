@@ -85,11 +85,13 @@ python build.py
 
 ## Før release
 
-- Kjør `python3 -m pytest -q`.
-- Test intent-routeren med relevante norske prompt-eksempler.
+- Kjør `python3 -m pytest -q` — alle 309+ tester skal passere.
+- Kjør `python3 -m pytest tests/test_false_positives.py -q` — regresjonstester skal passere.
+- Test intent-routeren med relevante norske prompt-eksempler (spesielt kalender- og søke-intents).
+- Verifiser at confidence-tresholds fungerer: usikre intents skal falle tilbake til AI.
 - Bygg minst én desktop-app lokalt hvis endringen berører launcher eller packaging.
 - Sjekk at `.env`, token og API-nøkler ikke ligger i diffen.
-- Oppdater dokumentasjon hvis brukerflyt eller kommandoer er endret.
+- Oppdater dokumentasjon hvis brukerflyt, kommandoer eller intent-arkitektur er endret.
 
 ## Feilsøking
 

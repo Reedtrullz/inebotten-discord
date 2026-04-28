@@ -159,22 +159,65 @@ Du pratar med {author_name}.
 
 ### 3. Message Monitor (`message_monitor.py`)
 
-**Formål:** Kjernen i meldingshåndtering og kommando-ruting (~1200 linjer)
+**Formål:** Kjernen i meldingshåndtering og kommando-ruting (~950 linjer)
 
 **Nøkkelmetoder:**
 
 | Metode | Beskrivelse |
 |--------|-------------|
 | `is_mention()` | Detekterer @inebotten-mentions |
-| `handle_message()` | Hovedprosesseringsrørledning |
-| `_send_ai_response()` | AI-/samtalerespons |
+| `handle_message()` | Hovedprosesseringsrørledning med exception-guard |
+| `_handle_intent()` | Dispatcher med confidence-treshold-sjekk |
+| `_send_ai_response()` | AI-/samtalerespons med routing-kontekst |
+| `_parse_and_execute_actions()` | Parser JSON- og tag-baserte handlinger fra AI |
 | `handlers["calendar"]` | Kalenderkommandoer (via CalendarHandler) |
 
 **Kommandoprioritet:**
 
-1. Naturlig språk kalender-parser
-2. Spesifikke kommandomatchere (nedtelling, avstemning, etc.)
-3. AI-fallback for generell chat
+1. Eksplisitte kommandoer (hjelp, status, kalender-CRUD)
+2. Aktiv avstemning og stemmegivning
+3. Spesifikke funksjoner (nedtelling, watchlist, sitat, etc.)
+4. Konservativ kalender-NLP (>=3 indikatorer kreves)
+5. Søk/dashboard når prompten ber om ekstern kontekst
+6. AI-fallback for generell chat
+
+**Intent-statistikk:**
+
+`message_monitor.py` sporer routing-statistikk per intent:
+
+```python
+self.intent_stats = defaultdict(lambda: {
+    "count": 0,
+    "low_confidence": 0,
+    "errors": 0
+})
+```
+
+Tallene vises i bot-status og hjelper med å identifisere hvilke intents som ofte faller tilbake til AI.
+
+**Confidence-treshold dispatch:**
+
+```python
+threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
+if route.confidence < threshold:
+    # Fallback til AI-chat i stedet for usikker handling
+    await self._send_ai_response(message)
+    return
+```
+
+**Structured Action Parsing:**
+
+AI-responser parses for både JSON- og tag-baserte handlinger:
+
+```python
+# JSON-format (anbefalt)
+{"action": "SAVE_EVENT", "title": "Møte", "date": "01.05.2025", "time": "14:00"}
+
+# Eldre tag-format (bakoverkompatibelt)
+[SAVE_EVENT: Møte | 01.05.2025 | 14:00]
+```
+
+Begge valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
 
 ### 4. Kalendersystem
 
@@ -548,9 +591,12 @@ Full guide: [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md).
 ### Kjøre Tester
 
 ```bash
-python3 tests/test_selfbot.py              # Basis-tester
-python3 tests/test_selfbot_comprehensive.py # Full test-suite
-python3 -m py_compile *.py                 # Syntaks-sjekk alle filer
+python3 -m pytest -q                        # Kjør alle tester (309+ passerer)
+python3 -m pytest tests/test_intent_router.py -q      # Intent-ruting
+python3 -m pytest tests/test_message_monitor_routing.py -q  # Meldingsflyt
+python3 -m pytest tests/test_false_positives.py -q    # Regresjonstester
+python3 -m pytest tests/test_action_schema.py -q      # AI-handlinger
+python3 -m py_compile *.py                  # Syntaks-sjekk alle filer
 ```
 
 ### Legge til nye funksjoner
@@ -577,6 +623,10 @@ Kortversjon:
 5. **Google Integrasjon** - Syncer med ekte kalender
 6. **Personlighetssystem** - Kontekstbevisst, personlig tilpasset
 7. **Sentral intent-router** - Én testbar beslutning per prompt
+8. **Confidence-tresholds** - Usikre intents faller tilbake til AI i stedet for å gjette
+9. **Token-aware matching** - Word-boundary matching eliminerer falske positive
+10. **Structured actions** - AI-handlinger parses trygt med validering før utførelse
+11. **Kanal-scoped kontekst** - Samtalehistorikk isoleres per kanal for bedre presisjon
 
 ---
 

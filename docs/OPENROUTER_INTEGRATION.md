@@ -35,7 +35,31 @@ Discord-melding
   -> renset Discord-svar
 ```
 
-Handlinger som `[SAVE_EVENT: ...]` fra AI blir validert lokalt før kalenderen endres. OpenRouter får derfor ikke lov til å skrive direkte til lagring uten parser-sjekk.
+Handlinger fra AI blir validert lokalt før kalenderen endres. OpenRouter får derfor ikke lov til å skrive direkte til lagring uten parser-sjekk.
+
+**Supported action formats:**
+
+```python
+# JSON-format (anbefalt)
+{"action": "SAVE_EVENT", "title": "Møte med Ola", "date": "01.05.2025", "time": "14:00"}
+{"action": "SHOW_DASHBOARD"}
+
+# Eldre tag-format (bakoverkompatibelt)
+[SAVE_EVENT: Møte med Ola | 01.05.2025 | 14:00]
+[SHOW_DASHBOARD]
+```
+
+**Routing context:**
+
+Når AI kalles som fallback, injiseres routerens intent-beslutning i system prompt:
+
+```
+SYSTEMINTENT: ai_chat
+Systemet har analysert meldingen og bestemt at brukeren vil: brukeren vil bare chatte
+Hvis dette stemmer, fortsett med handlingen. Hvis ikke, svar naturlig.
+```
+
+Dette hjelper AI-modellen å forstå hvorfor den ble kalt og unngår å gjette feil.
 
 ## Miljøvariabler
 
