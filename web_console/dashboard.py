@@ -208,7 +208,7 @@ def _render_status_section(data: dict[str, Any]) -> str:
       </div>
     </div>
   </div>
-  <div class="card-footer">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('status')">Detaljer</button>
   </div>
 </section>"""
@@ -259,7 +259,7 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
       </div>
     </div>
   </div>
-  <div class="card-footer">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('bridge')">Detaljer</button>
   </div>
 </section>"""
@@ -307,7 +307,7 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
     </div>
 {upcoming_html}
   </div>
-  <div class="card-footer">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('calendar')">Vis alle</button>
   </div>
 </section>"""
@@ -331,14 +331,12 @@ def _render_polls_section(data: dict[str, Any]) -> str:
                 for option, count in votes.items():
                     pct = (count / total * 100) if total > 0 else 0
                     bars.append(
-                        f"""            <div class="mt-1">
-              <div class="flex items-center justify-between text-xs">
-                <span class="text-[var(--text-secondary)]">{escape(str(option))}</span>
-                <span class="text-[var(--text-muted)]">{count} ({pct:.0f}%)</span>
-              </div>
-              <div class="w-full h-2 rounded-full mt-1" style="background:var(--bg-tertiary)">
+                        f"""            <div class="grid grid-cols-[3rem_1fr_auto] gap-2 items-center mt-2">
+              <span class="text-xs text-[var(--text-secondary)] truncate">{escape(str(option))}</span>
+              <div class="h-2 rounded-full" style="background:var(--bg-tertiary)">
                 <div class="h-2 rounded-full transition-all duration-500" style="width:{pct:.1f}%;background:var(--accent)"></div>
               </div>
+              <span class="text-xs text-[var(--text-muted)] whitespace-nowrap">{count}</span>
             </div>"""
                     )
                 poll_items.append(
@@ -367,7 +365,7 @@ def _render_polls_section(data: dict[str, Any]) -> str:
   <div class="card-body">
 {polls_html}
   </div>
-  <div class="card-footer">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('polls')">Vis alle</button>
   </div>
 </section>"""
@@ -397,10 +395,10 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
                 + f'</td>'
                 + f'</tr>'
             )
-        table_html = f"""<div class="overflow-x-auto">
+        table_html = f"""<div class="overflow-x-auto rounded-lg border border-[var(--border-color)]">
       <table class="w-full border-collapse text-sm">
         <thead>
-          <tr class="border-b border-[var(--border-color)]">
+          <tr class="border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
             <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Bruker</th>
             <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Antall</th>
             <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Bruk</th>
@@ -415,7 +413,7 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
     return f"""<section class="card" id="rate-limits">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Rate Limits</h2>
-    <span class="text-sm text-[var(--text-muted)] whitespace-nowrap"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
+    <span class="badge badge-info whitespace-nowrap"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
   <div class="card-body">
     {table_html}
@@ -441,10 +439,10 @@ def _render_intents_section(data: dict[str, Any]) -> str:
                 + f'<td class="py-2 px-4 text-sm text-[var(--text-secondary)]">{escape(str(count))}</td>'
                 + f'</tr>'
             )
-        table_html = f"""<div class="overflow-x-auto">
+        table_html = f"""<div class="overflow-x-auto rounded-lg border border-[var(--border-color)]">
       <table class="w-full border-collapse text-sm">
         <thead>
-          <tr class="border-b border-[var(--border-color)]">
+          <tr class="border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
             <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Intent</th>
             <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Antall</th>
           </tr>
@@ -501,10 +499,10 @@ def _render_logs_section(data: dict[str, Any]) -> str:
     return f"""<section class="card" id="logs">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Logger</h2>
-    <span class="text-sm text-[var(--text-muted)]">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
+    <span class="badge badge-info">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
   </div>
   <div class="card-body">
-    <div class="max-h-48 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-4 border border-[var(--border-color)] log-fade">
+    <div class="max-h-48 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-5 border border-[var(--border-color)]">
       {_render_log_block(log_lines)}
     </div>
   </div>
