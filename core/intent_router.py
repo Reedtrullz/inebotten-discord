@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
+# pyright: reportDeprecated=false, reportExplicitAny=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportAny=false, reportUnusedImport=false
 """Central intent router for Inebotten message handling."""
 
 from dataclasses import dataclass, field
 from enum import Enum
 import re
 from typing import Any, Dict, Optional
+
+from core.intent_keywords import (
+    AURORA_KEYWORDS,
+    CALENDAR_KEYWORDS,
+    CLEAR_KEYWORDS,
+    COMPLETE_KEYWORDS,
+    DAILY_DIGEST_KEYWORDS,
+    DELETE_KEYWORDS,
+    EDIT_KEYWORDS,
+    HELP_KEYWORDS,
+    LIST_KEYWORDS,
+    PROFILE_KEYWORDS,
+    SCHOOL_HOLIDAYS_KEYWORDS,
+    STATUS_KEYWORDS,
+    SYNC_KEYWORDS,
+    WORD_OF_DAY_KEYWORDS,
+)
+from core.intent_utils import has_any_keyword
 
 
 class BotIntent(Enum):
@@ -47,40 +66,6 @@ class IntentResult:
     reason: str = ""
 
 
-HELP_KEYWORDS = [
-    "hjelp", "help", "kommandoer", "commands",
-    "hva kan du gjøre", "hva kan du", "hva gjør du",
-    "funksjoner", "features", "capabilities",
-    "hva er du", "hvem er du", "what can you do",
-]
-
-STATUS_KEYWORDS = [
-    "bot status", "status bot", "inebotten status",
-    "health", "helse", "diagnose", "diagnostics",
-]
-
-CALENDAR_KEYWORDS = [
-    "kalender", "calendar", "arrangementer", "events",
-    "kommende", "planlagt", "påminnelser", "huskeliste",
-    "synk", "sync", "synkroniser", "gcal",
-]
-SYNC_KEYWORDS = ["synk", "sync", "synkroniser", "hent fra google", "oppdater fra google"]
-DELETE_KEYWORDS = ["slett", "delete", "fjern"]
-COMPLETE_KEYWORDS = ["ferdig", "done", "complete", "fullført"]
-EDIT_KEYWORDS = ["endre", "edit", "oppdater"]
-LIST_KEYWORDS = ["liste", "vis", "se", "oversikt"]
-CLEAR_KEYWORDS = ["tøm", "clear", "empty", "slett alt", "fjern alt"]
-
-PROFILE_KEYWORDS = [
-    "status", "bio", "om meg", "about me", "endre navn", "spiller", "ser på",
-    "playing", "watching",
-]
-
-WORD_OF_DAY_KEYWORDS = ["dagens ord", "word of the day", "lære meg et ord"]
-AURORA_KEYWORDS = ["nordlys", "aurora", "nordly"]
-SCHOOL_HOLIDAYS_KEYWORDS = ["skoleferie", "skoleferier", "vinterferie", "påskeferie"]
-DAILY_DIGEST_KEYWORDS = ["daglig oppsummering", "daily digest", "oppsummering", "summary"]
-
 
 class IntentRouter:
     """Routes cleaned, authorized message text to one concrete bot intent."""
@@ -88,24 +73,17 @@ class IntentRouter:
     def __init__(self, monitor):
         self.monitor = monitor
 
-    def _contains_any_word(self, content: str, words: list) -> bool:
-        """Check if content contains any of the words as whole words."""
-        for word in words:
-            if re.search(rf'\b{re.escape(word)}\b', content, re.IGNORECASE):
-                return True
-        return False
-
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
         content_lower = content.lower().strip()
 
         # Explicit operational/help/calendar commands first.
-        if self._contains_any_word(content_lower, ["kalender", "calendar"]) and self._contains_any_word(content_lower, ["hjelp", "help", "guide"]):
+        if has_any_keyword(content_lower, ["kalender", "calendar"]) and has_any_keyword(content_lower, ["hjelp", "help", "guide"]):
             return IntentResult(BotIntent.CALENDAR_HELP, 0.99, reason="calendar_help_keyword")
 
         if self._is_status_command(content_lower):
             return IntentResult(BotIntent.STATUS, 0.99, reason="status_keyword")
 
-        if self._contains_any_word(content_lower, HELP_KEYWORDS):
+        if has_any_keyword(content_lower, HELP_KEYWORDS):
             return IntentResult(BotIntent.HELP, 0.96, reason="help_keyword")
 
         if self._is_profile_command(content_lower):
@@ -115,7 +93,7 @@ class IntentRouter:
         if calendar_command:
             return calendar_command
 
-        calendar_item = self._route_calendar_item(content)
+        calendar_item = self._route_calendar_item(content, guild_id)
         if calendar_item and calendar_item.confidence >= 0.94:
             return calendar_item
 
@@ -135,17 +113,17 @@ class IntentRouter:
         if watchlist_cmd:
             return IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": watchlist_cmd}, "watchlist_parser")
 
-        if self._contains_any_word(content_lower, WORD_OF_DAY_KEYWORDS):
+        if has_any_keyword(content_lower, WORD_OF_DAY_KEYWORDS):
             return IntentResult(BotIntent.WORD_OF_DAY, 0.95, reason="word_of_day_keyword")
 
         quote_cmd = self.monitor.parse_quote_command(content)
         if quote_cmd:
             return IntentResult(BotIntent.QUOTE, 0.9, {"quote": quote_cmd}, "quote_parser")
 
-        if self._contains_any_word(content_lower, AURORA_KEYWORDS):
+        if has_any_keyword(content_lower, AURORA_KEYWORDS):
             return IntentResult(BotIntent.AURORA, 0.9, reason="aurora_keyword")
 
-        if self._contains_any_word(content_lower, SCHOOL_HOLIDAYS_KEYWORDS):
+        if has_any_keyword(content_lower, SCHOOL_HOLIDAYS_KEYWORDS):
             return IntentResult(BotIntent.SCHOOL_HOLIDAYS, 0.9, reason="school_holidays_keyword")
 
         price_cmd = self.monitor.parse_price_command(content)
@@ -168,7 +146,7 @@ class IntentRouter:
         if shorten_cmd:
             return IntentResult(BotIntent.SHORTEN_URL, 0.9, {"shorten": shorten_cmd}, "shorten_parser")
 
-        if self._contains_any_word(content_lower, DAILY_DIGEST_KEYWORDS):
+        if has_any_keyword(content_lower, DAILY_DIGEST_KEYWORDS):
             return IntentResult(BotIntent.DAILY_DIGEST, 0.9, reason="daily_digest_keyword")
 
         if calendar_item:
@@ -189,26 +167,26 @@ class IntentRouter:
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
     def _route_calendar_command(self, content_lower: str) -> Optional[IntentResult]:
-        if not self._contains_any_word(content_lower, ["kalender", "calendar"]):
+        if not has_any_keyword(content_lower, ["kalender", "calendar"]):
             # Special case for "synk" / "sync" which can be used without "kalender"
-            if not self._contains_any_word(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
+            if not has_any_keyword(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
                 return None
 
-        if self._contains_any_word(content_lower, SYNC_KEYWORDS):
+        if has_any_keyword(content_lower, SYNC_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_SYNC, 0.98, reason="calendar_sync_keyword")
-        if self._contains_any_word(content_lower, DELETE_KEYWORDS):
+        if has_any_keyword(content_lower, DELETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_DELETE, 0.98, reason="calendar_delete_keyword")
-        if self._contains_any_word(content_lower, COMPLETE_KEYWORDS):
+        if has_any_keyword(content_lower, COMPLETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_complete_keyword")
-        if self._contains_any_word(content_lower, EDIT_KEYWORDS):
+        if has_any_keyword(content_lower, EDIT_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_EDIT, 0.98, reason="calendar_edit_keyword")
-        if self._contains_any_word(content_lower, CLEAR_KEYWORDS):
+        if has_any_keyword(content_lower, CLEAR_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
-        if self._contains_any_word(content_lower, LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
+        if has_any_keyword(content_lower, LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
             return IntentResult(BotIntent.CALENDAR_LIST, 0.92, reason="calendar_list_keyword")
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")
 
-    def _route_calendar_item(self, content: str) -> Optional[IntentResult]:
+    def _route_calendar_item(self, content: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
         try:
             parsed = self.monitor.nlp_parser.parse_task_with_recurrence(content)
             if not parsed:
@@ -217,7 +195,7 @@ class IntentRouter:
             return IntentResult(BotIntent.AI_CHAT, 0.2, {"error": str(exc)}, "calendar_parser_error")
 
         if parsed:
-            parsed = self._resolve_calendar_followup(content, parsed)
+            parsed = self._resolve_calendar_followup(content, parsed, guild_id)
             
             # Boost confidence for strong matches
             confidence = 0.86
@@ -225,7 +203,7 @@ class IntentRouter:
             if (parsed.get("date") or parsed.get("recurrence")) and parsed.get("title"):
                 confidence = 0.97
             # "husk" is a very strong keyword indicator for calendar
-            if self._contains_any_word(content.lower(), ["husk", "remind", "påminn"]):
+            if has_any_keyword(content.lower(), ["husk", "remind", "påminn"]):
                 confidence = max(confidence, 0.95)
                 
             return IntentResult(BotIntent.CALENDAR_ITEM, confidence, {"calendar_item": parsed}, "calendar_nlp")
@@ -253,7 +231,7 @@ class IntentRouter:
         
         return None
 
-    def _resolve_calendar_followup(self, content: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_calendar_followup(self, content: str, parsed: Dict[str, Any], channel_id: Optional[int] = None) -> Dict[str, Any]:
         """Replace vague follow-up titles like "det" with the recent offered reminder topic."""
         title = str(parsed.get("title", "")).strip()
         content_lower = content.lower()
@@ -263,22 +241,26 @@ class IntentRouter:
         if not (vague_title and reminder_followup):
             return parsed
 
-        topic = self._infer_recent_reminder_topic()
+        topic = self._infer_recent_reminder_topic(channel_id)
         if topic:
             parsed = dict(parsed)
             parsed["title"] = topic[0].upper() + topic[1:]
             parsed["type"] = "task"
         return parsed
 
-    def _infer_recent_reminder_topic(self) -> Optional[str]:
+    def _infer_recent_reminder_topic(self, channel_id=None) -> Optional[str]:
         conversation = getattr(self.monitor, "conversation", None)
         threads = getattr(conversation, "threads", None)
         if not threads:
             return None
 
         recent_messages = []
-        for messages in threads.values():
+        if channel_id is not None:
+            messages = threads.get(channel_id, [])
             recent_messages.extend(messages[-6:])
+        else:
+            for messages in threads.values():
+                recent_messages.extend(messages[-6:])
 
         recent_messages.sort(key=lambda msg: msg.get("timestamp"), reverse=True)
         for msg in recent_messages:
@@ -307,7 +289,7 @@ class IntentRouter:
         return None
 
     def _is_status_command(self, content_lower: str) -> bool:
-        return any(keyword in content_lower for keyword in STATUS_KEYWORDS)
+        return has_any_keyword(content_lower, STATUS_KEYWORDS)
 
     def _is_profile_command(self, content_lower: str) -> bool:
         if self._is_status_command(content_lower):
@@ -317,8 +299,8 @@ class IntentRouter:
         if content_lower.startswith(("spiller ", "playing ", "ser på ", "watching ")):
             return True
         if content_lower.startswith("status "):
-            return any(status in content_lower for status in ["online", "idle", "dnd", "invisible", "offline"])
-        return any(keyword in content_lower for keyword in PROFILE_KEYWORDS if keyword not in {"status"})
+            return has_any_keyword(content_lower, ["online", "idle", "dnd", "invisible", "offline"])
+        return has_any_keyword(content_lower, [keyword for keyword in PROFILE_KEYWORDS if keyword not in {"status"}])
 
     def _has_active_poll(self, guild_id: Optional[int]) -> bool:
         if guild_id is None:
