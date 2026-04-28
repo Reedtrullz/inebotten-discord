@@ -193,10 +193,8 @@ class MessageMonitor:
         self.intent_router = IntentRouter(self)
 
     async def setup(self):
-        """Async initialization of managers"""
         await self.calendar.setup()
         await self.user_memory.setup()
-        await self.conversation.setup()
         
         # Inject birthday manager into daily digest after initialization
         from features.birthday_manager import BirthdayManager
