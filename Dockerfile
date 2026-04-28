@@ -33,6 +33,7 @@ RUN mkdir -p /root/.hermes && chmod 700 /root/.hermes
 
 # Expose the bridge port (if needed for external access, though run_both uses localhost)
 EXPOSE 3000
+EXPOSE 8080
 
 # Run the bot
 CMD ["python", "scripts/run_both.py"]

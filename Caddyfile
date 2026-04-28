@@ -1,0 +1,25 @@
+# Caddy reverse proxy for Inebotten Web Console
+# Caddy automatically obtains and renews SSL certificates via Let's Encrypt
+
+bot.reidar.tech {
+    # Reverse proxy to the bot's console
+    reverse_proxy http://inebotten:8080
+
+    # Security headers
+    header {
+        # Prevent the site from being embedded in iframes
+        X-Frame-Options "DENY"
+        # Enable XSS protection
+        X-Content-Type-Options "nosniff"
+        # Referrer policy
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    # Logging (optional)
+    log {
+        output file /data/access.log {
+            roll_size 10MB
+            roll_keep 5
+        }
+    }
+}

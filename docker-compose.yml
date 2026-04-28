@@ -11,11 +11,33 @@ services:
     environment:
       - HERMES_BRIDGE_HOST=0.0.0.0
       - HERMES_BRIDGE_PORT=3000
+      # Bind console to all interfaces so Caddy can reach it
+      - CONSOLE_HOST=0.0.0.0
+      - CONSOLE_PORT=8080
+    expose:
+      - "8080"
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
 
+  caddy:
+    image: caddy:2-alpine
+    container_name: inebotten-caddy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - inebotten
+
 volumes:
   data:
+  caddy_data:
+  caddy_config:
