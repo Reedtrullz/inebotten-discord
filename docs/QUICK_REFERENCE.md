@@ -18,6 +18,16 @@ python3 setup.py
 python3 run_both.py
 ```
 
+### Web Console
+
+Når botten kjører er dashbordet tilgjengelig på `http://localhost:8080` (eller det konfigurerte domenet på VPS).
+
+1. Åpne URL i nettleser
+2. Logg inn med API-nøkkelen (vises i oppstartsloggen som `Console API key: q9oAYGbb...`)
+3. Dashboard viser bot-status, bridge, kalender, avstemninger og sanntidslogger
+
+For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
+
 ---
 
 ## 📅 Kalenderkommandoer

@@ -9,13 +9,14 @@
 1. [Oversikt](#oversikt)
 2. [Systemarkitektur](#systemarkitektur)
 3. [Komponenter](#komponenter)
-4. [Datastrøm](#datastrøm)
-5. [Kalendersystem](#kalendersystem)
-6. [Personlighetssystem](#personlighetssystem)
-7. [Funksjoner](#funksjoner)
-8. [Konfigurasjon](#konfigurasjon)
-9. [Utvikling](#utvikling)
-10. [Feilsøking](#feilsøking)
+4. [Web Console](#web-console)
+5. [Datastrøm](#datastrøm)
+6. [Kalendersystem](#kalendersystem)
+7. [Personlighetssystem](#personlighetssystem)
+8. [Funksjoner](#funksjoner)
+9. [Konfigurasjon](#konfigurasjon)
+10. [Utvikling](#utvikling)
+11. [Feilsøking](#feilsøking)
 
 ---
 
@@ -448,6 +449,52 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 
 ---
 
+### 8. Web Console
+
+Botten eksponerer et webbasert dashbord på port 8080 (konfigurerbart via `CONSOLE_HOST`/`CONSOLE_PORT`).
+
+**Funksjoner:**
+- **Bot-status** — online/offline, oppetid, antall servere/brukere, Discord-tilkobling
+- **Bridge-status** — LM Studio / OpenRouter-tilkobling, forespørsler og feil
+- **Kalender** — antall hendelser, oppgaver og kommende avtaler
+- **Avstemninger** — aktive avstemninger og stemmetall
+- **Rate Limits** — anonymisert brukerstatistikk
+- **Intents** — rutingsstatistikk og fallback-teller
+- **Minne** — antall brukere og samtaler i minnet
+- **Logger** — sanntidsvisning av de siste 200 logglinjene fra både `logging` og `print()`
+
+**Autentisering:**
+
+Console krever API-nøkkel. Nøkkelen genereres automatisk ved oppstart hvis `CONSOLE_API_KEY` ikke er satt i `.env`.
+
+| Metode | Beskrivelse |
+|--------|-------------|
+| `X-API-Key`-header | For API-klienter og programmer |
+| Cookie-session | For nettlesere — logg inn via skjema på `/login` |
+
+**Endpoints:**
+
+| Path | Metode | Beskrivelse |
+|------|--------|-------------|
+| `/` | GET | Dashboard HTML (krever auth) |
+| `/login` | GET | Innloggingsside |
+| `/health` | GET | Helsesjekk (ingen auth) |
+| `/api/status` | GET | Bot-status JSON |
+| `/api/bridge` | GET | Bridge-status JSON |
+| `/api/calendar` | GET | Kalenderdata JSON |
+| `/api/polls` | GET | Avstemninger JSON |
+| `/api/rate-limits` | GET | Rate-limit-statistikk JSON |
+| `/api/intents` | GET | Intent-statistikk JSON |
+| `/api/memory` | GET | Minnestatistikk JSON |
+| `/api/logs` | GET | Logglinjer JSON (`?lines=N` for antall) |
+| `/api/login` | POST | Validerer API-nøkkel og setter session-cookie |
+
+**Tilgang:**
+
+På VPS med Caddy reverse proxy er console tilgjengelig på det konfigurerte domenet (f.eks. `https://bot.reidar.tech`). Caddy videresender til container-port 8080.
+
+---
+
 ## Datastrøm
 
 ### Legge til Kalender-event (Naturlig Språk)
@@ -646,7 +693,6 @@ Kortversjon:
 - [ ] Bildegenererings-integrasjon
 - [ ] Stemme-melding-støtte
 - [ ] Flerspråklig støtte (Svensk, Dansk)
-- [ ] Web dashboard for kalenderhåndtering
 
 ---
 

@@ -34,6 +34,7 @@ Inebotten er laget for praktisk hverdagsbruk i Discord: skriv naturlig norsk, s�
 | Verktøy | Vær, kalkulator, valuta/temperatur, krypto, URL-forkorter og søk/dashboard |
 | Sosialt | Avstemninger, sitater, dagens ord, komplimenter, horoskop og nordlysvarsel |
 | Drift | Rate limiting, mention-gate, helsesjekk, Docker/VPS-oppsett og desktop-launchere |
+| Web Console | Dashboard med bot-status, logger og innlogging via API-nøkkel |
 
 ## Hurtigstart
 
@@ -149,6 +150,7 @@ inebotten-discord/
 ├── core/                  # Konfig, auth, rate limit, intent-router og meldingsmonitor
 ├── features/              # Funksjoner og handlere
 ├── memory/                # Samtalekontekst og brukerminne
+├── web_console/           # Dashboard, login og loggvisning
 ├── docs/                  # Norsk dokumentasjon
 ├── scripts/               # Start-, test- og deploy-skript
 ├── tests/                 # Enhets- og rutingtester

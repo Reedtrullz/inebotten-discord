@@ -113,6 +113,7 @@ Dette laget håndterer all kommunikasjon med eksterne systemer.
 | Google Calendar API | HTTPS + OAuth | To-veis kalendersynkronisering |
 | LM Studio | HTTP (localhost) | AI-modell (gemma-3-4b) |
 | MET.no API | HTTPS | Værdata (gratis, norsk) |
+| Web Console | HTTP | Dashbord med status, logger og autentisering |
 
 ### 2. Bot-Lag
 
@@ -633,6 +634,7 @@ run_both.py
 |----------|--------|---------|
 | Discord | User Token | .env-fil (gitignored) |
 | Google Calendar | OAuth2 | ~/.gcal_token.pickle |
+| Web Console | API-nøkkel + cookie-session | `.env` (`CONSOLE_API_KEY`) |
 
 ### Data-sikkerhet
 

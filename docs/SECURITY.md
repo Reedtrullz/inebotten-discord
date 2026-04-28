@@ -233,6 +233,7 @@ git rev-list --all | xargs git grep -l "MTQ3N"
 | Token Redaction | Tokens fjernes fra logger |
 | JSON Storage | Ingen skylagring av data |
 | OAuth for GCal | Ingen passord lagret |
+| Console Auth | API-nøkkel + HttpOnly-cookie, SameSite=Strict |
 
 ### CI-sikkerhet
 

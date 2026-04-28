@@ -57,6 +57,8 @@ sudo docker compose ps
 sudo docker logs -f inebotten-bot
 ```
 
+Web console er tilgjengelig på det konfigurerte domenet (f.eks. `https://bot.reidar.tech`). API-nøkkelen skrives til Docker-loggen ved oppstart.
+
 ## Installer Auto-Update
 
 Fra repo-checkoutet på serveren:
