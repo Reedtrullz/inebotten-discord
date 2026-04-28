@@ -23,10 +23,11 @@ BASE_DIR = SCRIPT_DIR.parent.absolute()
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from utils.logger import setup_logger
+from utils.logger import setup_logger, install_log_capture
 
 # Setup logging
 logger = setup_logger(__name__, log_level="INFO")
+install_log_capture()
 
 # Services
 BRIDGE_SERVER_PATH = BASE_DIR / "ai" / "hermes_bridge_server.py"

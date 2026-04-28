@@ -873,6 +873,7 @@ class SelfbotClient(discord.Client):
 
     async def start_console(self):
         if self.console_server is not None:
+            self.console_server.monitor = self.monitor
             return
 
         if not getattr(self.config, 'console_enabled', True):

@@ -6,6 +6,7 @@ Provides centralized logging configuration for the Inebotten Discord bot
 
 import logging
 import sys
+from collections import deque
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional
@@ -96,11 +97,77 @@ def set_log_level(level: str):
     logging.getLogger().setLevel(getattr(logging, level.upper()))
 
 
+class LogBuffer:
+    def __init__(self, maxlen: int = 2000):
+        self._buffer: deque[str] = deque(maxlen=maxlen)
+
+    def append(self, line: str) -> None:
+        self._buffer.append(line)
+
+    def get_lines(self, count: int = 200) -> list[str]:
+        return list(self._buffer)[-count:]
+
+
+class BufferHandler(logging.Handler):
+    def __init__(self, buffer: LogBuffer):
+        super().__init__()
+        self._buffer = buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._buffer.append(self.format(record))
+        except Exception:
+            pass
+
+
+class StdoutWrapper:
+    def __init__(self, stream, buffer: LogBuffer):
+        self._stream = stream
+        self._buffer = buffer
+        self._pending = ""
+
+    def write(self, data: str) -> None:
+        self._stream.write(data)
+        self._pending += data
+        while "\n" in self._pending:
+            line, self._pending = self._pending.split("\n", 1)
+            self._buffer.append(line)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return getattr(self._stream, "isatty", lambda: False)()
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+_log_buffer = LogBuffer()
+
+
+def get_log_buffer() -> LogBuffer:
+    return _log_buffer
+
+
+def install_log_capture() -> None:
+    buffer = get_log_buffer()
+
+    root = logging.getLogger()
+    handler = BufferHandler(buffer)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)8s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+    root.addHandler(handler)
+
+    sys.stdout = StdoutWrapper(sys.stdout, buffer)
+    sys.stderr = StdoutWrapper(sys.stderr, buffer)
+
+
 class LoggerMixin:
     """
     Mixin class to add logging capabilities to any class
     """
-    
+
     @property
     def logger(self) -> logging.Logger:
         """Get logger for this class"""

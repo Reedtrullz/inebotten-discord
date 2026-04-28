@@ -320,6 +320,11 @@ def collect_memory_stats(monitor: object | None = None) -> dict[str, int]:
         return {"user_count": 0, "conversation_count": 0}
 
 
+def collect_logs(count: int = 200) -> dict[str, Any]:
+    from utils.logger import get_log_buffer
+    return {"logs": get_log_buffer().get_lines(count)}
+
+
 class StateCollector:
     def __init__(self, monitor: object | None = None):
         self.monitor = monitor
@@ -333,4 +338,5 @@ class StateCollector:
             "rate_limits": collect_rate_limits(self.monitor),
             "intents": collect_intent_stats(self.monitor),
             "memory": collect_memory_stats(self.monitor),
+            "logs": collect_logs(),
         }

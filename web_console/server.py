@@ -12,6 +12,7 @@ from web_console.state_collector import (
     collect_bridge_health,
     collect_calendar_data,
     collect_intent_stats,
+    collect_logs,
     collect_memory_stats,
     collect_poll_data,
     collect_rate_limits,
@@ -226,6 +227,17 @@ class ConsoleServer:
                 await self._send_response(writer, 200, collect_intent_stats(self.monitor))
             elif path == "/api/memory":
                 await self._send_response(writer, 200, collect_memory_stats(self.monitor))
+            elif path == "/api/logs":
+                parsed_query = urlparse(target)
+                query_lines = 200
+                if parsed_query.query:
+                    for pair in parsed_query.query.split("&"):
+                        if pair.startswith("lines="):
+                            try:
+                                query_lines = int(pair.split("=", 1)[1])
+                            except ValueError:
+                                pass
+                await self._send_response(writer, 200, collect_logs(query_lines))
             else:
                 await self._send_response(writer, 404, {"error": "Not found"})
         except Exception:

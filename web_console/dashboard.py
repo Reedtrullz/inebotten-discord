@@ -203,6 +203,14 @@ def render_dashboard(data: dict | None) -> str:
     mem_users = _safe(data, "memory", "user_count")
     mem_convs = _safe(data, "memory", "conversation_count")
 
+    log_lines = data.get("logs", {}).get("logs", []) if isinstance(data.get("logs"), dict) else []
+    logs_html = ""
+    if isinstance(log_lines, list) and log_lines:
+        logs_text = "\n".join(str(line) for line in log_lines)
+        logs_html = f'<pre>{logs_text}</pre>'
+    else:
+        logs_html = '<p class="empty">Ingen logger tilgjengelig</p>'
+
     upcoming_rows = ""
     if isinstance(upcoming, list) and upcoming:
         for ev in upcoming:
@@ -333,6 +341,20 @@ def render_dashboard(data: dict | None) -> str:
   .badge.warn {{ background: rgba(241, 196, 15, 0.15); color: var(--warn); }}
   .badge.error {{ background: rgba(231, 76, 60, 0.15); color: var(--error); }}
   .empty {{ color: var(--text-muted); font-style: italic; }}
+  .log-card {{ grid-column: 1 / -1; }}
+  .log-card pre {{
+    background: #0d1117;
+    color: #c9d1d9;
+    padding: 0.75rem;
+    border-radius: var(--radius);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    max-height: 400px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }}
   footer {{
     margin-top: 1.5rem;
     text-align: center;
@@ -435,6 +457,11 @@ def render_dashboard(data: dict | None) -> str:
         <tr><td>Samtaler</td><td>{mem_convs}</td></tr>
       </tbody>
     </table>
+  </section>
+
+  <section class="card log-card">
+    <h2>Logger</h2>
+    {logs_html}
   </section>
 </main>
 <footer>

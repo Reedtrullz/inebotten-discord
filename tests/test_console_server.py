@@ -243,3 +243,23 @@ async def test_api_with_cookie():
         assert b'"status":' in response
     finally:
         await stop_server(server, task)
+
+
+async def test_logs_endpoint():
+    server, task = await start_server()
+    try:
+        response = await request("/api/logs", api_key=API_KEY)
+        assert b"200" in response
+        assert b"logs" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_logs_endpoint_with_lines_param():
+    server, task = await start_server()
+    try:
+        response = await request("/api/logs?lines=50", api_key=API_KEY)
+        assert b"200" in response
+        assert b"logs" in response
+    finally:
+        await stop_server(server, task)
