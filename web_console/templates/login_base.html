@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="no" x-data="consoleApp()" x-init="init()" :class="theme">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {refresh_meta}
+  <title>{title}</title>
+  <script>
+    (function() {{
+      var theme = localStorage.getItem('theme');
+      if (!theme) {{
+        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }}
+      document.documentElement.classList.add(theme);
+    }})();
+  </script>
+  <link rel="stylesheet" href="/static/main.css">
+  <script src="/static/tailwindcss.min.js" defer></script>
+  <script src="/static/alpinejs.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body class="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] flex flex-col items-center justify-center p-4 {body_class}">
+  <div class="w-full max-w-md animate-fade-in">
+    <main class="mb-4">
+      {main_content}
+    </main>
+    <footer class="text-center text-[var(--text-muted)] text-sm">
+      {footer_content}
+    </footer>
+  </div>
+</body>
+</html>

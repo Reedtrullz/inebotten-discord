@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import pathlib
 from datetime import datetime
 from typing import cast
 from urllib.parse import urlparse
@@ -34,6 +36,14 @@ class ConsoleServer:
         self.api_key = api_key
         self.monitor = monitor
         self._server = None
+
+    @property
+    def actual_port(self) -> int:
+        if self._server is None:
+            return self.port
+        for sock in (self._server.sockets or []):
+            return sock.getsockname()[1]
+        return self.port
 
     async def start(self) -> None:
         if self._server is not None:
@@ -82,23 +92,75 @@ class ConsoleServer:
             return True
         return False
 
+    async def _serve_static_file(self, writer: asyncio.StreamWriter, path: str) -> None:
+        static_dir = pathlib.Path(__file__).parent / "static"
+        if not path.startswith("/static/"):
+            await self._send_response(writer, 404, {"error": "Not found"})
+            return
+
+        relative = path[len("/static/"):]
+        requested = static_dir / relative
+
+        try:
+            resolved = requested.resolve()
+            static_resolved = static_dir.resolve()
+            if not str(resolved).startswith(str(static_resolved) + os.sep) and str(resolved) != str(static_resolved):
+                await self._send_response(writer, 403, {"error": "Forbidden"})
+                return
+        except (OSError, ValueError):
+            await self._send_response(writer, 403, {"error": "Forbidden"})
+            return
+
+        if not resolved.is_file():
+            await self._send_response(writer, 404, {"error": "Not found"})
+            return
+
+        for part in [requested] + list(requested.parents):
+            if part == static_dir:
+                break
+            if part.is_symlink():
+                await self._send_response(writer, 403, {"error": "Forbidden"})
+                return
+
+        ext = resolved.suffix.lower()
+        mime_types = {
+            ".css": "text/css",
+            ".js": "application/javascript",
+            ".svg": "image/svg+xml",
+            ".png": "image/png",
+            ".woff2": "font/woff2",
+            ".ico": "image/x-icon",
+            ".json": "application/json",
+        }
+
+        if ext not in mime_types:
+            await self._send_response(writer, 403, {"error": "Forbidden"})
+            return
+
+        try:
+            content = resolved.read_bytes()
+            await self._send_response(writer, 200, content, content_type=mime_types[ext])
+        except OSError:
+            await self._send_response(writer, 404, {"error": "Not found"})
+
     async def _send_response(self, writer: asyncio.StreamWriter, status: int, body: object, content_type: str = "application/json; charset=utf-8", extra_headers: list[str] | None = None) -> None:
         status_text = {
             200: "OK",
             400: "Bad Request",
+            401: "Unauthorized",
+            403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
             500: "Internal Server Error",
         }.get(status, "OK")
 
         if isinstance(body, (dict, list)):
-            payload = json.dumps(body, ensure_ascii=False)
+            body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
         elif isinstance(body, bytes):
-            payload = body.decode("utf-8", errors="replace")
+            body_bytes = body
         else:
-            payload = str(body)
+            body_bytes = str(body).encode("utf-8")
 
-        body_bytes = payload.encode("utf-8")
         header_lines = [
             f"HTTP/1.1 {status} {status_text}",
             f"Content-Type: {content_type}",
@@ -146,6 +208,10 @@ class ConsoleServer:
                 except asyncio.IncompleteReadError:
                     await self._send_response(writer, 400, {"error": "Incomplete request body"})
                     return
+
+            if method == "GET" and path.startswith("/static/"):
+                await self._serve_static_file(writer, path)
+                return
 
             auth_exempt = path in ("/health", "/api/login")
             authenticated = auth_exempt or self._is_authenticated(headers)

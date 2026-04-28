@@ -2,13 +2,39 @@
 
 HTTP console for bot monitoring: status, bridge health, calendar, polls, rate limits, intents, memory, and live logs.
 
+## Web Console Architecture (Redesigned)
+
+### Frontend
+- Tailwind CSS + Alpine.js (vendored in `static/`)
+- Dark/light theme with CSS custom properties
+- Smart polling with per-endpoint intervals
+- Modal system with focus trap
+- Responsive design (mobile-first)
+
+### Static Assets
+- `static/main.css` — Design system
+- `static/app.js` — Alpine.js application
+- `static/alpinejs.min.js` — Alpine.js library
+- `static/tailwindcss.min.js` — Tailwind CSS CDN build
+
+### Templates
+- `templates/base.html` — Dashboard base template
+- `templates/login_base.html` — Login base template
+
+### Polling Intervals
+- Status/Bridge: 5s
+- Calendar/Polls/Rate Limits/Intents/Memory: 10s
+- Logs: 30s
+
 ## STRUCTURE
 
 ```
 web_console/
 ├── server.py           # ConsoleServer — asyncio HTTP server
-├── dashboard.py        # render_dashboard() + render_login_page() — pure Python HTML
+├── dashboard.py        # render_dashboard() + render_login_page() — Python HTML templates
 ├── state_collector.py  # Collects bot state for the dashboard
+├── templates/          # Base templates (dashboard + login)
+├── static/             # CSS, JS, and vendored libraries
 └── __init__.py
 ```
 
@@ -20,20 +46,24 @@ web_console/
 | Add new API endpoint | `server.py` — `handle_request()` |
 | Change auth behavior | `server.py` — `_is_authenticated()`, `/api/login` |
 | Change data collection | `state_collector.py` |
-| Change styling | `dashboard.py` — inline CSS in `render_dashboard()` |
+| Change styling | `static/main.css` + `templates/base.html` |
+| Change frontend behavior | `static/app.js` |
 
 ## CONVENTIONS
 
-- Pure Python HTML — no templating engine
+- Python string templates loaded at runtime from `dashboard.py`
 - Auth: `X-API-Key` header for API clients, cookie session (`console_auth`) for browsers
 - `ConsoleServer` receives `monitor=None` initially, updated after `on_ready()`
 - `/health` is auth-exempt
 - Login form posts to `/api/login` which validates key and sets HttpOnly cookie
+- All dashboard cards use `data-metric` attributes for client-side updates
+- Initial state delivered via `<script id="initial-data" type="application/json">`
 
 ## ANTI-PATTERNS
 
 - **Do not** serve the dashboard without auth — always check `_is_authenticated()`
 - **Do not** forget to update `self.console_server.monitor` in `start_console()` after `on_ready()`
+- **Do not** add inline JavaScript in templates — use `static/app.js`
 
 ## ENDPOINTS
 

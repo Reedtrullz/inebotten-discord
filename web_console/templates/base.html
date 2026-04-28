@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="no" x-data="consoleApp()" x-init="init()" :class="theme">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {refresh_meta}
+  <title>{title}</title>
+  <script>
+    (function() {{
+      var theme = localStorage.getItem('theme');
+      if (!theme) {{
+        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }}
+      document.documentElement.classList.add(theme);
+    }})();
+  </script>
+  <link rel="stylesheet" href="/static/main.css">
+  <script src="/static/tailwindcss.min.js" defer></script>
+  <script src="/static/alpinejs.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body class="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] {body_class}">
+  <div
+    x-show="authExpired"
+    class="fixed top-0 left-0 right-0 z-50 bg-red-500 text-white px-4 py-3 text-center font-medium"
+    style="display: none;"
+  >
+    Økta er utløpt. <a href="/login" class="underline">Logg inn på nytt</a>.
+  </div>
+  <a href="#main-content" class="skip-link">Hopp til hovedinnhold</a>
+
+  <header role="banner" class="sticky top-0 z-50 border-b border-[var(--border-color)] bg-[var(--bg-secondary)]/80 backdrop-blur">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center gap-3">
+          <span class="text-xl font-bold">Inebotten</span>
+          <span class="badge badge-online text-xs">Online</span>
+        </div>
+        <button @click="mobileMenuOpen = !mobileMenuOpen" class="md:hidden p-2 rounded-md text-[var(--text-primary)]" aria-label="Meny">
+          <span x-show="!mobileMenuOpen">☰</span>
+          <span x-show="mobileMenuOpen">✕</span>
+        </button>
+        <nav
+          class="md:flex items-center gap-1"
+          :class="mobileMenuOpen ? 'flex flex-col absolute top-16 left-0 right-0 bg-[var(--bg-secondary)] border-b border-[var(--border-color)] p-4 z-40' : 'hidden'"
+          aria-label="Hovednavigasjon"
+        >
+          <a href="#status" class="nav-link" @click="mobileMenuOpen = false">Status</a>
+          <a href="#bridge" class="nav-link" @click="mobileMenuOpen = false">Bridge</a>
+          <a href="#calendar" class="nav-link" @click="mobileMenuOpen = false">Kalender</a>
+          <a href="#polls" class="nav-link" @click="mobileMenuOpen = false">Avstemninger</a>
+          <a href="#rate-limits" class="nav-link" @click="mobileMenuOpen = false">Rate Limits</a>
+          <a href="#intents" class="nav-link" @click="mobileMenuOpen = false">Intents</a>
+          <a href="#memory" class="nav-link" @click="mobileMenuOpen = false">Minne</a>
+          <a href="#logs" class="nav-link" @click="mobileMenuOpen = false">Logger</a>
+          <button @click="toggleTheme" class="theme-toggle md:hidden" aria-label="Bytt tema">
+            <span x-show="theme === 'dark'">☀️</span>
+            <span x-show="theme === 'light'">🌙</span>
+          </button>
+        </nav>
+        <div class="flex items-center gap-3">
+          <span x-show="lastUpdated" class="hidden md:inline text-sm text-[var(--text-muted)] transition-opacity duration-300">
+            Oppdatert <span x-text="lastUpdated"></span>
+          </span>
+          <button @click="toggleTheme" class="theme-toggle hidden md:inline-flex" aria-label="Bytt tema">
+            <span x-show="theme === 'dark'">☀️</span>
+            <span x-show="theme === 'light'">🌙</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {initial_data_script}
+    <main id="main-content" class="dashboard-grid" tabindex="-1">
+      {main_content}
+    </main>
+  </div>
+
+  <footer role="contentinfo" class="border-t border-[var(--border-color)] py-6 mt-8">
+    <div class="max-w-7xl mx-auto px-4 text-center text-sm text-[var(--text-muted)]">
+      {footer_content}
+    </div>
+  </footer>
+
+  <div
+    x-show="activeModal !== null"
+    x-transition:enter="transition ease-out duration-200"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-150"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style="display: none;"
+    @keydown.escape.window="closeModal"
+  >
+    <div
+      class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+      @click="closeModal"
+    ></div>
+
+    <div
+      x-show="activeModal !== null"
+      x-transition:enter="transition ease-out duration-200"
+      x-transition:enter-start="opacity-0 scale-95 translate-y-4"
+      x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+      x-transition:leave="transition ease-in duration-150"
+      x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+      x-transition:leave-end="opacity-0 scale-95 translate-y-4"
+      class="relative w-full max-w-2xl bg-[var(--bg-card)] border border-[var(--border-color)] rounded-xl shadow-2xl"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+      tabindex="-1"
+    >
+      <div class="flex items-center justify-between p-6 border-b border-[var(--border-color)]">
+        <h3 id="modal-title" class="text-lg font-semibold" x-text="modalData.title || 'Detaljer'"></h3>
+        <button @click="closeModal" class="text-[var(--text-muted)] hover:text-[var(--text-primary)]" aria-label="Lukk">
+          &#x2715;
+        </button>
+      </div>
+      <div class="p-6 max-h-[60vh] overflow-y-auto">
+        <div x-html="modalData.content || ''"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

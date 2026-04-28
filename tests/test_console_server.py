@@ -158,7 +158,85 @@ async def test_dashboard_html():
     server, task = await start_server()
     try:
         response = await request("/", api_key=API_KEY)
-        assert b"<meta http-equiv=\"refresh\"" in response
+        assert b"<main" in response
+        assert b"grid" in response
+        assert b"x-data" in response
+        assert b"/static/main.css" in response
+        assert b"/static/app.js" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_dashboard_includes_initial_data():
+    server, task = await start_server()
+    try:
+        response = await request("/", api_key=API_KEY)
+        assert b'id="initial-data"' in response
+        assert b"application/json" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_dashboard_has_data_metrics():
+    server, task = await start_server()
+    try:
+        response = await request("/", api_key=API_KEY)
+        assert b'data-metric=' in response
+        assert b'status.uptime' in response
+        assert b'bridge.errors' in response
+        assert b'calendar.events' in response
+        assert b'polls.active' in response
+        assert b'rate_limits.total' in response
+        assert b'intents.fallback' in response
+        assert b'memory.users' in response
+        assert b'logs.count' in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_static_css_file():
+    server, task = await start_server()
+    try:
+        response = await request("/static/main.css")
+        assert b"200" in response
+        assert b"text/css" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_static_js_file():
+    server, task = await start_server()
+    try:
+        response = await request("/static/app.js")
+        assert b"200" in response
+        assert b"application/javascript" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_static_path_traversal_blocked():
+    server, task = await start_server()
+    try:
+        response = await request("/static/../../core/config.py")
+        assert b"403" in response or b"404" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_static_nonexistent_file():
+    server, task = await start_server()
+    try:
+        response = await request("/static/nonexistent.css")
+        assert b"404" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_static_directory_listing_blocked():
+    server, task = await start_server()
+    try:
+        response = await request("/static/")
+        assert b"403" in response or b"404" in response
     finally:
         await stop_server(server, task)
 
