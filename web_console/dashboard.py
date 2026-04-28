@@ -184,27 +184,27 @@ def _render_status_section(data: dict[str, Any]) -> str:
     dc_text = "Ja" if discord_connected in (True, "true", "yes", "ja", "connected") else "Nei"
 
     return f"""<section class="card" id="status">
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Bot Status</h2>
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Oppetid</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Oppetid</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Servere</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.guilds">{escape(guilds)}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Servere</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.guilds">{escape(guilds)}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Brukere</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Brukere</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Discord</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Discord</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
       </div>
     </div>
   </div>
@@ -235,27 +235,27 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
     err_class = "text-[var(--status-error)]" if err_val > 0 else "text-[var(--text-primary)]"
 
     return f"""<section class="card" id="bridge">
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Bridge</h2>
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Status</div>
-        <div class="text-xl font-bold text-[var(--text-primary)] truncate">{escape(str(bridge_status))}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Status</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)] break-words">{escape(str(bridge_status))}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">LM Studio</div>
-        <div class="text-xl font-bold text-[var(--text-primary)] truncate" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">LM Studio</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)] break-words" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Forespørsler</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Forespørsler</div>
+        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Feil</div>
-        <div class="text-xl font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Feil</div>
+        <div class="text-2xl font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
       </div>
     </div>
   </div>
@@ -285,23 +285,23 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
         </div>"""
             )
         upcoming_html = f"""    <div class="mt-3">
-      <div class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1">Kommende</div>
+      <div class="text-sm font-medium text-[var(--text-muted)] mb-1">Kommende</div>
 {chr(10).join(items)}
     </div>"""
 
     return f"""<section class="card" id="calendar">
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Kalender</h2>
     <span class="badge badge-info">{escape(event_count)} hendelser</span>
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Hendelser</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Hendelser</div>
         <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="calendar.events">{escape(event_count)}</div>
       </div>
-      <div class="metric min-w-0">
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Oppgaver</div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Oppgaver</div>
         <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="calendar.tasks">{escape(task_count)}</div>
       </div>
     </div>
@@ -360,7 +360,7 @@ def _render_polls_section(data: dict[str, Any]) -> str:
         polls_html = '    <div class="mt-4 text-sm text-[var(--text-muted)]">Ingen aktive avstemninger</div>'
 
     return f"""<section class="card" id="polls">
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Avstemninger</h2>
     <span class="badge badge-info"><span data-metric="polls.active">{escape(active_polls)}</span> aktive</span>
   </div>
@@ -401,20 +401,20 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
       <table class="w-full border-collapse text-sm">
         <thead>
           <tr class="border-b border-[var(--border-color)]">
-            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Bruker</th>
-            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th>
-            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Bruk</th>
+            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Bruker</th>
+            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Antall</th>
+            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Bruk</th>
           </tr>
         </thead>
         <tbody>{''.join(user_rows_html)}</tbody>
       </table>
     </div>"""
     else:
-        table_html = '<div class="flex-1 flex items-center justify-center text-sm text-[var(--text-muted)]">Ingen rate-limit-data</div>'
+        table_html = '<div class="py-8 text-center text-sm text-[var(--text-muted)]">Ingen rate-limit-data</div>'
 
     return f"""<section class="card" id="rate-limits">
-  <div class="flex items-center justify-between gap-2 mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)] truncate">Rate Limits</h2>
+  <div class="flex items-center justify-between gap-3 mb-4">
+    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Rate Limits</h2>
     <span class="text-sm text-[var(--text-muted)] whitespace-nowrap"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
   <div class="card-body">
@@ -445,19 +445,19 @@ def _render_intents_section(data: dict[str, Any]) -> str:
       <table class="w-full border-collapse text-sm">
         <thead>
           <tr class="border-b border-[var(--border-color)]">
-            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Intent</th>
-            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th>
+            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Intent</th>
+            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Antall</th>
           </tr>
         </thead>
         <tbody>{''.join(intent_rows_html)}</tbody>
       </table>
     </div>"""
     else:
-        table_html = '<div class="flex-1 flex items-center justify-center text-sm text-[var(--text-muted)]">Ingen intent-data</div>'
+        table_html = '<div class="py-8 text-center text-sm text-[var(--text-muted)]">Ingen intent-data</div>'
 
     return f"""<section class="card" id="intents">
-  <div class="flex items-center justify-between gap-2 mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)] truncate">Intents</h2>
+  <div class="flex items-center justify-between gap-3 mb-4">
+    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Intents</h2>
     <span class="badge {fallback_badge_class} whitespace-nowrap">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
   <div class="card-body">
@@ -474,18 +474,18 @@ def _render_memory_section(data: dict[str, Any]) -> str:
     mem_convs = _safe_int(data, "memory", "conversation_count", default=0)
 
     return f"""<section class="card" id="memory">
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Minne</h2>
   </div>
   <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
       <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
         <div class="text-3xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] mt-2">Brukere</div>
+        <div class="text-sm text-[var(--text-muted)] mt-2">Brukere</div>
       </div>
       <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
         <div class="text-3xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
-        <div class="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] mt-2">Samtaler</div>
+        <div class="text-sm text-[var(--text-muted)] mt-2">Samtaler</div>
       </div>
     </div>
   </div>
@@ -499,7 +499,7 @@ def _render_logs_section(data: dict[str, Any]) -> str:
     log_lines = data.get("logs", {}).get("logs", []) if isinstance(data.get("logs"), dict) else []
     line_count = len(log_lines) if isinstance(log_lines, list) else 0
     return f"""<section class="card" id="logs">
-  <div class="flex items-center justify-between mb-4">
+  <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Logger</h2>
     <span class="text-sm text-[var(--text-muted)]">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
   </div>
