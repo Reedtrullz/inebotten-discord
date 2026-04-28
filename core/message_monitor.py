@@ -892,11 +892,12 @@ class SelfbotClient(discord.Client):
                     api_key=self.config.console_api_key,
                     monitor=self.monitor,
                 )
-                self.console_task = asyncio.create_task(self.console_server.start())
+                await self.console_server.start()
                 print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
                 print(f"[BOT] Console API key: {self.config.console_api_key[:8]}...")
                 self._setup_signal_handlers()
             except Exception as e:
+                self.console_server = None
                 print(f"[BOT] WARNING: Could not start web console: {e}")
 
         # Initialize and start calendar reminder checker
