@@ -116,17 +116,32 @@ class PollsHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error handling vote: {e}")
 
+    def _resolve_poll_id(self, guild_id, ref):
+        """Resolve a poll reference to a poll_id. ref can be None, 'siste', or a 1-based index."""
+        active_polls = self.poll.get_active_polls(guild_id)
+        if not active_polls:
+            return None
+        if ref is None or ref == "siste":
+            return active_polls[-1]["id"]
+        if isinstance(ref, int) and 1 <= ref <= len(active_polls):
+            return active_polls[ref - 1]["id"]
+        return None
+
     async def handle_poll_edit(self, message, payload: Dict[str, Any]) -> None:
         """
         Handle poll editing.
 
         Args:
             message: The Discord message
-            payload: Dict with 'poll_id' and optionally 'question' and/or 'options'
+            payload: Dict with 'target' (None, 'siste', or int index)
         """
         try:
             guild_id = self.get_guild_id(message)
-            poll_id = payload.get("poll_id")
+            poll_id = self._resolve_poll_id(guild_id, payload.get("target"))
+            if poll_id is None:
+                await self.send_response(message, self.loc.t("poll_not_found"))
+                return
+
             question = payload.get("question")
             options = payload.get("options")
 
@@ -162,11 +177,14 @@ class PollsHandler(BaseHandler):
 
         Args:
             message: The Discord message
-            payload: Dict with 'poll_id'
+            payload: Dict with 'target' (None, 'siste', or int index)
         """
         try:
             guild_id = self.get_guild_id(message)
-            poll_id = payload.get("poll_id")
+            poll_id = self._resolve_poll_id(guild_id, payload.get("target"))
+            if poll_id is None:
+                await self.send_response(message, self.loc.t("poll_not_found"))
+                return
 
             success, result = self.poll.delete_poll(
                 guild_id=guild_id,
@@ -196,11 +214,14 @@ class PollsHandler(BaseHandler):
 
         Args:
             message: The Discord message
-            payload: Dict with 'poll_id'
+            payload: Dict with 'target' (None, 'siste', or int index)
         """
         try:
             guild_id = self.get_guild_id(message)
-            poll_id = payload.get("poll_id")
+            poll_id = self._resolve_poll_id(guild_id, payload.get("target"))
+            if poll_id is None:
+                await self.send_response(message, self.loc.t("poll_not_found"))
+                return
 
             success, result = self.poll.close_poll(
                 guild_id=guild_id,
