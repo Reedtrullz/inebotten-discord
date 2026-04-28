@@ -195,11 +195,10 @@ class MessageMonitor:
     async def setup(self):
         await self.calendar.setup()
         await self.user_memory.setup()
-        
+
         # Inject birthday manager into daily digest after initialization
         from features.birthday_manager import BirthdayManager
         self.birthdays = BirthdayManager()
-        await self.birthdays.setup()
         self.daily_digest.birthday_manager = self.birthdays
 
         # Auto-sync from GCal on startup if enabled
