@@ -17,6 +17,9 @@ from core.intent_keywords import (
     EDIT_KEYWORDS,
     HELP_KEYWORDS,
     LIST_KEYWORDS,
+    POLL_CLOSE_KEYWORDS,
+    POLL_DELETE_KEYWORDS,
+    POLL_EDIT_KEYWORDS,
     PROFILE_KEYWORDS,
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
@@ -40,6 +43,9 @@ class BotIntent(Enum):
     CALENDAR_ITEM = "calendar_item"
     POLL_CREATE = "poll_create"
     POLL_VOTE = "poll_vote"
+    POLL_EDIT = "poll_edit"
+    POLL_DELETE = "poll_delete"
+    POLL_CLOSE = "poll_close"
     COUNTDOWN = "countdown"
     WATCHLIST = "watchlist"
     WORD_OF_DAY = "word_of_day"
@@ -104,6 +110,14 @@ class IntentRouter:
         vote = self.monitor.parse_vote(content)
         if vote and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_VOTE, 0.95, {"vote": vote}, "active_poll_vote")
+
+        poll_ref = self._parse_poll_reference(content_lower)
+        if has_any_keyword(content_lower, POLL_EDIT_KEYWORDS) and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_EDIT, 0.95, {"poll_edit": poll_ref}, "poll_edit_keyword")
+        if has_any_keyword(content_lower, POLL_DELETE_KEYWORDS) and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_DELETE, 0.95, {"poll_delete": poll_ref}, "poll_delete_keyword")
+        if has_any_keyword(content_lower, POLL_CLOSE_KEYWORDS) and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_CLOSE, 0.95, {"poll_close": poll_ref}, "poll_close_keyword")
 
         countdown_result = self.monitor.countdown.parse_countdown_query(content)
         if countdown_result:
@@ -309,6 +323,17 @@ class IntentRouter:
             return bool(self.monitor.poll.get_active_polls(guild_id))
         except Exception:
             return False
+
+    def _parse_poll_reference(self, content_lower: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"target": None}
+        number_match = re.search(r'\b(\d+)\b', content_lower)
+        if number_match:
+            result["target"] = int(number_match.group(1))
+            return result
+        if has_any_keyword(content_lower, ("siste", "last")):
+            result["target"] = "siste"
+            return result
+        return result
 
     def _looks_contextual_enough_for_search(self, content_lower: str, search_info: Dict[str, str]) -> bool:
         if search_info.get("type") == "news":

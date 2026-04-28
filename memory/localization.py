@@ -212,6 +212,34 @@ class Localization:
                 'no': '📊 Ingen aktive avstemninger akkurat nå!',
                 'en': '📊 No active polls right now!'
             },
+            'poll_edited': {
+                'no': '✅ Avstemning oppdatert!',
+                'en': '✅ Poll updated!'
+            },
+            'poll_deleted': {
+                'no': '🗑️ Avstemning slettet!',
+                'en': '🗑️ Poll deleted!'
+            },
+            'poll_closed': {
+                'no': '🔒 Avstemning lukket!',
+                'en': '🔒 Poll closed!'
+            },
+            'poll_not_found': {
+                'no': '❌ Fant ikke avstemningen.',
+                'en': '❌ Poll not found.'
+            },
+            'poll_not_owner': {
+                'no': '🚫 Du kan bare endre/slette dine egne avstemninger.',
+                'en': '🚫 You can only edit/delete your own polls.'
+            },
+            'poll_closed_already': {
+                'no': '🔒 Avstemningen er allerede lukket.',
+                'en': '🔒 Poll is already closed.'
+            },
+            'poll_no_permission': {
+                'no': '🚫 Du har ikke tilgang til å gjøre dette.',
+                'en': '🚫 You don\'t have permission to do that.'
+            },
             
             # Watchlist
             'watchlist_suggestion': {

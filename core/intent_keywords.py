@@ -36,6 +36,10 @@ AURORA_KEYWORDS = ("nordlys", "aurora", "nordly")
 SCHOOL_HOLIDAYS_KEYWORDS = ("skoleferie", "skoleferier", "vinterferie", "påskeferie")
 DAILY_DIGEST_KEYWORDS = ("daglig oppsummering", "daily digest", "oppsummering", "summary")
 
+POLL_EDIT_KEYWORDS = ("endre poll", "edit poll", "endre avstemning", "rediger poll")
+POLL_DELETE_KEYWORDS = ("slett poll", "delete poll", "fjern avstemning", "slett avstemning")
+POLL_CLOSE_KEYWORDS = ("lukk poll", "close poll", "avslutt avstemning", "steng poll")
+
 __all__ = [
     "HELP_KEYWORDS",
     "STATUS_KEYWORDS",
@@ -51,4 +55,7 @@ __all__ = [
     "AURORA_KEYWORDS",
     "SCHOOL_HOLIDAYS_KEYWORDS",
     "DAILY_DIGEST_KEYWORDS",
+    "POLL_EDIT_KEYWORDS",
+    "POLL_DELETE_KEYWORDS",
+    "POLL_CLOSE_KEYWORDS",
 ]

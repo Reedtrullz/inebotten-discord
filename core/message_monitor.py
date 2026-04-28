@@ -376,6 +376,12 @@ class MessageMonitor:
             await self.handlers["polls"].handle_poll(message, payload["poll"])
         elif route.intent == BotIntent.POLL_VOTE:
             await self.handlers["polls"].handle_vote(message, payload["vote"])
+        elif route.intent == BotIntent.POLL_EDIT:
+            await self.handlers["polls"].handle_poll_edit(message, payload["poll_edit"])
+        elif route.intent == BotIntent.POLL_DELETE:
+            await self.handlers["polls"].handle_poll_delete(message, payload["poll_delete"])
+        elif route.intent == BotIntent.POLL_CLOSE:
+            await self.handlers["polls"].handle_poll_close(message, payload["poll_close"])
         elif route.intent == BotIntent.COUNTDOWN:
             await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
         elif route.intent == BotIntent.WATCHLIST:

@@ -41,7 +41,7 @@ class PollManager:
         with open(self.storage_path, "w", encoding="utf-8") as f:
             json.dump(self.polls, f, ensure_ascii=False, indent=2)
 
-    def create_poll(self, guild_id, question, options, created_by):
+    def create_poll(self, guild_id, question, options, created_by, created_by_id=None):
         """
         Create a new poll
 
@@ -50,6 +50,7 @@ class PollManager:
             question: The poll question
             options: List of option strings
             created_by: Username who created it
+            created_by_id: User ID who created it (optional, for ownership)
 
         Returns:
             poll_id
@@ -65,6 +66,7 @@ class PollManager:
                 for i, opt in enumerate(options[:10])
             ],
             "created_by": created_by,
+            "created_by_id": created_by_id,
             "created_at": datetime.now().isoformat(),
             "expires_at": (datetime.now() + timedelta(days=7)).isoformat(),
             "status": "active",
@@ -77,6 +79,75 @@ class PollManager:
         self._save_polls()
 
         return poll
+
+    def get_poll(self, guild_id, poll_id):
+        """Get a poll by guild and poll ID. Returns dict or None."""
+        guild_key = str(guild_id)
+        if guild_key in self.polls and poll_id in self.polls[guild_key]:
+            return self.polls[guild_key][poll_id]
+        return None
+
+    def is_poll_owner(self, poll, user_id, username=None):
+        """
+        Check if a user owns a poll.
+
+        For polls created after this update, checks created_by_id.
+        For legacy polls without created_by_id, falls back to created_by name.
+        """
+        if "created_by_id" in poll and poll["created_by_id"] is not None:
+            return str(poll["created_by_id"]) == str(user_id)
+        if username is not None:
+            return poll.get("created_by") == username
+        return False
+
+    def edit_poll(self, guild_id, poll_id, user_id, username=None, question=None, options=None):
+        """
+        Edit an existing active poll.
+
+        Returns:
+            (True, poll) or (False, error_message)
+        """
+        guild_key = str(guild_id)
+        poll = self.get_poll(guild_key, poll_id)
+        if not poll:
+            return False, "Poll not found"
+
+        if poll["status"] != "active":
+            return False, "Poll is closed"
+
+        if not self.is_poll_owner(poll, user_id, username):
+            return False, "You are not the owner of this poll"
+
+        if question is not None:
+            poll["question"] = question
+
+        if options is not None:
+            poll["options"] = [
+                {"text": opt, "votes": [], "emoji": self.emojis[i]}
+                for i, opt in enumerate(options[:10])
+            ]
+
+        self._save_polls()
+        return True, poll
+
+    def delete_poll(self, guild_id, poll_id, user_id, username=None):
+        """
+        Delete a poll.
+
+        Returns:
+            (True, "Poll deleted") or (False, error_message)
+        """
+        guild_key = str(guild_id)
+        poll = self.get_poll(guild_key, poll_id)
+        if not poll:
+            return False, "Poll not found"
+
+        if not self.is_poll_owner(poll, user_id, username):
+            return False, "You are not the owner of this poll"
+
+        del self.polls[guild_key][poll_id]
+        self._save_polls()
+        return True, "Poll deleted"
 
     def vote(self, guild_id, poll_id, option_num, user_id, username):
         """
@@ -152,15 +223,27 @@ class PollManager:
 
         return "\n".join(lines)
 
-    def close_poll(self, guild_id, poll_id):
-        """Close a poll"""
-        guild_key = str(guild_id)
+    def close_poll(self, guild_id, poll_id, user_id=None, username=None):
+        """
+        Close a poll. If user_id is provided, checks ownership.
 
-        if guild_key in self.polls and poll_id in self.polls[guild_key]:
-            self.polls[guild_key][poll_id]["status"] = "closed"
-            self._save_polls()
-            return True
-        return False
+        Returns:
+            (True, poll) or (False, error_message)
+        """
+        guild_key = str(guild_id)
+        poll = self.get_poll(guild_key, poll_id)
+        if not poll:
+            return False, "Poll not found"
+
+        if user_id is not None and not self.is_poll_owner(poll, user_id, username):
+            return False, "You are not the owner of this poll"
+
+        if poll["status"] == "closed":
+            return False, "Poll is already closed"
+
+        self.polls[guild_key][poll_id]["status"] = "closed"
+        self._save_polls()
+        return True, poll
 
 
 def parse_poll_command(message_content):

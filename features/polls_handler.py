@@ -36,6 +36,7 @@ class PollsHandler(BaseHandler):
                 question=poll_cmd["question"],
                 options=poll_cmd["options"],
                 created_by=message.author.name,
+                created_by_id=message.author.id,
             )
 
             response_text = self.poll.format_poll(poll, lang)
@@ -87,3 +88,113 @@ class PollsHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error handling vote: {e}")
+
+    async def handle_poll_edit(self, message, payload: Dict[str, Any]) -> None:
+        """
+        Handle poll editing.
+
+        Args:
+            message: The Discord message
+            payload: Dict with 'poll_id' and optionally 'question' and/or 'options'
+        """
+        try:
+            guild_id = self.get_guild_id(message)
+            poll_id = payload.get("poll_id")
+            question = payload.get("question")
+            options = payload.get("options")
+
+            success, result = self.poll.edit_poll(
+                guild_id=guild_id,
+                poll_id=poll_id,
+                user_id=message.author.id,
+                username=message.author.name,
+                question=question,
+                options=options,
+            )
+
+            if success:
+                response_text = self.loc.t("poll_edited") + "\n\n" + self.poll.format_poll(result)
+            else:
+                if result == "Poll not found":
+                    response_text = self.loc.t("poll_not_found")
+                elif result == "Poll is closed":
+                    response_text = self.loc.t("poll_closed_already")
+                elif "owner" in result.lower():
+                    response_text = self.loc.t("poll_not_owner")
+                else:
+                    response_text = result
+
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error editing poll: {e}")
+
+    async def handle_poll_delete(self, message, payload: Dict[str, Any]) -> None:
+        """
+        Handle poll deletion.
+
+        Args:
+            message: The Discord message
+            payload: Dict with 'poll_id'
+        """
+        try:
+            guild_id = self.get_guild_id(message)
+            poll_id = payload.get("poll_id")
+
+            success, result = self.poll.delete_poll(
+                guild_id=guild_id,
+                poll_id=poll_id,
+                user_id=message.author.id,
+                username=message.author.name,
+            )
+
+            if success:
+                response_text = self.loc.t("poll_deleted")
+            else:
+                if result == "Poll not found":
+                    response_text = self.loc.t("poll_not_found")
+                elif "owner" in result.lower():
+                    response_text = self.loc.t("poll_not_owner")
+                else:
+                    response_text = result
+
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error deleting poll: {e}")
+
+    async def handle_poll_close(self, message, payload: Dict[str, Any]) -> None:
+        """
+        Handle poll closing.
+
+        Args:
+            message: The Discord message
+            payload: Dict with 'poll_id'
+        """
+        try:
+            guild_id = self.get_guild_id(message)
+            poll_id = payload.get("poll_id")
+
+            success, result = self.poll.close_poll(
+                guild_id=guild_id,
+                poll_id=poll_id,
+                user_id=message.author.id,
+                username=message.author.name,
+            )
+
+            if success:
+                response_text = self.loc.t("poll_closed") + "\n\n" + self.poll.format_poll(result)
+            else:
+                if result == "Poll not found":
+                    response_text = self.loc.t("poll_not_found")
+                elif result == "Poll is already closed":
+                    response_text = self.loc.t("poll_closed_already")
+                elif "owner" in result.lower():
+                    response_text = self.loc.t("poll_not_owner")
+                else:
+                    response_text = result
+
+            await self.send_response(message, response_text)
+
+        except Exception as e:
+            self.log(f"Error closing poll: {e}")

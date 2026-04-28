@@ -12,6 +12,9 @@ from core.intent_keywords import (
     EDIT_KEYWORDS,
     HELP_KEYWORDS,
     LIST_KEYWORDS,
+    POLL_CLOSE_KEYWORDS,
+    POLL_DELETE_KEYWORDS,
+    POLL_EDIT_KEYWORDS,
     PROFILE_KEYWORDS,
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
@@ -50,6 +53,9 @@ EXPECTED_KEYWORDS = {
     "AURORA_KEYWORDS": ("nordlys", "aurora", "nordly"),
     "SCHOOL_HOLIDAYS_KEYWORDS": ("skoleferie", "skoleferier", "vinterferie", "påskeferie"),
     "DAILY_DIGEST_KEYWORDS": ("daglig oppsummering", "daily digest", "oppsummering", "summary"),
+    "POLL_EDIT_KEYWORDS": ("endre poll", "edit poll", "endre avstemning", "rediger poll"),
+    "POLL_DELETE_KEYWORDS": ("slett poll", "delete poll", "fjern avstemning", "slett avstemning"),
+    "POLL_CLOSE_KEYWORDS": ("lukk poll", "close poll", "avslutt avstemning", "steng poll"),
 }
 
 EXPECTED_EXPORTS = tuple(EXPECTED_KEYWORDS.keys())
@@ -95,8 +101,11 @@ class IntentKeywordsTests(unittest.TestCase):
             "WORD_OF_DAY_KEYWORDS": WORD_OF_DAY_KEYWORDS,
             "AURORA_KEYWORDS": AURORA_KEYWORDS,
             "SCHOOL_HOLIDAYS_KEYWORDS": SCHOOL_HOLIDAYS_KEYWORDS,
-            "DAILY_DIGEST_KEYWORDS": DAILY_DIGEST_KEYWORDS,
-        }
+        "DAILY_DIGEST_KEYWORDS": DAILY_DIGEST_KEYWORDS,
+        "POLL_EDIT_KEYWORDS": POLL_EDIT_KEYWORDS,
+        "POLL_DELETE_KEYWORDS": POLL_DELETE_KEYWORDS,
+        "POLL_CLOSE_KEYWORDS": POLL_CLOSE_KEYWORDS,
+    }
 
         for name, value in imported_values.items():
             self.assertIs(value, _keywords(name), f"{name} should be imported from the module")
