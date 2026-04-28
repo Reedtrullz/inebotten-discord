@@ -64,10 +64,6 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.name == "test_remaining" and item.module.__name__.endswith("test_advanced_dialect"):
             item.add_marker(pytest.mark.skip(reason="external LM Studio dialect smoke test"))
-            continue
-        obj = getattr(item, "obj", None)
-        if obj is not None and inspect.iscoroutinefunction(obj):
-            item.add_marker(pytest.mark.asyncio)
 
 
 def pytest_sessionfinish(session, exitstatus):
