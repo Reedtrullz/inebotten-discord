@@ -184,11 +184,11 @@ def _render_status_section(data: dict[str, Any]) -> str:
     dc_text = "Ja" if discord_connected in (True, "true", "yes", "ja", "connected") else "Nei"
 
     return f"""<section class="card" id="status">
-  <div class="card-header flex items-center justify-between">
+  <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold">Bot Status</h2>
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
-  <div class="card-body mt-4">
+  <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Oppetid</div>
@@ -203,12 +203,12 @@ def _render_status_section(data: dict[str, Any]) -> str:
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
       </div>
       <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Discord-tilkobling</div>
+        <div class="text-sm text-[var(--text-muted)]">Discord</div>
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
       </div>
     </div>
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)]">
+  <div class="card-footer">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('status')">Detaljer</button>
   </div>
 </section>"""
@@ -235,12 +235,16 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
     err_class = "text-[var(--status-error)]" if err_val > 0 else "text-[var(--text-primary)]"
 
     return f"""<section class="card" id="bridge">
-  <div class="card-header flex items-center justify-between">
+  <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold">Bridge</h2>
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
-  <div class="card-body mt-4">
+  <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Status</div>
+        <div class="text-xl font-bold text-[var(--text-primary)]">{escape(str(bridge_status))}</div>
+      </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">LM Studio</div>
         <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
@@ -255,7 +259,7 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
       </div>
     </div>
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)]">
+  <div class="card-footer">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('bridge')">Detaljer</button>
   </div>
 </section>"""
@@ -269,30 +273,28 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
     upcoming_html = ""
     if isinstance(upcoming, list) and upcoming:
         items = []
-        for event in upcoming[:5]:
+        for event in upcoming[:3]:
             if not isinstance(event, dict):
                 continue
             title = escape(str(event.get("title") or event.get("name") or "Uten tittel"))
             when = escape(str(event.get("when") or event.get("start") or event.get("date") or "Ukjent tid"))
             items.append(
-                f"""        <div class="flex items-center justify-between py-2 border-b border-[var(--border-color)] last:border-0">
-          <span class="text-sm text-[var(--text-primary)]">{title}</span>
-          <span class="text-xs text-[var(--text-muted)]">{when}</span>
+                f"""        <div class="flex items-center gap-2 py-1.5 border-b border-[var(--border-color)] last:border-0">
+          <span class="text-sm text-[var(--text-primary)] truncate flex-1 min-w-0">{title}</span>
+          <span class="text-xs text-[var(--text-muted)] whitespace-nowrap">{when}</span>
         </div>"""
             )
-        upcoming_html = f"""    <div class="mt-4">
-      <div class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">Kommende hendelser</div>
+        upcoming_html = f"""    <div class="mt-3">
+      <div class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1">Kommende</div>
 {chr(10).join(items)}
     </div>"""
-    else:
-        upcoming_html = '    <div class="mt-4 text-sm text-[var(--text-muted)]">Ingen kommende hendelser</div>'
 
     return f"""<section class="card" id="calendar">
-  <div class="card-header flex items-center justify-between">
+  <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold">Kalender</h2>
     <span class="badge badge-info">{escape(event_count)} hendelser</span>
   </div>
-  <div class="card-body mt-4">
+  <div class="card-body">
     <div class="grid grid-cols-2 gap-4">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Hendelser</div>
@@ -305,7 +307,7 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
     </div>
 {upcoming_html}
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)]">
+  <div class="card-footer">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('calendar')">Vis alle</button>
   </div>
 </section>"""
@@ -318,7 +320,7 @@ def _render_polls_section(data: dict[str, Any]) -> str:
     polls_html = ""
     if isinstance(polls_list, list) and polls_list:
         poll_items = []
-        for poll in polls_list[:3]:
+        for poll in polls_list[:1]:
             if not isinstance(poll, dict):
                 continue
             question = escape(str(poll.get("question") or poll.get("title") or "Uten spørsmål"))
@@ -359,20 +361,18 @@ def _render_polls_section(data: dict[str, Any]) -> str:
         polls_html = '    <div class="mt-4 text-sm text-[var(--text-muted)]">Ingen aktive avstemninger</div>'
 
     return f"""<section class="card" id="polls">
-  <div class="card-header flex items-center justify-between">
+  <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold">Avstemninger</h2>
     <span class="badge badge-info">{escape(active_polls)} aktive</span>
   </div>
-  <div class="card-body mt-4">
-    <div class="grid grid-cols-2 gap-4">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Aktive</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="polls.active">{escape(active_polls)}</div>
-      </div>
+  <div class="card-body">
+    <div class="metric">
+      <div class="text-sm text-[var(--text-muted)]">Aktive avstemninger</div>
+      <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="polls.active">{escape(active_polls)}</div>
     </div>
 {polls_html}
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)]">
+  <div class="card-footer">
     <button class="btn text-xs py-1 px-3" @click="showSectionModal('polls')">Vis alle</button>
   </div>
 </section>"""
@@ -384,48 +384,48 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
     user_stats = rate_limits.get("user_stats") if isinstance(rate_limits, dict) else None
     total_requests = _safe_int(rate_limits, "summary", "total_requests", default=0)
 
-    user_rows_html: list[str] = []
+    table_html = ""
     if isinstance(user_stats, dict) and user_stats:
         numeric_values = [v for v in user_stats.values() if isinstance(v, (int, float))]
         max_count = max(numeric_values) if numeric_values else 1
-        for user, count in sorted(user_stats.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True):
+        user_rows_html: list[str] = []
+        for user, count in sorted(user_stats.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)[:5]:
             pct = min((count / max_count) * 100, 100) if max_count else 0
             user_rows_html.append(
                 f'<tr class="border-b border-[var(--border-color)] hover:bg-[var(--bg-hover)]">'
                 + f'<td class="py-2 px-4 text-sm text-[var(--text-primary)]">{escape(str(user))}</td>'
                 + f'<td class="py-2 px-4 text-sm text-[var(--text-secondary)]">{escape(str(count))}</td>'
-                + f'<td class="py-2 px-4 w-32">'
-                + f'<div class="w-full bg-gray-700 rounded h-2">'
-                + f'<div class="bg-blue-500 h-2 rounded" style="width: {pct:.0f}%"></div>'
+                + f'<td class="py-2 px-4 w-24">'
+                + f'<div class="w-full bg-gray-700 rounded h-1.5">'
+                + f'<div class="bg-blue-500 h-1.5 rounded" style="width: {pct:.0f}%"></div>'
                 + f'</div>'
                 + f'</td>'
                 + f'</tr>'
             )
+        table_html = f"""<div class="overflow-x-auto">
+      <table class="w-full border-collapse text-sm">
+        <thead>
+          <tr class="border-b border-[var(--border-color)]">
+            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Bruker</th>
+            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th>
+            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Bruk</th>
+          </tr>
+        </thead>
+        <tbody>{''.join(user_rows_html)}</tbody>
+      </table>
+    </div>"""
     else:
-        user_rows_html.append(
-            f'<tr><td colspan="3" class="py-4 px-4 text-sm text-[var(--text-muted)] text-center">Ingen rate-limit-data</td></tr>'
-        )
+        table_html = '<div class="text-sm text-[var(--text-muted)] text-center py-6">Ingen rate-limit-data</div>'
 
     return f"""<section class="card" id="rate-limits">
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Rate Limits</h2>
-    <span class="text-sm text-[var(--text-muted)]"><span data-metric="rate_limits.total">{total_requests}</span> forespørsler totalt</span>
+    <span class="text-sm text-[var(--text-muted)]"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
-  <div class="overflow-x-auto">
-    <table class="w-full border-collapse text-sm">
-      <thead>
-        <tr class="border-b border-[var(--border-color)]">
-          <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Bruker</th>
-          <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th>
-          <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Bruk</th>
-        </tr>
-      </thead>
-      <tbody>
-        {''.join(user_rows_html)}
-      </tbody>
-    </table>
+  <div class="card-body">
+    {table_html}
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)] flex justify-end">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('rate-limits')">Detaljer</button>
   </div>
 </section>"""
@@ -436,39 +436,39 @@ def _render_intents_section(data: dict[str, Any]) -> str:
     fallback_count = _safe_int(data, "intents", "fallback_count", default=0)
     fallback_badge_class = "badge-error" if fallback_count > 5 else "badge-info"
 
-    intent_rows_html: list[str] = []
+    table_html = ""
     if isinstance(intent_counts, dict) and intent_counts:
-        for intent, count in sorted(intent_counts.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True):
+        intent_rows_html: list[str] = []
+        for intent, count in sorted(intent_counts.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)[:5]:
             intent_rows_html.append(
                 f'<tr class="border-b border-[var(--border-color)] hover:bg-[var(--bg-hover)]">'
                 + f'<td class="py-2 px-4 text-sm text-[var(--text-primary)]">{escape(str(intent))}</td>'
                 + f'<td class="py-2 px-4 text-sm text-[var(--text-secondary)]">{escape(str(count))}</td>'
                 + f'</tr>'
             )
+        table_html = f"""<div class="overflow-x-auto">
+      <table class="w-full border-collapse text-sm">
+        <thead>
+          <tr class="border-b border-[var(--border-color)]">
+            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Intent</th>
+            <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th>
+          </tr>
+        </thead>
+        <tbody>{''.join(intent_rows_html)}</tbody>
+      </table>
+    </div>"""
     else:
-        intent_rows_html.append(
-            f'<tr><td colspan="2" class="py-4 px-4 text-sm text-[var(--text-muted)] text-center">Ingen intent-data</td></tr>'
-        )
+        table_html = '<div class="text-sm text-[var(--text-muted)] text-center py-6">Ingen intent-data</div>'
 
     return f"""<section class="card" id="intents">
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Intents</h2>
     <span class="badge {fallback_badge_class}">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
-  <div class="overflow-x-auto">
-    <table class="w-full border-collapse text-sm">
-      <thead>
-        <tr class="border-b border-[var(--border-color)]">
-          <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Intent</th>
-          <th class="py-2 px-4 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th>
-        </tr>
-      </thead>
-      <tbody>
-        {''.join(intent_rows_html)}
-      </tbody>
-    </table>
+  <div class="card-body">
+    {table_html}
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)] flex justify-end">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('intents')">Detaljer</button>
   </div>
 </section>"""
@@ -482,17 +482,19 @@ def _render_memory_section(data: dict[str, Any]) -> str:
   <div class="flex items-center justify-between mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Minne</h2>
   </div>
-  <div class="grid grid-cols-2 gap-4">
-    <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
-      <div class="text-2xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
-      <div class="text-sm text-[var(--text-muted)] mt-1">Brukere i minne</div>
-    </div>
-    <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
-      <div class="text-2xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
-      <div class="text-sm text-[var(--text-muted)] mt-1">Samtaler</div>
+  <div class="card-body">
+    <div class="grid grid-cols-2 gap-4">
+      <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
+        <div class="text-2xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
+        <div class="text-sm text-[var(--text-muted)] mt-1">Brukere</div>
+      </div>
+      <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
+        <div class="text-2xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
+        <div class="text-sm text-[var(--text-muted)] mt-1">Samtaler</div>
+      </div>
     </div>
   </div>
-  <div class="card-footer mt-4 pt-4 border-t border-[var(--border-color)] flex justify-end">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('memory')">Detaljer</button>
   </div>
 </section>"""
@@ -506,10 +508,12 @@ def _render_logs_section(data: dict[str, Any]) -> str:
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Logger</h2>
     <span class="text-sm text-[var(--text-muted)]">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
   </div>
-  <div class="max-h-64 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-4 border border-[var(--border-color)]">
-    {_render_log_block(log_lines)}
+  <div class="card-body">
+    <div class="max-h-48 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-4 border border-[var(--border-color)] log-fade">
+      {_render_log_block(log_lines)}
+    </div>
   </div>
-  <div class="mt-4 pt-4 border-t border-[var(--border-color)] flex justify-end">
+  <div class="card-footer flex justify-end">
     <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('logs')">Vis alle</button>
   </div>
 </section>"""
