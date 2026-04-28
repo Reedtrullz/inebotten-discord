@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 from cal_system.natural_language_parser import NaturalLanguageParser
 from core.intent_router import BotIntent, IntentRouter
+from features.crypto_manager import parse_price_command
+from features.search_manager import detect_search_intent
 
 
 class DummyMonitor:
@@ -126,6 +128,19 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_contextual_hva_skjer_routes_to_search(self):
         result = self.route("hva skjer i Trondheim i helga?")
+        self.assertEqual(result.intent, BotIntent.SEARCH)
+
+    def test_travel_cost_question_routes_to_search_not_crypto(self):
+        monitor = DummyMonitor()
+        monitor.parse_price_command = parse_price_command
+        monitor.detect_search_intent = detect_search_intent
+
+        result = self.route(
+            "hva koster det å fly fra trondheim til panama?",
+            monitor=monitor,
+        )
+
+        self.assertIsNone(parse_price_command("hva koster det å fly fra trondheim til panama?"))
         self.assertEqual(result.intent, BotIntent.SEARCH)
 
     def test_active_poll_gates_numeric_vote(self):

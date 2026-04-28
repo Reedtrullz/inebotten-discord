@@ -336,5 +336,6 @@ class IntentRouter:
         context_markers = [
             " i ", " på ", " om ", " for ", " hos ", "til ", "trondheim", "oslo",
             "bergen", "tromsø", "helga", "helgen", "siste", "nå", "today",
+            " fra ", "fly", "flight", "reise", "travel",
         ]
         return any(marker in content_lower for marker in context_markers)

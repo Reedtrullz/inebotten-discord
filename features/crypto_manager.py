@@ -114,6 +114,7 @@ class CryptoManager:
             match = re.search(pattern, content_lower)
             if match:
                 asset = match.group(1).lower()
+                trigger_text = match.group(0).lower()
                 
                 # Check if it's a known crypto
                 if asset in self.crypto_mappings:
@@ -123,20 +124,32 @@ class CryptoManager:
                         'coin_id': self.crypto_mappings[asset],
                         'display_name': asset.upper()
                     }
-                
+
+                # Check if it's a stock
+                if asset in self.stock_symbols:
+                    return {'type': 'stock', 'asset': asset, 'symbol': self.stock_symbols[asset]}
+
                 # Unknown crypto - try to search by the name directly
-                # This allows querying any CoinGecko-supported token
-                if len(asset) >= 2 and asset.isalnum():
+                # only for explicit market/crypto wording. Generic phrases like
+                # "hva koster det å fly ..." should fall through to web search.
+                explicit_market_query = any(
+                    word in content_lower
+                    for word in ["pris", "price", "verdi", "value", "kurs", "crypto", "krypto", "coin", "token"]
+                )
+                generic_cost_query = trigger_text.startswith("hva koster") or trigger_text.startswith("kor mykje kostar")
+                blocked_generic_asset = asset in {"det", "den", "dette", "å", "a", "an", "en", "et"}
+                if (
+                    len(asset) >= 2
+                    and asset.isalnum()
+                    and explicit_market_query
+                    and not (generic_cost_query and blocked_generic_asset)
+                ):
                     return {
                         'type': 'crypto_search',
                         'asset': asset,
                         'coin_id': asset,  # Will try to use as-is
                         'display_name': asset.upper()
                     }
-                
-                # Check if it's a stock
-                if asset in self.stock_symbols:
-                    return {'type': 'stock', 'asset': asset, 'symbol': self.stock_symbols[asset]}
         
         return None
     

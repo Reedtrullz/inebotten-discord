@@ -150,7 +150,7 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     # Information/Fact triggers
     info_triggers = [
         r"hvem vant", r"resultatet", r"hvordan gikk det",
-        r"hva er status", r"hvor mye koster", r"søk på nett",
+        r"hva er status", r"hvor mye koster", r"hva koster", r"kva kostar", r"kor mykje kostar", r"søk på nett",
         r"hva skjer", r"hvor mye er", r"fortell meg om", r"hva vet du om",
         r"hvem er", r"hva er", r"hvordan fungerer", r"når begynner",
         r"hvilke", r"hvor", r"når", r"hvem", r"kan man", r"finnes det"
