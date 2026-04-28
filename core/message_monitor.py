@@ -5,10 +5,11 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+import os
 import re
 import signal
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import discord
 
