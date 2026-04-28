@@ -4,9 +4,8 @@ from __future__ import annotations
 
 # pyright: reportAny=false, reportExplicitAny=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportAttributeAccessIssue=false, reportUnannotatedClassAttribute=false, reportUnusedParameter=false
 
+import asyncio
 import json
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -64,6 +63,11 @@ def _sanitize_user_stats(stats: Any) -> dict[str, dict[str, int]]:
     return cleaned
 
 
+def _anonymize_user_ids(user_stats: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    sorted_keys = sorted(user_stats.keys(), key=lambda k: str(k))
+    return {f"user_{i+1}": user_stats[k] for i, k in enumerate(sorted_keys)}
+
+
 def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
     if monitor is None:
         return {"status": "starting", "monitor_ready": False}
@@ -112,11 +116,24 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         return {"status": "degraded", "monitor_ready": False}
 
 
-def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
+async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
     try:
-        request = urllib.request.Request("http://127.0.0.1:3000/health", method="GET")
-        with urllib.request.urlopen(request, timeout=2.5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", 3000),
+            timeout=2.5,
+        )
+        request = b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        writer.write(request)
+        await writer.drain()
+
+        response = await asyncio.wait_for(reader.read(4096), timeout=2.5)
+        writer.close()
+        await writer.wait_closed()
+
+        header_end = response.find(b"\r\n\r\n")
+        if header_end > 0:
+            body = response[header_end + 4 :]
+            payload = json.loads(body.decode("utf-8"))
             if isinstance(payload, dict):
                 return {
                     "status": payload.get("status", "unknown"),
@@ -124,8 +141,6 @@ def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
                     "requests": payload.get("requests", 0),
                     "errors": payload.get("errors", 0),
                 }
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
-        pass
     except Exception:
         pass
 
@@ -243,7 +258,7 @@ def collect_rate_limits(monitor: object | None = None) -> dict[str, Any]:
                     break
 
         return {
-            "user_stats": user_stats,
+            "user_stats": _anonymize_user_ids(user_stats),
             "summary": overall_stats if isinstance(overall_stats, dict) else {},
         }
     except Exception:
@@ -309,10 +324,10 @@ class StateCollector:
     def __init__(self, monitor: object | None = None):
         self.monitor = monitor
 
-    def collect_all(self) -> dict[str, Any]:
+    async def collect_all(self) -> dict[str, Any]:
         return {
             "status": collect_bot_status(self.monitor),
-            "bridge": collect_bridge_health(self.monitor),
+            "bridge": await collect_bridge_health(self.monitor),
             "calendar": collect_calendar_data(self.monitor),
             "polls": collect_poll_data(self.monitor),
             "rate_limits": collect_rate_limits(self.monitor),

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import cast
 from urllib.parse import urlparse
 
@@ -137,15 +138,24 @@ class ConsoleServer:
                 return
 
             if path == "/health":
-                await self._send_response(writer, 200, {"status": "healthy", "console": "running"})
+                await self._send_response(
+                    writer,
+                    200,
+                    {
+                        "status": "healthy",
+                        "console": "running",
+                        "timestamp": datetime.now().isoformat(),
+                        "port": self.port,
+                    },
+                )
             elif path == "/":
-                data = StateCollector(self.monitor).collect_all()
+                data = await StateCollector(self.monitor).collect_all()
                 html = render_dashboard(data)
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/api/status":
                 await self._send_response(writer, 200, collect_bot_status(self.monitor))
             elif path == "/api/bridge":
-                bridge = collect_bridge_health(self.monitor)
+                bridge = await collect_bridge_health(self.monitor)
                 bridge.setdefault("lm_studio", "unknown")
                 bridge.setdefault("requests", 0)
                 bridge.setdefault("errors", 0)

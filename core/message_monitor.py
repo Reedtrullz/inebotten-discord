@@ -6,6 +6,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 
 import asyncio
 import re
+import signal
 from collections import defaultdict, deque
 from datetime import datetime
 
@@ -894,6 +895,7 @@ class SelfbotClient(discord.Client):
                 self.console_task = asyncio.create_task(self.console_server.start())
                 print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
                 print(f"[BOT] Console API key: {self.config.console_api_key[:8]}...")
+                self._setup_signal_handlers()
             except Exception as e:
                 print(f"[BOT] WARNING: Could not start web console: {e}")
 
@@ -935,6 +937,18 @@ class SelfbotClient(discord.Client):
             get_channel_func=get_channel,
         )
 
+    def _setup_signal_handlers(self):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(self.close()))
+            except (NotImplementedError, RuntimeError):
+                pass
+
     async def on_message(self, message):
         """Called when a message is received"""
         if self.monitor:
@@ -949,12 +963,23 @@ class SelfbotClient(discord.Client):
         print("[BOT] Session resumed")
 
     async def close(self):
+        if self.console_task and not self.console_task.done():
+            self.console_task.cancel()
+            try:
+                await self.console_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self.console_task = None
+
         if self.console_server:
             try:
                 await self.console_server.stop()
                 print("[BOT] Web console stopped")
             except Exception as e:
                 print(f"[BOT] Error stopping console: {e}")
+            finally:
+                self.console_server = None
         await super().close()
 
     def get_uptime(self):
