@@ -83,7 +83,9 @@ class ProfileHandler(BaseHandler):
         url = "https://discord.com/api/v9/users/@me"
         headers = {
             "Authorization": self.token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "X-Super-Properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTIwLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjI1MjgxMywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbCwiZGVzaWduX2lkIjowfQ=="
         }
         payload = {"bio": bio_text}
 
@@ -93,8 +95,11 @@ class ProfileHandler(BaseHandler):
                     if resp.status == 200:
                         await self.send_response(message, "✅ Bio (About Me) er oppdatert!")
                     else:
-                        data = await resp.json()
-                        error_msg = data.get("message", "Ukjent feil")
+                        try:
+                            data = await resp.json()
+                            error_msg = data.get("message", "Ukjent feil")
+                        except Exception:
+                            error_msg = f"HTTP {resp.status}"
                         self.log(f"API Error updating bio: {resp.status} - {error_msg}")
                         await self.send_response(message, f"❌ Kunne ikke oppdatere bio: {error_msg}")
         except Exception as e:
