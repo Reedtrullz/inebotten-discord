@@ -869,9 +869,9 @@ class SelfbotClient(discord.Client):
 
     async def setup_hook(self):
         """Start diagnostics before the Discord session reaches ready."""
-        await self._start_console()
+        await self.start_console()
 
-    async def _start_console(self):
+    async def start_console(self):
         if self.console_server is not None:
             return
 
@@ -911,7 +911,7 @@ class SelfbotClient(discord.Client):
         )
         await self.monitor.setup()
 
-        await self._start_console()
+        await self.start_console()
         if self.console_server:
             self.console_server.monitor = self.monitor
 

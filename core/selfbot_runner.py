@@ -146,6 +146,7 @@ class SelfbotRunner:
             return 1
         
         self.create_client()
+        await self.client.start_console()
         
         print("\n[STARTING] Connecting to Discord...")
         print("  (Press Ctrl+C to stop)\n")
