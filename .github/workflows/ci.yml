@@ -54,7 +54,9 @@ jobs:
             .
 
       - name: Run tests
-        run: python -m pytest -q
+        run: |
+          python -m pytest -q --ignore=tests/test_console_frontend.py
+          python -m pytest -q tests/test_console_frontend.py
 
       - name: Check for committed secrets
         run: |
