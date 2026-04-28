@@ -25,7 +25,12 @@ os.environ["HOME"] = str(_TEST_HOME)
 _ = os.environ.setdefault("HERMES_HOME", str(_TEST_HOME / ".hermes"))
 _ = os.environ.setdefault("DISCORD_USER_TOKEN", "test_token_1234567890.abc.defghijklmnopqrstuvwxyz")
 # Point Playwright to real browser cache (tests override HOME)
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_REAL_HOME / "Library" / "Caches" / "ms-playwright"))
+# macOS: ~/Library/Caches/ms-playwright, Linux: ~/.cache/ms-playwright
+_pw_cache_mac = _REAL_HOME / "Library" / "Caches" / "ms-playwright"
+_pw_cache_linux = _REAL_HOME / ".cache" / "ms-playwright"
+_pw_cache = _pw_cache_mac if _pw_cache_mac.exists() else _pw_cache_linux
+if _pw_cache.exists():
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_pw_cache))
 
 HOST = "127.0.0.1"
 PORT = 18081
@@ -102,14 +107,20 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 def console_server() -> Generator[ConsoleServer, None, None]:
     """Start ConsoleServer on an ephemeral port to avoid conflicts."""
     server = ConsoleServer(host=HOST, port=0, api_key=API_KEY)
-    loop = asyncio.new_event_loop()
+    loop_container: list[asyncio.AbstractEventLoop] = []
 
     def run_loop() -> None:
+        loop = asyncio.new_event_loop()
+        loop_container.append(loop)
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
     thread = threading.Thread(target=run_loop, daemon=True)
     thread.start()
+
+    while not loop_container:
+        time.sleep(0.01)
+    loop = loop_container[0]
 
     future = asyncio.run_coroutine_threadsafe(server.start(), loop)
     future.result(timeout=5)
