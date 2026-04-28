@@ -22,7 +22,7 @@ if command -v python3 &> /dev/null; then
     echo "✓ Python found: $PYTHON_VERSION"
 else
     echo "✗ Python 3 not found"
-    echo "Please install Python 3.10+ from https://www.python.org/downloads/"
+    echo "Please install Python 3.12+ from https://www.python.org/downloads/"
     exit 1
 fi
 
@@ -30,8 +30,8 @@ fi
 PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
 PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
 
-if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
-    echo "✗ Python 3.10+ required, found $PYTHON_VERSION"
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 12 ]); then
+    echo "✗ Python 3.12+ required, found $PYTHON_VERSION"
     exit 1
 fi
 

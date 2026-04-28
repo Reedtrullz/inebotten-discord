@@ -33,7 +33,7 @@
 
 | Komponent | Teknologi |
 |-----------|-----------|
-| Språk | Python 3.10+ |
+| Språk | Python 3.12+ |
 | Discord API | discord.py |
 | AI Backend | LM Studio (gemma-3-4b) |
 | Bridge | aiohttp HTTP server |

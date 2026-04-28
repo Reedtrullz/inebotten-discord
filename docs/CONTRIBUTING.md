@@ -326,7 +326,7 @@ Script krasjer med IndexError.
 
 **Miljø**
 - OS: Ubuntu 22.04
-- Python: 3.10.6
+- Python: 3.12.13
 - Discord.py: 2.3.0
 
 **Logger**

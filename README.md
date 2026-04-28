@@ -1,7 +1,7 @@
 # Inebotten Discord Bot
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/python-3.12+-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/discord-selfbot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord selfbot">
   <img src="https://img.shields.io/badge/AI-LM%20Studio%20%7C%20OpenRouter-green?style=for-the-badge&logo=openai&logoColor=white" alt="AI">
   <img src="https://img.shields.io/badge/plattform-macOS%20%7C%20Windows-lightgrey?style=for-the-badge&logo=apple&logoColor=white" alt="Plattform">

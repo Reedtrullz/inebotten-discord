@@ -804,7 +804,7 @@ async def main():
     print("=" * 60)
     print("\nPress Ctrl+C to stop\n")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def shutdown():
         logger.info("Shutting down...")

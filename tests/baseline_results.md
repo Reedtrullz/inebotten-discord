@@ -8,7 +8,7 @@ Sist kjente lokale baseline:
 
 ## Miljø
 
-- Python 3.10 eller nyere.
+- Python 3.12 eller nyere.
 - `discord.py-self` eller teststubb fra `tests/conftest.py`.
 - `pytest` og `pytest-asyncio`.
 

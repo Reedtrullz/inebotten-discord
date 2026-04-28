@@ -14,7 +14,7 @@ Dette er Windows-launcheren for Inebotten. Den gir et enkelt grafisk grensesnitt
 ## Krav
 
 - Windows 10 eller nyere, 64-bit.
-- Python 3.10 eller nyere hvis du bygger selv.
+- Python 3.12 eller nyere hvis du bygger selv.
 - PyInstaller for lokalt bygg.
 
 ## Bruk ferdig program
@@ -71,7 +71,7 @@ windows_app\setup.bat
 | SmartScreen-varsel | Velg `More info` og `Run anyway` |
 | Programmet åpner ikke | Sjekk Windows-versjon, bygg på nytt og les loggen |
 | Botten stopper | Sjekk Discord-token, OpenRouter-nøkkel og LM Studio-status |
-| Python mangler | Installer Python 3.10+ og huk av `Add Python to PATH` |
+| Python mangler | Installer Python 3.12+ og huk av `Add Python to PATH` |
 
 ## Filer
 

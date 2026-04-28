@@ -32,7 +32,7 @@ Anbefalt norsk startmodell: `google/gemma-3-4b-it:free`.
 |---------|---------|
 | SmartScreen stopper appen | Velg `More info` og `Run anyway` |
 | Botten stopper raskt | Sjekk token, API-nøkkel og valgt AI-leverandør |
-| Python finnes ikke | Installer Python 3.10+ med `Add Python to PATH` |
+| Python finnes ikke | Installer Python 3.12+ med `Add Python to PATH` |
 | Manglende moduler | Kjør `pip install -r requirements.txt` og bygg på nytt |
 
 ## Neste steg

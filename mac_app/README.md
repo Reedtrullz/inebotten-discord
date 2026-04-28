@@ -14,7 +14,7 @@ Dette er macOS-launcheren for Inebotten. Den gir et enkelt grafisk grensesnitt f
 ## Krav
 
 - macOS 12 Monterey eller nyere.
-- Python 3.10 eller nyere hvis du bygger selv.
+- Python 3.12 eller nyere hvis du bygger selv.
 - PyInstaller hvis du bygger `.app` lokalt.
 
 ## Bruk ferdig app

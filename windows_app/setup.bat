@@ -18,7 +18,7 @@ echo Checking Python installation...
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Python not found
-    echo Please install Python 3.10+ from https://www.python.org/downloads/
+    echo Please install Python 3.12+ from https://www.python.org/downloads/
     exit /b 1
 )
 
@@ -27,9 +27,9 @@ echo [OK] Python found: %PYTHON_VERSION%
 echo.
 
 REM Check Python version
-python -c "import sys; exit(0 if sys.version_info.major >= 3 and sys.version_info.minor >= 10 else 1)" >nul 2>&1
+python -c "import sys; exit(0 if sys.version_info.major >= 3 and sys.version_info.minor >= 12 else 1)" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Python 3.10+ required
+    echo [ERROR] Python 3.12+ required
     echo Current version: %PYTHON_VERSION%
     exit /b 1
 )

@@ -819,7 +819,7 @@ Se konsoll-output:
 # Sett breakpoint
 import pdb; pdb.set_trace()
 
-# Eller bruk breakpoint() i Python 3.7+
+# Eller bruk breakpoint() i Python 3.12+
 breakpoint()
 ```
 

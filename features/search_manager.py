@@ -32,12 +32,12 @@ class SearchManager:
                 from tavily import TavilyClient
                 client = TavilyClient(api_key=self.tavily_api_key)
                 # Tavily is blocking, run in executor
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(
                     None,
                     lambda: client.search(
-                        query=query, 
-                        search_depth="advanced", 
+                        query=query,
+                        search_depth="advanced",
                         max_results=max_results,
                         include_raw_content=True
                     )
@@ -65,7 +65,7 @@ class SearchManager:
         try:
             from googlesearch import search as google_search
             print(f"[SEARCH] Trying Google fallback for: {query}")
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             # googlesearch-python returns an iterator of URLs
             urls = await loop.run_in_executor(
                 None,
@@ -82,9 +82,9 @@ class SearchManager:
             if not self.ddgs:
                 self.ddgs = DDGS()
             print(f"[SEARCH] Trying DuckDuckGo last resort for: {query}")
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             results = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: list(self.ddgs.text(query, region=region, max_results=max_results))
             )
             return results
@@ -100,7 +100,7 @@ class SearchManager:
             try:
                 from tavily import TavilyClient
                 client = TavilyClient(api_key=self.tavily_api_key)
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 # Tavily doesn't have a separate news endpoint in basic, but we can prefix query
                 response = await loop.run_in_executor(
                     None,

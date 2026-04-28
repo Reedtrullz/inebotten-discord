@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 
-Norwegian Discord selfbot with AI chat, calendar, reminders, polls, weather, and utilities. Built in Python 3.10+ with discord.py-self, supporting both LM Studio (local) and OpenRouter (cloud) AI backends.
+Norwegian Discord selfbot with AI chat, calendar, reminders, polls, weather, and utilities. Built in Python 3.12+ with discord.py-self, supporting both LM Studio (local) and OpenRouter (cloud) AI backends.
 
 ## STRUCTURE
 
