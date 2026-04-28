@@ -97,6 +97,13 @@ class ConversationContext:
             lines.append(f"{name}: {msg['content']}")
         
         return "\n".join(lines)
+
+    def get_channel_messages(self, channel_id, limit=6):
+        """Get recent messages for a specific channel."""
+        self._clean_old_messages(channel_id)
+        if channel_id not in self.threads:
+            return []
+        return self.threads[channel_id][-limit:]
     
     def wants_dashboard(self, content):
         """

@@ -6,6 +6,7 @@ Uses Tavily (AI-optimized) with Google and DuckDuckGo fallbacks.
 
 # Core imports
 import asyncio
+import logging
 import os
 import re
 from typing import List, Dict, Optional
@@ -138,27 +139,34 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     """
     Detect if the user is asking for real-time info or news.
     Returns dict with 'query' and 'type' (web/news) if detected.
+    Uses phrase-level patterns to avoid false positives on ordinary
+    or opinion questions.
     """
     content_lower = content.lower()
-    
+
     # News triggers
     news_triggers = [
-        r"nyheter", r"hva skjer i verden", r"siste nytt", 
+        r"nyheter", r"hva skjer i verden", r"siste nytt",
         r"overskrifter", r"hva er det siste om", r"nytt om", r"news"
     ]
-    
-    # Information/Fact triggers
-    info_triggers = [
+
+    info_phrase_triggers = [
         r"hvem vant", r"resultatet", r"hvordan gikk det",
-        r"hva er status", r"hvor mye koster", r"hva koster", r"kva kostar", r"kor mykje kostar", r"søk på nett",
-        r"hva skjer", r"hvor mye er", r"fortell meg om", r"hva vet du om",
-        r"hvem er", r"hva er", r"hvordan fungerer", r"når begynner",
-        r"hvilke", r"hvor", r"når", r"hvem", r"kan man", r"finnes det"
+        r"hva er status", r"hvor mye koster", r"hva koster",
+        r"kva kostar", r"kor mykje kostar", r"søk på nett",
+        r"hva skjer i", r"hvor mye er", r"fortell meg om",
+        r"hva vet du om", r"hvem er", r"hvordan fungerer",
+        r"når begynner", r"hvilke", r"kan man", r"finnes det",
     ]
-    
+
+    opinion_blocklist = [
+        r"synes du om", r"liker du", r"mener du",
+        r"tror du", r"bor du", r"kommer du fra", r"er du",
+    ]
+
     query_type = None
     matched_pattern = None
-    
+
     for pattern in news_triggers:
         if re.search(pattern, content_lower):
             query_type = "news"
@@ -166,24 +174,32 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
             break
 
     if not query_type:
-        for pattern in info_triggers:
+        for pattern in info_phrase_triggers:
             if re.search(pattern, content_lower):
                 query_type = "web"
                 matched_pattern = pattern
                 break
-    
+
     if query_type:
+        for opinion in opinion_blocklist:
+            if re.search(opinion, content_lower):
+                logging.debug(
+                    "Search intent rejected – opinion pattern matched: %s in %r",
+                    opinion, content,
+                )
+                return None
+
         query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE)
         query = re.sub(matched_pattern, "", query, flags=re.IGNORECASE)
-        # Remove common filler words
-        fillers = [r"\bhva er\b", r"\bom\b", r"\ber\b", r"\bdet\b", r"\bi\b", r"\bpå\b"]
-        for filler in fillers:
-            query = re.sub(filler, "", query, flags=re.IGNORECASE)
-        
         query = query.strip("? .!,").strip()
+
         if len(query) < 3:
-            query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE).strip("? .!,").strip()
-            
-        return {"query": query if query else "siste nyheter norge", "type": query_type}
-            
+            logging.debug(
+                "Search intent rejected – extracted query too short (%r) from %r",
+                query, content,
+            )
+            return None
+
+        return {"query": query, "type": query_type}
+
     return None

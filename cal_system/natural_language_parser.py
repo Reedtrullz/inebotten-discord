@@ -7,6 +7,8 @@ Understands flexible Norwegian and English event descriptions
 import re
 from datetime import datetime, timedelta
 
+from core.intent_utils import has_keyword
+
 
 class NaturalLanguageParser:
     """
@@ -235,22 +237,20 @@ class NaturalLanguageParser:
         Determine if content describes an event or a task
         based on language patterns
         """
-        content_lower = content.lower()
-        
         # Check for explicit event command
-        if content_lower.startswith('arrangement'):
+        if content.lower().startswith('arrangement'):
             return 'event'
-        
-        # Check for task indicators
+
+        # Check for task indicators using whole-word matching
         for indicator in self.task_indicators:
-            if indicator in content_lower:
+            if has_keyword(content, indicator):
                 return 'task'
-        
-        # Check for event indicators
+
+        # Check for event indicators using whole-word matching
         for indicator in self.event_indicators:
-            if indicator in content_lower:
+            if has_keyword(content, indicator):
                 return 'event'
-        
+
         # Default to event for most time-based items (backwards compatible)
         return 'event'
     
@@ -499,7 +499,7 @@ class NaturalLanguageParser:
             'julebord', 'regning', 'regninger', 'regningar',
         ]
         for keyword in calendar_keywords:
-            if keyword in content_lower:
+            if re.search(rf'\b{re.escape(keyword)}\b', content_lower):
                 strong_indicators += 2  # Calendar keywords are strong signals
 
         # 2. Task indicators (husk, jeg må, skal, etc.)
@@ -520,10 +520,14 @@ class NaturalLanguageParser:
             strong_indicators += 2
         if re.search(r'\b(?:at\s*)?\d{1,2}\s*(?:am|pm)\b', content_lower):
             strong_indicators += 2
-            
-        time_words = ['kveld', 'morgen', 'ettermiddag', 'formiddag', 'natt', 'lunsj', 'middag']
-        for word in time_words:
-            if re.search(rf'\b{word}\b', content_lower):
+
+        for word in self.time_words:
+            if re.search(rf'\b{re.escape(word)}\b', content_lower):
+                strong_indicators += 1
+
+        # Date words (today, tomorrow, etc.)
+        for word in self.date_words:
+            if re.search(rf'\b{re.escape(word)}\b', content_lower):
                 strong_indicators += 1
 
         # 4. Numeric dates (DD.MM.YYYY or DD.MM)
@@ -539,11 +543,22 @@ class NaturalLanguageParser:
 
         # 5. Day names (Mandag, Fredag, etc.) are strong indicators
         for day in self.days:
-            if day in content_lower:
+            if re.search(rf'\b{day}\b', content_lower):
                 strong_indicators += 2
 
+        # 6. Negative scoring for conversational patterns (question words without calendar context)
+        question_words = ['hva', 'kva', 'hvem', 'hvorfor', 'hvordan', 'korleis', 'why', 'what', 'how', 'who']
+        if any(re.search(rf'\b{word}\b', content_lower) for word in question_words):
+            calendar_context = ['minn meg', 'husk', 'møte', 'meeting', 'avtale', 'appointment', 'kalender', 'calendar']
+            if not any(re.search(rf'\b{re.escape(ctx)}\b', content_lower) for ctx in calendar_context):
+                strong_indicators -= 2
+
+        # "jeg skal bare" / "eg skal bare" patterns are conversational, not calendar
+        if re.search(r'\b(jeg|eg)\s+skal\s+bare\b', content_lower):
+            strong_indicators -= 3
+
         # If we have strong indicators, it's likely a calendar command
-        if strong_indicators >= 2:
+        if strong_indicators >= 3:
             return True
 
         return False
@@ -552,8 +567,8 @@ class NaturalLanguageParser:
         """Reject future-tense chat that mentions time without asking for scheduling."""
         content_lower = content.lower().strip()
         conversational_patterns = [
-            r'\b(jeg|eg)\s+skal\s+bare\s+(høre|spørre|sjekke|prate|snakke)\b',
-            r'\b(hva|kva)\s+(synes|mener|tenker)\s+du\b',
+            r'\b(jeg|eg)\s+skal\s+bare\s+(høre|spørre|sjekke|prate|snakke|fortelle|vise|dele|si|spørre\s+deg|høre\s+hva)\b',
+            r'\b(hva|kva)\s+(synes|mener|tenker)\s+du(\s+om)?\b',
             r'\bfortell\s+(meg\s+)?om\b',
             r'\bforklar\b',
             r'\bwhat\s+do\s+you\s+think\b',
@@ -810,26 +825,26 @@ class NaturalLanguageParser:
         Returns: dict with 'type' and optional 'day' or simple string
         """
         content_lower = content.lower()
-        
+
         # Check for day-specific patterns first (e.g., "hver mandag", "annenhver tirsdag")
         for pattern_prefix in sorted(self.day_recurrence_patterns.keys(), key=len, reverse=True):
-            if pattern_prefix in content_lower:
+            if re.search(rf'\b{re.escape(pattern_prefix)}\b', content_lower):
                 # Check if a day name follows
                 for day_name, rrule_day in self.day_name_to_rrule.items():
                     # Check for patterns like "hver mandag", "annenhver tirsdag"
                     full_pattern = f"{pattern_prefix} {day_name}"
-                    if full_pattern in content_lower:
+                    if re.search(rf'\b{re.escape(full_pattern)}\b', content_lower):
                         return {
                             'type': self.day_recurrence_patterns[pattern_prefix],
                             'day': day_name,
                             'rrule_day': rrule_day
                         }
-        
+
         # Check for general recurrence patterns
         for pattern in sorted(self.recurrence_patterns.keys(), key=len, reverse=True):
-            if pattern in content_lower:
+            if re.search(rf'\b{re.escape(pattern)}\b', content_lower):
                 return {'type': self.recurrence_patterns[pattern]}
-        
+
         return None
 
 
