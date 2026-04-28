@@ -22,6 +22,7 @@ from core.intent_keywords import (
     LIST_KEYWORDS,
     STATUS_KEYWORDS,
 )
+from web_console.server import ConsoleServer
 
 
 COMMAND_REGISTRY = [
@@ -860,6 +861,8 @@ class SelfbotClient(discord.Client):
         self.response_gen = response_generator
 
         self.monitor = None
+        self.console_server = None
+        self.console_task = None
         self.start_time = None
 
     async def on_ready(self):
@@ -879,6 +882,20 @@ class SelfbotClient(discord.Client):
             response_generator=self.response_gen,
         )
         await self.monitor.setup()
+
+        if getattr(self.config, 'console_enabled', True):
+            try:
+                self.console_server = ConsoleServer(
+                    host=self.config.console_host,
+                    port=self.config.console_port,
+                    api_key=self.config.console_api_key,
+                    monitor=self.monitor,
+                )
+                self.console_task = asyncio.create_task(self.console_server.start())
+                print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
+                print(f"[BOT] Console API key: {self.config.console_api_key[:8]}...")
+            except Exception as e:
+                print(f"[BOT] WARNING: Could not start web console: {e}")
 
         # Initialize and start calendar reminder checker
         self.reminder_checker = self._create_reminder_checker()
@@ -930,6 +947,15 @@ class SelfbotClient(discord.Client):
     async def on_resumed(self):
         """Called when session is resumed"""
         print("[BOT] Session resumed")
+
+    async def close(self):
+        if self.console_server:
+            try:
+                await self.console_server.stop()
+                print("[BOT] Web console stopped")
+            except Exception as e:
+                print(f"[BOT] Error stopping console: {e}")
+        await super().close()
 
     def get_uptime(self):
         """Get bot uptime"""

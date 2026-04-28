@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 
+_config_instance = None
+
 class Config:
     """
     Central configuration management with fallbacks
@@ -43,6 +45,17 @@ class Config:
         # Google Calendar Configuration
         self.GCAL_ENABLED = os.getenv('GCAL_ENABLED', 'False').lower() == 'true'
         self.GOOGLE_CALENDAR_ID = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+
+        # Web Console Configuration
+        self.CONSOLE_ENABLED = os.getenv('CONSOLE_ENABLED', 'True').lower() == 'true'
+        self.CONSOLE_HOST = os.getenv('CONSOLE_HOST', '127.0.0.1')
+        self.CONSOLE_PORT = int(os.getenv('CONSOLE_PORT', '8080'))
+        console_api_key = os.getenv('CONSOLE_API_KEY')
+        if not console_api_key:
+            import uuid
+            console_api_key = str(uuid.uuid4())
+            print(f"[CONFIG] Generated console API key: {console_api_key[:8]}... (set CONSOLE_API_KEY to override)")
+        self.CONSOLE_API_KEY = console_api_key
         
         # Rate Limiting (conservative to avoid flags)
         self.MAX_MSGS_PER_SECOND = int(os.getenv('MAX_MSGS_PER_SEC', 5))
@@ -104,7 +117,7 @@ class Config:
             if not self.OPENROUTER_API_KEY:
                 print("[CONFIG] WARNING: AI_PROVIDER is 'openrouter' but OPENROUTER_API_KEY is not set!")
                 print("  Falling back to LM Studio...")
-                self.AI_PROVIDER = 'lm_studio'
+                object.__setattr__(self, 'AI_PROVIDER', 'lm_studio')
             else:
                 if self.env_file_loaded:
                     print(f"[CONFIG] Settings loaded from {self.env_file_loaded}")
@@ -163,10 +176,27 @@ class Config:
         """
         return self.AI_PROVIDER == 'openrouter'
 
+    @property
+    def console_enabled(self):
+        return self.CONSOLE_ENABLED
+
+    @property
+    def console_host(self):
+        return self.CONSOLE_HOST
+
+    @property
+    def console_port(self):
+        return self.CONSOLE_PORT
+
+    @property
+    def console_api_key(self):
+        return self.CONSOLE_API_KEY
+
 def get_config() -> Config:
     """
     Get the global configuration instance (singleton)
     """
-    if not hasattr(get_config, '_instance'):
-        get_config._instance = Config()
-    return get_config._instance
+    global _config_instance
+    if _config_instance is None:
+        _config_instance = Config()
+    return _config_instance
