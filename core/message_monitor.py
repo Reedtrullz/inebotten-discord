@@ -867,6 +867,32 @@ class SelfbotClient(discord.Client):
         self.console_task = None
         self.start_time = None
 
+    async def setup_hook(self):
+        """Start diagnostics before the Discord session reaches ready."""
+        await self._start_console()
+
+    async def _start_console(self):
+        if self.console_server is not None:
+            return
+
+        if not getattr(self.config, 'console_enabled', True):
+            return
+
+        try:
+            self.console_server = ConsoleServer(
+                host=self.config.console_host,
+                port=self.config.console_port,
+                api_key=self.config.console_api_key,
+                monitor=self.monitor,
+            )
+            await self.console_server.start()
+            print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
+            print(f"[BOT] Console API key: {self.config.console_api_key[:8]}...")
+            self._setup_signal_handlers()
+        except Exception as e:
+            self.console_server = None
+            print(f"[BOT] WARNING: Could not start web console: {e}")
+
     async def on_ready(self):
         """Called when bot is ready"""
         self.start_time = datetime.now()
@@ -885,21 +911,9 @@ class SelfbotClient(discord.Client):
         )
         await self.monitor.setup()
 
-        if getattr(self.config, 'console_enabled', True):
-            try:
-                self.console_server = ConsoleServer(
-                    host=self.config.console_host,
-                    port=self.config.console_port,
-                    api_key=self.config.console_api_key,
-                    monitor=self.monitor,
-                )
-                await self.console_server.start()
-                print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
-                print(f"[BOT] Console API key: {self.config.console_api_key[:8]}...")
-                self._setup_signal_handlers()
-            except Exception as e:
-                self.console_server = None
-                print(f"[BOT] WARNING: Could not start web console: {e}")
+        await self._start_console()
+        if self.console_server:
+            self.console_server.monitor = self.monitor
 
         # Initialize and start calendar reminder checker
         self.reminder_checker = self._create_reminder_checker()
