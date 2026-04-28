@@ -415,3 +415,24 @@ setTimeout(() => {
     _registerConsoleApp();
   }
 }, 50);
+
+function copyLogs() {
+  const el = document.getElementById('log-container');
+  if (!el) return;
+  const text = el.innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector('#logs button[onclick="copyLogs()"]');
+    if (btn) {
+      const original = btn.textContent;
+      btn.textContent = 'Kopiert!';
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    }
+  }).catch(() => {
+    const btn = document.querySelector('#logs button[onclick="copyLogs()"]');
+    if (btn) {
+      const original = btn.textContent;
+      btn.textContent = 'Feilet';
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    }
+  });
+}

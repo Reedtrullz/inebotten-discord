@@ -57,7 +57,7 @@ def test_dashboard_requires_auth(page: Any, console_server: ConsoleServer) -> No
 
 
 def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> None:
-    """Verify all 8 cards are visible on dashboard."""
+    """Verify all 7 cards are visible on dashboard."""
     _login(page, console_server)
     content = page.content()
     assert "Bot Status" in content
@@ -66,7 +66,6 @@ def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> No
     assert "Avstemninger" in content
     assert "Rate Limits" in content
     assert "Intents" in content
-    assert "Minne" in content
     assert "Logger" in content
 
 
@@ -182,7 +181,7 @@ def test_nav_links_present(page: Any, console_server: ConsoleServer) -> None:
     nav = page.locator('nav[aria-label="Hovednavigasjon"]')
     assert nav.is_visible()
 
-    links = ["Status", "Bridge", "Kalender", "Avstemninger", "Rate Limits", "Intents", "Minne", "Logger"]
+    links = ["Status", "Bridge", "Kalender", "Avstemninger", "Rate Limits", "Intents", "Logger"]
     for text in links:
         assert nav.locator(f'a:has-text("{text}")').is_visible()
 

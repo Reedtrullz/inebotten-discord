@@ -172,6 +172,8 @@ def _render_status_section(data: dict[str, Any]) -> str:
     guilds = _safe(data, "status", "guilds")
     users = _safe(data, "status", "users")
     discord_connected = _safe(data, "status", "discord_connected")
+    mem_users = _safe_int(data, "memory", "user_count", default=0)
+    mem_convs = _safe_int(data, "memory", "conversation_count", default=0)
 
     status_lower = str(bot_status).lower()
     if status_lower == "online":
@@ -189,22 +191,30 @@ def _render_status_section(data: dict[str, Any]) -> str:
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
   <div class="card-body">
-    <div class="grid grid-cols-2 gap-5">
+    <div class="grid grid-cols-3 gap-4">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Oppetid</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
+        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Servere</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.guilds">{escape(guilds)}</div>
+        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.guilds">{escape(guilds)}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Brukere</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
+        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
       </div>
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Discord</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
+        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
+      </div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Minne brukere</div>
+        <div class="text-xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
+      </div>
+      <div class="metric">
+        <div class="text-sm text-[var(--text-muted)]">Samtaler</div>
+        <div class="text-xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
       </div>
     </div>
   </div>
@@ -502,11 +512,12 @@ def _render_logs_section(data: dict[str, Any]) -> str:
     <span class="badge badge-info gap-1"><span>Siste</span><span data-metric="logs.count">{line_count}</span><span>linjer</span></span>
   </div>
   <div class="card-body">
-    <div class="max-h-80 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-5 border border-[var(--border-color)]">
+    <div id="log-container" class="max-h-80 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-5 border border-[var(--border-color)]">
       {_render_log_block(log_lines)}
     </div>
   </div>
-  <div class="card-footer flex justify-end">
+  <div class="card-footer flex justify-end gap-2">
+    <button class="btn text-xs px-3 py-1.5" onclick="copyLogs()">Kopier</button>
     <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('logs')">Vis alle</button>
   </div>
 </section>"""
@@ -582,7 +593,6 @@ def render_dashboard(data: dict[str, Any] | None) -> str:
             _render_polls_section(data),
             _render_rate_limits_section(data),
             _render_intents_section(data),
-            _render_memory_section(data),
             _render_logs_section(data),
         ]
     )
