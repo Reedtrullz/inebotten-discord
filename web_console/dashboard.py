@@ -183,13 +183,13 @@ def _render_status_section(data: dict[str, Any]) -> str:
 
     dc_text = "Ja" if discord_connected in (True, "true", "yes", "ja", "connected") else "Nei"
 
-    return f"""<section class="card" id="status">
+    return f"""<section class="card xl:col-span-2 scroll-mt-24" id="status">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Bot Status</h2>
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
   <div class="card-body">
-    <div class="grid grid-cols-2 gap-4">
+    <div class="grid grid-cols-2 gap-5">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Oppetid</div>
         <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
@@ -234,13 +234,13 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
     err_val = _safe_int(data, "bridge", "errors", default=0)
     err_class = "text-[var(--status-error)]" if err_val > 0 else "text-[var(--text-primary)]"
 
-    return f"""<section class="card" id="bridge">
+    return f"""<section class="card xl:col-span-2 scroll-mt-24" id="bridge">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Bridge</h2>
     <span class="badge {badge_class}">{badge_text}</span>
   </div>
   <div class="card-body">
-    <div class="grid grid-cols-2 gap-4">
+    <div class="grid grid-cols-2 gap-5">
       <div class="metric">
         <div class="text-sm text-[var(--text-muted)]">Status</div>
         <div class="text-2xl font-bold text-[var(--text-primary)] break-words">{escape(str(bridge_status))}</div>
@@ -289,7 +289,7 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
 {chr(10).join(items)}
     </div>"""
 
-    return f"""<section class="card" id="calendar">
+    return f"""<section class="card scroll-mt-24" id="calendar">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Kalender</h2>
     <span class="badge badge-info">{escape(event_count)} hendelser</span>
@@ -331,33 +331,33 @@ def _render_polls_section(data: dict[str, Any]) -> str:
                 for option, count in votes.items():
                     pct = (count / total * 100) if total > 0 else 0
                     bars.append(
-                        f"""            <div class="grid grid-cols-[3rem_1fr_auto] gap-2 items-center mt-2">
+                        f"""            <div class="grid grid-cols-[3rem_1fr_auto] gap-2 items-center mt-1">
               <span class="text-xs text-[var(--text-secondary)] truncate">{escape(str(option))}</span>
-              <div class="h-2 rounded-full" style="background:var(--bg-tertiary)">
-                <div class="h-2 rounded-full transition-all duration-500" style="width:{pct:.1f}%;background:var(--accent)"></div>
+              <div class="h-1.5 rounded-full" style="background:var(--bg-tertiary)">
+                <div class="h-1.5 rounded-full transition-all duration-500" style="width:{pct:.1f}%;background:var(--accent)"></div>
               </div>
               <span class="text-xs text-[var(--text-muted)] whitespace-nowrap">{count}</span>
             </div>"""
                     )
                 poll_items.append(
-                    f"""        <div class="py-3 border-b border-[var(--border-color)] last:border-0">
+                    f"""        <div class="py-2 border-b border-[var(--border-color)] last:border-0">
           <div class="text-sm font-medium text-[var(--text-primary)]">{question}</div>
-          <div class="mt-2">{''.join(bars)}</div>
+          <div class="mt-1">{''.join(bars)}</div>
         </div>"""
                 )
             else:
                 poll_items.append(
-                    f"""        <div class="py-3 border-b border-[var(--border-color)] last:border-0">
+                    f"""        <div class="py-2 border-b border-[var(--border-color)] last:border-0">
           <div class="text-sm font-medium text-[var(--text-primary)]">{question}</div>
         </div>"""
                 )
-        polls_html = f"""    <div class="mt-4">
+        polls_html = f"""    <div class="mt-2">
 {chr(10).join(poll_items)}
     </div>"""
     else:
-        polls_html = '    <div class="mt-4 text-sm text-[var(--text-muted)]">Ingen aktive avstemninger</div>'
+        polls_html = '    <div class="mt-2 text-sm text-[var(--text-muted)]">Ingen aktive avstemninger</div>'
 
-    return f"""<section class="card" id="polls">
+    return f"""<section class="card scroll-mt-24" id="polls">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold">Avstemninger</h2>
     <span class="badge badge-info"><span data-metric="polls.active">{escape(active_polls)}</span> aktive</span>
@@ -410,10 +410,10 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
     else:
         table_html = '<div class="py-8 text-center text-sm text-[var(--text-muted)]">Ingen rate-limit-data</div>'
 
-    return f"""<section class="card" id="rate-limits">
+    return f"""<section class="card scroll-mt-24" id="rate-limits">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Rate Limits</h2>
-    <span class="badge badge-info whitespace-nowrap"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
+    <span class="badge badge-info whitespace-nowrap gap-1"><span data-metric="rate_limits.total">{total_requests}</span><span>totalt</span></span>
   </div>
   <div class="card-body">
     {table_html}
@@ -453,7 +453,7 @@ def _render_intents_section(data: dict[str, Any]) -> str:
     else:
         table_html = '<div class="py-8 text-center text-sm text-[var(--text-muted)]">Ingen intent-data</div>'
 
-    return f"""<section class="card" id="intents">
+    return f"""<section class="card scroll-mt-24" id="intents">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Intents</h2>
     <span class="badge {fallback_badge_class} whitespace-nowrap">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
@@ -471,7 +471,7 @@ def _render_memory_section(data: dict[str, Any]) -> str:
     mem_users = _safe_int(data, "memory", "user_count", default=0)
     mem_convs = _safe_int(data, "memory", "conversation_count", default=0)
 
-    return f"""<section class="card" id="memory">
+    return f"""<section class="card xl:col-span-2 scroll-mt-24" id="memory">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Minne</h2>
   </div>
@@ -496,13 +496,13 @@ def _render_memory_section(data: dict[str, Any]) -> str:
 def _render_logs_section(data: dict[str, Any]) -> str:
     log_lines = data.get("logs", {}).get("logs", []) if isinstance(data.get("logs"), dict) else []
     line_count = len(log_lines) if isinstance(log_lines, list) else 0
-    return f"""<section class="card" id="logs">
+    return f"""<section class="card md:col-span-2 xl:col-span-4 scroll-mt-24" id="logs">
   <div class="flex items-center justify-between gap-3 mb-4">
     <h2 class="text-lg font-semibold text-[var(--text-primary)]">Logger</h2>
-    <span class="badge badge-info">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
+    <span class="badge badge-info gap-1"><span>Siste</span><span data-metric="logs.count">{line_count}</span><span>linjer</span></span>
   </div>
   <div class="card-body">
-    <div class="max-h-48 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-5 border border-[var(--border-color)]">
+    <div class="max-h-80 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-5 border border-[var(--border-color)]">
       {_render_log_block(log_lines)}
     </div>
   </div>
