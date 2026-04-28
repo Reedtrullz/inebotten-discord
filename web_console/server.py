@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import cast
 from urllib.parse import urlparse
 
-from web_console.dashboard import render_dashboard  # pyright: ignore[reportUnknownVariableType]
+from web_console.dashboard import render_dashboard, render_login_page  # pyright: ignore[reportUnknownVariableType]
 from web_console.state_collector import (
     StateCollector,
     collect_bot_status,
@@ -61,7 +61,27 @@ class ConsoleServer:
             headers[key.strip().lower()] = value.strip()
         return headers
 
-    async def _send_response(self, writer: asyncio.StreamWriter, status: int, body: object, content_type: str = "application/json; charset=utf-8") -> None:
+    def _parse_cookies(self, cookie_header: str | None) -> dict[str, str]:
+        cookies: dict[str, str] = {}
+        if not cookie_header:
+            return cookies
+        for part in cookie_header.split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            cookies[key.strip()] = value.strip()
+        return cookies
+
+    def _is_authenticated(self, headers: dict[str, str]) -> bool:
+        api_key = headers.get("x-api-key")
+        if api_key == self.api_key:
+            return True
+        cookies = self._parse_cookies(headers.get("cookie"))
+        if cookies.get("console_auth") == self.api_key:
+            return True
+        return False
+
+    async def _send_response(self, writer: asyncio.StreamWriter, status: int, body: object, content_type: str = "application/json; charset=utf-8", extra_headers: list[str] | None = None) -> None:
         status_text = {
             200: "OK",
             400: "Bad Request",
@@ -83,9 +103,10 @@ class ConsoleServer:
             f"Content-Type: {content_type}",
             f"Content-Length: {len(body_bytes)}",
             "Connection: close",
-            "",
-            "",
         ]
+        if extra_headers:
+            header_lines.extend(extra_headers)
+        header_lines.extend(["", ""])
 
         writer.write("\r\n".join(header_lines).encode("utf-8") + body_bytes)
         await writer.drain()
@@ -116,28 +137,63 @@ class ConsoleServer:
             path = parsed.path or "/"
             headers = self._parse_headers(lines[1:])
 
-            if path != "/health":
-                api_key = headers.get("x-api-key")
-                if api_key != self.api_key:
-                    peername = cast(object | None, writer.get_extra_info("peername"))
-                    peername_text = "None" if peername is None else repr(peername)
-                    logger.warning("Unauthorized request to %s from %s", path, peername_text)
-                    await self._send_response(writer, 401, {"error": "Unauthorized"})
-                    return
-
             content_length = int(headers.get("content-length", "0") or 0)
+            body_bytes = b""
             if content_length > 0:
                 try:
-                    _ = await reader.readexactly(content_length)
+                    body_bytes = await reader.readexactly(content_length)
                 except asyncio.IncompleteReadError:
                     await self._send_response(writer, 400, {"error": "Incomplete request body"})
                     return
+
+            auth_exempt = path in ("/health", "/api/login")
+            authenticated = auth_exempt or self._is_authenticated(headers)
+
+            if not authenticated and path in ("/", "/login"):
+                html = render_login_page()
+                await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
+                return
+
+            if not authenticated:
+                peername = cast(object | None, writer.get_extra_info("peername"))
+                peername_text = "None" if peername is None else repr(peername)
+                logger.warning("Unauthorized request to %s from %s", path, peername_text)
+                await self._send_response(writer, 401, {"error": "Unauthorized"})
+                return
+
+            if method == "POST" and path == "/api/login":
+                body_text = body_bytes.decode("utf-8", errors="replace")
+                form_data: dict[str, str] = {}
+                for pair in body_text.split("&"):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        from urllib.parse import unquote_plus
+                        form_data[unquote_plus(k)] = unquote_plus(v)
+                submitted_key = form_data.get("api_key", "")
+                if submitted_key == self.api_key:
+                    await self._send_response(
+                        writer,
+                        302,
+                        "",
+                        content_type="text/plain",
+                        extra_headers=[
+                            "Location: /",
+                            "Set-Cookie: console_auth=" + str(self.api_key) + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000",
+                        ],
+                    )
+                else:
+                    html = render_login_page(error="Ugyldig API-nøkkel")
+                    await self._send_response(writer, 401, html, content_type="text/html; charset=utf-8")
+                return
 
             if method != "GET":
                 await self._send_response(writer, 405, {"error": "Method not allowed"})
                 return
 
-            if path == "/health":
+            if path == "/login":
+                html = render_login_page()
+                await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
+            elif path == "/health":
                 await self._send_response(
                     writer,
                     200,

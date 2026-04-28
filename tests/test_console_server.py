@@ -24,7 +24,7 @@ async def stop_server(server: ConsoleServer, task: asyncio.Task[None]):
         pass
 
 
-async def request(path: str, *, method: str = "GET", api_key: str | None = None, body: bytes = b""):
+async def request(path: str, *, method: str = "GET", api_key: str | None = None, body: bytes = b"", cookie: str | None = None):
     reader, writer = await asyncio.open_connection(HOST, PORT)
     headers = [
         f"{method} {path} HTTP/1.1",
@@ -33,6 +33,8 @@ async def request(path: str, *, method: str = "GET", api_key: str | None = None,
     ]
     if api_key is not None:
         headers.append(f"X-API-Key: {api_key}")
+    if cookie is not None:
+        headers.append(f"Cookie: {cookie}")
     if body:
         headers.append(f"Content-Length: {len(body)}")
     payload = "\r\n".join(headers).encode() + b"\r\n\r\n" + body
@@ -175,5 +177,69 @@ async def test_404_unknown_path():
     try:
         response = await request("/unknown", api_key=API_KEY)
         assert b"404" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_login_page_without_auth():
+    server, task = await start_server()
+    try:
+        response = await request("/login")
+        assert b"200" in response
+        assert b"Inebotten Console" in response
+        assert b"api_key" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_root_returns_login_without_auth():
+    server, task = await start_server()
+    try:
+        response = await request("/")
+        assert b"200" in response
+        assert b"api_key" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_api_login_valid_key():
+    server, task = await start_server()
+    try:
+        body = b"api_key=test-key-123"
+        response = await request("/api/login", method="POST", body=body)
+        assert b"302" in response
+        assert b"Set-Cookie: console_auth=" in response
+        assert b"Location: /" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_api_login_invalid_key():
+    server, task = await start_server()
+    try:
+        body = b"api_key=wrong-key"
+        response = await request("/api/login", method="POST", body=body)
+        assert b"401" in response
+        assert "Ugyldig API-nøkkel".encode("utf-8") in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_dashboard_with_cookie():
+    server, task = await start_server()
+    try:
+        response = await request("/", cookie="console_auth=test-key-123")
+        assert b"200" in response
+        assert b"Inebotten Console" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_api_with_cookie():
+    server, task = await start_server()
+    try:
+        response = await request("/api/status", cookie="console_auth=test-key-123")
+        assert b"200" in response
+        assert b'"status":' in response
     finally:
         await stop_server(server, task)

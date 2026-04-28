@@ -54,6 +54,126 @@ def _status_badge(status: str) -> str:
     return "warn"
 
 
+def render_login_page(error: str | None = None) -> str:
+    error_html = f'<div class="error">{error}</div>' if error else ""
+    return f"""<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inebotten Console - Logg inn</title>
+<style>
+  :root {{
+    --bg: #1a1a2e;
+    --bg-card: #16213e;
+    --text: #e0e0e0;
+    --text-muted: #a0a0b0;
+    --accent: #e94560;
+    --accent-secondary: #0f3460;
+    --border: #2a2a4a;
+    --radius: 8px;
+    --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 1.5rem;
+  }}
+  .login-card {{
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+    width: 100%;
+    max-width: 400px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+  }}
+  .login-card h1 {{
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: var(--accent);
+  }}
+  .login-card p {{
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-bottom: 1.5rem;
+  }}
+  label {{
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text-muted);
+  }}
+  input[type="password"] {{
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 1rem;
+    font-family: var(--font);
+    margin-bottom: 1rem;
+  }}
+  input[type="password"]:focus {{
+    outline: none;
+    border-color: var(--accent);
+  }}
+  button {{
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--accent);
+    border: none;
+    border-radius: var(--radius);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }}
+  button:hover {{ opacity: 0.9; }}
+  .error {{
+    background: rgba(231, 76, 60, 0.15);
+    color: #e74c3c;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+  }}
+  .hint {{
+    margin-top: 1rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+  }}
+</style>
+</head>
+<body>
+<div class="login-card">
+  <h1>Inebotten Console</h1>
+  <p>Skriv inn API-nøkkelen for å fortsette</p>
+  {error_html}
+  <form method="POST" action="/api/login">
+    <label for="api_key">API-nøkkel</label>
+    <input type="password" id="api_key" name="api_key" placeholder="API-nøkkel" required autofocus>
+    <button type="submit">Logg inn</button>
+  </form>
+  <p class="hint">Nøkkelen finner du i serverloggen eller som miljøvariabel <code>CONSOLE_API_KEY</code></p>
+</div>
+</body>
+</html>"""
+
+
 def render_dashboard(data: dict | None) -> str:
     if data is None:
         data = {}
