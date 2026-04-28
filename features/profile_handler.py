@@ -72,13 +72,29 @@ class ProfileHandler(BaseHandler):
             await self.send_response(message, "❌ Kunne ikke endre aktivitet.")
 
     async def handle_bio(self, message, bio_text: str) -> None:
-        """
-        Update Inebotten's "About Me" (bio) section.
-        Since discord.py doesn't officially support bio editing, we use a direct API call.
-        """
+        """Update Inebotten's About Me (bio) via Discord API."""
         if not self.token:
             await self.send_response(message, "❌ Fant ikke Discord-token for API-kall.")
             return
+
+        if hasattr(self.client, 'http') and hasattr(self.client.http, 'request'):
+            try:
+                resp = await self.client.http.request(
+                    method='PATCH',
+                    path='/users/@me',
+                    json={"bio": bio_text}
+                )
+                if isinstance(resp, dict):
+                    await self.send_response(message, "✅ Bio (About Me) er oppdatert!")
+                    return
+                status = getattr(resp, 'status', 200)
+                if status == 200:
+                    await self.send_response(message, "✅ Bio (About Me) er oppdatert!")
+                    return
+                body = await resp.text() if hasattr(resp, 'text') else str(resp)
+                self.log(f"Bio update via client.http failed: HTTP {status} - {body[:500]}")
+            except Exception as e:
+                self.log(f"client.http bio attempt failed: {e}")
 
         url = "https://discord.com/api/v9/users/@me"
         headers = {
@@ -87,20 +103,20 @@ class ProfileHandler(BaseHandler):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "X-Super-Properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTIwLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjI1MjgxMywiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbCwiZGVzaWduX2lkIjowfQ=="
         }
-        payload = {"bio": bio_text}
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.patch(url, headers=headers, json=payload) as resp:
+                async with session.patch(url, headers=headers, json={"bio": bio_text}) as resp:
+                    raw_body = await resp.text()
+                    self.log(f"Bio update raw response: HTTP {resp.status} body={raw_body[:1000]}")
                     if resp.status == 200:
                         await self.send_response(message, "✅ Bio (About Me) er oppdatert!")
                     else:
                         try:
-                            data = await resp.json()
-                            error_msg = data.get("message", "Ukjent feil")
+                            data = await resp.json(content_type=None)
+                            error_msg = data.get("message", "Ukjent feil") if isinstance(data, dict) else "Ukjent feil"
                         except Exception:
-                            error_msg = f"HTTP {resp.status}"
-                        self.log(f"API Error updating bio: {resp.status} - {error_msg}")
+                            error_msg = raw_body[:200] if raw_body else f"HTTP {resp.status}"
                         await self.send_response(message, f"❌ Kunne ikke oppdatere bio: {error_msg}")
         except Exception as e:
             self.log(f"Error updating bio: {e}")
