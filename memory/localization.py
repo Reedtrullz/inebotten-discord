@@ -385,8 +385,8 @@ class Localization:
                 'en': '🎉 **Fun:**\n• "@inebotten countdown to christmas" / "hvor lenge til jul"\n• "@inebotten poll Pizza or burger?"\n• "@inebotten movie suggestion" / "filmforslag"\n• "@inebotten quote" / "sitat"\n• "@inebotten word of the day" / "dagens ord"\n• "@inebotten aurora" / "nordlys"\n• "@inebotten school holidays" / "skoleferie"\n• "@inebotten btc price" / "bitcoin pris"\n• "@inebotten compliment @user" / "kompliment @user"\n• "@inebotten horoscope aquarius" / "horoskop vannmannen"\n• "@inebotten calculate 2+2" / "regn ut 2+2"\n• "@inebotten convert 100 USD to NOK" / "100 USD til NOK"\n• "@inebotten shorten [URL]" / "forkort [URL]"\n• "@inebotten daily digest" / "daglig oppsummering"'
             },
             'help_profile': {
-                'no': '👤 **Profil:**\n• "@inebotten status online/dnd/idle"\n• "@inebotten bio [tekst]" / "endre bio"\n• "@inebotten spiller [spill]" / "ser på [film]"',
-                'en': '👤 **Profile:**\n• "@inebotten status online/dnd/idle"\n• "@inebotten bio [text]"\n• "@inebotten playing [game]" / "watching [movie]"'
+                'no': '👤 **Profil:**\n• "@inebotten status online/dnd/idle"\n• "@inebotten spiller [spill]" / "ser på [film]"',
+                'en': '👤 **Profile:**\n• "@inebotten status online/dnd/idle"\n• "@inebotten playing [game]" / "watching [movie]"'
             },
             'help_footer_tip': {
                 'no': '\n💡 Jeg forstår både norsk og engelsk!',
