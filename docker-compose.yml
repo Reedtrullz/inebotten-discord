@@ -16,6 +16,9 @@ services:
       - CONSOLE_PORT=8080
     expose:
       - "8080"
+    ports:
+      # Localhost-only diagnostic access on the VPS. Public access still goes through Caddy.
+      - "127.0.0.1:8080:8080"
     logging:
       driver: "json-file"
       options:
@@ -26,6 +29,8 @@ services:
     image: caddy:2-alpine
     container_name: inebotten-caddy
     restart: always
+    environment:
+      - CADDY_CONFIG_REV=2026-04-28-console-upstream
     ports:
       - "80:80"
       - "443:443"

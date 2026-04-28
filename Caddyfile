@@ -3,7 +3,7 @@
 
 bot.reidar.tech {
     # Reverse proxy to the bot's console
-    reverse_proxy http://inebotten:8080
+    reverse_proxy http://inebotten-bot:8080
 
     # Security headers
     header {
