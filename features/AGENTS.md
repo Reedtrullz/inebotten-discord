@@ -8,7 +8,11 @@ Denne mappen inneholder botfunksjoner og handlers for Discord-kommandoer.
 features/
 ├── base_handler.py          # felles svar, guild-id, logging og rate limit
 ├── calendar_handler.py      # kalenderkommandoer
+├── reminder_handler.py      # påminnelseskommandoer
 ├── polls_handler.py         # avstemninger og stemmer
+├── quote_handler.py         # sitathåndtering
+├── watchlist_handler.py     # watchlist-håndtering
+├── birthday_handler.py      # bursdagshåndtering
 ├── utility_handler.py       # kalkulator, krypto og URL
 ├── fun_handler.py           # sitater, dagens ord, horoskop og komplimenter
 ├── *_manager.py             # domenelogikk uten Discord-avhengighet

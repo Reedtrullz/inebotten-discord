@@ -31,8 +31,9 @@ HTTP console for bot monitoring: status, bridge health, calendar, polls, rate li
 ```
 web_console/
 ├── server.py           # ConsoleServer — asyncio HTTP server
-├── dashboard.py        # render_dashboard() + render_login_page() — Python HTML templates
+├── dashboard.py        # render_dashboard() + render_login_page() + render_commands_page()
 ├── state_collector.py  # Collects bot state for the dashboard
+├── console_store.py    # Persistent JSONL log + cumulative stats storage
 ├── templates/          # Base templates (dashboard + login)
 ├── static/             # CSS, JS, and vendored libraries
 └── __init__.py
@@ -58,6 +59,7 @@ web_console/
 - Login form posts to `/api/login` which validates key and sets HttpOnly cookie
 - All dashboard cards use `data-metric` attributes for client-side updates
 - Initial state delivered via `<script id="initial-data" type="application/json">`
+- Logs and stats persist across restarts via `console_store.py` (JSONL + JSON)
 
 ## ANTI-PATTERNS
 
@@ -80,4 +82,6 @@ web_console/
 | `/api/rate-limits` | Yes | Rate limit stats JSON |
 | `/api/intents` | Yes | Intent stats JSON |
 | `/api/memory` | Yes | Memory stats JSON |
+| `/commands` | No | Commands reference page (auth-exempt in demo) |
+| `/demo` | No | Demo dashboard with mock data |
 | `/api/logs` | Yes | Log lines JSON (`?lines=N`) |

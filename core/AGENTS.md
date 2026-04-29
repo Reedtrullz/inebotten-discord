@@ -35,9 +35,10 @@ core/
 - `SelfbotClient.start_console()` creates `ConsoleServer` early (before `on_ready`) and updates `.monitor` later
 - `IntentRouter.route()` returns `IntentResult(intent, confidence, payload, reason)`
 - Confidence thresholds in `intent_thresholds.py` — calendar requires ≥0.94
+- `MessageMonitor` runs `_console_persistence_loop()` to save intent/rate-limit stats every 60s
 
 ## ANTI-PATTERNS
 
 - **Do not** call `await self.monitor.setup()` if the monitor object lacks a `setup()` method
 - **Do not** add random parsing in `MessageMonitor` — route through `IntentRouter`
-- `message_monitor.py` is ~1024 lines — resist adding more; extract to handlers
+- `message_monitor.py` is ~1200 lines — resist adding more; extract to handlers
