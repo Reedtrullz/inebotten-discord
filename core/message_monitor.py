@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
@@ -942,6 +943,65 @@ class SelfbotClient(discord.Client):
         print("[BOT] No commit hash source found, using 'unknown'")
         return "unknown"
 
+    def _ensure_current_commit_hash(self, current_commit):
+        """Refresh commit_hash.txt if git HEAD differs from the startup hash."""
+        import shutil
+
+        if not shutil.which("git"):
+            return current_commit
+
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.isdir(os.path.join(project_root, ".git")):
+            return current_commit
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=project_root,
+            )
+        except Exception as e:
+            print(f"[BOT] Could not check git HEAD for commit hash refresh: {e}")
+            return current_commit
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            print(f"[BOT] Could not check git HEAD for commit hash refresh: {stderr}")
+            return current_commit
+
+        git_commit = result.stdout.strip()
+        if not git_commit or git_commit == current_commit:
+            return current_commit
+
+        print(
+            f"[BOT] commit_hash.txt is stale ({current_commit} != {git_commit}), regenerating"
+        )
+
+        python_cmd = shutil.which("python3") or sys.executable
+        try:
+            result = subprocess.run(
+                [python_cmd, "scripts/write_version.py"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=project_root,
+            )
+        except Exception as e:
+            print(f"[BOT] Could not regenerate commit_hash.txt: {e}")
+            return current_commit
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            print(f"[BOT] Could not regenerate commit_hash.txt: {stderr}")
+            return current_commit
+
+        stdout = result.stdout.strip()
+        if stdout:
+            print(f"[BOT] {stdout}")
+        return self._get_commit_hash()
+
     async def on_ready(self):
         """Called when bot is ready"""
         self.start_time = datetime.now()
@@ -952,6 +1012,7 @@ class SelfbotClient(discord.Client):
         )
 
         commit = self._get_commit_hash()
+        commit = self._ensure_current_commit_hash(commit)
         try:
             await self.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=commit))
             print(f"[BOT] Set activity to: Playing {commit}")

@@ -28,6 +28,7 @@ fi
   echo "[$(date -Is)] Updating $before -> $after"
   git reset --hard "origin/$BRANCH"
 
+  python3 scripts/write_version.py
   docker compose up -d --build --remove-orphans
   docker image prune -f >/dev/null || true
 
