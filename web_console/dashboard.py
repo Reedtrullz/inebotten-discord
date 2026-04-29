@@ -584,25 +584,21 @@ function toggleTheme() {{
     )
 
 
-def render_dashboard(data: dict[str, Any] | None, *, is_demo: bool = False) -> str:
+def render_dashboard(data: dict[str, Any] | None) -> str:
     if data is None:
         data = {}
 
-    sections = [
-        _render_status_section(data),
-        _render_bridge_section(data),
-        _render_calendar_section(data),
-        _render_polls_section(data),
-        _render_rate_limits_section(data),
-        _render_intents_section(data),
-        _render_logs_section(data),
-    ]
-
-    if is_demo:
-        demo_banner = '<div class="demo-banner">Demo-modus — Eksempeldata, ikke tilkoblet bot</div>'
-        sections.insert(0, demo_banner)
-
-    main_content = "\n".join(sections)
+    main_content = "\n".join(
+        [
+            _render_status_section(data),
+            _render_bridge_section(data),
+            _render_calendar_section(data),
+            _render_polls_section(data),
+            _render_rate_limits_section(data),
+            _render_intents_section(data),
+            _render_logs_section(data),
+        ]
+    )
 
     return _BASE_TEMPLATE.format(
         title="Inebotten Console",

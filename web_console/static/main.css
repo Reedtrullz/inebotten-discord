@@ -255,18 +255,6 @@ code {
   gap: var(--space-6);
 }
 
-/* Demo banner */
-.demo-banner {
-  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
-  color: #fff;
-  text-align: center;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--border-radius-md);
-  font-weight: 600;
-  font-size: var(--text-sm);
-  margin-bottom: var(--space-4);
-}
-
 /* Form styles */
 .input {
   width: 100%;

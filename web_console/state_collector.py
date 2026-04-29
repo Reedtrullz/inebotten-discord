@@ -353,7 +353,8 @@ def generate_mock_data() -> dict[str, Any]:
             "task_count": 2,
         },
         "polls": {
-            "active_polls": [
+            "active_polls": 2,
+            "polls": [
                 {
                     "question": "Pizza eller burger?",
                     "votes": {"Pepperoni": 5, "Margherita": 3, "Kebab": 7},
@@ -363,27 +364,26 @@ def generate_mock_data() -> dict[str, Any]:
                     "votes": {"Bowling": 2, "Escape room": 4, "Grilling": 6},
                 },
             ],
-            "total_polls": 8,
         },
         "rate_limits": {
-            "global": {
-                "limit": 10000,
-                "remaining": 9876,
-                "reset_in": 3600 * 8,
-                "window": "daglig",
-            },
-            "per_user": {
-                "limit": 5,
-                "window_seconds": 1,
-                "current_users": 3,
+            "summary": {"total_requests": 1337},
+            "user_stats": {
+                "user_1": 45,
+                "user_2": 32,
+                "user_3": 18,
+                "user_4": 12,
+                "user_5": 8,
             },
         },
         "intents": {
-            "CALENDAR_ITEM": {"count": 45, "low_confidence": 2, "errors": 0},
-            "AI_CHAT": {"count": 120, "low_confidence": 5, "errors": 1},
-            "POLL_CREATE": {"count": 8, "low_confidence": 0, "errors": 0},
-            "STATUS": {"count": 12, "low_confidence": 1, "errors": 0},
-            "CALENDAR_LIST": {"count": 20, "low_confidence": 0, "errors": 0},
+            "intent_counts": {
+                "CALENDAR_ITEM": 45,
+                "AI_CHAT": 120,
+                "POLL_CREATE": 8,
+                "STATUS": 12,
+                "CALENDAR_LIST": 20,
+            },
+            "fallback_count": 5,
         },
         "memory": {
             "user_count": 15,

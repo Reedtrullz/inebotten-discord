@@ -214,7 +214,7 @@ class ConsoleServer:
                 await self._serve_static_file(writer, path)
                 return
 
-            auth_exempt = path in ("/health", "/api/login", "/demo")
+            auth_exempt = path in ("/health", "/api/login", "/demo", "/commands")
             authenticated = auth_exempt or self._is_authenticated(headers)
 
             if not authenticated and path in ("/", "/login"):
@@ -280,7 +280,7 @@ class ConsoleServer:
                 html = render_commands_page()
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/demo":
-                html = render_dashboard(generate_mock_data(), is_demo=True)
+                html = render_dashboard(generate_mock_data())
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/api/status":
                 await self._send_response(writer, 200, collect_bot_status(self.monitor))
