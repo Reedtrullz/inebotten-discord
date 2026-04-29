@@ -114,6 +114,9 @@ class MessageMonitor:
         )
         self.nlp_parser = NaturalLanguageParser()
 
+        from cal_system.reminder_manager import ReminderManager
+        self.reminders = ReminderManager()
+
         # Initialize personality and memory systems
         from memory.user_memory import get_user_memory
         from memory.conversation_context import get_context_manager
@@ -374,6 +377,10 @@ class MessageMonitor:
             await self.handlers["calendar"].handle_clear(message)
         elif route.intent == BotIntent.CALENDAR_ITEM:
             await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
+        elif route.intent == BotIntent.REMINDER_EDIT:
+            await self.handlers["reminders"].handle_reminder_edit(message, payload)
+        elif route.intent == BotIntent.REMINDER_DELETE:
+            await self.handlers["reminders"].handle_reminder_delete(message, payload)
         elif route.intent == BotIntent.POLL_CREATE:
             await self.handlers["polls"].handle_poll(message, payload["poll"])
         elif route.intent == BotIntent.POLL_VOTE:
@@ -401,6 +408,12 @@ class MessageMonitor:
             await self.handlers["fun"].handle_word_of_day(message)
         elif route.intent == BotIntent.QUOTE:
             await self.handlers["fun"].handle_quote_command(message, payload["quote"])
+        elif route.intent == BotIntent.QUOTE_LIST:
+            await self.handlers["quotes"].handle_quote_list(message)
+        elif route.intent == BotIntent.QUOTE_EDIT:
+            await self.handlers["quotes"].handle_quote_edit(message, payload)
+        elif route.intent == BotIntent.QUOTE_DELETE:
+            await self.handlers["quotes"].handle_quote_delete(message, payload)
         elif route.intent == BotIntent.AURORA:
             await self.handlers["aurora"].handle_aurora(message)
         elif route.intent == BotIntent.SCHOOL_HOLIDAYS:
@@ -848,6 +861,8 @@ class MessageMonitor:
         from features.help_handler import HelpHandler
         from features.daily_digest_handler import DailyDigestHandler
         from features.birthday_handler import BirthdayHandler
+        from features.quote_handler import QuoteHandler
+        from features.reminder_handler import ReminderHandler
 
         self.handlers = {
             "fun": FunHandler(self),
@@ -855,6 +870,7 @@ class MessageMonitor:
             "countdown": CountdownHandler(self),
             "polls": PollsHandler(self),
             "calendar": CalendarHandler(self),
+            "reminders": ReminderHandler(self),
             "watchlist": WatchlistHandler(self),
             "aurora": AuroraHandler(self),
             "school_holidays": SchoolHolidaysHandler(self),
@@ -862,6 +878,7 @@ class MessageMonitor:
             "daily_digest": DailyDigestHandler(self),
             "profile": __import__('features.profile_handler', fromlist=['ProfileHandler']).ProfileHandler(self),
             "birthdays": BirthdayHandler(self),
+            "quotes": QuoteHandler(self),
         }
 
 

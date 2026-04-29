@@ -17,6 +17,11 @@ from core.intent_keywords import (
     POLL_DELETE_KEYWORDS,
     POLL_EDIT_KEYWORDS,
     PROFILE_KEYWORDS,
+    QUOTE_DELETE_KEYWORDS,
+    QUOTE_EDIT_KEYWORDS,
+    QUOTE_LIST_KEYWORDS,
+    REMINDER_DELETE_KEYWORDS,
+    REMINDER_EDIT_KEYWORDS,
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
@@ -61,6 +66,11 @@ EXPECTED_KEYWORDS = {
     "BIRTHDAY_EDIT_KEYWORDS": ("endre bursdag", "rediger bursdag", "oppdater bursdag"),
     "WATCHLIST_REMOVE_KEYWORDS": ("fjern watchlist", "slett watchlist", "fjern fra watchlist"),
     "WATCHLIST_EDIT_KEYWORDS": ("endre watchlist", "rediger watchlist"),
+    "REMINDER_EDIT_KEYWORDS": ("endre påminnelse", "rediger påminnelse", "oppdater påminnelse"),
+    "REMINDER_DELETE_KEYWORDS": ("slett påminnelse", "fjern påminnelse"),
+    "QUOTE_LIST_KEYWORDS": ("liste sitater", "vis sitater", "alle sitater"),
+    "QUOTE_EDIT_KEYWORDS": ("endre sitat", "rediger sitat"),
+    "QUOTE_DELETE_KEYWORDS": ("slett sitat", "fjern sitat"),
 }
 
 EXPECTED_EXPORTS = tuple(EXPECTED_KEYWORDS.keys())
@@ -113,6 +123,11 @@ class IntentKeywordsTests(unittest.TestCase):
         "BIRTHDAY_EDIT_KEYWORDS": BIRTHDAY_EDIT_KEYWORDS,
         "WATCHLIST_REMOVE_KEYWORDS": WATCHLIST_REMOVE_KEYWORDS,
         "WATCHLIST_EDIT_KEYWORDS": WATCHLIST_EDIT_KEYWORDS,
+        "REMINDER_EDIT_KEYWORDS": REMINDER_EDIT_KEYWORDS,
+        "REMINDER_DELETE_KEYWORDS": REMINDER_DELETE_KEYWORDS,
+        "QUOTE_LIST_KEYWORDS": QUOTE_LIST_KEYWORDS,
+        "QUOTE_EDIT_KEYWORDS": QUOTE_EDIT_KEYWORDS,
+        "QUOTE_DELETE_KEYWORDS": QUOTE_DELETE_KEYWORDS,
     }
 
         for name, value in imported_values.items():

@@ -42,11 +42,10 @@ class QuoteHandler(BaseHandler):
             quotes = self.quote.list_quotes(guild_id)
 
             if not quotes:
-                # TODO(Task 12): Replace with localization key
-                await self.send_response(message, "📭 Ingen sitater lagret ennå.")
+                await self.send_response(message, self.loc.t("quote_list_empty"))
                 return
 
-            lines = ["📚 **Sitater**"]
+            lines = [self.loc.t("quote_list_title")]
             for idx, q in enumerate(quotes, start=1):
                 text = q.get("text", "")
                 author = q.get("author", "Ukjent")
@@ -73,9 +72,8 @@ class QuoteHandler(BaseHandler):
                 index = self.extract_number(message.content)
 
             if index is None:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, "❌ Vennligst oppgi et sitatnummer å redigere."
+                    message, self.loc.t("invalid_event_num")
                 )
                 return
 
@@ -83,23 +81,20 @@ class QuoteHandler(BaseHandler):
             author = self._extract_author_from_payload(payload)
 
             if text is None and author is None:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, "❌ Ingen endringer oppgitt. Send ny tekst eller forfatter."
+                    message, self.loc.t("calendar_edit_invalid")
                 )
                 return
 
             success = self.quote.update_quote(guild_id, index, text=text, author=author)
 
             if success:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, f"✏️ Sitat {index} er oppdatert."
+                    message, self.loc.t("quote_edit_success")
                 )
             else:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, f"❌ Fant ikke sitat {index}."
+                    message, self.loc.t("quote_edit_not_found", num=index)
                 )
 
         except Exception as e:
@@ -121,23 +116,20 @@ class QuoteHandler(BaseHandler):
                 index = self.extract_number(message.content)
 
             if index is None:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, "❌ Vennligst oppgi et sitatnummer å slette."
+                    message, self.loc.t("invalid_event_num")
                 )
                 return
 
             success = self.quote.delete_quote(guild_id, index)
 
             if success:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, f"🗑️ Sitat {index} er slettet."
+                    message, self.loc.t("quote_delete_success")
                 )
             else:
-                # TODO(Task 12): Replace with localization key
                 await self.send_response(
-                    message, f"❌ Fant ikke sitat {index}."
+                    message, self.loc.t("quote_delete_not_found", num=index)
                 )
 
         except Exception as e:

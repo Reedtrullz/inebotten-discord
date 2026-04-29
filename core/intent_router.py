@@ -22,6 +22,11 @@ from core.intent_keywords import (
     POLL_DELETE_KEYWORDS,
     POLL_EDIT_KEYWORDS,
     PROFILE_KEYWORDS,
+    QUOTE_DELETE_KEYWORDS,
+    QUOTE_EDIT_KEYWORDS,
+    QUOTE_LIST_KEYWORDS,
+    REMINDER_DELETE_KEYWORDS,
+    REMINDER_EDIT_KEYWORDS,
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
@@ -54,6 +59,9 @@ class BotIntent(Enum):
     WATCHLIST = "watchlist"
     WORD_OF_DAY = "word_of_day"
     QUOTE = "quote"
+    QUOTE_LIST = "quote_list"
+    QUOTE_EDIT = "quote_edit"
+    QUOTE_DELETE = "quote_delete"
     AURORA = "aurora"
     SCHOOL_HOLIDAYS = "school_holidays"
     PRICE = "price"
@@ -66,6 +74,8 @@ class BotIntent(Enum):
     DASHBOARD = "dashboard"
     SET_LOCATION = "set_location"
     BIRTHDAY_EDIT = "birthday_edit"
+    REMINDER_EDIT = "reminder_edit"
+    REMINDER_DELETE = "reminder_delete"
     AI_CHAT = "ai_chat"
 
 
@@ -99,6 +109,11 @@ class IntentRouter:
 
         if self._is_profile_command(content_lower):
             return IntentResult(BotIntent.PROFILE, 0.95, reason="profile_keyword")
+
+        if has_any_keyword(content_lower, REMINDER_EDIT_KEYWORDS):
+            return IntentResult(BotIntent.REMINDER_EDIT, 0.98, {}, "reminder_edit_keyword")
+        if has_any_keyword(content_lower, REMINDER_DELETE_KEYWORDS):
+            return IntentResult(BotIntent.REMINDER_DELETE, 0.98, {}, "reminder_delete_keyword")
 
         calendar_command = self._route_calendar_command(content_lower)
         if calendar_command:
@@ -140,6 +155,15 @@ class IntentRouter:
 
         if has_any_keyword(content_lower, WORD_OF_DAY_KEYWORDS):
             return IntentResult(BotIntent.WORD_OF_DAY, 0.95, reason="word_of_day_keyword")
+
+        if has_any_keyword(content_lower, QUOTE_LIST_KEYWORDS):
+            return IntentResult(BotIntent.QUOTE_LIST, 0.95, {}, "quote_list_keyword")
+
+        if has_any_keyword(content_lower, QUOTE_EDIT_KEYWORDS):
+            return IntentResult(BotIntent.QUOTE_EDIT, 0.95, {}, "quote_edit_keyword")
+
+        if has_any_keyword(content_lower, QUOTE_DELETE_KEYWORDS):
+            return IntentResult(BotIntent.QUOTE_DELETE, 0.95, {}, "quote_delete_keyword")
 
         quote_cmd = self.monitor.parse_quote_command(content)
         if quote_cmd:

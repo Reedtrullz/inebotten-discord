@@ -336,6 +336,30 @@ class Localization:
                 'no': '💬 **Sitat fra arkivet**\n\n"{text}"\n— {author}\n_{date}_',
                 'en': '💬 **Quote from archive**\n\n"{text}"\n— {author}\n_{date}_'
             },
+            'quote_list_title': {
+                'no': '📚 **Sitater**',
+                'en': '📚 **Quotes**'
+            },
+            'quote_list_empty': {
+                'no': '📚 Ingen sitater ennå!',
+                'en': '📚 No quotes yet!'
+            },
+            'quote_edit_success': {
+                'no': '✅ Sitat oppdatert!',
+                'en': '✅ Quote updated!'
+            },
+            'quote_edit_not_found': {
+                'no': '❌ Fant ikke sitat #{num}',
+                'en': '❌ Quote #{num} not found'
+            },
+            'quote_delete_success': {
+                'no': '🗑️ Sitat slettet!',
+                'en': '🗑️ Quote deleted!'
+            },
+            'quote_delete_not_found': {
+                'no': '❌ Fant ikke sitat #{num}',
+                'en': '❌ Quote #{num} not found'
+            },
             'no_quotes': {
                 'no': 'Ingen sitater lagret ennå! 💬\n\nSi "@inebotten husk dette: [noe morsomt]" for å lagre!',
                 'en': 'No quotes saved yet! 💬\n\nSay "@inebotten remember this: [something funny]" to save!'
