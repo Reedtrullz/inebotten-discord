@@ -21,7 +21,6 @@ user_memory.json
 !package.json
 
 # Git
-.git/
 .gitignore
 
 # OS
