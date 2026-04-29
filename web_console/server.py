@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import cast
 from urllib.parse import urlparse
 
-from web_console.dashboard import render_dashboard, render_login_page  # pyright: ignore[reportUnknownVariableType]
+from web_console.dashboard import render_commands_page, render_dashboard, render_login_page  # pyright: ignore[reportUnknownVariableType]
 from web_console.state_collector import (
     StateCollector,
     collect_bot_status,
@@ -274,6 +274,9 @@ class ConsoleServer:
             elif path == "/":
                 data = await StateCollector(self.monitor).collect_all()
                 html = render_dashboard(data)
+                await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
+            elif path == "/commands":
+                html = render_commands_page()
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/api/status":
                 await self._send_response(writer, 200, collect_bot_status(self.monitor))
