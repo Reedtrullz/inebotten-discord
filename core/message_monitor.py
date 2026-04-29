@@ -901,21 +901,26 @@ class SelfbotClient(discord.Client):
             print(f"[BOT] WARNING: Could not start web console: {e}")
 
     def _get_commit_hash(self):
-        """Get short git commit hash, or 'unknown' if not in a git repo."""
-        import shutil
+        """Get short git commit hash from file, git, or fallback to 'unknown'."""
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+        commit_file = os.path.join(project_root, "commit_hash.txt")
+        if os.path.exists(commit_file):
+            try:
+                with open(commit_file, "r") as f:
+                    commit = f.read().strip()
+                    if commit:
+                        print(f"[BOT] Read commit hash from file: {commit}")
+                        return commit
+            except Exception as e:
+                print(f"[BOT] Error reading commit_hash.txt: {e}")
+
+        import shutil
         if not shutil.which("git"):
             print("[BOT] git not found in PATH, cannot determine commit hash")
             return "unknown"
 
-        candidate_dirs = [
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            os.getcwd(),
-            "/opt/inebotten-discord",
-            "/app",
-            os.path.expanduser("~"),
-        ]
-
+        candidate_dirs = [project_root, os.getcwd(), "/opt/inebotten-discord", "/app"]
         for cwd in candidate_dirs:
             if not os.path.isdir(os.path.join(cwd, ".git")):
                 continue
@@ -929,14 +934,12 @@ class SelfbotClient(discord.Client):
                 )
                 if result.returncode == 0:
                     commit = result.stdout.strip()
-                    print(f"[BOT] Detected commit hash from {cwd}: {commit}")
+                    print(f"[BOT] Detected commit hash from git: {commit}")
                     return commit
-                else:
-                    print(f"[BOT] git failed in {cwd}: {result.stderr.strip()}")
-            except Exception as e:
-                print(f"[BOT] git error in {cwd}: {e}")
+            except Exception:
+                pass
 
-        print("[BOT] No .git directory found in candidate paths, using 'unknown'")
+        print("[BOT] No commit hash source found, using 'unknown'")
         return "unknown"
 
     async def on_ready(self):
