@@ -212,8 +212,35 @@ class MessageMonitor:
                 asyncio.create_task(self.calendar.sync_from_gcal())
             except Exception as e:
                 print(f"[MONITOR] Initial GCal sync failed: {e}")
-        
+
+        # Start periodic console stats persistence
+        asyncio.create_task(self._console_persistence_loop())
+
         print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
+
+    async def _console_persistence_loop(self) -> None:
+        """Periodically save intent and rate-limit stats to disk."""
+        try:
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    from web_console.console_store import get_console_store
+                    store = get_console_store()
+                    rate_stats: dict[str, int] = {}
+                    overall = self.rate_limiter.get_stats() if hasattr(self.rate_limiter, "get_stats") else {}
+                    if isinstance(overall, dict):
+                        for key in ("user_stats", "per_user", "users"):
+                            candidate = overall.get(key)
+                            if isinstance(candidate, dict):
+                                for user, stats in candidate.items():
+                                    count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
+                                    rate_stats[user] = rate_stats.get(user, 0) + count
+                                break
+                    store.save_stats(dict(self.intent_stats), rate_stats)
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
 
     def is_mention(self, message):
         """Check if message explicitly mentions the bot."""

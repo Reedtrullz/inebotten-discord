@@ -84,7 +84,12 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         uptime_seconds = 0
         if start_time:
             try:
-                uptime_seconds = max(0, int((datetime.now() - start_time).total_seconds()))
+                session_uptime = max(0, int((datetime.now() - start_time).total_seconds()))
+                from web_console.console_store import get_console_store
+                store = get_console_store()
+                first_start = store.first_start_time()
+                total_uptime = max(0, int((datetime.now() - first_start).total_seconds()))
+                uptime_seconds = total_uptime
             except Exception:
                 uptime_seconds = 0
 
@@ -233,13 +238,24 @@ def collect_poll_data(monitor: object | None = None) -> dict[str, Any]:
 
 
 def collect_rate_limits(monitor: object | None = None) -> dict[str, Any]:
+    from web_console.console_store import get_console_store
+
+    store = get_console_store()
+    persisted = store.load_rate_limit_stats()
+
     if monitor is None:
-        return {"user_stats": {}}
+        return {
+            "user_stats": _anonymize_user_ids({u: {"requests": c} for u, c in persisted.items()}),
+            "summary": {"total_requests": sum(persisted.values())},
+        }
 
     try:
         rate_limiter = getattr(monitor, "rate_limiter", None)
         if rate_limiter is None:
-            return {"user_stats": {}}
+            return {
+                "user_stats": _anonymize_user_ids({u: {"requests": c} for u, c in persisted.items()}),
+                "summary": {"total_requests": sum(persisted.values())},
+            }
 
         overall_stats = rate_limiter.get_stats() if hasattr(rate_limiter, "get_stats") else {}
         user_stats: dict[str, dict[str, int]] = {}
@@ -257,8 +273,15 @@ def collect_rate_limits(monitor: object | None = None) -> dict[str, Any]:
                     user_stats = _sanitize_user_stats(candidate)
                     break
 
+        merged: dict[str, int] = {}
+        for user, stats in user_stats.items():
+            count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
+            merged[user] = merged.get(user, 0) + count
+        for user, count in persisted.items():
+            merged[user] = merged.get(user, 0) + count
+
         return {
-            "user_stats": _anonymize_user_ids(user_stats),
+            "user_stats": _anonymize_user_ids({u: {"requests": c} for u, c in merged.items()}),
             "summary": overall_stats if isinstance(overall_stats, dict) else {},
         }
     except Exception:
@@ -266,8 +289,16 @@ def collect_rate_limits(monitor: object | None = None) -> dict[str, Any]:
 
 
 def collect_intent_stats(monitor: object | None = None) -> dict[str, Any]:
+    from web_console.console_store import get_console_store
+
+    store = get_console_store()
+    persisted = store.load_intent_stats()
+
     if monitor is None:
-        return {"intent_counts": {}, "fallback_count": 0}
+        intent_counts = {k: v.get("count", 0) for k, v in persisted.items()}
+        fallback_count = sum(v.get("low_confidence", 0) for v in persisted.values())
+        fallback_count += intent_counts.get("ai_chat", 0)
+        return {"intent_counts": intent_counts, "fallback_count": fallback_count}
 
     try:
         raw_stats = {}
@@ -280,12 +311,16 @@ def collect_intent_stats(monitor: object | None = None) -> dict[str, Any]:
         intent_counts: dict[str, int] = {}
         fallback_count = 0
 
+        for intent_name, stats in persisted.items():
+            intent_counts[str(intent_name)] = int(stats.get("count", 0))
+            fallback_count += int(stats.get("low_confidence", 0))
+
         if isinstance(raw_stats, dict):
             for intent_name, stats in raw_stats.items():
                 if not isinstance(stats, dict):
                     continue
                 count = int(stats.get("count", 0) or 0)
-                intent_counts[str(intent_name)] = count
+                intent_counts[str(intent_name)] = intent_counts.get(str(intent_name), 0) + count
                 fallback_count += int(stats.get("low_confidence", 0) or 0)
 
         fallback_count += intent_counts.get("ai_chat", 0)

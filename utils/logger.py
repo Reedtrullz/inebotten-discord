@@ -100,11 +100,30 @@ def set_log_level(level: str):
 class LogBuffer:
     def __init__(self, maxlen: int = 2000):
         self._buffer: deque[str] = deque(maxlen=maxlen)
+        self._store = None
+
+    def _lazy_store(self):
+        if self._store is None:
+            try:
+                from web_console.console_store import get_console_store
+                self._store = get_console_store()
+            except Exception:
+                pass
+        return self._store
 
     def append(self, line: str) -> None:
         self._buffer.append(line)
+        store = self._lazy_store()
+        if store is not None:
+            store.append_logs([line])
 
     def get_lines(self, count: int = 200) -> list[str]:
+        store = self._lazy_store()
+        if store is not None:
+            persisted = store.load_logs(count)
+            live = list(self._buffer)
+            combined = persisted + live
+            return combined[-count:]
         return list(self._buffer)[-count:]
 
 
