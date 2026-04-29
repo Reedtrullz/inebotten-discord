@@ -280,7 +280,7 @@ class ConsoleServer:
                 html = render_commands_page()
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/demo":
-                html = render_dashboard(generate_mock_data())
+                html = render_dashboard(generate_mock_data(), is_demo=True)
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/api/status":
                 await self._send_response(writer, 200, collect_bot_status(self.monitor))

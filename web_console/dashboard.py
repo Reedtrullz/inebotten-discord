@@ -584,7 +584,7 @@ function toggleTheme() {{
     )
 
 
-def render_dashboard(data: dict[str, Any] | None) -> str:
+def render_dashboard(data: dict[str, Any] | None, *, is_demo: bool = False) -> str:
     if data is None:
         data = {}
 
@@ -600,12 +600,14 @@ def render_dashboard(data: dict[str, Any] | None) -> str:
         ]
     )
 
+    body_class = "dashboard-page demo-mode" if is_demo else "dashboard-page"
+
     return _BASE_TEMPLATE.format(
         title="Inebotten Console",
         header_content=_dashboard_header(),
         main_content=main_content,
         footer_content=_dashboard_footer(),
-        body_class="dashboard-page",
+        body_class=body_class,
         refresh_meta="",
         initial_data_script=_initial_data_script(data),
     )

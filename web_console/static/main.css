@@ -255,6 +255,11 @@ code {
   gap: var(--space-6);
 }
 
+/* Demo mode: suppress auth-expired banner */
+.demo-mode div[x-show="authExpired"] {
+  display: none !important;
+}
+
 /* Form styles */
 .input {
   width: 100%;
