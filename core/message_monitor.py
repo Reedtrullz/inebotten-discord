@@ -389,7 +389,14 @@ class MessageMonitor:
         elif route.intent == BotIntent.COUNTDOWN:
             await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
         elif route.intent == BotIntent.WATCHLIST:
-            await self.handlers["watchlist"].handle_watchlist(message, payload["watchlist"])
+            watchlist_payload = payload.get("watchlist", {})
+            action = watchlist_payload.get("action")
+            if action == "remove":
+                await self.handlers["watchlist"].handle_watchlist_remove(message, watchlist_payload)
+            elif action == "edit":
+                await self.handlers["watchlist"].handle_watchlist_edit(message, watchlist_payload)
+            else:
+                await self.handlers["watchlist"].handle_watchlist(message, watchlist_payload)
         elif route.intent == BotIntent.WORD_OF_DAY:
             await self.handlers["fun"].handle_word_of_day(message)
         elif route.intent == BotIntent.QUOTE:
@@ -410,6 +417,8 @@ class MessageMonitor:
             await self.handlers["utility"].handle_shorten(message, payload["shorten"])
         elif route.intent == BotIntent.DAILY_DIGEST:
             await self.handlers["daily_digest"].handle_daily_digest(message)
+        elif route.intent == BotIntent.BIRTHDAY_EDIT:
+            await self.handlers["birthdays"].handle_birthday_edit(message, payload)
         elif route.intent == BotIntent.SET_LOCATION:
             await self._handle_set_location(message, payload["city"])
         else:
@@ -838,6 +847,7 @@ class MessageMonitor:
         from features.school_holidays_handler import SchoolHolidaysHandler
         from features.help_handler import HelpHandler
         from features.daily_digest_handler import DailyDigestHandler
+        from features.birthday_handler import BirthdayHandler
 
         self.handlers = {
             "fun": FunHandler(self),
@@ -851,6 +861,7 @@ class MessageMonitor:
             "help": HelpHandler(self),
             "daily_digest": DailyDigestHandler(self),
             "profile": __import__('features.profile_handler', fromlist=['ProfileHandler']).ProfileHandler(self),
+            "birthdays": BirthdayHandler(self),
         }
 
 

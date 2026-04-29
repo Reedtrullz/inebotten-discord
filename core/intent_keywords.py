@@ -38,6 +38,10 @@ DAILY_DIGEST_KEYWORDS = ("daglig oppsummering", "daily digest", "oppsummering", 
 POLL_EDIT_KEYWORDS = ("endre poll", "edit poll", "endre avstemning", "rediger poll")
 POLL_DELETE_KEYWORDS = ("slett poll", "delete poll", "fjern avstemning", "slett avstemning")
 POLL_CLOSE_KEYWORDS = ("lukk poll", "close poll", "avslutt avstemning", "steng poll")
+BIRTHDAY_EDIT_KEYWORDS = ("endre bursdag", "rediger bursdag", "oppdater bursdag")
+
+WATCHLIST_REMOVE_KEYWORDS = ("fjern watchlist", "slett watchlist", "fjern fra watchlist")
+WATCHLIST_EDIT_KEYWORDS = ("endre watchlist", "rediger watchlist")
 
 __all__ = [
     "HELP_KEYWORDS",
@@ -57,4 +61,7 @@ __all__ = [
     "POLL_EDIT_KEYWORDS",
     "POLL_DELETE_KEYWORDS",
     "POLL_CLOSE_KEYWORDS",
+    "BIRTHDAY_EDIT_KEYWORDS",
+    "WATCHLIST_REMOVE_KEYWORDS",
+    "WATCHLIST_EDIT_KEYWORDS",
 ]

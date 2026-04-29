@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from core.intent_keywords import (
     AURORA_KEYWORDS,
+    BIRTHDAY_EDIT_KEYWORDS,
     CALENDAR_KEYWORDS,
     CLEAR_KEYWORDS,
     COMPLETE_KEYWORDS,
@@ -24,6 +25,8 @@ from core.intent_keywords import (
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
+    WATCHLIST_EDIT_KEYWORDS,
+    WATCHLIST_REMOVE_KEYWORDS,
     WORD_OF_DAY_KEYWORDS,
 )
 from core.intent_utils import has_any_keyword
@@ -62,6 +65,7 @@ class BotIntent(Enum):
     SEARCH = "search"
     DASHBOARD = "dashboard"
     SET_LOCATION = "set_location"
+    BIRTHDAY_EDIT = "birthday_edit"
     AI_CHAT = "ai_chat"
 
 
@@ -100,6 +104,9 @@ class IntentRouter:
         if calendar_command:
             return calendar_command
 
+        if has_any_keyword(content_lower, BIRTHDAY_EDIT_KEYWORDS):
+            return IntentResult(BotIntent.BIRTHDAY_EDIT, 0.95, {}, "birthday_edit_keyword")
+
         calendar_item = self._route_calendar_item(content, guild_id)
         if calendar_item and calendar_item.confidence >= 0.94:
             return calendar_item
@@ -127,9 +134,9 @@ class IntentRouter:
         if countdown_result:
             return IntentResult(BotIntent.COUNTDOWN, 0.93, {"countdown": countdown_result}, "countdown_parser")
 
-        watchlist_cmd = self.monitor.parse_watchlist_command(content)
-        if watchlist_cmd:
-            return IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": watchlist_cmd}, "watchlist_parser")
+        watchlist_result = self._route_watchlist_command(content)
+        if watchlist_result:
+            return watchlist_result
 
         if has_any_keyword(content_lower, WORD_OF_DAY_KEYWORDS):
             return IntentResult(BotIntent.WORD_OF_DAY, 0.95, reason="word_of_day_keyword")
@@ -204,6 +211,12 @@ class IntentRouter:
         if has_any_keyword(content_lower, LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
             return IntentResult(BotIntent.CALENDAR_LIST, 0.92, reason="calendar_list_keyword")
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")
+
+    def _route_watchlist_command(self, content: str) -> Optional[IntentResult]:
+        watchlist_cmd = self.monitor.parse_watchlist_command(content)
+        if watchlist_cmd:
+            return IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": watchlist_cmd}, "watchlist_parser")
+        return None
 
     def _route_calendar_item(self, content: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
         try:
@@ -329,6 +342,10 @@ class IntentRouter:
 
     def _parse_poll_reference(self, content_lower: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {"target": None}
+        number_match = re.search(r'(?:poll|avstemning)\s+(\d+)', content_lower)
+        if number_match:
+            result["target"] = int(number_match.group(1))
+            return result
         number_match = re.search(r'\b(\d+)\b', content_lower)
         if number_match:
             result["target"] = int(number_match.group(1))

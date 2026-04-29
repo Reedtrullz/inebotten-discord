@@ -150,6 +150,30 @@ class Localization:
                 'no': '❌ Fant ikke påminnelse #{num}',
                 'en': '❌ Reminder #{num} not found'
             },
+            'reminder_edit_success': {
+                'no': '✅ Påminnelse oppdatert!',
+                'en': '✅ Reminder updated!'
+            },
+            'reminder_edit_not_found': {
+                'no': '❌ Fant ikke påminnelse #{num}',
+                'en': '❌ Reminder #{num} not found'
+            },
+            'reminder_delete_success': {
+                'no': '🗑️ Påminnelse slettet!',
+                'en': '🗑️ Reminder deleted!'
+            },
+            'reminder_delete_not_found': {
+                'no': '❌ Fant ikke påminnelse #{num}',
+                'en': '❌ Reminder #{num} not found'
+            },
+            'reminder_search_results': {
+                'no': '⏰ Søkeresultater:',
+                'en': '⏰ Search results:'
+            },
+            'reminder_search_no_results': {
+                'no': "❌ Ingen påminnelser funnet for '{query}'",
+                'en': "❌ No reminders found for '{query}'"
+            },
             'active_reminders': {
                 'no': '📋 **Dine påminnelser**',
                 'en': '📋 **Your reminders**'
@@ -187,6 +211,14 @@ class Localization:
             'birthday_tomorrow': {
                 'no': '🎂 **{name}** har bursdag i morgen!',
                 'en': '🎂 **{name}**\'s birthday is tomorrow!'
+            },
+            'birthday_edit_success': {
+                'no': '✅ Bursdag oppdatert!',
+                'en': '✅ Birthday updated!'
+            },
+            'birthday_edit_not_found': {
+                'no': '❌ Fant ikke bursdag for {name}',
+                'en': '❌ Birthday for {name} not found'
             },
             
             # Countdown

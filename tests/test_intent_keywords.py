@@ -4,6 +4,7 @@ from typing import cast
 import core.intent_keywords as intent_keywords
 from core.intent_keywords import (
     AURORA_KEYWORDS,
+    BIRTHDAY_EDIT_KEYWORDS,
     CALENDAR_KEYWORDS,
     CLEAR_KEYWORDS,
     COMPLETE_KEYWORDS,
@@ -19,6 +20,8 @@ from core.intent_keywords import (
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
+    WATCHLIST_EDIT_KEYWORDS,
+    WATCHLIST_REMOVE_KEYWORDS,
     WORD_OF_DAY_KEYWORDS,
 )
 
@@ -55,6 +58,9 @@ EXPECTED_KEYWORDS = {
     "POLL_EDIT_KEYWORDS": ("endre poll", "edit poll", "endre avstemning", "rediger poll"),
     "POLL_DELETE_KEYWORDS": ("slett poll", "delete poll", "fjern avstemning", "slett avstemning"),
     "POLL_CLOSE_KEYWORDS": ("lukk poll", "close poll", "avslutt avstemning", "steng poll"),
+    "BIRTHDAY_EDIT_KEYWORDS": ("endre bursdag", "rediger bursdag", "oppdater bursdag"),
+    "WATCHLIST_REMOVE_KEYWORDS": ("fjern watchlist", "slett watchlist", "fjern fra watchlist"),
+    "WATCHLIST_EDIT_KEYWORDS": ("endre watchlist", "rediger watchlist"),
 }
 
 EXPECTED_EXPORTS = tuple(EXPECTED_KEYWORDS.keys())
@@ -104,6 +110,9 @@ class IntentKeywordsTests(unittest.TestCase):
         "POLL_EDIT_KEYWORDS": POLL_EDIT_KEYWORDS,
         "POLL_DELETE_KEYWORDS": POLL_DELETE_KEYWORDS,
         "POLL_CLOSE_KEYWORDS": POLL_CLOSE_KEYWORDS,
+        "BIRTHDAY_EDIT_KEYWORDS": BIRTHDAY_EDIT_KEYWORDS,
+        "WATCHLIST_REMOVE_KEYWORDS": WATCHLIST_REMOVE_KEYWORDS,
+        "WATCHLIST_EDIT_KEYWORDS": WATCHLIST_EDIT_KEYWORDS,
     }
 
         for name, value in imported_values.items():

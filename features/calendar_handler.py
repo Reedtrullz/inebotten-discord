@@ -341,36 +341,156 @@ class CalendarHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error completing item: {e}")
 
-    async def handle_edit(self, message) -> None:
+    _EDIT_FIELD_MAP = {
+        "tittel": "title",
+        "title": "title",
+        "dato": "date",
+        "date": "date",
+        "tid": "time",
+        "time": "time",
+        "kl": "time",
+        "klokken": "time",
+        "gjentakelse": "recurrence",
+        "recurrence": "recurrence",
+        "gjenta": "recurrence",
+        "beskrivelse": "description",
+        "description": "description",
+        "desc": "description",
+    }
+
+    def _parse_edit_command(self, content: str):
         """
-        Handle event editing.
-        Currently guides users to delete+recreate workflow.
+        Extract index, search text, field name, and value from an edit command.
+
+        Returns:
+            (index, search_text, field, value) where index is 1-based or None,
+            search_text is the title snippet to search for, field is the
+            Norwegian/English keyword before the colon, and value is the text
+            after the colon.
+        """
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+
+        for kw in ("endre", "rediger", "edit"):
+            if cleaned.lower().startswith(kw):
+                cleaned = cleaned[len(kw) :].strip()
+                break
+
+        if ":" not in cleaned:
+            return None, None, None, None
+
+        prefix, value = cleaned.split(":", 1)
+        prefix = prefix.strip()
+        value = value.strip()
+
+        field = None
+        search_text = prefix
+        for nor_field in sorted(self._EDIT_FIELD_MAP.keys(), key=len, reverse=True):
+            pattern = rf"\b{re.escape(nor_field)}$"
+            if re.search(pattern, prefix, re.IGNORECASE):
+                field = nor_field
+                search_text = re.sub(pattern, "", prefix, flags=re.IGNORECASE).strip()
+                break
+
+        num_match = re.search(r"\b(\d+)\b", search_text if field else prefix)
+        index = int(num_match.group(1)) if num_match else None
+
+        if index is not None:
+            search_text = re.sub(r"\b\d+\b", "", search_text).strip()
+            if not search_text:
+                search_text = None
+        elif field and not search_text:
+            search_text = None
+
+        return index, search_text, field, value
+
+    def _parse_date_value(self, value: str) -> Optional[str]:
+        value = value.strip()
+
+        if re.match(r"^\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?$", value):
+            return value
+
+        try:
+            parsed = self.nlp_parser.parse_event(f"x på {value} kl 12")
+            if parsed and parsed.get("date"):
+                return parsed["date"]
+        except Exception:
+            pass
+
+        return value
+
+    async def handle_edit(self, message, payload=None) -> None:
+        """
+        Handle editing calendar items in-place.
+        Supports:
+          - endre 2 tittel: Ny tittel
+          - rediger møte dato: i morgen
         """
         try:
             guild_id = self.get_guild_id(message)
-            items = self.calendar.get_upcoming(guild_id, days=365)
+            index, search_text, field, value = self._parse_edit_command(
+                message.content
+            )
 
-            if not items:
-                response_text = (
-                    "📭 **Ingen arrangementer å endre**\n\n"
-                    "Det er ingen aktive arrangementer."
+            if not field or not value:
+                await self.send_response(
+                    message, self.loc.t("calendar_edit_invalid")
                 )
-            else:
-                response_text = "📝 **Endre arrangement**\n\n"
-                response_text += (
-                    "For å endre et arrangement, slett det først og lag et nytt:\n\n"
-                )
-                for i, item in enumerate(items[:5], 1):
-                    response_text += f"{i}. **{item['title']}** - {item['date']}\n"
-                response_text += "\nBruk: `@inebotten slett [nummer]`\n"
-                response_text += (
-                    "Deretter: `@inebotten [nytt arrangement] [dato] [tid]`"
-                )
+                return
 
-            await self.send_response(message, response_text)
+            kwarg_field = self._EDIT_FIELD_MAP.get(field.lower())
+            if not kwarg_field:
+                await self.send_response(
+                    message, self.loc.t("calendar_edit_invalid")
+                )
+                return
+
+            if kwarg_field == "date":
+                parsed = self._parse_date_value(value)
+                if parsed:
+                    value = parsed
+
+            if index is None and search_text:
+                matches = self.calendar.search_items(search_text)
+                if not matches:
+                    await self.send_response(
+                        message, self.loc.t("calendar_edit_not_found", num=search_text)
+                    )
+                    return
+
+                upcoming = self.calendar.get_upcoming(guild_id, days=365)
+                target_item = matches[0]
+                for i, item in enumerate(upcoming, 1):
+                    if item.get("id") == target_item.get("id"):
+                        index = i
+                        break
+
+                if index is None:
+                    await self.send_response(
+                        message, self.loc.t("calendar_edit_not_found", num=search_text)
+                    )
+                    return
+            elif index is None:
+                await self.send_response(
+                    message, self.loc.t("calendar_edit_invalid")
+                )
+                return
+
+            try:
+                updated_item = await self.calendar.edit_item(
+                    index, **{kwarg_field: value}
+                )
+                await self.send_response(
+                    message,
+                    self.loc.t("calendar_edit_success", title=updated_item["title"]),
+                )
+            except ValueError:
+                await self.send_response(
+                    message, self.loc.t("calendar_edit_not_found", num=index)
+                )
 
         except Exception as e:
-            self.log(f"Error editing event: {e}")
+            self.log(f"Error editing item: {e}")
 
     async def handle_sync(self, message) -> None:
         """Handle manual sync from Google Calendar."""

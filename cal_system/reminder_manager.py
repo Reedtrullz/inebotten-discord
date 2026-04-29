@@ -306,6 +306,103 @@ class ReminderManager:
 
         self._save_reminders()
 
+    def edit_reminder(self, guild_id, index, title=None, date=None, time=None, recurrence=None):
+        """
+        Edit an existing reminder by its 1-based index in active reminders.
+
+        Args:
+            guild_id: Discord guild ID
+            index: 1-based index in the active reminders list
+            title: New reminder text (maps to 'text' field)
+            date: New due date (maps to 'due_date' field)
+            time: Not applied — reminders do not store a separate time field
+            recurrence: New recurrence type
+
+        Returns:
+            Updated reminder dict
+
+        Raises:
+            ValueError: If index is invalid
+        """
+        guild_key = str(guild_id)
+
+        if guild_key not in self.reminders:
+            raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
+
+        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active.sort(key=lambda x: x["created_at"])
+
+        idx = index - 1
+        if idx < 0 or idx >= len(active):
+            raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
+
+        target = active[idx]
+
+        if title is not None:
+            target["text"] = title
+        if date is not None:
+            target["due_date"] = date
+        if recurrence is not None:
+            target["recurrence"] = recurrence
+
+        self._save_reminders()
+        return target
+
+    def delete_reminder_by_id(self, guild_id, index):
+        """
+        Delete a reminder by its 1-based index in active reminders.
+
+        Args:
+            guild_id: Discord guild ID
+            index: 1-based index in the active reminders list
+
+        Returns:
+            Deleted reminder dict
+
+        Raises:
+            ValueError: If index is invalid
+        """
+        guild_key = str(guild_id)
+
+        if guild_key not in self.reminders:
+            raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
+
+        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active.sort(key=lambda x: x["created_at"])
+
+        idx = index - 1
+        if idx < 0 or idx >= len(active):
+            raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
+
+        target = active[idx]
+        self.reminders[guild_key].remove(target)
+        self._save_reminders()
+        return target
+
+    def search_reminders(self, guild_id, query):
+        """
+        Search all reminders (active and completed) by title text.
+
+        Args:
+            guild_id: Discord guild ID
+            query: Substring to search for (case-insensitive)
+
+        Returns:
+            List of matching reminder dicts
+        """
+        guild_key = str(guild_id)
+        query_lower = query.lower()
+
+        if guild_key not in self.reminders:
+            return []
+
+        matches = [
+            r
+            for r in self.reminders[guild_key]
+            if query_lower in r.get("text", "").lower()
+        ]
+        return matches
+
 
 def parse_reminder_command(message_content):
     """

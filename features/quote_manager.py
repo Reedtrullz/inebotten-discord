@@ -110,6 +110,69 @@ class QuoteManager:
             return random.choice(candidates)
         return None
 
+    def list_quotes(self, guild_id):
+        """Return all quotes for a guild as a list"""
+        guild_key = str(guild_id)
+        return self.quotes.get(guild_key, []).copy()
+
+    def update_quote(self, guild_id, index, text=None, author=None):
+        """
+        Update a quote by 1-based index.
+
+        Args:
+            guild_id: Discord guild/channel ID
+            index: 1-based index of the quote to update
+            text: New quote text (optional)
+            author: New author (optional)
+
+        Returns:
+            bool: True if updated, False if index out of range
+        """
+        guild_key = str(guild_id)
+
+        if guild_key not in self.quotes:
+            return False
+
+        quotes = self.quotes[guild_key]
+        zero_based_index = index - 1
+
+        if zero_based_index < 0 or zero_based_index >= len(quotes):
+            return False
+
+        if text is not None:
+            quotes[zero_based_index]["text"] = text
+        if author is not None:
+            quotes[zero_based_index]["author"] = author
+
+        self._save_quotes()
+        return True
+
+    def delete_quote(self, guild_id, index):
+        """
+        Delete a quote by 1-based index.
+
+        Args:
+            guild_id: Discord guild/channel ID
+            index: 1-based index of the quote to delete
+
+        Returns:
+            bool: True if deleted, False if index out of range
+        """
+        guild_key = str(guild_id)
+
+        if guild_key not in self.quotes:
+            return False
+
+        quotes = self.quotes[guild_key]
+        zero_based_index = index - 1
+
+        if zero_based_index < 0 or zero_based_index >= len(quotes):
+            return False
+
+        quotes.pop(zero_based_index)
+        self._save_quotes()
+        return True
+
     def format_quote(self, quote, lang="no"):
         """Format quote for display in specified language"""
         header = (

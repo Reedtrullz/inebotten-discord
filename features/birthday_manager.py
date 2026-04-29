@@ -235,6 +235,46 @@ class BirthdayManager:
             print(f"[BIRTHDAY] Error removing birthday: {e}")
             return False
 
+    def edit_birthday(self, guild_id, name, day, month, year=None):
+        """
+        Edit a birthday by username (case-insensitive)
+
+        Args:
+            guild_id: Discord guild ID
+            name: Username to search for
+            day: New day of month (1-31)
+            month: New month (1-12)
+            year: Optional new birth year
+
+        Returns:
+            Updated birthday dict
+
+        Raises:
+            ValueError: If username not found
+        """
+        guild_key = str(guild_id)
+        if guild_key not in self.birthdays:
+            raise ValueError(f"Birthday for {name} not found")
+
+        name_lower = name.lower()
+        target_user_id = None
+        for user_id, data in self.birthdays[guild_key].items():
+            if data.get("username", "").lower() == name_lower:
+                target_user_id = user_id
+                break
+
+        if target_user_id is None:
+            raise ValueError(f"Birthday for {name} not found")
+
+        self.birthdays[guild_key][target_user_id]["day"] = day
+        self.birthdays[guild_key][target_user_id]["month"] = month
+        if year is not None:
+            self.birthdays[guild_key][target_user_id]["year"] = year
+        self.birthdays[guild_key][target_user_id]["updated_at"] = datetime.now().isoformat()
+
+        self._save_birthdays()
+        return self.birthdays[guild_key][target_user_id]
+
     def get_todays_birthdays(self, guild_id):
         """
         Get birthdays for today

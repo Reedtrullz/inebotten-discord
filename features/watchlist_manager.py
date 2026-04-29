@@ -211,6 +211,71 @@ class WatchlistManager:
                 return True
         return False
 
+    def remove_from_watchlist(self, index, guild_id=None):
+        """
+        Remove an item from the watchlist by 1-based index.
+
+        Args:
+            index: 1-based index of the item to remove
+            guild_id: Optional guild/channel scope
+
+        Returns:
+            The removed item dict, or None if index is invalid
+        """
+        bucket = self._get_scope(guild_id)
+        items = bucket["movies"] + bucket["series"]
+        if not 1 <= index <= len(items):
+            return None
+        item = items[index - 1]
+        if item in bucket["movies"]:
+            bucket["movies"].remove(item)
+        else:
+            bucket["series"].remove(item)
+        self._save_watchlist()
+        return item
+
+    def edit_watchlist_entry(self, index, title=None, type=None, genre=None, comment=None, guild_id=None):
+        """
+        Edit an item in the watchlist by 1-based index.
+
+        Args:
+            index: 1-based index of the item to edit
+            title: New title (optional)
+            type: New type 'movie' or 'series' (optional)
+            genre: New genre (optional)
+            comment: New comment (optional)
+            guild_id: Optional guild/channel scope
+
+        Returns:
+            The updated item dict, or None if index is invalid
+        """
+        bucket = self._get_scope(guild_id)
+        items = bucket["movies"] + bucket["series"]
+        if not 1 <= index <= len(items):
+            return None
+        item = items[index - 1]
+        old_type = item.get("type")
+
+        if title is not None:
+            item["title"] = title
+        if genre is not None:
+            item["genre"] = genre
+        if comment is not None:
+            item["comment"] = comment
+        if type is not None and type != old_type:
+            if old_type == "movie":
+                bucket["movies"].remove(item)
+            else:
+                bucket["series"].remove(item)
+            item["type"] = type
+            if type == "movie":
+                bucket["movies"].append(item)
+            else:
+                bucket["series"].append(item)
+
+        self._save_watchlist()
+        return item
+
     def format_suggestion(self, item, lang="no"):
         """Format a suggestion for display in specified language"""
         title = item["title"]
@@ -394,15 +459,29 @@ def parse_watchlist_command(message_content):
                 "lang": lang,
             }
 
-    # Check for watchlist status
-    status_keywords = ["watchlist", "watchlista", "hva har vi"]
-    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in status_keywords):
-        return {"action": "status", "lang": lang}
+    # Check for removing item (before generic status match)
+    remove_phrases = ["fjern watchlist", "slett watchlist", "fjern fra watchlist"]
+    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in remove_phrases):
+        number_match = re.search(r'\b(\d+)\b', message_content)
+        index = int(number_match.group(1)) if number_match else None
+        return {"action": "remove", "index": index, "lang": lang}
+
+    # Check for editing item (before generic status match)
+    edit_phrases = ["endre watchlist", "rediger watchlist"]
+    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in edit_phrases):
+        number_match = re.search(r'\b(\d+)\b', message_content)
+        index = int(number_match.group(1)) if number_match else None
+        return {"action": "edit", "index": index, "lang": lang}
 
     # Check for adding item
     add_phrases = ["legg til", "add to watchlist", "husk å se"]
     if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in add_phrases):
         return {"action": "add", "lang": lang}
+
+    # Check for watchlist status
+    status_keywords = ["watchlist", "watchlista", "hva har vi"]
+    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in status_keywords):
+        return {"action": "status", "lang": lang}
 
     return None
 
