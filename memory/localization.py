@@ -100,6 +100,26 @@ class Localization:
                 'no': '❌ Fant ikke arrangement #{num}',
                 'en': '❌ Event #{num} not found'
             },
+            'calendar_edit_success': {
+                'no': '✅ Oppdatert: **{title}**',
+                'en': '✅ Updated: **{title}**'
+            },
+            'calendar_edit_not_found': {
+                'no': '❌ Fant ikke element #{num}',
+                'en': '❌ Item #{num} not found'
+            },
+            'calendar_edit_invalid': {
+                'no': '❌ Ugyldig redigeringsformat. Bruk: endre [nummer] [felt]: [verdi]',
+                'en': '❌ Invalid edit format. Use: edit [number] [field]: [value]'
+            },
+            'calendar_search_results': {
+                'no': '📅 Søkeresultater:',
+                'en': '📅 Search results:'
+            },
+            'calendar_search_no_results': {
+                'no': '❌ Ingen treff for \'{query}\'',
+                'en': '❌ No matches for \'{query}\''
+            },
             'invalid_event_num': {
                 'no': '❌ Ugyldig nummer. Bruk: slett 1',
                 'en': '❌ Invalid number. Use: delete 1'
@@ -446,8 +466,7 @@ class Localization:
     def get(self, key, **kwargs):
         """Get translated text for current language"""
         if key in self.translations:
-            translation = self.translations[key].get(self.current_lang, 
-                                                      self.translations[key].get(self.default_lang, key))
+            translation = self.translations[key].get(self.current_lang) or self.translations[key].get(self.default_lang) or key
             return translation.format(**kwargs) if kwargs else translation
         return key
     

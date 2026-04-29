@@ -327,6 +327,40 @@ class CalendarManager:
 
         return count, completed_titles, has_recurring
 
+    def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None):
+        """Edit a calendar item by its list number (1-based, matching delete/complete patterns)"""
+        guild_key = self.SHARED_KEY
+        items = self.get_upcoming(guild_key, days=365)
+
+        if index is None or not (1 <= index <= len(items)):
+            raise ValueError(f"Ugyldig indeks: {index}")
+
+        item = items[index - 1]
+
+        if title is not None:
+            item["title"] = title
+        if date is not None:
+            item["date"] = date
+        if time is not None:
+            item["time"] = time
+        if recurrence is not None:
+            item["recurrence"] = recurrence
+        if description is not None:
+            item["description"] = description
+
+        self._save_data_sync()
+        return AwaitableDict(item)
+
+    def search_items(self, query):
+        """Search calendar items by title (case-insensitive substring match)"""
+        guild_key = self.SHARED_KEY
+        items = self.items.get(guild_key, [])
+
+        query = query.lower()
+        matching = [item for item in items if query in item.get("title", "").lower()]
+
+        return matching
+
     async def _process_completion(self, guild_key, item):
         """Internal helper to handle completion logic"""
         return self._process_completion_sync(guild_key, item)
