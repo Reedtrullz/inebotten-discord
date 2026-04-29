@@ -138,6 +138,20 @@ class FalsePositiveTests(unittest.TestCase):
         result = self.route("Status på prosjektet")
         self.assertNotEqual(result.intent, BotIntent.STATUS)
 
+    def test_status_alone_stays_status_not_profile(self):
+        result = self.route("status")
+        self.assertEqual(result.intent, BotIntent.STATUS)
+        self.assertNotEqual(result.intent, BotIntent.PROFILE)
+
+    def test_bare_slett_does_not_delete_calendar_without_context(self):
+        result = self.route("slett")
+        self.assertNotEqual(result.intent, BotIntent.CALENDAR_DELETE)
+        self.assertNotEqual(result.intent, BotIntent.CALENDAR_CLEAR)
+
+    def test_bare_oppdater_does_not_edit_calendar_without_context(self):
+        result = self.route("oppdater")
+        self.assertNotEqual(result.intent, BotIntent.CALENDAR_EDIT)
+
     def test_help_explicit(self):
         result = self.route("hjelp")
         self.assertEqual(result.intent, BotIntent.HELP)

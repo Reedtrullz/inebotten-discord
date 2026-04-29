@@ -45,7 +45,12 @@ class DummyMonitor:
         return int(content) if content.strip().isdigit() else None
 
     def _parse_watchlist(self, content):
-        return {"action": "suggest"} if "hva skal vi se" in content.lower() else None
+        lower = content.lower()
+        if "fjern watchlist" in lower or "slett watchlist" in lower or "fjern fra watchlist" in lower:
+            return {"action": "remove"}
+        if "endre watchlist" in lower or "rediger watchlist" in lower:
+            return {"action": "edit"}
+        return {"action": "suggest"} if "hva skal vi se" in lower else None
 
     def _parse_quote(self, content):
         return {"action": "get"} if "sitat" in content.lower() else None
@@ -180,6 +185,11 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(self.route("status").intent, BotIntent.STATUS)
         self.assertEqual(self.route("bot status").intent, BotIntent.STATUS)
 
+    def test_status_alone_does_not_trigger_profile(self):
+        result = self.route("status")
+        self.assertEqual(result.intent, BotIntent.STATUS)
+        self.assertNotEqual(result.intent, BotIntent.PROFILE)
+
     def test_presence_status_requires_discord_status_word(self):
         self.assertEqual(self.route("status dnd").intent, BotIntent.PROFILE)
         self.assertEqual(self.route("status invisible").intent, BotIntent.PROFILE)
@@ -206,6 +216,23 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_calendar_delete_still_handles_item_deletion(self):
         self.assertEqual(self.route("kalender slett 2").intent, BotIntent.CALENDAR_DELETE)
+
+    def test_reminder_edit_routes_to_reminder_edit(self):
+        result = self.route("endre påminnelse")
+        self.assertEqual(result.intent, BotIntent.REMINDER_EDIT)
+
+    def test_quote_list_routes_to_quote_list(self):
+        result = self.route("liste sitater")
+        self.assertEqual(result.intent, BotIntent.QUOTE_LIST)
+
+    def test_birthday_edit_routes_to_birthday_edit(self):
+        result = self.route("endre bursdag")
+        self.assertEqual(result.intent, BotIntent.BIRTHDAY_EDIT)
+
+    def test_watchlist_remove_routes_with_remove_action(self):
+        result = self.route("fjern watchlist")
+        self.assertEqual(result.intent, BotIntent.WATCHLIST)
+        self.assertEqual(result.payload["watchlist"]["action"], "remove")
 
 
 if __name__ == "__main__":

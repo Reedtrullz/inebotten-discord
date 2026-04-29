@@ -86,7 +86,13 @@ class QuoteHandler(BaseHandler):
                 )
                 return
 
-            success = self.quote.update_quote(guild_id, index, text=text, author=author)
+            try:
+                success = self.quote.update_quote(guild_id, index, text=text, author=author)
+            except ValueError:
+                await self.send_response(
+                    message, self.loc.t("quote_edit_not_found", num=index)
+                )
+                return
 
             if success:
                 await self.send_response(
@@ -121,7 +127,13 @@ class QuoteHandler(BaseHandler):
                 )
                 return
 
-            success = self.quote.delete_quote(guild_id, index)
+            try:
+                success = self.quote.delete_quote(guild_id, index)
+            except ValueError:
+                await self.send_response(
+                    message, self.loc.t("quote_delete_not_found", num=index)
+                )
+                return
 
             if success:
                 await self.send_response(

@@ -99,3 +99,4 @@ webhook-secret*
 .codex-ssh/inebotten_vps_codex
 .codex-ssh/inebotten_vps_codex.pub
 commit_hash.txt
+.venv312/

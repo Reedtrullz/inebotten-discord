@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportAttributeAccessIssue=false, reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnusedCallResult=false, reportUnknownLambdaType=false, reportUnusedParameter=false
 """Async monitor routing regressions."""
 
 import unittest
@@ -120,7 +121,15 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         monitor.parse_poll_command = lambda content: None
         monitor.parse_vote = lambda content: int(content) if content.strip().isdigit() else None
-        monitor.parse_watchlist_command = lambda content: None
+        def parse_watchlist_command(content):
+            lower = content.lower()
+            if "fjern watchlist" in lower or "slett watchlist" in lower or "fjern fra watchlist" in lower:
+                return {"action": "remove"}
+            if "endre watchlist" in lower or "rediger watchlist" in lower:
+                return {"action": "edit"}
+            return None
+
+        monitor.parse_watchlist_command = parse_watchlist_command
         monitor.parse_quote_command = lambda content: None
         monitor.parse_price_command = lambda content: None
         monitor.parse_horoscope_command = lambda content: None
@@ -128,10 +137,28 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.parse_calculator_command = lambda content: None
         monitor.parse_shorten_command = lambda content: None
 
+        async def noop(*args, **kwargs):
+            return None
+
         polls = RecordingPollsHandler()
         monitor.handlers = {
             "polls": polls,
             "help": SimpleNamespace(handle_help=lambda message: None),
+            "reminders": SimpleNamespace(
+                handle_reminder_edit=noop,
+                handle_reminder_delete=noop,
+            ),
+            "quotes": SimpleNamespace(
+                handle_quote_list=noop,
+                handle_quote_edit=noop,
+                handle_quote_delete=noop,
+            ),
+            "watchlist": SimpleNamespace(
+                handle_watchlist=noop,
+                handle_watchlist_edit=noop,
+                handle_watchlist_remove=noop,
+            ),
+            "birthdays": SimpleNamespace(handle_birthday_edit=noop),
         }
         monitor.intent_router = IntentRouter(monitor)
         monitor.recording_polls = polls
@@ -245,6 +272,67 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(monitor.recording_polls.votes), 1)
         self.assertEqual(monitor.recording_polls.votes[0][1], 1)
         self.assertEqual(message.replies, [])
+
+    async def test_reminder_edit_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_reminder_edit(message, payload):
+            calls.append((message.content, payload["watchlist"] if "watchlist" in payload else payload))
+
+        monitor.handlers["reminders"].handle_reminder_edit = fake_handle_reminder_edit
+        message = RecordingMessage("@inebotten endre påminnelse")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_EDIT.value]["count"], 1)
+
+    async def test_quote_list_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_quote_list(message):
+            calls.append(message.content)
+
+        monitor.handlers["quotes"].handle_quote_list = fake_handle_quote_list
+        message = RecordingMessage("@inebotten liste sitater")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(calls, ["liste sitater"])
+        self.assertEqual(monitor.intent_stats[BotIntent.QUOTE_LIST.value]["count"], 1)
+
+    async def test_birthday_edit_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_birthday_edit(message, payload):
+            calls.append((message.content, payload))
+
+        monitor.handlers["birthdays"].handle_birthday_edit = fake_handle_birthday_edit
+        message = RecordingMessage("@inebotten endre bursdag")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(monitor.intent_stats[BotIntent.BIRTHDAY_EDIT.value]["count"], 1)
+
+    async def test_watchlist_remove_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_watchlist_remove(message, payload):
+            calls.append((message.content, payload))
+
+        monitor.handlers["watchlist"].handle_watchlist_remove = fake_handle_watchlist_remove
+        message = RecordingMessage("@inebotten fjern watchlist")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["action"], "remove")
+        self.assertEqual(monitor.intent_stats[BotIntent.WATCHLIST.value]["count"], 1)
 
 
 if __name__ == "__main__":

@@ -125,19 +125,19 @@ class QuoteManager:
             text: New quote text (optional)
             author: New author (optional)
 
-        Returns:
-            bool: True if updated, False if index out of range
+        Raises:
+            ValueError: If the quote index is invalid
         """
         guild_key = str(guild_id)
 
         if guild_key not in self.quotes:
-            return False
+            raise ValueError("Quote index out of range")
 
         quotes = self.quotes[guild_key]
         zero_based_index = index - 1
 
         if zero_based_index < 0 or zero_based_index >= len(quotes):
-            return False
+            raise ValueError("Quote index out of range")
 
         if text is not None:
             quotes[zero_based_index]["text"] = text
@@ -155,19 +155,19 @@ class QuoteManager:
             guild_id: Discord guild/channel ID
             index: 1-based index of the quote to delete
 
-        Returns:
-            bool: True if deleted, False if index out of range
+        Raises:
+            ValueError: If the quote index is invalid
         """
         guild_key = str(guild_id)
 
         if guild_key not in self.quotes:
-            return False
+            raise ValueError("Quote index out of range")
 
         quotes = self.quotes[guild_key]
         zero_based_index = index - 1
 
         if zero_based_index < 0 or zero_based_index >= len(quotes):
-            return False
+            raise ValueError("Quote index out of range")
 
         quotes.pop(zero_based_index)
         self._save_quotes()

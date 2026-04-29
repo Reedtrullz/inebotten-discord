@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnusedCallResult=false, reportAny=false, reportDeprecated=false, reportExplicitAny=false, reportPrivateUsage=false, reportUnknownLambdaType=false, reportImplicitOverride=false, reportOptionalSubscript=false, reportUninitializedInstanceVariable=false
 """
 WatchlistHandler - Handles watchlist commands for the selfbot.
 
@@ -80,7 +81,11 @@ class WatchlistHandler(BaseHandler):
         if index is None:
             return self.loc.t("watchlist_help", lang)
 
-        item = self.watchlist.remove_from_watchlist(index, guild_id=guild_id)
+        try:
+            item = self.watchlist.remove_from_watchlist(index, guild_id=guild_id)
+        except ValueError:
+            return "❌ Fant ikke noe med det nummeret." if lang == "no" else "❌ Could not find an item with that number."
+
         if item:
             title = item["title"]
             return f"✅ Fjernet **{title}** fra watchlista!" if lang == "no" else f"✅ Removed **{title}** from watchlist!"

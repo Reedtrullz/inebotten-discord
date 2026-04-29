@@ -366,10 +366,19 @@ class IntentRouter:
 
     def _parse_poll_reference(self, content_lower: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {"target": None}
+        # Scoped extraction: number immediately after "poll" or "avstemning"
         number_match = re.search(r'(?:poll|avstemning)\s+(\d+)', content_lower)
         if number_match:
             result["target"] = int(number_match.group(1))
             return result
+        # If message contains poll keywords but no scoped number, don't fall back
+        # to arbitrary numbers (prevents "slett poll etter 15 minutter" → target=15)
+        if has_any_keyword(content_lower, ("poll", "avstemning")):
+            if has_any_keyword(content_lower, ("siste", "last")):
+                result["target"] = "siste"
+                return result
+            return result
+        # Fallback for messages without poll keywords (backward compat)
         number_match = re.search(r'\b(\d+)\b', content_lower)
         if number_match:
             result["target"] = int(number_match.group(1))

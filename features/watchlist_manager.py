@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnusedCallResult=false, reportAny=false, reportDeprecated=false, reportExplicitAny=false, reportPrivateUsage=false, reportUnknownLambdaType=false, reportImplicitOverride=false, reportOptionalSubscript=false, reportUninitializedInstanceVariable=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 Watchlist Manager for Inebotten
 Manages movie and series recommendations from Discord channels
@@ -220,12 +221,15 @@ class WatchlistManager:
             guild_id: Optional guild/channel scope
 
         Returns:
-            The removed item dict, or None if index is invalid
+            The removed item dict
+
+        Raises:
+            ValueError: If index is invalid
         """
         bucket = self._get_scope(guild_id)
         items = bucket["movies"] + bucket["series"]
         if not 1 <= index <= len(items):
-            return None
+            raise ValueError(f"Invalid watchlist index: {index}")
         item = items[index - 1]
         if item in bucket["movies"]:
             bucket["movies"].remove(item)
