@@ -168,9 +168,12 @@ class MessageMonitor:
         self.search_manager = SearchManager()
         self.browser_manager = BrowserManager()
         self.detect_search_intent = detect_search_intent
+        from features.birthday_manager import BirthdayManager
+        self.birthdays = BirthdayManager()
+
         self.daily_digest = DailyDigestManager(
             event_manager=self.calendar,
-            birthday_manager=None,  # Will be set in setup()
+            birthday_manager=self.birthdays,
             crypto_manager=self.crypto,
             aurora_manager=self.aurora,
             watchlist_manager=self.watchlist
@@ -200,11 +203,6 @@ class MessageMonitor:
     async def setup(self):
         await self.calendar.setup()
         await self.user_memory.setup()
-
-        # Inject birthday manager into daily digest after initialization
-        from features.birthday_manager import BirthdayManager
-        self.birthdays = BirthdayManager()
-        self.daily_digest.birthday_manager = self.birthdays
 
         # Auto-sync from GCal on startup if enabled
         if self.calendar.gcal_enabled:
