@@ -109,9 +109,13 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 ```text
 @inebotten hjelp
 @inebotten bot status
+@inebotten status dnd
+@inebotten spiller CS2
 @inebotten vær i Trondheim
 @inebotten avstemning Pizza? Pepperoni, Margherita, Kebab
+@inebotten polls
 @inebotten stem 1
+@inebotten slett poll
 @inebotten nedtelling til 17. mai
 @inebotten pris BTC
 @inebotten 100 USD til NOK

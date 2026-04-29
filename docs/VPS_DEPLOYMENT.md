@@ -125,6 +125,14 @@ cd /opt/inebotten-discord
 sudo docker compose up -d --build
 ```
 
+Hvis du har endret `Dockerfile` (f.eks. lagt til systempakker som `git`) og Docker bruker den gamle cachede imaget, bruk `--no-cache`:
+
+```bash
+cd /opt/inebotten-discord
+sudo docker compose build --no-cache
+sudo docker compose up -d
+```
+
 ## Sikkerhetsnotater
 
 - Ikke commit `.env`, Discord-tokens, webhook-secrets eller `data/`.
@@ -143,3 +151,4 @@ sudo docker compose up -d --build
 | Timeren kjører ikke | `sudo systemctl list-timers inebotten-update.timer --no-pager` |
 | Docker-bygg feiler | `sudo tail -100 /var/log/inebotten-autoupdate.log` |
 | Botten starter og avslutter | `sudo docker logs --tail=200 inebotten-bot` |
+| Botten viser "Playing unknown" | `docker compose build --no-cache` (mangler `git` i imaget) |
