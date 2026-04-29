@@ -30,8 +30,6 @@ from core.intent_keywords import (
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
-    WATCHLIST_EDIT_KEYWORDS,
-    WATCHLIST_REMOVE_KEYWORDS,
     WORD_OF_DAY_KEYWORDS,
 )
 from core.intent_utils import has_any_keyword
