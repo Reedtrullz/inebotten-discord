@@ -190,6 +190,56 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["content"], "calendar_edit_invalid")
         self.assertEqual(manager.list_quotes("123")[0]["text"], "Gammel")
 
+    async def test_handler_edit_quotes_parses_author_when_text_is_empty(self):
+        manager = self.make_manager()
+        manager.add_quote("123", "Gammel", "Ola")
+        handler = QuoteHandler(DummyQuoteMonitor(manager))
+
+        captured = {}
+
+        async def reply(content, mention_author=False):
+            captured["content"] = content
+            captured["mention_author"] = mention_author
+
+        message = SimpleNamespace(
+            content="@inebotten endre sitat 1 tekst: forfatter: Kari",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            reply=reply,
+        )
+
+        await handler.handle_quote_edit(message, {})
+
+        updated = manager.list_quotes("123")[0]
+        self.assertEqual(updated["text"], "Gammel")
+        self.assertEqual(updated["author"], "Kari")
+        self.assertEqual(captured["content"], "quote_edit_success")
+
+    async def test_handler_edit_quotes_parses_text_when_author_is_empty(self):
+        manager = self.make_manager()
+        manager.add_quote("123", "Gammel", "Ola")
+        handler = QuoteHandler(DummyQuoteMonitor(manager))
+
+        captured = {}
+
+        async def reply(content, mention_author=False):
+            captured["content"] = content
+            captured["mention_author"] = mention_author
+
+        message = SimpleNamespace(
+            content="@inebotten endre sitat 1 forfatter: tekst: Ny tekst",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            reply=reply,
+        )
+
+        await handler.handle_quote_edit(message, {})
+
+        updated = manager.list_quotes("123")[0]
+        self.assertEqual(updated["text"], "Ny tekst")
+        self.assertEqual(updated["author"], "Ola")
+        self.assertEqual(captured["content"], "quote_edit_success")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,12 +8,18 @@ Commands:
 - Delete a quote by index
 """
 
-from features.base_handler import BaseHandler
 import re
+
+from features.base_handler import BaseHandler
 
 
 class QuoteHandler(BaseHandler):
     """Handler for quote management commands"""
+
+    _EDIT_FIELD_PATTERN = re.compile(
+        r"\b(?:tekst|text|forfatter|author)\b\s*:",
+        flags=re.IGNORECASE,
+    )
 
     def __init__(self, monitor):
         super().__init__(monitor)
@@ -39,19 +45,23 @@ class QuoteHandler(BaseHandler):
     def _extract_edit_fields_from_content(self, content: str) -> tuple[str | None, str | None]:
         cleaned = re.sub(r"^(?:<@!?\d+>|@\S+)\s*", "", content).strip()
 
-        text_match = re.search(
-            r"\b(?:tekst|text)\s*:\s*(.+?)(?=\s+\b(?:forfatter|author)\b\s*:|$)",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-        author_match = re.search(
-            r"\b(?:forfatter|author)\s*:\s*(.+?)(?=\s+\b(?:tekst|text)\b\s*:|$)",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
+        matches = list(self._EDIT_FIELD_PATTERN.finditer(cleaned))
+        if not matches:
+            return None, None
 
-        text = text_match.group(1).strip() if text_match else None
-        author = author_match.group(1).strip() if author_match else None
+        text = None
+        author = None
+        for idx, match in enumerate(matches):
+            label = match.group(0).split(":", 1)[0].strip().lower()
+            start = match.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(cleaned)
+            value = cleaned[start:end].strip() or None
+
+            if label in {"tekst", "text"}:
+                text = value
+            else:
+                author = value
+
         return text or None, author or None
 
     async def handle_quote_list(self, message) -> None:
