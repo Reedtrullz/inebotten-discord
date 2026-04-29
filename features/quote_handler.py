@@ -9,6 +9,7 @@ Commands:
 """
 
 from features.base_handler import BaseHandler
+import re
 
 
 class QuoteHandler(BaseHandler):
@@ -34,6 +35,24 @@ class QuoteHandler(BaseHandler):
         if isinstance(payload, dict):
             return payload.get("author")
         return None
+
+    def _extract_edit_fields_from_content(self, content: str) -> tuple[str | None, str | None]:
+        cleaned = re.sub(r"^(?:<@!?\d+>|@\S+)\s*", "", content).strip()
+
+        text_match = re.search(
+            r"\b(?:tekst|text)\s*:\s*(.+?)(?=\s+\b(?:forfatter|author)\b\s*:|$)",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        author_match = re.search(
+            r"\b(?:forfatter|author)\s*:\s*(.+?)(?=\s+\b(?:tekst|text)\b\s*:|$)",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+        text = text_match.group(1).strip() if text_match else None
+        author = author_match.group(1).strip() if author_match else None
+        return text or None, author or None
 
     async def handle_quote_list(self, message) -> None:
         """List all quotes for the current guild with numbered indices."""
@@ -79,6 +98,9 @@ class QuoteHandler(BaseHandler):
 
             text = self._extract_text_from_payload(payload)
             author = self._extract_author_from_payload(payload)
+
+            if text is None and author is None:
+                text, author = self._extract_edit_fields_from_content(message.content)
 
             if text is None and author is None:
                 await self.send_response(

@@ -142,6 +142,54 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('1. "Første" — Ola', captured["content"])
         self.assertIn('2. "Andre" — Kari', captured["content"])
 
+    async def test_handler_edit_quotes_parses_text_and_author_from_content(self):
+        manager = self.make_manager()
+        manager.add_quote("123", "Gammel", "Ola")
+        handler = QuoteHandler(DummyQuoteMonitor(manager))
+
+        captured = {}
+
+        async def reply(content, mention_author=False):
+            captured["content"] = content
+            captured["mention_author"] = mention_author
+
+        message = SimpleNamespace(
+            content="@inebotten endre sitat 1 tekst: Ny tekst forfatter: Kari",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            reply=reply,
+        )
+
+        await handler.handle_quote_edit(message, {})
+
+        updated = manager.list_quotes("123")[0]
+        self.assertEqual(updated["text"], "Ny tekst")
+        self.assertEqual(updated["author"], "Kari")
+        self.assertEqual(captured["content"], "quote_edit_success")
+
+    async def test_handler_edit_quotes_rejects_missing_fields(self):
+        manager = self.make_manager()
+        manager.add_quote("123", "Gammel", "Ola")
+        handler = QuoteHandler(DummyQuoteMonitor(manager))
+
+        captured = {}
+
+        async def reply(content, mention_author=False):
+            captured["content"] = content
+            captured["mention_author"] = mention_author
+
+        message = SimpleNamespace(
+            content="@inebotten endre sitat 1",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            reply=reply,
+        )
+
+        await handler.handle_quote_edit(message, {})
+
+        self.assertEqual(captured["content"], "calendar_edit_invalid")
+        self.assertEqual(manager.list_quotes("123")[0]["text"], "Gammel")
+
 
 if __name__ == "__main__":
     unittest.main()
