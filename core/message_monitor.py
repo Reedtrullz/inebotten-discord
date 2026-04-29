@@ -8,6 +8,7 @@ import asyncio
 import os
 import re
 import signal
+import subprocess
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
@@ -899,6 +900,22 @@ class SelfbotClient(discord.Client):
             self.console_server = None
             print(f"[BOT] WARNING: Could not start web console: {e}")
 
+    def _get_commit_hash(self):
+        """Get short git commit hash, or 'unknown' if not in a git repo."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return "unknown"
+
     async def on_ready(self):
         """Called when bot is ready"""
         self.start_time = datetime.now()
@@ -907,6 +924,13 @@ class SelfbotClient(discord.Client):
         print(
             f"[BOT] Rate limit: {self.config.MAX_MSGS_PER_SECOND}/sec, {self.config.DAILY_QUOTA}/day"
         )
+
+        commit = self._get_commit_hash()
+        try:
+            await self.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name=commit))
+            print(f"[BOT] Set activity to: Playing {commit}")
+        except Exception as e:
+            print(f"[BOT] Could not set activity: {e}")
 
         # Initialize message monitor
         self.monitor = MessageMonitor(
