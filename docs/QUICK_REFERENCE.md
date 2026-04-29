@@ -54,6 +54,13 @@ For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
 | `@inebotten kalender` | Vis alle kommende hendelser (90 dager) | `@inebotten kalender` |
+| `@inebotten søk [tittel]` | Søk etter hendelser | `@inebotten søk møte` |
+
+### Redigere
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten endre [nummer] [felter]` | Endre hendelse | `@inebotten endre 1 tittel: Ny tittel dato: 15.05 kl 14` |
 
 ### Slette
 
@@ -62,7 +69,7 @@ For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
 | `@inebotten slett [nummer]` | Slett hendelse etter nummer | `@inebotten slett 2` |
 | `@inebotten slett [tittel]` | Slett første treff på delvis tittel | `@inebotten slett spaghetti` |
 | `@inebotten slett alle [tittel]` | Slett ALLE treff | `@inebotten slett alle spaghetti` |
-| `@inebotten tøm kalenderen min` | Slett alt (krever bekreftelse) | `@inebotten tøm kalenderen min` |
+| `@inebotten slett alt` / `@inebotten fjern alt` | Slett alt (krever bekreftelse) | `@inebotten slett alt` |
 
 ### Fullføre
 
@@ -119,6 +126,16 @@ Du trenger ikke be om påminnelser - de skjer automatisk!
 
 ---
 
+## 🔔 Påminnelser
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten påminnelse [tekst] om [tid]` | Opprett påminnelse | `@inebotten påminnelse Ring lege om 2 timer` |
+| `@inebotten påminnelser` | Vis aktive påminnelser | `@inebotten påminnelser` |
+| `@inebotten endre påminnelse [nummer] [felt]` | Endre påminnelse | `@inebotten endre påminnelse 1 om 1 time` |
+| `@inebotten slett påminnelse [nummer]` | Slett påminnelse | `@inebotten slett påminnelse 1` |
+| `@inebotten søk påminnelse [tekst]` | Søk etter påminnelse | `@inebotten søk påminnelse lege` |
+
 ## 🌦️ Vær
 
 | Kommando | Beskrivelse |
@@ -142,9 +159,9 @@ Du trenger ikke be om påminnelser - de skjer automatisk!
 | `@inebotten avstemning [tittel]? [alt1], [alt2]` | Lag avstemning | `@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab` |
 | `@inebotten stem [nummer]` | Stem på alternativ | `@inebotten stem 1` |
 | `@inebotten polls` | Vis aktive avstemninger | `@inebotten polls` |
-| `@inebotten endre poll` | Endre siste avstemning | `@inebotten endre poll` |
-| `@inebotten slett poll` | Slett siste avstemning | `@inebotten slett poll` |
-| `@inebotten lukk poll` | Lukk siste avstemning | `@inebotten lukk poll` |
+| `@inebotten endre poll [nummer]` | Endre avstemning | `@inebotten endre poll 1` |
+| `@inebotten slett poll [nummer]` | Slett avstemning | `@inebotten slett poll 1` |
+| `@inebotten lukk poll [nummer]` | Lukk avstemning | `@inebotten lukk poll 1` |
 
 ---
 
@@ -185,11 +202,36 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 
 ---
 
+## 💬 Sitater
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten sitat` | Tilfeldig sitat | `@inebotten sitat` |
+| `@inebotten sitater` | Vis alle sitater | `@inebotten sitater` |
+| `@inebotten endre sitat [nummer] [felt]` | Endre sitat | `@inebotten endre sitat 1 tekst: Ny tekst forfatter: Ola` |
+| `@inebotten slett sitat [nummer]` | Slett sitat | `@inebotten slett sitat 1` |
+
+## 📺 Watchlist
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten watchlist` | Vis watchlist | `@inebotten watchlist` |
+| `@inebotten watchlist [ticker]` | Legg til ticker | `@inebotten watchlist AAPL` |
+| `@inebotten endre watchlist [nummer] [ticker]` | Endre ticker | `@inebotten endre watchlist 1 TSLA` |
+| `@inebotten fjern watchlist [nummer]` | Fjern ticker | `@inebotten fjern watchlist 1` |
+
+## 🎂 Bursdager
+
+| Kommando | Beskrivelse | Eksempel |
+|----------|-------------|----------|
+| `@inebotten bursdag [navn] [dato]` | Legg til bursdag | `@inebotten bursdag Ola 15.05` |
+| `@inebotten endre bursdag [navn] [dato]` | Endre bursdag | `@inebotten endre bursdag Ola 20.05` |
+| `@inebotten bursdager` | Vis bursdager | `@inebotten bursdager` |
+
 ## 🌟 Annet
 
 | Kommando | Beskrivelse |
 |----------|-------------|
-| `@inebotten sitat` | Tilfeldig inspirerende sitat |
 | `@inebotten dagens ord` | Norsk ord med definisjon |
 | `@inebotten daglig oppsummering` | Omfattende briefing (Vær, marked, kalender) |
 | `@inebotten kompliment` | Send et kompliment |
@@ -202,6 +244,7 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 
 | Kommando | Eksempel | Beskrivelse |
 |----------|----------|-------------|
+| `@inebotten status` | `@inebotten status` | Bot-helse og driftstatus |
 | `@inebotten status [s]` | `@inebotten status dnd` | online, idle, dnd, invisible |
 | `@inebotten spiller [t]` | `@inebotten spiller CS2` | Endre aktivitet |
 | `@inebotten ser på [t]` | `@inebotten ser på Netflix` | Endre aktivitet |
