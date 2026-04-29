@@ -191,15 +191,16 @@ class IntentRouter:
                 return None
 
         if has_any_keyword(content_lower, SYNC_KEYWORDS):
-            return IntentResult(BotIntent.CALENDAR_SYNC, 0.98, reason="calendar_sync_keyword")
+            if not (has_any_keyword(content_lower, ["oppdater"]) and not has_any_keyword(content_lower, ["google", "gcal"])):
+                return IntentResult(BotIntent.CALENDAR_SYNC, 0.98, reason="calendar_sync_keyword")
+        if has_any_keyword(content_lower, CLEAR_KEYWORDS):
+            return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
         if has_any_keyword(content_lower, DELETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_DELETE, 0.98, reason="calendar_delete_keyword")
         if has_any_keyword(content_lower, COMPLETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_complete_keyword")
         if has_any_keyword(content_lower, EDIT_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_EDIT, 0.98, reason="calendar_edit_keyword")
-        if has_any_keyword(content_lower, CLEAR_KEYWORDS):
-            return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
         if has_any_keyword(content_lower, LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
             return IntentResult(BotIntent.CALENDAR_LIST, 0.92, reason="calendar_list_keyword")
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")
@@ -307,15 +308,15 @@ class IntentRouter:
         return None
 
     def _is_status_command(self, content_lower: str) -> bool:
-        return has_any_keyword(content_lower, STATUS_KEYWORDS)
+        return content_lower == "status" or has_any_keyword(content_lower, STATUS_KEYWORDS)
 
     def _is_profile_command(self, content_lower: str) -> bool:
         if self._is_status_command(content_lower):
             return False
         if content_lower.startswith(("spiller ", "playing ", "ser på ", "watching ")):
             return True
-        if content_lower.startswith("status "):
-            return has_any_keyword(content_lower, ["online", "idle", "dnd", "invisible", "offline"])
+        if re.match(r"^status\s+(online|offline|idle|dnd|invisible)\b", content_lower):
+            return True
         return has_any_keyword(content_lower, [keyword for keyword in PROFILE_KEYWORDS if keyword not in {"status"}])
 
     def _has_active_poll(self, guild_id: Optional[int]) -> bool:

@@ -11,8 +11,8 @@ class ConfidenceThresholdTests(unittest.TestCase):
     def test_calendar_item_threshold_is_094(self):
         self.assertEqual(CONFIDENCE_THRESHOLDS.get(BotIntent.CALENDAR_ITEM), 0.94)
 
-    def test_search_threshold_is_080(self):
-        self.assertEqual(CONFIDENCE_THRESHOLDS.get(BotIntent.SEARCH), 0.80)
+    def test_search_threshold_is_070(self):
+        self.assertEqual(CONFIDENCE_THRESHOLDS.get(BotIntent.SEARCH), 0.70)
 
     def test_help_has_no_threshold(self):
         self.assertEqual(CONFIDENCE_THRESHOLDS.get(BotIntent.HELP, 0.0), 0.0)
@@ -28,7 +28,7 @@ class ConfidenceThresholdTests(unittest.TestCase):
         self.assertGreaterEqual(route.confidence, threshold)
 
     def test_low_confidence_search_rejected(self):
-        route = IntentResult(BotIntent.SEARCH, 0.75, {}, "test")
+        route = IntentResult(BotIntent.SEARCH, 0.69, {}, "test")
         threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
         self.assertLess(route.confidence, threshold)
 
@@ -37,8 +37,13 @@ class ConfidenceThresholdTests(unittest.TestCase):
         threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
         self.assertGreaterEqual(route.confidence, threshold)
 
+    def test_search_at_072_accepted(self):
+        route = IntentResult(BotIntent.SEARCH, 0.72, {}, "test")
+        threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
+        self.assertGreaterEqual(route.confidence, threshold)
+
     def test_exactly_at_threshold_accepted(self):
-        route = IntentResult(BotIntent.SEARCH, 0.80, {}, "test")
+        route = IntentResult(BotIntent.SEARCH, 0.70, {}, "test")
         threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
         self.assertGreaterEqual(route.confidence, threshold)
 

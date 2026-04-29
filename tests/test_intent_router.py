@@ -4,6 +4,7 @@
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any, cast
 
 from cal_system.natural_language_parser import NaturalLanguageParser
 from core.intent_router import BotIntent, IntentRouter
@@ -132,7 +133,7 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_travel_cost_question_routes_to_search_not_crypto(self):
         monitor = DummyMonitor()
-        monitor.parse_price_command = parse_price_command
+        monitor.parse_price_command = cast(Any, parse_price_command)
         monitor.detect_search_intent = detect_search_intent
 
         result = self.route(
@@ -158,9 +159,11 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_prompt_priority_examples(self):
         examples = {
+            "status": BotIntent.STATUS,
             "hjelp": BotIntent.HELP,
             "bot status": BotIntent.STATUS,
             "status dnd": BotIntent.PROFILE,
+            "status online": BotIntent.PROFILE,
             "kalender": BotIntent.CALENDAR_LIST,
             "hvor lenge til jul": BotIntent.COUNTDOWN,
             "hva skal vi se": BotIntent.WATCHLIST,
@@ -172,6 +175,37 @@ class IntentRouterTests(unittest.TestCase):
         for prompt, expected in examples.items():
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.route(prompt).intent, expected)
+
+    def test_status_command_priority_keeps_health_over_profile(self):
+        self.assertEqual(self.route("status").intent, BotIntent.STATUS)
+        self.assertEqual(self.route("bot status").intent, BotIntent.STATUS)
+
+    def test_presence_status_requires_discord_status_word(self):
+        self.assertEqual(self.route("status dnd").intent, BotIntent.PROFILE)
+        self.assertEqual(self.route("status invisible").intent, BotIntent.PROFILE)
+        self.assertEqual(self.route("status").intent, BotIntent.STATUS)
+
+    def test_calendar_oppdater_routes_to_edit_not_sync(self):
+        result = self.route("kalender oppdater")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
+        self.assertEqual(result.reason, "calendar_edit_keyword")
+
+    def test_calendar_oppdater_fra_google_routes_to_sync(self):
+        result = self.route("kalender oppdater fra google")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_SYNC)
+        self.assertEqual(result.reason, "calendar_sync_keyword")
+
+    def test_calendar_synkroniser_routes_to_sync(self):
+        result = self.route("kalender synkroniser")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_SYNC)
+        self.assertEqual(result.reason, "calendar_sync_keyword")
+
+    def test_calendar_clear_phrases_win_over_delete(self):
+        self.assertEqual(self.route("kalender slett alt").intent, BotIntent.CALENDAR_CLEAR)
+        self.assertEqual(self.route("kalender fjern alt").intent, BotIntent.CALENDAR_CLEAR)
+
+    def test_calendar_delete_still_handles_item_deletion(self):
+        self.assertEqual(self.route("kalender slett 2").intent, BotIntent.CALENDAR_DELETE)
 
 
 if __name__ == "__main__":
