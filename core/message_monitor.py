@@ -902,18 +902,41 @@ class SelfbotClient(discord.Client):
 
     def _get_commit_hash(self):
         """Get short git commit hash, or 'unknown' if not in a git repo."""
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception:
-            pass
+        import shutil
+
+        if not shutil.which("git"):
+            print("[BOT] git not found in PATH, cannot determine commit hash")
+            return "unknown"
+
+        candidate_dirs = [
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            os.getcwd(),
+            "/opt/inebotten-discord",
+            "/app",
+            os.path.expanduser("~"),
+        ]
+
+        for cwd in candidate_dirs:
+            if not os.path.isdir(os.path.join(cwd, ".git")):
+                continue
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    cwd=cwd,
+                )
+                if result.returncode == 0:
+                    commit = result.stdout.strip()
+                    print(f"[BOT] Detected commit hash from {cwd}: {commit}")
+                    return commit
+                else:
+                    print(f"[BOT] git failed in {cwd}: {result.stderr.strip()}")
+            except Exception as e:
+                print(f"[BOT] git error in {cwd}: {e}")
+
+        print("[BOT] No .git directory found in candidate paths, using 'unknown'")
         return "unknown"
 
     async def on_ready(self):
