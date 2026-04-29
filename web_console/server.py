@@ -18,6 +18,7 @@ from web_console.state_collector import (
     collect_memory_stats,
     collect_poll_data,
     collect_rate_limits,
+    generate_mock_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,7 @@ class ConsoleServer:
                 await self._serve_static_file(writer, path)
                 return
 
-            auth_exempt = path in ("/health", "/api/login")
+            auth_exempt = path in ("/health", "/api/login", "/demo")
             authenticated = auth_exempt or self._is_authenticated(headers)
 
             if not authenticated and path in ("/", "/login"):
@@ -277,6 +278,9 @@ class ConsoleServer:
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/commands":
                 html = render_commands_page()
+                await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
+            elif path == "/demo":
+                html = render_dashboard(generate_mock_data(), is_demo=True)
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/api/status":
                 await self._send_response(writer, 200, collect_bot_status(self.monitor))

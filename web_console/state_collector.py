@@ -325,6 +325,87 @@ def collect_logs(count: int = 200) -> dict[str, Any]:
     return {"logs": get_log_buffer().get_lines(count)}
 
 
+def generate_mock_data() -> dict[str, Any]:
+    """Generate realistic mock data for the demo dashboard."""
+    return {
+        "status": {
+            "status": "online",
+            "uptime_seconds": 86400 + 3600 * 4 + 120,
+            "guilds": 3,
+            "users": 42,
+            "discord_connected": True,
+            "monitor_ready": True,
+        },
+        "bridge": {
+            "status": "healthy",
+            "lm_studio": "connected",
+            "requests": 1337,
+            "errors": 3,
+        },
+        "calendar": {
+            "event_count": 12,
+            "upcoming_events": [
+                {"title": "Møte med Ola", "date": "15.05.2025", "time": "14:00", "recurrence": None},
+                {"title": "Lunsj med gjengen", "date": "16.05.2025", "time": "12:00", "recurrence": "hver uke"},
+                {"title": "Tannlege", "date": "20.05.2025", "time": "09:00", "recurrence": None},
+                {"title": "RBK - Bodø/Glimt", "date": "25.05.2025", "time": "18:00", "recurrence": None},
+            ],
+            "task_count": 2,
+        },
+        "polls": {
+            "active_polls": [
+                {
+                    "question": "Pizza eller burger?",
+                    "votes": {"Pepperoni": 5, "Margherita": 3, "Kebab": 7},
+                },
+                {
+                    "question": "Neste teambuilding?",
+                    "votes": {"Bowling": 2, "Escape room": 4, "Grilling": 6},
+                },
+            ],
+            "total_polls": 8,
+        },
+        "rate_limits": {
+            "global": {
+                "limit": 10000,
+                "remaining": 9876,
+                "reset_in": 3600 * 8,
+                "window": "daglig",
+            },
+            "per_user": {
+                "limit": 5,
+                "window_seconds": 1,
+                "current_users": 3,
+            },
+        },
+        "intents": {
+            "CALENDAR_ITEM": {"count": 45, "low_confidence": 2, "errors": 0},
+            "AI_CHAT": {"count": 120, "low_confidence": 5, "errors": 1},
+            "POLL_CREATE": {"count": 8, "low_confidence": 0, "errors": 0},
+            "STATUS": {"count": 12, "low_confidence": 1, "errors": 0},
+            "CALENDAR_LIST": {"count": 20, "low_confidence": 0, "errors": 0},
+        },
+        "memory": {
+            "user_count": 15,
+            "conversation_count": 32,
+        },
+        "logs": {
+            "logs": [
+                "08:00:00 [INFO] Bot started successfully",
+                "08:00:01 [INFO] Connected to Discord (3 guilds)",
+                "08:00:02 [INFO] Bridge server running on port 3000",
+                "08:05:15 [INFO] Calendar sync completed (12 events)",
+                "08:10:42 [INFO] AI response generated (120 tokens)",
+                "08:15:00 [INFO] Daily digest sent to #general",
+                "08:20:33 [WARN] Rate limit approaching for user_123",
+                "08:30:00 [INFO] Reminder sent: Møte med Ola",
+                "08:45:12 [INFO] Poll created: Pizza eller burger?",
+                "09:00:00 [INFO] New quote added by user_456",
+            ],
+        },
+    }
+
+
 class StateCollector:
     def __init__(self, monitor: object | None = None):
         self.monitor = monitor
