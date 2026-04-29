@@ -947,28 +947,32 @@ class SelfbotClient(discord.Client):
         """Refresh commit_hash.txt if git HEAD differs from the startup hash."""
         import shutil
 
-        if not shutil.which("git"):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        git_bin = shutil.which("git")
+        if not git_bin:
+            print("[BOT] _ensure_current_commit_hash: git binary not found in PATH")
             return current_commit
 
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if not os.path.isdir(os.path.join(project_root, ".git")):
+        git_dir = os.path.join(project_root, ".git")
+        if not os.path.isdir(git_dir):
+            print(f"[BOT] _ensure_current_commit_hash: no .git directory at {project_root}")
             return current_commit
 
         try:
             result = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
+                [git_bin, "rev-parse", "--short", "HEAD"],
                 capture_output=True,
                 text=True,
                 timeout=5,
                 cwd=project_root,
             )
         except Exception as e:
-            print(f"[BOT] Could not check git HEAD for commit hash refresh: {e}")
+            print(f"[BOT] _ensure_current_commit_hash: git rev-parse failed: {e}")
             return current_commit
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
-            print(f"[BOT] Could not check git HEAD for commit hash refresh: {stderr}")
+            print(f"[BOT] _ensure_current_commit_hash: git rev-parse error: {stderr}")
             return current_commit
 
         git_commit = result.stdout.strip()
@@ -982,7 +986,7 @@ class SelfbotClient(discord.Client):
         python_cmd = shutil.which("python3") or sys.executable
         try:
             result = subprocess.run(
-                [python_cmd, "scripts/write_version.py"],
+                [python_cmd, os.path.join(project_root, "scripts/write_version.py")],
                 capture_output=True,
                 text=True,
                 timeout=10,

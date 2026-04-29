@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     libffi-dev \
     python3-dev \
+    git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -26,6 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the container
 COPY . .
+
+# Bake the current git commit hash into the image at build time
+RUN python scripts/write_version.py || echo "warning: could not write commit_hash.txt"
 
 # Create a volume for persistent data
 # The bot stores data in ~/.hermes which is /root/.hermes in this container
