@@ -94,6 +94,49 @@ class GoogleCalendarManager:
         """Return True if Google Calendar is configured and ready"""
         return self.enabled
 
+    def get_auth_url(self):
+        """Generate an OAuth authorization URL for the user to visit"""
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        client_secrets_file = HERMES_HOME / "credentials.json"
+        
+        if not client_secrets_file.exists():
+            return False, f"Fant ikke `credentials.json` i {HERMES_HOME}. Last ned OAuth 2.0 Client ID for 'Desktop app' fra Google Cloud Platform, døp filen til `credentials.json`, og legg den der."
+            
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(client_secrets_file), 
+                ["https://www.googleapis.com/auth/calendar"]
+            )
+            # Use localhost as redirect URI (OOB is deprecated)
+            flow.redirect_uri = "http://localhost:8080"
+            auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+            return True, auth_url
+        except Exception as e:
+            return False, f"Klarte ikke generere auth URL: {e}"
+
+    def exchange_code(self, code):
+        """Exchange the authorization code for a token"""
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        client_secrets_file = HERMES_HOME / "credentials.json"
+        
+        if not client_secrets_file.exists():
+            return False, "Fant ikke `credentials.json`."
+            
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(client_secrets_file), 
+                ["https://www.googleapis.com/auth/calendar"]
+            )
+            flow.redirect_uri = "http://localhost:8080"
+            flow.fetch_token(code=code)
+            
+            creds = flow.credentials
+            self._save_credentials(creds)
+            self.enabled = True
+            return True, "Autentisering vellykket! Google Calendar er nå synkronisert og klar til bruk."
+        except Exception as e:
+            return False, f"Autentisering feilet: Sjekk at koden er riktig. ({e})"
+
     def _run_calendar_command(self, *args):
         """Run a calendar command via the google_api.py script"""
         script_path = SKILL_PATH / "google_api.py"

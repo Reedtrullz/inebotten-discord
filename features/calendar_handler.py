@@ -518,3 +518,40 @@ class CalendarHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error syncing calendar: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under synkronisering med Google Calendar.")
+
+    async def handle_auth(self, message, payload: Dict[str, Any] = None) -> None:
+        """Handle Google Calendar authentication commands."""
+        try:
+            if not self.calendar.gcal:
+                from cal_system.google_calendar_manager import GoogleCalendarManager
+                self.calendar.gcal = GoogleCalendarManager()
+                
+            code = payload.get("auth_code") if payload else None
+            
+            if code:
+                success, msg = self.calendar.gcal.exchange_code(code)
+                if success:
+                    self.calendar.gcal_enabled = True
+                    await self.send_response(message, "✅ " + msg)
+                    await self.handle_sync(message)
+                else:
+                    await self.send_response(message, "❌ " + msg)
+            else:
+                success, result = self.calendar.gcal.get_auth_url()
+                if success:
+                    auth_url = result
+                    response_text = (
+                        "🔐 **Koble til Google Calendar**\n\n"
+                        f"1. Klikk på denne lenken for å logge inn med Google-kontoen din:\n{auth_url}\n\n"
+                        "2. Etter at du har logget inn, vil nettleseren prøve å gå til `localhost`. "
+                        "Dette vil kanskje feile, men det går fint! Se i adresselinjen din.\n\n"
+                        "3. Kopier koden fra adresselinjen (etter `code=`) og send den til meg slik:\n"
+                        "`@inebotten kalender kode <din_kode>`"
+                    )
+                    await self.send_response(message, response_text)
+                else:
+                    await self.send_response(message, "❌ " + result)
+                    
+        except Exception as e:
+            self.log(f"Error handling calendar auth: {e}")
+            await self.send_response(message, "❌ Beklager, det oppstod en feil under autentiseringen.")

@@ -157,6 +157,7 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
         r"hva skjer i", r"hvor mye er", r"fortell meg om",
         r"hva vet du om", r"hvem er", r"hvordan fungerer",
         r"når begynner", r"hvilke", r"kan man", r"finnes det",
+        r"hva er", r"hvilket", r"når", r"hvor", r"hvordan", r"hvem",
     ]
 
     opinion_blocklist = [

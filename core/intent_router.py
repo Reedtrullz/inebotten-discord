@@ -31,6 +31,7 @@ from core.intent_keywords import (
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
     WORD_OF_DAY_KEYWORDS,
+    GCAL_AUTH_KEYWORDS,
 )
 from core.intent_utils import has_any_keyword
 
@@ -74,6 +75,7 @@ class BotIntent(Enum):
     BIRTHDAY_EDIT = "birthday_edit"
     REMINDER_EDIT = "reminder_edit"
     REMINDER_DELETE = "reminder_delete"
+    CALENDAR_AUTH = "calendar_auth"
     AI_CHAT = "ai_chat"
 
 
@@ -112,6 +114,11 @@ class IntentRouter:
             return IntentResult(BotIntent.REMINDER_EDIT, 0.98, {}, "reminder_edit_keyword")
         if has_any_keyword(content_lower, REMINDER_DELETE_KEYWORDS):
             return IntentResult(BotIntent.REMINDER_DELETE, 0.98, {}, "reminder_delete_keyword")
+
+        if has_any_keyword(content_lower, GCAL_AUTH_KEYWORDS):
+            code_match = re.search(r'(?:kode|code|auth)\s+([4/a-zA-Z0-9_\-]+)', content)
+            code = code_match.group(1) if code_match else None
+            return IntentResult(BotIntent.CALENDAR_AUTH, 0.99, {"auth_code": code}, "calendar_auth_keyword")
 
         calendar_command = self._route_calendar_command(content_lower)
         if calendar_command:

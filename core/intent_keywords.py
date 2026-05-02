@@ -19,6 +19,8 @@ CALENDAR_KEYWORDS = (
     "synk", "sync", "synkroniser", "gcal",
 )
 
+GCAL_AUTH_KEYWORDS = ("kalender auth", "gcal auth", "kalender login", "kalender kode", "gcal kode", "kalenderkode")
+
 SYNC_KEYWORDS = ("synk", "sync", "synkroniser", "hent fra google", "oppdater fra google")
 DELETE_KEYWORDS = ("slett", "delete", "fjern")
 COMPLETE_KEYWORDS = ("ferdig", "done", "complete", "fullført")
@@ -76,4 +78,5 @@ __all__ = [
     "QUOTE_LIST_KEYWORDS",
     "QUOTE_EDIT_KEYWORDS",
     "QUOTE_DELETE_KEYWORDS",
+    "GCAL_AUTH_KEYWORDS",
 ]

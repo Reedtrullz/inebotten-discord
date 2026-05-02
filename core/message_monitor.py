@@ -402,6 +402,8 @@ class MessageMonitor:
             await self.handlers["calendar"].handle_clear(message)
         elif route.intent == BotIntent.CALENDAR_ITEM:
             await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
+        elif route.intent == BotIntent.CALENDAR_AUTH:
+            await self.handlers["calendar"].handle_auth(message, payload)
         elif route.intent == BotIntent.REMINDER_EDIT:
             await self.handlers["reminders"].handle_reminder_edit(message, payload)
         elif route.intent == BotIntent.REMINDER_DELETE:
