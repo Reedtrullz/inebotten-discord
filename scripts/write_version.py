@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Write current git commit hash to commit_hash.txt for containerized deployments."""
 import subprocess
-import sys
-
 import os
+import subprocess
 
-commit = os.environ.get("SOURCE_COMMIT")
+commit = os.environ.get("SOURCE_COMMIT") or os.environ.get("COMMIT_SHA")
 
 if not commit:
     try:
@@ -16,9 +15,8 @@ if not commit:
             check=True,
         )
         commit = result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"Failed to get commit hash via git: {e}", file=sys.stderr)
-        sys.exit(1)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        commit = "unknown"
 
 with open("commit_hash.txt", "w") as f:
     f.write(commit)
