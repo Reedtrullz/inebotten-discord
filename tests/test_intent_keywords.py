@@ -28,6 +28,7 @@ from core.intent_keywords import (
     WATCHLIST_EDIT_KEYWORDS,
     WATCHLIST_REMOVE_KEYWORDS,
     WORD_OF_DAY_KEYWORDS,
+    GCAL_AUTH_KEYWORDS,
 )
 
 
@@ -71,6 +72,7 @@ EXPECTED_KEYWORDS = {
     "QUOTE_LIST_KEYWORDS": ("liste sitater", "vis sitater", "alle sitater"),
     "QUOTE_EDIT_KEYWORDS": ("endre sitat", "rediger sitat"),
     "QUOTE_DELETE_KEYWORDS": ("slett sitat", "fjern sitat"),
+    "GCAL_AUTH_KEYWORDS": ("kalender auth", "gcal auth", "kalender login", "kalender kode", "gcal kode", "kalenderkode"),
 }
 
 EXPECTED_EXPORTS = tuple(EXPECTED_KEYWORDS.keys())
@@ -128,6 +130,7 @@ class IntentKeywordsTests(unittest.TestCase):
         "QUOTE_LIST_KEYWORDS": QUOTE_LIST_KEYWORDS,
         "QUOTE_EDIT_KEYWORDS": QUOTE_EDIT_KEYWORDS,
         "QUOTE_DELETE_KEYWORDS": QUOTE_DELETE_KEYWORDS,
+        "GCAL_AUTH_KEYWORDS": GCAL_AUTH_KEYWORDS,
     }
 
         for name, value in imported_values.items():

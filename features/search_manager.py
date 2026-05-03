@@ -201,6 +201,15 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
             )
             return None
 
+        # Vague queries that are usually small talk or handled by other intents
+        vague_queries = ["nytt", "skjer", "det", "greia", "planen", "opplegget"]
+        if query.lower() in vague_queries:
+            logging.debug(
+                "Search intent rejected – query is too vague: %r",
+                query
+            )
+            return None
+
         return {"query": query, "type": query_type}
 
     return None
