@@ -15,7 +15,7 @@ class URLShortener:
     
     def __init__(self):
         self.url_pattern = re.compile(
-            r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+            r'http[s]?://(?:[a-zA-Z]|[0-9]|[$\-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
         )
     
     def parse_shorten_command(self, message_content):

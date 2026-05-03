@@ -216,9 +216,15 @@ def generate_env(discord_token, ai_config, gcal_config):
         else:
             new_lines.append(line)
 
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
-    os.chmod(env_path, 0o600)
+    # Create .env with restricted permissions
+    try:
+        # Create file with 0600 permissions
+        fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.writelines(new_lines)
+    except Exception as e:
+        print(f"  {Colors.FAIL}Error writing .env file: {e}{Colors.ENDC}")
+        return
     
     print(f"  {Colors.GREEN}✓ .env file generated successfully!{Colors.ENDC}")
 

@@ -219,9 +219,7 @@ class BirthdayManager:
                 if self.gcal_enabled and birthday_data.get("gcal_event_id"):
                     try:
                         self.gcal.delete_event(birthday_data["gcal_event_id"])
-                        print(
-                            f"[BIRTHDAY] Deleted from Google Calendar: {birthday_data['gcal_event_id']}"
-                        )
+                        print(f"[BIRTHDAY] Deleted event from Google Calendar")
                     except Exception as e:
                         print(f"[BIRTHDAY] Failed to delete from Google Calendar: {e}")
 
@@ -531,17 +529,10 @@ if __name__ == "__main__":
     manager.add_birthday("guild1", "user1", "Ola Nordmann", 17, 3, 1990)
     manager.add_birthday("guild1", "user2", "Kari Nordmann", 20, 3)
 
-    # Test today's birthdays
-    print("Today's birthdays:")
+    # Test today's birthdays (silent unless needed)
     today_bdays = manager.get_todays_birthdays("guild1")
-    for username, age in today_bdays:
-        print(manager.format_birthday_greeting(username, age))
-
-    print("\nUpcoming birthdays:")
-    print(manager.format_upcoming_birthdays("guild1"))
-
-    print("\nAll birthdays:")
-    print(manager.format_birthday_list("guild1"))
+    if today_bdays:
+        print(f"Found {len(today_bdays)} birthdays today.")
 
     # Cleanup
     if manager.storage_path.exists():

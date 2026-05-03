@@ -54,7 +54,6 @@ class Config:
         if not console_api_key:
             import uuid
             console_api_key = str(uuid.uuid4())
-            print(f"[CONFIG] Generated console API key: {console_api_key[:8]}... (set CONSOLE_API_KEY to override)")
         self.CONSOLE_API_KEY = console_api_key
         
         # Rate Limiting (conservative to avoid flags)

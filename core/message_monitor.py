@@ -950,7 +950,6 @@ class SelfbotClient(discord.Client):
             )
             await self.console_server.start()
             print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
-            print(f"[BOT] Console API key: {self.config.console_api_key[:8]}...")
             self._setup_signal_handlers()
         except Exception as e:
             self.console_server = None
