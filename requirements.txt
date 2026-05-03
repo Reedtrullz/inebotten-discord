@@ -26,7 +26,7 @@ cryptography>=41.0.0
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0.0
 google-auth-httplib2>=0.1.0
-google-api-python-client>=2.0.0
+google-api-python-client>=2.195.0
 
 # Browser and Scraping
 browserbase>=0.1.0
