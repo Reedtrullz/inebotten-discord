@@ -103,13 +103,13 @@ class GoogleCalendarManager:
             return False, f"Fant ikke `credentials.json` i {HERMES_HOME}. Last ned OAuth 2.0 Client ID for 'Desktop app' fra Google Cloud Platform, døp filen til `credentials.json`, og legg den der."
             
         try:
-            flow = InstalledAppFlow.from_client_secrets_file(
+            self._auth_flow = InstalledAppFlow.from_client_secrets_file(
                 str(client_secrets_file), 
                 ["https://www.googleapis.com/auth/calendar"]
             )
             # Use localhost as redirect URI (OOB is deprecated)
-            flow.redirect_uri = "http://localhost:8080"
-            auth_url, _ = flow.authorization_url(prompt='consent', access_type='offline')
+            self._auth_flow.redirect_uri = "http://localhost:8080"
+            auth_url, _ = self._auth_flow.authorization_url(prompt='consent', access_type='offline')
             return True, auth_url
         except Exception as e:
             return False, f"Klarte ikke generere auth URL: {e}"
@@ -119,20 +119,17 @@ class GoogleCalendarManager:
         from google_auth_oauthlib.flow import InstalledAppFlow
         client_secrets_file = HERMES_HOME / "credentials.json"
         
-        if not client_secrets_file.exists():
-            return False, "Fant ikke `credentials.json`."
+        if not getattr(self, '_auth_flow', None):
+            return False, "Ingen aktiv påloggingsøkt funnet. Vennligst kjør `@inebotten kalender auth` først for å få en ny lenke, og prøv igjen med den nye koden."
             
         try:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(client_secrets_file), 
-                ["https://www.googleapis.com/auth/calendar"]
-            )
-            flow.redirect_uri = "http://localhost:8080"
+            flow = self._auth_flow
             flow.fetch_token(code=code)
             
             creds = flow.credentials
             self._save_credentials(creds)
             self.enabled = True
+            self._auth_flow = None # Clear flow after success
             return True, "Autentisering vellykket! Google Calendar er nå synkronisert og klar til bruk."
         except Exception as e:
             return False, f"Autentisering feilet: Sjekk at koden er riktig. ({e})"
