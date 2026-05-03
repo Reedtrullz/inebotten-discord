@@ -20,7 +20,7 @@ python-dotenv>=1.0.0
 keyring>=24.0.0
 
 # Encryption for token storage (optional but recommended)
-cryptography>=41.0.0
+cryptography>=47.0.0
 
 # Google Calendar integration (optional)
 google-auth>=2.0.0
