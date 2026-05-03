@@ -1,7 +1,7 @@
 # Core dependencies for Inebotten Discord selfbot
 
 # Discord API (Self-bot fork)
-discord.py-self>=2.0.0
+discord.py-self>=2.1.0
 
 # HTTP client for API calls
 aiohttp>=3.8.0
