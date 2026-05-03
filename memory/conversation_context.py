@@ -16,12 +16,12 @@ class ConversationContext:
     
     # Keywords that indicate user wants dashboard/info
     DASHBOARD_KEYWORDS = [
-        'vær', 'været', 'weather',
-        'kalender', 'calendar', 'plan',
+        'vær', 'været', 'værmelding', 'weather',
+        'kalender', 'kalenderen', 'calendar', 'plan', 'planer',
         'hva skjer', 'hva skal', 'hva har jeg',
         'oversikt', 'status', 'dashboard',
-        'påminnelse', 'huskeliste', 'gjøremål',
-        'navnedag',
+        'påminnelse', 'påminnelser', 'huskeliste', 'gjøremål',
+        'navnedag', 'navnedager'
     ]
     
     # Small talk patterns
@@ -111,9 +111,20 @@ class ConversationContext:
         """
         content_lower = content.lower()
         
+        # Un-match explicit questions that use "hva er" unless they specifically ask for weather/status
+        if re.search(r'\bhva er\b', content_lower) and not re.search(r'\b(været|status|værmelding)\b', content_lower):
+            return False
+
+        # Extract precise words to prevent substring matching (e.g. "værnes" matching "vær")
+        words = set(re.findall(r'\b\w+\b', content_lower))
+        
         for keyword in self.DASHBOARD_KEYWORDS:
-            if keyword in content_lower:
-                return True
+            if ' ' in keyword:
+                if keyword in content_lower:
+                    return True
+            else:
+                if keyword in words:
+                    return True
         
         return False
     
