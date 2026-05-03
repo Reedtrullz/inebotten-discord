@@ -5,6 +5,7 @@ Den velinformerte vennen - en digital følgesvenn for nordmenn
 """
 
 import random
+import re
 from datetime import datetime
 
 

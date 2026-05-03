@@ -5,6 +5,7 @@ Tracks reminders that can be marked as completed
 """
 
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
