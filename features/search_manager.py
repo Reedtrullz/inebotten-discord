@@ -151,13 +151,13 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     ]
 
     info_phrase_triggers = [
-        r"hvem vant", r"resultatet", r"hvordan gikk det",
-        r"hva er status", r"hvor mye koster", r"hva koster",
-        r"kva kostar", r"kor mykje kostar", r"søk på nett",
-        r"hva skjer i", r"hvor mye er", r"fortell meg om",
-        r"hva vet du om", r"hvem er", r"hvordan fungerer",
-        r"når begynner", r"hvilke", r"kan man", r"finnes det",
-        r"hva er", r"hvilket", r"når", r"hvor", r"hvordan", r"hvem",
+        r"\bhvem vant\b", r"\bresultatet\b", r"\bhvordan gikk det\b",
+        r"\bhva er status\b", r"\bhvor mye koster\b", r"\bhva koster\b",
+        r"\bkva kostar\b", r"\bkor mykje kostar\b", r"\bsøk på nett\b",
+        r"\bhva skjer i\b", r"\bhvor mye er\b", r"\bfortell meg om\b",
+        r"\bhva vet du om\b", r"\bhvem er\b", r"\bhvordan fungerer\b",
+        r"\bnår begynner\b", r"\bhvilke\b", r"\bkan man\b", r"\bfinnes det\b",
+        r"\bhva er\b", r"\bhvilket\b", r"\bnår\b", r"\bhvor\b", r"\bhvordan\b", r"\bhvem\b",
     ]
 
     opinion_blocklist = [

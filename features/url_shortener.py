@@ -30,8 +30,9 @@ class URLShortener:
         # Remove @inebotten
         content = message_content.replace('@inebotten', '').strip()
         
-        # Check for shorten keywords
-        if not any(word in content_lower for word in ['shorten', 'forkort', 'kort url', 'short url']):
+        # Check for shorten keywords (use word boundaries)
+        keywords = ['shorten', 'forkort', 'kort url', 'short url']
+        if not any(re.search(rf"\b{re.escape(word)}\b", content_lower) for word in keywords):
             return None
         
         # Find URL

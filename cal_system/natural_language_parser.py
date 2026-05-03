@@ -648,9 +648,9 @@ class NaturalLanguageParser:
                 date_str = f"{day_str}.{today.month}.{year}"
                 return date_str, None
 
-        # 4. Check for "i dag", "i morgen", etc.
+        # 4. Check for "i dag", "i morgen", etc. (use word boundaries)
         for word, offset in self.date_words.items():
-            if word in content_lower:
+            if re.search(rf"\b{re.escape(word)}\b", content_lower):
                 target_date = today + timedelta(days=offset)
                 return target_date.strftime('%d.%m.%Y'), offset
 
@@ -667,7 +667,7 @@ class NaturalLanguageParser:
 
         # 6. If we have time indicators like "i kveld" but no date, assume today
         for time_word in ['i kveld', 'i natt', 'i dag']:
-            if time_word in content_lower:
+            if re.search(rf"\b{re.escape(time_word)}\b", content_lower):
                 return today.strftime('%d.%m.%Y'), 0
 
         return None, None
@@ -699,9 +699,9 @@ class NaturalLanguageParser:
         if time_match:
             return f"{time_match.group(1)}:{time_match.group(2)}"
         
-        # Check for time words
+        # Check for time words (use word boundaries)
         for word, meaning in self.time_words.items():
-            if word in content_lower:
+            if re.search(rf"\b{re.escape(word)}\b", content_lower):
                 if meaning == 'morning':
                     return '10:00'
                 elif meaning == 'afternoon':

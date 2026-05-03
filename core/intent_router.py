@@ -297,7 +297,7 @@ class IntentRouter:
         title = str(parsed.get("title", "")).strip()
         content_lower = content.lower()
         vague_title = re.fullmatch(r"(det|that|dette|den|it)(?:\s+.*)?", title.lower() or "") is not None
-        reminder_followup = any(phrase in content_lower for phrase in ["minn meg", "påminn meg", "remind me"])
+        reminder_followup = any(re.search(rf"\b{re.escape(phrase)}\b", content_lower) for phrase in ["minn meg", "påminn meg", "remind me"])
 
         if not (vague_title and reminder_followup):
             return parsed
@@ -399,8 +399,8 @@ class IntentRouter:
         if content_lower.strip() in {"hva skjer", "hva skjer?", "what's up", "what is up"}:
             return False
         context_markers = [
-            " i ", " på ", " om ", " for ", " hos ", "til ", "trondheim", "oslo",
+            "i", "på", "om", "for", "hos", "til", "trondheim", "oslo",
             "bergen", "tromsø", "helga", "helgen", "siste", "nå", "today",
-            " fra ", "fly", "flight", "reise", "travel",
+            "fra", "fly", "flight", "reise", "travel",
         ]
-        return any(marker in content_lower for marker in context_markers)
+        return any(re.search(rf"\b{re.escape(marker)}\b", content_lower) for marker in context_markers)

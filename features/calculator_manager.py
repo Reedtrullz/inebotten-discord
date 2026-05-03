@@ -95,7 +95,7 @@ class CalculatorManager:
             to_unit = match.group(3)
             
             is_recognized = (from_unit in self.exchange_rates or to_unit in self.exchange_rates)
-            is_explicit = any(w in content_lower for w in ["konverter", "convert", "omgjør"])
+            is_explicit = any(re.search(rf"\b{re.escape(w)}\b", content_lower) for w in ["konverter", "convert", "omgjør"])
             
             if is_recognized or is_explicit:
                 return {

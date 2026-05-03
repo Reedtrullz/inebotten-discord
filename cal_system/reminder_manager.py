@@ -424,7 +424,7 @@ def parse_reminder_command(message_content):
     ]
 
     for keyword in reminder_keywords:
-        if keyword in content_lower:
+        if re.search(rf"\b{re.escape(keyword)}\b", content_lower):
             # Extract reminder text
             text = message_content
 
@@ -468,7 +468,7 @@ def parse_reminder_command(message_content):
     # Check for complete reminder
     complete_keywords = ["ferdig", "fullført", "done", "completed", "gjort", "✓"]
     for keyword in complete_keywords:
-        if keyword in content_lower:
+        if re.search(rf"\b{re.escape(keyword)}\b", content_lower):
             # Try to extract number
             import re
 
@@ -478,9 +478,10 @@ def parse_reminder_command(message_content):
             return {"action": "complete", "number": None}
 
     # Check for list reminders
+    list_keywords = ["påminnelser", "gjøremål", "reminders", "todos", "huskeliste"]
     if any(
-        word in content_lower
-        for word in ["påminnelser", "gjøremål", "reminders", "todos", "huskeliste"]
+        re.search(rf"\b{re.escape(word)}\b", content_lower)
+        for word in list_keywords
     ):
         return {"action": "list"}
 

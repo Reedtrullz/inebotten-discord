@@ -488,7 +488,7 @@ class MessageMonitor:
         if city_name:
             print(f"[MONITOR] Specific city detected for context: {city_name}")
         
-        show_navnedag = any(word in content_lower for word in ['navnedag', 'oppsummering', 'brief', 'status'])
+        show_navnedag = any(re.search(rf"\b{re.escape(word)}\b", content_lower) for word in ['navnedag', 'oppsummering', 'brief', 'status'])
 
 
         # Update conversation history

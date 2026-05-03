@@ -77,13 +77,13 @@ class HoroscopeManager:
         # Remove @inebotten
         content_lower = content_lower.replace('@inebotten', '').strip()
         
-        # Check for horoscope keywords
-        if not any(word in content_lower for word in ['horoskop', 'horoscope']):
+        # Check for horoscope keywords (use word boundaries)
+        if not any(re.search(rf"\b{re.escape(word)}\b", content_lower) for word in ['horoskop', 'horoscope']):
             return None
         
-        # Look for zodiac sign
+        # Look for zodiac sign (use word boundaries)
         for sign_key, sign_name in self.zodiac_signs.items():
-            if sign_key in content_lower:
+            if re.search(rf"\b{re.escape(sign_key)}\b", content_lower):
                 return {'sign': sign_name, 'sign_key': sign_key}
         
         # If no sign found, return None (we need a sign)

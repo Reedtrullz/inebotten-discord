@@ -153,7 +153,8 @@ class InebottenPersonality:
         condition_lower = condition.lower()
         
         for key, comments in self.weather_comments.items():
-            if key in condition_lower:
+            # Use word boundaries to avoid matching substrings in condition names
+            if re.search(rf"\b{re.escape(key)}\b", condition_lower):
                 return random.choice(comments)
         
         return "Håper været holder seg! 🌤️"
@@ -279,30 +280,31 @@ class InebottenPersonality:
         an appropriate response. Returns None if no dialect words found.
         """
         content_lower = content.lower()
+        import re
         
-        # Check for dialect expressions
-        if 'kjekt' in content_lower:
+        # Check for dialect expressions (use word boundaries)
+        if re.search(r"\bkjekt\b", content_lower):
             return random.choice([
                 "Det var kjekt å høre! 😊",
                 "Kjekt at du sier det!",
                 "Det høres kjekt ut!",
             ])
         
-        if 'tøft' in content_lower:
+        if re.search(r"\btøft\b", content_lower):
             return random.choice([
                 "Skikkelig tøft! 👍",
                 "Det var tøft!",
                 "Tøft å høre!",
             ])
         
-        if 'rått' in content_lower:
+        if re.search(r"\brått\b", content_lower):
             return random.choice([
                 "Helt rått! 🎉",
                 "Det var rått!",
                 "Rått! Kjempebra!",
             ])
         
-        if 'skikkelig' in content_lower:
+        if re.search(r"\bskikkelig\b", content_lower):
             return random.choice([
                 "Skikkelig bra! 👍",
                 "Det var skikkelig fint!",
