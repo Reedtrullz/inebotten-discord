@@ -107,8 +107,9 @@ class CountdownManager:
         # Remove @inebotten
         content_lower = content_lower.replace("@inebotten", "").strip()
 
-        # Harden trigger: ensure specific countdown keywords are present
-        if not any(keyword in content_lower for keyword in ["hvor lenge", "hvor mange dager", "nedtelling", "når er det", "dager til", "how long", "how many days", "countdown", "when is the", "days until", "days to"]):
+        # Harden trigger: ensure specific countdown keywords are present (use word boundaries)
+        keywords = ["hvor lenge", "hvor mange dager", "nedtelling", "når er det", "dager til", "how long", "how many days", "countdown", "when is the", "days until", "days to"]
+        if not any(re.search(rf"\b{re.escape(keyword)}\b", content_lower) for keyword in keywords):
             return None
 
         # Patterns to match (Norwegian and English)
@@ -136,9 +137,9 @@ class CountdownManager:
         """Find date for a query and return structured data"""
         query_lower = query.lower().strip()
 
-        # Check against known holidays
+        # Check against known holidays (use word boundaries)
         for holiday_name, date_tuple in self.important_dates.items():
-            if holiday_name in query_lower:
+            if re.search(rf"\b{re.escape(holiday_name)}\b", query_lower):
                 target_date = datetime(date_tuple[0], date_tuple[1], date_tuple[2])
                 return self._calculate_countdown(target_date, holiday_name)
 
@@ -183,10 +184,10 @@ class CountdownManager:
         hours = diff.seconds // 3600
         minutes = (diff.seconds % 3600) // 60
 
-        # Find emoji
+        # Find emoji (use word boundaries)
         emoji = "📅"
         for key, em in self.event_emojis.items():
-            if key in event_name.lower():
+            if re.search(rf"\b{re.escape(key)}\b", event_name.lower()):
                 emoji = em
                 break
 
