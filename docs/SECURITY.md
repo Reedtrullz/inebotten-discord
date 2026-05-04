@@ -135,12 +135,14 @@ git pull origin master
 git log --oneline -5
 ```
 
-På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md). Viktige sikkerhetsregler for auto-update:
+På VPS kan dette automatiseres med GitHub Actions + GHCR + Ansible (se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md)).
 
+For legacy webhook-basert auto-update (kun for enkelt-app VPS, IKKE anbefalt for multi-app):
 - Bruk en GitHub webhook secret.
 - Ikke commit `/etc/inebotten-webhook.env`, `.env`, tokens eller `data/`.
 - Ikke gjør manuelle kodeendringer i `/opt/inebotten-discord`; auto-update bruker `git reset --hard origin/master`.
 - Sjekk `/var/log/inebotten-autoupdate.log` etter feil.
+- Ikke eksponer webhook-port 9000 offentlig med mindre du bruker legacy-metoden.
 
 ---
 
@@ -150,13 +152,20 @@ På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMEN
 
 ```bash
 # Disse skal ALDRI committes til git
-.env                    # Discord token
+.env                    # Discord token, API-nøkler
 .env.local             # Lokale overrides
+data/                  # All kjøredata, tokens, minne
 data/tokens.json       # Bruker-tokens
 data/user_memory.json  # Personlig data
 data/calendar.json     # Personlig data
 data/client_secret*.json  # Google credentials
 *.log                  # Loggfiler
+
+# API-nøkler (ALDRI commit)
+OPENROUTER_API_KEY     # OpenRouter
+TAVILY_API_KEY         # Tavily search
+BROWSERBASE_API_KEY    # Browserbase
+/etc/inebotten-webhook.env  # Webhook secret (legacy)
 ```
 
 Alle disse er allerede i `.gitignore`.
@@ -177,6 +186,15 @@ discord_token="your-token" python3 run_both.py  # Vises i shell history
 - **Bridge kjører kun på localhost** (127.0.0.1:3000)
 - **Ingen ekstern tilgang** til AI-endepunktet
 - **Discord-token sendes kun til Discord's API**
+
+### Produksjonsdeployment Sikkerhet
+
+For multi-app VPS deployment:
+- All public access går kun gjennom sentral Caddy proxy (bot.reidar.tech)
+- Interne porter (3000, 8080) skal IKKE eksponeres offentlig
+- Web console skal beskyttes med `CONSOLE_API_KEY` i `.env`
+- Ikke bruk webhook-basert auto-update i produksjon (dette er legacy metode)
+- Bruk foretrukket metode: GitHub Actions + GHCR + Ansible
 
 ---
 

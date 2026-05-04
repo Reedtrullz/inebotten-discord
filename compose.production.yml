@@ -1,0 +1,21 @@
+services:
+  inebotten:
+    image: ghcr.io/reedtrullz/inebotten-discord:${IMAGE_TAG:-latest}
+    container_name: inebotten-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/root/.hermes
+    environment:
+      - HERMES_BRIDGE_HOST=0.0.0.0
+      - HERMES_BRIDGE_PORT=3000
+      - CONSOLE_HOST=0.0.0.0
+      - CONSOLE_PORT=8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
