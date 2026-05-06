@@ -167,14 +167,15 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handle_edit_search_by_title_then_edit(self):
         self._add_item("Møte med Ola", _date(1), time="09:00")
-        self.message.content = "@inebotten rediger møte med ola dato: 05.05.2026"
+        target_date = _date(7)
+        self.message.content = f"@inebotten rediger møte med ola dato: {target_date}"
 
         await self.handler.handle_edit(self.message)
 
         self.handler.send_response.assert_awaited_once_with(
             self.message, "Oppdatert: Møte med Ola"
         )
-        self.assertEqual(self.manager.get_upcoming("123")[0]["date"], "05.05.2026")
+        self.assertEqual(self.manager.get_upcoming("123")[0]["date"], target_date)
 
 
 if __name__ == "__main__":
