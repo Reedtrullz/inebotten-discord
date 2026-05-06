@@ -68,11 +68,23 @@ python3 -m pip install -r requirements.txt
 
 ### Docker/VPS
 
+For local development:
+
 ```bash
 docker compose up -d
 ```
 
-For VPS med webhook-basert auto-oppdatering:
+For deploying to the production VPS, use the Ansible playbook in `deploy/`:
+
+```bash
+ansible-playbook -i deploy/inventory/hosts.yml deploy/ansible-playbook.yml \
+  --vault-password-file ~/.vault_pass.txt
+```
+
+See [deploy/README.md](deploy/README.md) for prerequisites, secrets layout,
+and verification steps.
+
+For VPS med webhook-basert auto-oppdatering (legacy):
 
 ```bash
 cd /opt/inebotten-discord

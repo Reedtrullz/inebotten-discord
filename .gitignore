@@ -79,6 +79,7 @@ improved_prompt_*.txt
 
 # Deployment secrets
 inebotten-webhook.env
+.vault_pass*
 webhook-secret*
 
 # Build artifacts

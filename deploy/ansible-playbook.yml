@@ -1,0 +1,90 @@
+- name: Deploy Inebotten to VPS (via docker compose)
+  hosts: vps
+  gather_facts: false
+  vars:
+    compose_dir: "/opt/apps/inebotten-discord"
+
+  tasks:
+    - name: Stop any standalone container left over from older deploys
+      community.docker.docker_container:
+        name: inebotten
+        state: absent
+
+    - name: Pull latest source from origin
+      ansible.builtin.git:
+        repo: "https://github.com/Reedtrullz/inebotten-discord.git"
+        dest: "{{ compose_dir }}"
+        version: master
+        update: yes
+        force: no
+      become: true
+      become_user: deploy
+      register: source_pull
+      ignore_errors: yes  # allow operating on an already-checked-out tree without origin access
+
+    - name: Ensure {{ compose_dir }}/.env exists (cannot create silently — must be present)
+      ansible.builtin.stat:
+        path: "{{ compose_dir }}/.env"
+      register: env_file
+
+    - name: Fail loudly if {{ compose_dir }}/.env is missing
+      ansible.builtin.fail:
+        msg: |
+          {{ compose_dir }}/.env not found. SSH to the VPS and create it:
+              cd {{ compose_dir }}
+              cp .env.example .env
+              # then fill in DISCORD_USER_TOKEN
+      when: not env_file.stat.exists
+
+    - name: Ensure AI provider settings are present in .env (managed block)
+      ansible.builtin.blockinfile:
+        path: "{{ compose_dir }}/.env"
+        marker: "# === managed by ansible (inebotten-discord deploy) {mark} ==="
+        block: |
+          AI_PROVIDER=openrouter
+          OPENROUTER_API_KEY={{ vault_openrouter_api_key }}
+          OPENROUTER_MODEL=google/gemma-4-31b-it:free
+        mode: "0600"  # tighten — file contains an API key
+      no_log: true  # don't echo the key into ansible output
+
+    - name: Drop a compose override that maps the bot to 127.0.0.1:8081 and disables the bundled Caddy
+      ansible.builtin.copy:
+        dest: "{{ compose_dir }}/docker-compose.override.yml"
+        mode: "0644"
+        content: |
+          # Managed by ansible-playbook (deploy/ansible-playbook.yml). Do not edit by hand.
+          # The system Caddy on this host already terminates TLS for bot.reidar.tech and
+          # proxies to 127.0.0.1:8081, so we (a) remap the bot's web console to 8081 and
+          # (b) skip the bundled Caddy entirely so port 80/443 stays with the system one.
+          services:
+            inebotten:
+              ports: !override
+                - "127.0.0.1:8081:8080"
+            caddy:
+              profiles:
+                - never  # never start; system Caddy handles TLS
+
+    - name: Build (or rebuild) the inebotten image
+      community.docker.docker_compose_v2:
+        project_src: "{{ compose_dir }}"
+        services: [inebotten]
+        build: always
+        state: present
+        recreate: always
+        wait: true
+        wait_timeout: 120
+      register: compose_result
+
+    - name: Wait for the bot's health endpoint to come up
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8081/health"
+        status_code: [200, 401, 404]  # any HTTP response means the process is up
+        timeout: 5
+      register: health_check
+      until: health_check is succeeded
+      retries: 12
+      delay: 5
+
+    - name: Report deployment status
+      ansible.builtin.debug:
+        msg: "✅ Inebotten deployed via docker compose; health endpoint responded with HTTP {{ health_check.status }}"
