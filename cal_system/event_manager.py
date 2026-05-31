@@ -384,7 +384,7 @@ class EventManager:
                 self.gcal.delete_event(gcal_event_id)
                 print(f"[EVENT] Deleted from Google Calendar: {gcal_event_id}")
             except Exception as e:
-                print(f"[EVENT] Failed to delete from Google Calendar: {e}")
+                print(f"[EVENT] Failed to delete from Google Calendar: {e}")  # nosec B608
 
         return deleted_event is not None or gcal_event_id is not None
 
@@ -693,7 +693,7 @@ if __name__ == "__main__":
     # Test the event manager
     print("=== Event Manager Test ===\n")
 
-    manager = EventManager(storage_path="/tmp/test_events.json")
+    manager = EventManager(storage_path="/tmp/test_events.json")  # nosec B108
 
     # Test creating events
     test_guild = "123456789"

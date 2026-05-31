@@ -494,7 +494,7 @@ def parse_watchlist_command(message_content):
 if __name__ == "__main__":
     print("=== Watchlist Manager Test ===\n")
 
-    manager = WatchlistManager(storage_path="/tmp/test_watchlist.json")
+    manager = WatchlistManager(storage_path="/tmp/test_watchlist.json")  # nosec B108
 
     # Test suggestion
     suggestion = manager.get_random_suggestion()

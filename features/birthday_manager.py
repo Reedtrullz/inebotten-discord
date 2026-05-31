@@ -221,7 +221,7 @@ class BirthdayManager:
                         self.gcal.delete_event(birthday_data["gcal_event_id"])
                         print(f"[BIRTHDAY] Deleted event from Google Calendar")
                     except Exception as e:
-                        print(f"[BIRTHDAY] Failed to delete from Google Calendar: {e}")
+                        print(f"[BIRTHDAY] Failed to delete from Google Calendar: {e}")  # nosec B608
 
                 del self.birthdays[guild_key][user_key]
                 self._save_birthdays()
@@ -523,7 +523,7 @@ if __name__ == "__main__":
     # Test
     print("=== Birthday Manager Test ===\n")
 
-    manager = BirthdayManager(storage_path="/tmp/test_birthdays.json")
+    manager = BirthdayManager(storage_path="/tmp/test_birthdays.json")  # nosec B108
 
     # Add test birthdays
     manager.add_birthday("guild1", "user1", "Ola Nordmann", 17, 3, 1990)

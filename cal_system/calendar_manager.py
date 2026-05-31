@@ -711,7 +711,7 @@ if __name__ == "__main__":
     # Test
     print("=== Calendar Manager Test ===\n")
 
-    manager = CalendarManager(storage_path="/tmp/test_calendar_simple.json")
+    manager = CalendarManager(storage_path="/tmp/test_calendar_simple.json")  # nosec B108
 
     # Add various items
     manager.add_item(
@@ -758,4 +758,4 @@ if __name__ == "__main__":
     # Cleanup
     import os
 
-    os.remove("/tmp/test_calendar_simple.json")
+    os.remove("/tmp/test_calendar_simple.json")  # nosec B108

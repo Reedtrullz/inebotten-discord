@@ -269,7 +269,7 @@ def parse_quote_command(message_content):
 if __name__ == "__main__":
     print("=== Quote Manager Test ===\n")
 
-    manager = QuoteManager(storage_path="/tmp/test_quotes.json")
+    manager = QuoteManager(storage_path="/tmp/test_quotes.json")  # nosec B108
 
     # Add test quote
     manager.add_quote(

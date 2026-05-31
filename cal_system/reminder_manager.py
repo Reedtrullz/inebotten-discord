@@ -493,7 +493,7 @@ if __name__ == "__main__":
     # Test
     print("=== Reminder Manager Test ===\n")
 
-    manager = ReminderManager(storage_path="/tmp/test_reminders.json")
+    manager = ReminderManager(storage_path="/tmp/test_reminders.json")  # nosec B108
 
     # Add test reminders
     manager.add_reminder("guild1", "user1", "Ola", "Kjøpe melk", "20.03.2026")

@@ -98,6 +98,13 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if item.name == "test_remaining" and module_name.endswith("test_advanced_dialect"):
             item.add_marker(pytest.mark.skip(reason="external LM Studio dialect smoke test"))
 
+    # pytest-playwright's sync `page` fixture keeps Playwright's event loop
+    # active for the session, which conflicts with pytest-asyncio tests that
+    # still need to run. Keep Playwright-backed frontend tests at the end so
+    # the regular async suite can complete before the sync browser fixture is
+    # initialized.
+    items.sort(key=lambda item: int("page" in getattr(item, "fixturenames", ())))
+
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     shutil.rmtree(_TEST_HOME, ignore_errors=True)
