@@ -8,8 +8,8 @@ PORT = 18080
 API_KEY = "test-key-123"
 
 
-async def start_server(monitor: object | None = None) -> tuple[ConsoleServer, asyncio.Task[None]]:
-    server = ConsoleServer(host=HOST, port=PORT, api_key=API_KEY, monitor=monitor)
+async def start_server(monitor: object | None = None, *, secure_cookies: bool | None = None) -> tuple[ConsoleServer, asyncio.Task[None]]:
+    server = ConsoleServer(host=HOST, port=PORT, api_key=API_KEY, monitor=monitor, secure_cookies=secure_cookies)
     task = asyncio.create_task(server.start())
     await asyncio.sleep(0.1)
     return server, task
@@ -71,6 +71,26 @@ async def test_auth_valid_key():
         assert b"200" in response
     finally:
         await stop_server(server, task)
+
+
+def test_missing_console_api_key_never_authenticates():
+    server = ConsoleServer(api_key=None)
+    assert server._is_authenticated({}) is False
+    assert server._is_authenticated({"x-api-key": ""}) is False
+    assert server._is_authenticated({"cookie": "console_auth="}) is False
+
+
+async def test_console_server_refuses_to_start_without_api_key():
+    server = ConsoleServer(host=HOST, port=0, api_key=None)
+    try:
+        try:
+            await server.start()
+        except RuntimeError as exc:
+            assert "api_key" in str(exc)
+        else:
+            raise AssertionError("ConsoleServer.start() accepted a missing api_key")
+    finally:
+        await server.stop()
 
 
 async def test_health_no_auth():
@@ -288,6 +308,20 @@ async def test_api_login_valid_key():
         assert b"302" in response
         assert b"Set-Cookie: console_auth=" in response
         assert b"Location: /" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_api_login_valid_key_sets_secure_cookie_when_enabled():
+    server, task = await start_server(secure_cookies=True)
+    try:
+        body = b"api_key=test-key-123"
+        response = await request("/api/login", method="POST", body=body)
+        assert b"302" in response
+        assert b"Set-Cookie: console_auth=" in response
+        assert b"HttpOnly" in response
+        assert b"SameSite=Strict" in response
+        assert b"Secure" in response
     finally:
         await stop_server(server, task)
 
