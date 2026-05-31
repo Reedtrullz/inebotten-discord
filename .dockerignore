@@ -10,18 +10,30 @@ pip-log.txt
 pip-delete-this-directory.txt
 .venv/
 .env
+.env.*
 
-# Local data
+# Local data and secrets
 data/
+logs/
 reminder_log.json
 calendar.json
 user_memory.json
 *.json
+*.pem
+*.key
+*.crt
+*.token
+*.secret
+.vault_pass*
 !requirements.txt
 !package.json
 
-# Git
+# Git and CI/deploy metadata
+.git/
 .gitignore
+.github/
+deploy/
+tests/
 
 # OS
 .DS_Store

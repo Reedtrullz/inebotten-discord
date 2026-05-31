@@ -15,6 +15,21 @@ def test_dockerignore_excludes_git_directory():
     assert ".git/" in lines
 
 
+def test_dockerignore_excludes_deploy_secrets_and_local_env_files():
+    lines = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    required_patterns = {
+        ".env.*",
+        ".vault_pass*",
+        "deploy/",
+        "tests/",
+        ".github/",
+        "logs/",
+        "*.pem",
+        "*.key",
+    }
+    assert required_patterns.issubset(set(lines))
+
+
 def test_dockerfile_runs_as_non_root_user():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "useradd" in dockerfile
@@ -35,6 +50,10 @@ def test_compose_mounts_non_root_home_and_caddy_is_opt_in():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "./data:/home/inebotten/.hermes" in compose
     assert 'user: "10001:10001"' in compose
+    assert "data-permissions:" in compose
+    assert "chown -R 10001:10001 /data" in compose
+    inebotten_block = compose.split("  inebotten:", 1)[1].split("  caddy:", 1)[0]
+    assert "condition: service_completed_successfully" in inebotten_block
     caddy_block = compose.split("  caddy:", 1)[1]
     assert "profiles:" in caddy_block
     assert "bundled-caddy" in caddy_block

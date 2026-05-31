@@ -31,15 +31,21 @@ COPY requirements.txt .
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Create a fixed-UID non-root runtime user and its persistent data directory
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin inebotten
+ENV HOME=/home/inebotten
+
 # Copy the rest of the application code into the container
 COPY . .
 
 # Bake the current git commit hash into the image at build time
 RUN python scripts/write_version.py || echo "warning: could not write commit_hash.txt"
 
-# Create a volume for persistent data
-# The bot stores data in ~/.hermes which is /root/.hermes in this container
-RUN mkdir -p /root/.hermes && chmod 700 /root/.hermes
+# The bot stores data in ~/.hermes, now under the non-root user's home
+RUN mkdir -p /home/inebotten/.hermes \
+    && chown -R inebotten:inebotten /app /home/inebotten
+
+USER inebotten
 
 # Expose the bridge port (if needed for external access, though run_both uses localhost)
 EXPOSE 3000

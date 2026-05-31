@@ -1,13 +1,21 @@
 services:
+  data-permissions:
+    image: alpine:3.20
+    command: ["sh", "-c", "mkdir -p /data && chown -R 10001:10001 /data && chmod 700 /data"]
+    volumes:
+      - ./data:/data
+    restart: "no"
+
   inebotten:
     build: .
     container_name: inebotten-bot
     restart: always
+    user: "10001:10001"
     env_file:
       - .env
     volumes:
       # Persistent storage for calendar, memory, and tokens
-      - ./data:/root/.hermes
+      - ./data:/home/inebotten/.hermes
     environment:
       - HERMES_BRIDGE_HOST=0.0.0.0
       - HERMES_BRIDGE_PORT=3000
@@ -16,6 +24,9 @@ services:
       - CONSOLE_PORT=8080
     expose:
       - "8080"
+    depends_on:
+      data-permissions:
+        condition: service_completed_successfully
     ports:
       # Localhost-only diagnostic access on the VPS. Public access still goes through Caddy.
       - "127.0.0.1:8080:8080"
@@ -29,6 +40,8 @@ services:
     image: caddy:2-alpine
     container_name: inebotten-caddy
     restart: always
+    profiles:
+      - bundled-caddy
     environment:
       - CADDY_CONFIG_REV=2026-04-28-console-upstream
     ports:

@@ -63,6 +63,16 @@
               profiles:
                 - never  # never start; system Caddy handles TLS
 
+    - name: Ensure persistent data directory is writable by the non-root container user
+      ansible.builtin.file:
+        path: "{{ compose_dir }}/data"
+        state: directory
+        owner: "10001"
+        group: "10001"
+        mode: "0700"
+        recurse: true
+      become: true
+
     - name: Build (or rebuild) the inebotten image
       community.docker.docker_compose_v2:
         project_src: "{{ compose_dir }}"
