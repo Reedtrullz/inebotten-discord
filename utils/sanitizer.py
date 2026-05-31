@@ -4,11 +4,66 @@ Input Sanitization Module
 Provides utilities to sanitize user input and prevent injection attacks
 """
 
-import re
+import html
+import ipaddress
 import logging
+import re
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+_LEGACY_IPV4_PART_RE = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)\Z")
+
+
+def _parse_legacy_ipv4_part(part: str) -> int:
+    if part.lower().startswith("0x"):
+        return int(part, 16)
+    if len(part) > 1 and part.startswith("0"):
+        return int(part, 8)
+    return int(part, 10)
+
+
+def _parse_legacy_ipv4_host(host: str) -> ipaddress.IPv4Address | None:
+    """Parse IPv4 forms accepted by some resolvers but rejected by ipaddress."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    if not all(part and _LEGACY_IPV4_PART_RE.fullmatch(part) for part in parts):
+        return None
+
+    try:
+        numbers = [_parse_legacy_ipv4_part(part) for part in parts]
+    except ValueError:
+        return None
+
+    try:
+        if len(numbers) == 1:
+            return ipaddress.IPv4Address(numbers[0])
+        if len(numbers) == 2 and numbers[0] <= 0xFF and numbers[1] <= 0xFFFFFF:
+            return ipaddress.IPv4Address((numbers[0] << 24) | numbers[1])
+        if len(numbers) == 3 and numbers[0] <= 0xFF and numbers[1] <= 0xFF and numbers[2] <= 0xFFFF:
+            return ipaddress.IPv4Address((numbers[0] << 24) | (numbers[1] << 16) | numbers[2])
+        if len(numbers) == 4 and all(number <= 0xFF for number in numbers):
+            return ipaddress.IPv4Address(
+                (numbers[0] << 24) | (numbers[1] << 16) | (numbers[2] << 8) | numbers[3]
+            )
+    except ipaddress.AddressValueError:
+        return None
+
+    return None
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
 
 
 def sanitize_text(text: str, max_length: int = 1000) -> str:
@@ -48,7 +103,7 @@ def sanitize_discord_mention(text: str) -> str:
     Returns:
         Text with mentions removed
     """
-    return re.sub(r'<@!?\\d+>', '', text)
+    return re.sub(r'<@!?\d+>|<@&\d+>|@(?:everyone|here)\b', '', text)
 
 
 def sanitize_filename(filename: str) -> str:
@@ -130,35 +185,39 @@ def sanitize_command_input(input_text: str) -> str:
 
 
 def sanitize_url(url: str) -> str:
-    """
-    Sanitize URL to prevent SSRF attacks
-    
-    Args:
-        url: The URL to sanitize
-        
-    Returns:
-        Sanitized URL or empty string if invalid
-    """
+    """Sanitize URL to prevent SSRF attacks."""
     if not url:
         return ""
-    
-    # Remove whitespace
-    url = url.strip()
-    
-    # Basic URL validation
-    if not re.match(r'^https?://', url):
+
+    url = url.strip()[:2048]
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+    except ValueError:
         return ""
-    
-    # Remove potential SSRF patterns
-    # Block internal/private IPs
-    if re.search(r'@(localhost|127\.0\.0\.1|0\.0\.0\.0|::1|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)', url):
+
+    if parsed.scheme not in {"http", "https"}:
         return ""
-    
-    # Block file:// protocol
-    if url.startswith('file://'):
+    if not hostname:
         return ""
-    
-    return url[:2048]  # Reasonable URL length limit
+
+    host = hostname.lower().rstrip(".")
+    if host in {"localhost", "localhost.localdomain"}:
+        return ""
+
+    legacy_ipv4 = _parse_legacy_ipv4_host(host)
+    if legacy_ipv4 is not None:
+        return "" if _is_blocked_ip(legacy_ipv4) else url
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return url
+
+    if _is_blocked_ip(ip):
+        return ""
+
+    return url
 
 
 def sanitize_json_input(json_str: str) -> str:
@@ -224,15 +283,7 @@ def sanitize_html(text: str) -> str:
     """
     if not text:
         return ""
-    
-    # Escape HTML special characters
-    text = text.replace('&', '&')
-    text = text.replace('<', '<')
-    text = text.replace('>', '>')
-    text = text.replace('"', '"')
-    text = text.replace("'", '&#x27;')
-    
-    return text
+    return html.escape(text, quote=True)
 
 
 def validate_email(email: str) -> Tuple[bool, Optional[str]]:
