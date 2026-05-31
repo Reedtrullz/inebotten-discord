@@ -358,13 +358,16 @@ class ReminderChecker:
             return None
 
     def _find_digest_channel(self, guild_id):
-        """Find a sensible channel_id for the morning digest"""
+        """Find a sensible channel_id for the morning digest."""
         items = self.calendar.get_upcoming(guild_id, days=1)
         for item in items:
-            if item.get("channel_id"):
-                return int(item["channel_id"])
-        # Fallback: use guild_id
-        return int(guild_id)
+            channel_id = item.get("channel_id")
+            if channel_id:
+                try:
+                    return int(channel_id)
+                except (TypeError, ValueError):
+                    continue
+        return None
 
     def _format_morning_digest(self, items, now):
         """Format morning digest message in Norwegian"""

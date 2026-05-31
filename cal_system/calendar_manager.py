@@ -425,12 +425,14 @@ class CalendarManager:
             print(f"[CALENDAR] Calendar parse error: {e}")
             return None
 
-    async def sync_from_gcal(self, default_guild_id=None):
+    async def sync_from_gcal(self, default_guild_id=None, default_channel_id=None):
         """
         Pull events from Google Calendar and sync to local store
         """
         if not self.gcal_enabled or not self.gcal.is_configured():
             return 0
+
+        fallback_channel_id = default_channel_id
 
         print("[CAL] Syncing from Google Calendar...")
         gcal_events = self.gcal.list_upcoming_events(days=30)
@@ -535,6 +537,10 @@ class CalendarManager:
                 if item.get("user_id") == "gcal_sync" and gcal_user_id != "gcal_sync":
                     item["user_id"] = gcal_user_id
                     changed = True
+
+                if not item.get("channel_id") and fallback_channel_id is not None:
+                    item["channel_id"] = str(fallback_channel_id)
+                    changed = True
                 
                 # Check if it was marked as completed in GCal
                 if gcal_completed and not item.get("completed"):
@@ -556,6 +562,7 @@ class CalendarManager:
                     time_str=time_str,
                     gcal_event_id=gcal_id,
                     gcal_link=event.get("htmlLink"),
+                    channel_id=fallback_channel_id,
                 )
                 
                 # If it was completed, mark it so (add_item defaults to False)

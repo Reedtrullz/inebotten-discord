@@ -496,6 +496,7 @@ class CalendarHandler(BaseHandler):
         """Handle manual sync from Google Calendar."""
         try:
             guild_id = self.get_guild_id(message)
+            channel_id = getattr(getattr(message, "channel", None), "id", None)
             
             if not self.calendar.gcal_enabled:
                 await self.send_response(
@@ -507,7 +508,7 @@ class CalendarHandler(BaseHandler):
             await self.send_response(message, "🔄 Synkroniserer med Google Calendar...")
             
             # Use sync_from_gcal with the current channel ID as default
-            count = await self.calendar.sync_from_gcal(default_guild_id=guild_id)
+            count = await self.calendar.sync_from_gcal(default_guild_id=guild_id, default_channel_id=channel_id)
             
             if count > 0:
                 await self.send_response(message, f"✅ Ferdig! Hentet {count} nye/oppdaterte elementer fra Google Calendar.")
