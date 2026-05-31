@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -27,14 +28,23 @@ logger = logging.getLogger(__name__)
 class ConsoleServer:
     host: str
     port: int
-    api_key: object | None
+    api_key: str | None
+    secure_cookies: bool
     monitor: object | None
     _server: asyncio.AbstractServer | None
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8080, api_key: object | None = None, monitor: object | None = None):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        api_key: str | None = None,
+        monitor: object | None = None,
+        secure_cookies: bool | None = None,
+    ):
         self.host = host
         self.port = port
-        self.api_key = api_key
+        self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
+        self.secure_cookies = secure_cookies if secure_cookies is not None else host not in {"127.0.0.1", "localhost", "::1"}
         self.monitor = monitor
         self._server = None
 
@@ -49,6 +59,9 @@ class ConsoleServer:
     async def start(self) -> None:
         if self._server is not None:
             return
+
+        if self.api_key is None:
+            raise RuntimeError("ConsoleServer requires a non-empty api_key")
 
         self._server = await asyncio.start_server(self.handle_request, self.host, self.port)
         sockets = self._server.sockets or []
@@ -84,14 +97,16 @@ class ConsoleServer:
             cookies[key.strip()] = value.strip()
         return cookies
 
+    def _candidate_matches_api_key(self, candidate: str | None) -> bool:
+        if self.api_key is None or candidate is None:
+            return False
+        return hmac.compare_digest(candidate, self.api_key)
+
     def _is_authenticated(self, headers: dict[str, str]) -> bool:
-        api_key = headers.get("x-api-key")
-        if api_key == self.api_key:
+        if self._candidate_matches_api_key(headers.get("x-api-key")):
             return True
         cookies = self._parse_cookies(headers.get("cookie"))
-        if cookies.get("console_auth") == self.api_key:
-            return True
-        return False
+        return self._candidate_matches_api_key(cookies.get("console_auth"))
 
     async def _serve_static_file(self, writer: asyncio.StreamWriter, path: str) -> None:
         static_dir = pathlib.Path(__file__).parent / "static"
@@ -238,7 +253,11 @@ class ConsoleServer:
                         from urllib.parse import unquote_plus
                         form_data[unquote_plus(k)] = unquote_plus(v)
                 submitted_key = form_data.get("api_key", "")
-                if submitted_key == self.api_key:
+                if self._candidate_matches_api_key(submitted_key):
+                    assert self.api_key is not None
+                    cookie_attrs = "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
+                    if self.secure_cookies:
+                        cookie_attrs = "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000"
                     await self._send_response(
                         writer,
                         302,
@@ -246,7 +265,7 @@ class ConsoleServer:
                         content_type="text/plain",
                         extra_headers=[
                             "Location: /",
-                            "Set-Cookie: console_auth=" + str(self.api_key) + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000",
+                            "Set-Cookie: console_auth=" + self.api_key + cookie_attrs,
                         ],
                     )
                 else:
