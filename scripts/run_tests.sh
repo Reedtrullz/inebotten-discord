@@ -2,16 +2,18 @@
 # Inebotten Automated Test Runner
 # Run this script to test all bot functionality
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 echo "=========================================="
 echo "INEBOTTEN AUTOMATED TEST SUITE"
 echo "=========================================="
 echo ""
-echo "Running comprehensive tests..."
+echo "Running pytest suite..."
 echo ""
 
-python3 test_selfbot_comprehensive.py
+python3 -m pytest tests/test_comprehensive.py -q
 
 exit_code=$?
 
