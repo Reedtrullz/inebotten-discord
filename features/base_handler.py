@@ -13,6 +13,7 @@ This class should be inherited by all new handlers.
 """
 
 import discord
+import inspect
 import re
 from typing import Optional, Union
 from utils.logger import LoggerMixin
@@ -59,6 +60,22 @@ to ensure consistent access to shared state like rate limiting and
         Returns:
             The sent message object, or None if failed
         """
+        can_send, reason = self.rate_limiter.can_send()
+        if not can_send:
+            self.logger.warning("Rate limited: cannot send response (%s)", reason)
+            if hasattr(self.rate_limiter, "record_dropped"):
+                self.rate_limiter.record_dropped()
+            return None
+
+        wait_result = self.rate_limiter.wait_if_needed()
+        if inspect.isawaitable(wait_result):
+            wait_result = await wait_result
+        if not wait_result:
+            self.logger.warning("Rate limited: wait_if_needed refused send")
+            if hasattr(self.rate_limiter, "record_dropped"):
+                self.rate_limiter.record_dropped()
+            return None
+
         try:
             if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
                 sent = await message.channel.send(content)
