@@ -320,86 +320,79 @@ const _registerConsoleApp = () => {
 
     showSectionModal(section) {
       const titles = {
-        status: 'Bot Status',
+        status: 'Bot-status',
         bridge: 'Bridge',
         calendar: 'Kalender',
         polls: 'Avstemninger',
-        'rate-limits': 'Rate Limits',
+        'rate-limits': 'Rate limits',
         intents: 'Intents',
         memory: 'Minne',
         logs: 'Logger',
       };
       const data = this.data[section] || {};
-      let content = '';
+      const lines = [];
+      const add = (label, value) => lines.push(`${label}: ${value ?? 'N/A'}`);
+      const addBlank = () => lines.push('');
+
       switch (section) {
         case 'status':
-          content = `<table class="w-full text-sm"><tbody>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Status</td><td class="py-2">${data.status || 'N/A'}</td></tr>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Oppetid</td><td class="py-2">${this.formatUptime(data.uptime_seconds)}</td></tr>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Servere</td><td class="py-2">${data.guilds ?? 'N/A'}</td></tr>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Brukere</td><td class="py-2">${data.users ?? 'N/A'}</td></tr>
-            <tr><td class="py-2 font-medium">Discord-tilkobling</td><td class="py-2">${data.discord_connected ? 'Ja' : 'Nei'}</td></tr>
-          </tbody></table>`;
+          add('Status', data.status || 'N/A');
+          add('Oppetid', this.formatUptime(data.uptime_seconds));
+          add('Servere', data.guilds ?? 'N/A');
+          add('Brukere', data.users ?? 'N/A');
+          add('Discord-tilkobling', data.discord_connected ? 'Ja' : 'Nei');
           break;
         case 'bridge':
-          content = `<table class="w-full text-sm"><tbody>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Status</td><td class="py-2">${data.status || 'N/A'}</td></tr>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">LM Studio</td><td class="py-2">${data.lm_studio || 'N/A'}</td></tr>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Forespørsler</td><td class="py-2">${data.requests ?? 0}</td></tr>
-            <tr><td class="py-2 font-medium">Feil</td><td class="py-2">${data.errors ?? 0}</td></tr>
-          </tbody></table>`;
+          add('Status', data.status || 'N/A');
+          add('LM Studio', data.lm_studio || 'N/A');
+          add('Forespørsler', data.requests ?? 0);
+          add('Feil', data.errors ?? 0);
           break;
         case 'calendar':
-          content = `<table class="w-full text-sm"><tbody>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Hendelser</td><td class="py-2">${data.event_count ?? 0}</td></tr>
-            <tr><td class="py-2 font-medium">Oppgaver</td><td class="py-2">${data.task_count ?? 0}</td></tr>
-          </tbody></table>`;
+          add('Hendelser', data.event_count ?? 0);
+          add('Oppgaver', data.task_count ?? 0);
           if (Array.isArray(data.upcoming_events) && data.upcoming_events.length) {
-            content += `<div class="mt-4 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-2">Kommende hendelser</div>`;
+            addBlank();
+            lines.push('Kommende hendelser:');
             data.upcoming_events.slice(0, 10).forEach(ev => {
               const title = ev.title || ev.name || 'Uten tittel';
               const when = ev.when || ev.start || ev.date || 'Ukjent tid';
-              content += `<div class="flex items-center justify-between py-2 border-b border-[var(--border-color)] last:border-0"><span>${title}</span><span class="text-[var(--text-muted)]">${when}</span></div>`;
+              lines.push(`- ${title} — ${when}`);
             });
           }
           break;
         case 'polls':
-          content = `<div class="text-sm">Aktive avstemninger: <strong>${data.active_polls ?? 0}</strong></div>`;
+          add('Aktive avstemninger', data.active_polls ?? 0);
           break;
         case 'rate-limits':
-          content = `<div class="text-sm">Totale forespørsler: <strong>${data.summary?.total_requests ?? 0}</strong></div>`;
+          add('Totale forespørsler', data.summary?.total_requests ?? 0);
           break;
         case 'intents':
-          content = `<div class="text-sm">Fallbacks: <strong>${data.fallback_count ?? 0}</strong></div>`;
+          add('Fallbacks', data.fallback_count ?? 0);
           if (data.intent_counts && Object.keys(data.intent_counts).length) {
-            content += `<table class="w-full text-sm mt-4"><thead><tr class="border-b border-[var(--border-color)]"><th class="py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Intent</th><th class="py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Antall</th></tr></thead><tbody>`;
-            Object.entries(data.intent_counts).sort((a, b) => (b[1] || 0) - (a[1] || 0)).forEach(([intent, count]) => {
-              content += `<tr class="border-b border-[var(--border-color)]"><td class="py-2">${intent}</td><td class="py-2">${count}</td></tr>`;
-            });
-            content += `</tbody></table>`;
+            addBlank();
+            lines.push('Intent-tellinger:');
+            Object.entries(data.intent_counts)
+              .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+              .forEach(([intent, count]) => lines.push(`- ${intent}: ${count}`));
           }
           break;
         case 'memory':
-          content = `<table class="w-full text-sm"><tbody>
-            <tr class="border-b border-[var(--border-color)]"><td class="py-2 font-medium">Brukere i minne</td><td class="py-2">${data.user_count ?? 0}</td></tr>
-            <tr><td class="py-2 font-medium">Samtaler</td><td class="py-2">${data.conversation_count ?? 0}</td></tr>
-          </tbody></table>`;
+          add('Brukere i minne', data.user_count ?? 0);
+          add('Samtaler', data.conversation_count ?? 0);
           break;
         case 'logs':
           if (Array.isArray(data.logs) && data.logs.length) {
-            content = `<pre class="whitespace-pre-wrap break-words text-sm">` + data.logs.map(line => {
-              const upper = String(line).toUpperCase();
-              if (upper.includes('ERROR') || upper.includes('CRITICAL')) return `<span class="text-red-500">${line}</span>`;
-              if (upper.includes('WARN')) return `<span class="text-yellow-500">${line}</span>`;
-              if (upper.includes('INFO')) return `<span class="text-slate-400">${line}</span>`;
-              return `<span class="text-slate-500">${line}</span>`;
-            }).join('\n') + `</pre>`;
+            lines.push(...data.logs.map(line => String(line)));
           } else {
-            content = '<p class="text-sm text-[var(--text-muted)] text-center py-4">Ingen logger tilgjengelig</p>';
+            lines.push('Ingen logger tilgjengelig');
           }
           break;
+        default:
+          lines.push('Ingen detaljer tilgjengelig');
       }
-      this.openModal(section, { title: titles[section] || 'Detaljer', content });
+
+      this.openModal(section, { title: titles[section] || 'Detaljer', content: lines.join('\n') });
     },
   }));
 };
