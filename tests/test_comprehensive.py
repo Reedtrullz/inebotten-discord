@@ -27,6 +27,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
 from io import StringIO
 
+
+def _future_date(days_ahead: int = 14) -> str:
+    return (datetime.now() + timedelta(days=days_ahead)).strftime("%d.%m.%Y")
+
+
 # Import discord BEFORE adding project root (project's discord/ shadows discord.py)
 import discord
 from discord import DMChannel, GroupChannel, TextChannel
@@ -654,7 +659,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -673,7 +678,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -694,7 +699,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
             result = manager.complete_item("test_guild", item_id=event["id"])
@@ -714,7 +719,7 @@ class TestCalendarNLP(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test Event",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
             result = manager.delete_item("test_guild", item_num=1)
@@ -1941,7 +1946,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -1960,7 +1965,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -1982,7 +1987,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -2004,7 +2009,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -2026,7 +2031,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -2048,7 +2053,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
 
@@ -2070,7 +2075,7 @@ class TestCommandRoutingExtras(unittest.TestCase):
                 user_id="test_user",
                 username="Test",
                 title="Test1",
-                date_str="15.05.2026",
+                date_str=_future_date(14),
                 time_str="14:00",
             )
             manager.add_item(
