@@ -85,8 +85,13 @@ class GoogleCalendarManager:
     def _save_credentials(self, creds):
         """Persist credentials back to disk (e.g. after token refresh)"""
         try:
-            with open(TOKEN_PATH, "w") as token:
+            HERMES_HOME.mkdir(parents=True, exist_ok=True)
+            HERMES_HOME.chmod(0o700)
+            fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as token:
                 token.write(creds.to_json())
+            TOKEN_PATH.chmod(0o600)
         except Exception as e:
             print(f"[GCAL] Failed to save token: {e}")
 

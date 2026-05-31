@@ -78,8 +78,12 @@ def main():
             
         # Save the credentials for the next run
         HERMES_HOME.mkdir(parents=True, exist_ok=True)
-        with open(TOKEN_PATH, 'w') as token:
+        HERMES_HOME.chmod(0o700)
+        fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as token:
             token.write(creds.to_json())
+        TOKEN_PATH.chmod(0o600)
         print(f"Success! Token saved to {TOKEN_PATH}")
         print("Inebotten is now authorized to access your Google Calendar.")
 
