@@ -12,6 +12,33 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
+
+def get_project_root() -> Path:
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        return Path(bundle_root)
+    return Path(__file__).resolve().parent.parent
+
+
+def get_run_both_path() -> Path:
+    return get_project_root() / "scripts" / "run_both.py"
+
+
+def get_bot_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-bot"]
+    return [sys.executable, str(get_run_both_path())]
+
+
+def run_bundled_bot() -> None:
+    import runpy
+
+    run_both_path = get_run_both_path()
+    if not run_both_path.exists():
+        raise FileNotFoundError(f"Bot entrypoint not found: {run_both_path}")
+    runpy.run_path(str(run_both_path), run_name="__main__")
+
+
 class InebottenLauncher:
     """Simple GUI launcher for Inebotten Discord Bot"""
     
@@ -313,12 +340,15 @@ POLL_INTERVAL=8
     def _run_bot(self):
         """Run the bot in background thread"""
         try:
-            # Get the script directory
-            script_dir = Path(__file__).parent.parent
+            # Get the project directory and bot entrypoint
+            script_dir = get_project_root()
+            run_both_path = get_run_both_path()
+            if not run_both_path.exists():
+                raise FileNotFoundError(f"Bot entrypoint not found: {run_both_path}")
             
             # Run the bot
             self.bot_process = subprocess.Popen(
-                [sys.executable, str(script_dir / "run_both.py")],
+                get_bot_command(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -376,4 +406,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--run-bot" in sys.argv:
+        run_bundled_bot()
+    else:
+        main()
