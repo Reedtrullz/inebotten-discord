@@ -60,6 +60,7 @@ pyinstaller \
     --add-data="../memory:memory" \
     --add-data="../utils:utils" \
     --add-data="../docs:docs" \
+    --add-data="../scripts:scripts" \
     --hidden-import=ai \
     --hidden-import=cal_system \
     --hidden-import=core \
@@ -67,6 +68,7 @@ pyinstaller \
     --hidden-import=memory \
     --hidden-import=utils \
     --hidden-import=docs \
+    --hidden-import=scripts \
     launcher.py
 
 echo ""
