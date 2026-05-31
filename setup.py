@@ -29,7 +29,8 @@ class Colors:
     UNDERLINE = '\033[4m'
 
 def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    # ANSI clear-screen sequence; avoids shell execution for a cosmetic action.
+    print("\033[2J\033[H", end="")
 
 def print_header():
     print(f"{Colors.BOLD}{Colors.BLUE}")
