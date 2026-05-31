@@ -51,7 +51,7 @@ class URLShortener:
         
         try:
             # TinyURL API
-            api_url = f"http://tinyurl.com/api-create.php?url={urllib.parse.quote(url)}"
+            api_url = f"https://tinyurl.com/api-create.php?url={urllib.parse.quote(url, safe='')}"
             
             with urllib.request.urlopen(api_url, timeout=10) as response:
                 short_url = response.read().decode('utf-8')
