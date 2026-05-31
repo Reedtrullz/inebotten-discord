@@ -20,7 +20,6 @@
       become: true
       become_user: deploy
       register: source_pull
-      ignore_errors: yes  # allow operating on an already-checked-out tree without origin access
 
     - name: Ensure {{ compose_dir }}/.env exists (cannot create silently — must be present)
       ansible.builtin.stat:
