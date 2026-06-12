@@ -6,8 +6,11 @@ Tracks reminders that can be marked as completed
 
 import json
 import re
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 class ReminderManager:
@@ -17,7 +20,7 @@ class ReminderManager:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "reminders.json"
+            storage_path = hermes_discord_data_path("reminders.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,8 +39,7 @@ class ReminderManager:
 
     def _save_reminders(self):
         """Save reminders to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.reminders, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.storage_path, self.reminders)
 
     def add_reminder(
         self,
@@ -73,7 +75,7 @@ class ReminderManager:
             reminder_id
         """
         guild_key = str(guild_id)
-        reminder_id = f"rem_{guild_id}_{int(datetime.now().timestamp())}"
+        reminder_id = f"rem_{guild_id}_{uuid.uuid4().hex}"
 
         if guild_key not in self.reminders:
             self.reminders[guild_key] = []
@@ -404,6 +406,33 @@ class ReminderManager:
         ]
         return matches
 
+    def format_search_results(self, guild_id, query, lang="no"):
+        """Format reminder search results for Discord."""
+        matches = self.search_reminders(guild_id, query)
+        if not matches:
+            return (
+                f"🔎 Fant ingen påminnelser som matcher **{query}**."
+                if lang == "no"
+                else f"🔎 No reminders matched **{query}**."
+            )
+
+        header = (
+            f"🔎 **Påminnelser som matcher \"{query}\":**"
+            if lang == "no"
+            else f"🔎 **Reminders matching \"{query}\":**"
+        )
+        lines = [header]
+        for i, reminder in enumerate(matches[:10], 1):
+            status = "✅" if reminder.get("completed") else "⬜"
+            due = f" (frist: {reminder['due_date']})" if reminder.get("due_date") else ""
+            lines.append(f"{status} **{i}.** {reminder.get('text', '')}{due}")
+
+        if len(matches) > 10:
+            more = len(matches) - 10
+            lines.append(f"\n… og {more} til." if lang == "no" else f"\n… and {more} more.")
+
+        return "\n".join(lines)
+
 
 def parse_reminder_command(message_content):
     """
@@ -493,7 +522,11 @@ if __name__ == "__main__":
     # Test
     print("=== Reminder Manager Test ===\n")
 
-    manager = ReminderManager(storage_path="/tmp/test_reminders.json")  # nosec B108
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(delete=False) as tmp:
+        storage_path = tmp.name
+    manager = ReminderManager(storage_path=storage_path)
 
     # Add test reminders
     manager.add_reminder("guild1", "user1", "Ola", "Kjøpe melk", "20.03.2026")
@@ -510,5 +543,4 @@ if __name__ == "__main__":
     print(manager.format_reminders_list("guild1", show_completed=True))
 
     # Cleanup
-    if manager.storage_path.exists():
-        manager.storage_path.unlink()
+    manager.storage_path.unlink(missing_ok=True)

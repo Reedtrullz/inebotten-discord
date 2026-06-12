@@ -22,13 +22,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+MAX_HEADER_BYTES = 32 * 1024
+MAX_BODY_BYTES = 256 * 1024
+
 # Configuration
 HOST = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1")
 PORT = int(os.getenv("HERMES_BRIDGE_PORT", "3000"))
 
-# LM Studio Configuration (Windows host from WSL)
-LM_STUDIO_URL = "http://192.168.160.1:1234/v1"
-LM_STUDIO_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+# LM Studio Configuration
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1").rstrip("/")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
 
 # Model-specific settings
 MODEL_CONFIG = {
@@ -613,6 +616,9 @@ class HermesBridgeServer:
         try:
             # Read header first
             header_data = await reader.readuntil(b"\r\n\r\n")
+            if len(header_data) > MAX_HEADER_BYTES:
+                await self._send_response(writer, 400, {"error": "Request headers too large"})
+                return
             header_text = header_data.decode("utf-8", errors="ignore")
             lines = header_text.split("\r\n")
 
@@ -632,7 +638,17 @@ class HermesBridgeServer:
             # Handle body if POST
             body = None
             if method == "POST":
-                content_length = int(headers.get("Content-Length", 0))
+                try:
+                    content_length = int(headers.get("Content-Length", 0) or 0)
+                except ValueError:
+                    await self._send_response(writer, 400, {"error": "Invalid Content-Length"})
+                    return
+                if content_length < 0:
+                    await self._send_response(writer, 400, {"error": "Invalid Content-Length"})
+                    return
+                if content_length > MAX_BODY_BYTES:
+                    await self._send_response(writer, 413, {"error": "Request body too large"})
+                    return
                 if content_length > 0:
                     body_data = await reader.readexactly(content_length)
                     body = body_data.decode("utf-8", errors="ignore")
@@ -668,7 +684,9 @@ class HermesBridgeServer:
                 await self._send_response(writer, 404, {"error": "Not found"})
 
         except asyncio.IncompleteReadError:
-            pass # Connection closed
+            await self._send_response(writer, 400, {"error": "Incomplete request"})
+        except asyncio.LimitOverrunError:
+            await self._send_response(writer, 400, {"error": "Request headers too large"})
         except Exception as e:
             self.error_count += 1
             logger.error(f"[{request_id}] Error: {e}")

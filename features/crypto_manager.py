@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Crypto & Stock Price Manager for Inebotten
+Crypto Price Manager for Inebotten
 Fetches cryptocurrency prices using CoinGecko API
 """
 
@@ -63,7 +63,7 @@ class CryptoManager:
             'vult': 'vulture-2', 'vulture': 'vulture-2',
         }
         
-        # Stock symbols (kept for compatibility, but stocks need different API)
+        # Stock symbols are recognized only to return an explicit unsupported response.
         self.stock_symbols = {
             'apple': 'AAPL', 'aapl': 'AAPL',
             'microsoft': 'MSFT', 'msft': 'MSFT',
@@ -160,9 +160,12 @@ class CryptoManager:
         
         asset_type = query['type']
         
-        # Handle stocks differently (would need different API)
         if asset_type == 'stock':
-            return self._get_simulated_stock_price(query)
+            return {
+                'type': 'unsupported_stock',
+                'symbol': query.get('symbol', query.get('asset', '')).upper(),
+                'name': query.get('asset', 'aksje').title(),
+            }
         
         # Get crypto price from CoinGecko
         coin_id = query.get('coin_id', query.get('asset', ''))
@@ -263,35 +266,24 @@ class CryptoManager:
             print(f"[CRYPTO] Search error: {e}")
             return None
     
-    def _get_simulated_stock_price(self, query):
-        """Fallback for stocks (simulated data)"""
-        symbol = query['symbol']
-        base_prices = {
-            'AAPL': 185, 'MSFT': 420, 'TSLA': 175, 'AMZN': 180,
-            'GOOGL': 165, 'META': 505, 'NVDA': 890, 'NFLX': 625,
-            'EQNR': 28.5, 'NHY': 6.8,
-        }
-        
-        import random
-        base = base_prices.get(symbol, 100)
-        variation = random.uniform(-0.05, 0.05)
-        price = base * (1 + variation)
-        
-        return {
-            'symbol': symbol,
-            'name': query['asset'].title(),
-            'type': 'stock',
-            'price': price,
-            'currency': 'USD',
-            'change_24h': random.uniform(-3, 3),
-            'high_24h': price * 1.02,
-            'low_24h': price * 0.98,
-        }
-    
     def format_price(self, data, lang='no'):
         """Format price for display"""
         if not data:
             return None
+
+        if data.get('type') == 'unsupported_stock':
+            symbol = data.get('symbol', '').upper()
+            if lang == 'no':
+                return (
+                    f"📊 **{symbol}**\n"
+                    "Aksjekurser er ikke koblet til en live datakilde ennå, "
+                    "så jeg viser ikke simulerte tall."
+                )
+            return (
+                f"📊 **{symbol}**\n"
+                "Stock prices are not connected to a live data source yet, "
+                "so I will not show simulated numbers."
+            )
         
         symbol = data['symbol']
         name = data['name']

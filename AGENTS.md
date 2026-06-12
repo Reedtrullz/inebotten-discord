@@ -34,7 +34,7 @@ Norwegian Discord selfbot with AI chat, calendar, reminders, polls, weather, and
 | Change AI backend | `ai/connector_factory.py` | Switch between LM Studio and OpenRouter |
 | Change web dashboard | `web_console/dashboard.py` | Pure Python HTML generation |
 | Change web console routes | `web_console/server.py` | Auth, endpoints, static files |
-| Change auth | `core/auth_handler.py`, `web_console/server.py` | Token + cookie session |
+| Change auth | `core/auth_handler.py`, `web_console/server.py` | Token + persisted console session |
 | Change rate limits | `core/rate_limiter.py` | Per-user + global quotas |
 | Add tests | `tests/test_*.py` | pytest with async support |
 | Change logging | `utils/logger.py` | LogBuffer with persistent JSONL storage |
@@ -48,7 +48,7 @@ Norwegian Discord selfbot with AI chat, calendar, reminders, polls, weather, and
 - **Intent routing:** All commands route through `core/intent_router.py` before dispatch
 - **Storage:** JSON files in `~/.hermes/discord/data/`
 - **Logging:** `utils/logger.py` with `setup_logger()`; `install_log_capture()` captures both logging and stdout to `LogBuffer`
-- **Console persistence:** `web_console/console_store.py` persists logs (JSONL) and cumulative stats across restarts
+- **Console persistence:** `web_console/console_store.py` persists logs (JSONL), cumulative stats, and hashed console sessions across restarts
 - **Config:** `.env` file + `core/config.py` singleton
 
 ## ANTI-PATTERNS
@@ -79,9 +79,9 @@ python3 setup.py                       # Interactive first-run setup
 
 - `MessageMonitor` is the central hub (~1200 lines). It routes mentions → intents → handlers or AI
 - `ConsoleServer` starts in `SelfbotClient.setup_hook()` with `monitor=None`, then gets the real monitor after `on_ready()`
-- Web console auth supports both `X-API-Key` header and cookie session via `/api/login`
+- Web console auth supports `X-API-Key` API clients and browser `console_session` cookies via `/api/login`
 - The bridge runs on port 3000 (localhost); the web console on port 8080
 - GCal OAuth token stored in `~/.hermes/google_token.json`
-- Console persistence stores logs in `~/.hermes/discord/data/console/logs.jsonl` and stats in `stats.json`
+- Console persistence stores logs in `~/.hermes/discord/data/console/logs.jsonl`, stats in `stats.json`, and hashed sessions in `sessions.json`
 - Demo mode available at `/demo` without auth — uses mock data
 - Commands reference page at `/commands` — auth-exempt in demo mode

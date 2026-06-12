@@ -177,6 +177,15 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.manager.get_upcoming("123")[0]["date"], target_date)
 
+    async def test_handle_search_returns_calendar_matches(self):
+        self._add_item("Møte med Ola", _date(1), time="09:00")
+        self.message.content = "@inebotten søk møte"
+
+        await self.handler.handle_search(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        self.assertIn("Møte med Ola", self.handler.send_response.await_args.args[1])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,7 +47,8 @@ def test_login_with_invalid_key(page: Any, console_server: ConsoleServer) -> Non
     page.fill('input[name="api_key"]', "wrong-key")
     page.click('button[type="submit"]')
     page.wait_for_load_state("networkidle")
-    assert "Ugyldig" in page.content() or "error" in page.content().lower()
+    content = page.content()
+    assert "Ugyldig" in content or "feilet" in content.lower() or "error" in content.lower()
 
 
 def test_dashboard_requires_auth(page: Any, console_server: ConsoleServer) -> None:

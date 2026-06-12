@@ -11,6 +11,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
+
 
 class WatchlistManager:
     """
@@ -20,7 +22,7 @@ class WatchlistManager:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "watchlist.json"
+            storage_path = hermes_discord_data_path("watchlist.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,8 +109,7 @@ class WatchlistManager:
 
     def _save_watchlist(self):
         """Save watchlist to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.watchlist, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.storage_path, self.watchlist)
 
     def add_from_discord_message(self, title, content_type="movie", guild_id=None, **kwargs):
         """
@@ -494,7 +495,11 @@ def parse_watchlist_command(message_content):
 if __name__ == "__main__":
     print("=== Watchlist Manager Test ===\n")
 
-    manager = WatchlistManager(storage_path="/tmp/test_watchlist.json")  # nosec B108
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(delete=False) as tmp:
+        storage_path = tmp.name
+    manager = WatchlistManager(storage_path=storage_path)
 
     # Test suggestion
     suggestion = manager.get_random_suggestion()
@@ -507,5 +512,4 @@ if __name__ == "__main__":
     print(manager.format_watchlist_status())
 
     # Cleanup
-    if manager.storage_path.exists():
-        manager.storage_path.unlink()
+    manager.storage_path.unlink(missing_ok=True)

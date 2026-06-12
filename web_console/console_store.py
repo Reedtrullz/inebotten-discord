@@ -5,10 +5,15 @@ from __future__ import annotations
 # pyright: reportAny=false
 
 import json
+import hashlib
+import secrets
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from utils.json_storage import write_json_atomic
 
 
 class ConsoleStore:
@@ -20,8 +25,9 @@ class ConsoleStore:
 
         self._logs_file = self._data_dir / "logs.jsonl"
         self._stats_file = self._data_dir / "stats.json"
+        self._sessions_file = self._data_dir / "sessions.json"
         self._first_start_file = self._data_dir / "first_start.txt"
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         if not self._first_start_file.exists():
             self._first_start_file.write_text(datetime.now().isoformat(), encoding="utf-8")
@@ -69,8 +75,8 @@ class ConsoleStore:
 
             existing["last_saved"] = datetime.now().isoformat()
 
-            with self._lock, self._stats_file.open("w", encoding="utf-8") as handle:
-                json.dump(existing, handle, ensure_ascii=False)
+            with self._lock:
+                write_json_atomic(self._stats_file, existing, indent=None)
         except Exception:
             pass
 
@@ -88,6 +94,87 @@ class ConsoleStore:
         except Exception:
             pass
         return {"intents": {}, "rate_limits": {}, "last_saved": None}
+
+    def create_session(self, ttl_seconds: int) -> str:
+        """Create and persist a browser session token; returns the raw token."""
+        token = secrets.token_urlsafe(32)
+        expires_at = int(time.time()) + max(1, ttl_seconds)
+        with self._lock:
+            sessions = self._load_sessions_raw_unlocked()
+            self._prune_sessions_unlocked(sessions)
+            sessions[self._hash_token(token)] = {
+                "created_at": int(time.time()),
+                "expires_at": expires_at,
+            }
+            self._save_sessions_unlocked(sessions)
+        return token
+
+    def validate_session(self, token: str | None) -> bool:
+        """Return True if a session token exists and has not expired."""
+        if not token:
+            return False
+        token_hash = self._hash_token(token)
+        with self._lock:
+            sessions = self._load_sessions_raw_unlocked()
+            session = sessions.get(token_hash)
+            if not session:
+                return False
+            if int(session.get("expires_at", 0)) <= int(time.time()):
+                sessions.pop(token_hash, None)
+                self._save_sessions_unlocked(sessions)
+                return False
+            return True
+
+    def delete_session(self, token: str | None) -> None:
+        """Delete a persisted browser session token if present."""
+        if not token:
+            return
+        token_hash = self._hash_token(token)
+        with self._lock:
+            sessions = self._load_sessions_raw_unlocked()
+            if token_hash in sessions:
+                sessions.pop(token_hash, None)
+                self._save_sessions_unlocked(sessions)
+
+    def prune_expired_sessions(self) -> None:
+        """Remove expired browser sessions."""
+        with self._lock:
+            sessions = self._load_sessions_raw_unlocked()
+            if self._prune_sessions_unlocked(sessions):
+                self._save_sessions_unlocked(sessions)
+
+    def _load_sessions_raw_unlocked(self) -> dict[str, dict[str, int]]:
+        try:
+            if self._sessions_file.exists():
+                with self._sessions_file.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict):
+                    return {
+                        str(key): value
+                        for key, value in data.items()
+                        if isinstance(value, dict)
+                    }
+        except Exception:
+            pass
+        return {}
+
+    def _save_sessions_unlocked(self, sessions: dict[str, dict[str, int]]) -> None:
+        write_json_atomic(self._sessions_file, sessions)
+
+    def _prune_sessions_unlocked(self, sessions: dict[str, dict[str, int]]) -> bool:
+        now = int(time.time())
+        before = len(sessions)
+        expired = [
+            token_hash
+            for token_hash, session in sessions.items()
+            if int(session.get("expires_at", 0)) <= now
+        ]
+        for token_hash in expired:
+            sessions.pop(token_hash, None)
+        return len(sessions) != before
+
+    def _hash_token(self, token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def first_start_time(self) -> datetime:
         try:

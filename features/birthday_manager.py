@@ -9,6 +9,8 @@ import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
+
 # Suppress requests/urllib3 version warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="requests")
 
@@ -20,7 +22,7 @@ class BirthdayManager:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "birthdays.json"
+            storage_path = hermes_discord_data_path("birthdays.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,8 +58,7 @@ class BirthdayManager:
 
     def _save_birthdays(self):
         """Save birthdays to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.birthdays, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.storage_path, self.birthdays)
 
     def add_birthday(self, guild_id, user_id, username, day, month, year=None):
         """
@@ -164,44 +165,12 @@ class BirthdayManager:
                 age -= 1
             description += f"\nBlir {age + 1} år gammel!"
 
-        # Create the event using the calendar API directly for recurring events
-        import subprocess
-        import json
-        import sys
-        from pathlib import Path
-
-        SKILL_PATH = (
-            Path.home()
-            / ".hermes"
-            / "skills"
-            / "productivity"
-            / "google-workspace"
-            / "scripts"
-        )
-        script_path = SKILL_PATH / "google_api.py"
-
-        # Build event with recurrence (yearly)
-        # RRULE:FREQ=YEARLY means repeat every year
-        event_data = {
-            "summary": f"🎂 {username}",
-            "description": description,
-            "start": {
-                "dateTime": birthday_this_year.isoformat(),
-                "timeZone": "Europe/Oslo",
-            },
-            "end": {"dateTime": end_time.isoformat(), "timeZone": "Europe/Oslo"},
-            "recurrence": ["RRULE:FREQ=YEARLY"],
-            "transparency": "transparent",  # Show as free/busy
-            "visibility": "default",
-        }
-
-        # For now, use the basic create method (recurrence needs direct API call)
-        # We'll create a simple event for this year
         result = self.gcal.create_event(
             title=f"🎂 {username}",
             start_time=birthday_this_year.isoformat(),
             end_time=end_time.isoformat(),
             description=description,
+            recurrence="yearly",
         )
 
         return result
@@ -221,7 +190,7 @@ class BirthdayManager:
                         self.gcal.delete_event(birthday_data["gcal_event_id"])
                         print(f"[BIRTHDAY] Deleted event from Google Calendar")
                     except Exception as e:
-                        print(f"[BIRTHDAY] Failed to delete from Google Calendar: {e}")  # nosec B608
+                        print(f"[BIRTHDAY] Failed to remove Google Calendar event: {e}")
 
                 del self.birthdays[guild_key][user_key]
                 self._save_birthdays()
@@ -264,14 +233,35 @@ class BirthdayManager:
         if target_user_id is None:
             raise ValueError(f"Birthday for {name} not found")
 
-        self.birthdays[guild_key][target_user_id]["day"] = day
-        self.birthdays[guild_key][target_user_id]["month"] = month
+        birthday = self.birthdays[guild_key][target_user_id]
+        old_gcal_event_id = birthday.get("gcal_event_id")
+
+        birthday["day"] = day
+        birthday["month"] = month
         if year is not None:
-            self.birthdays[guild_key][target_user_id]["year"] = year
-        self.birthdays[guild_key][target_user_id]["updated_at"] = datetime.now().isoformat()
+            birthday["year"] = year
+        birthday["updated_at"] = datetime.now().isoformat()
+
+        if self.gcal_enabled:
+            if old_gcal_event_id:
+                try:
+                    self.gcal.delete_event(old_gcal_event_id)
+                except Exception as e:
+                    print(f"[BIRTHDAY] Failed to delete old Google Calendar event: {e}")
+            try:
+                gcal_result = self._sync_birthday_to_gcal(
+                    birthday.get("username", name),
+                    birthday["day"],
+                    birthday["month"],
+                    birthday.get("year"),
+                )
+                birthday["gcal_event_id"] = gcal_result.get("id") if gcal_result else None
+            except Exception as e:
+                print(f"[BIRTHDAY] Failed to resync Google Calendar event: {e}")
+                birthday["gcal_event_id"] = None
 
         self._save_birthdays()
-        return self.birthdays[guild_key][target_user_id]
+        return birthday
 
     def get_todays_birthdays(self, guild_id):
         """
@@ -523,7 +513,11 @@ if __name__ == "__main__":
     # Test
     print("=== Birthday Manager Test ===\n")
 
-    manager = BirthdayManager(storage_path="/tmp/test_birthdays.json")  # nosec B108
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(delete=False) as tmp:
+        storage_path = tmp.name
+    manager = BirthdayManager(storage_path=storage_path)
 
     # Add test birthdays
     manager.add_birthday("guild1", "user1", "Ola Nordmann", 17, 3, 1990)
@@ -535,5 +529,4 @@ if __name__ == "__main__":
         print(f"Found {len(today_bdays)} birthdays today.")
 
     # Cleanup
-    if manager.storage_path.exists():
-        manager.storage_path.unlink()
+    manager.storage_path.unlink(missing_ok=True)

@@ -23,7 +23,7 @@ python3 run_both.py
 Når botten kjører er dashbordet tilgjengelig på `http://localhost:8080` (eller det konfigurerte domenet på VPS).
 
 1. Åpne URL i nettleser
-2. Logg inn med API-nøkkelen (vises i oppstartsloggen som `Console API key: q9oAYGbb...`)
+2. Logg inn med API-nøkkelen. Hvis `CONSOLE_API_KEY` er tom, genereres den ved første start og lagres i `~/.hermes/discord/data/console/api_key.txt`.
 3. Dashboard viser bot-status, bridge, kalender, avstemninger og sanntidslogger
 
 For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
@@ -55,6 +55,7 @@ For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
 |----------|-------------|----------|
 | `@inebotten kalender` | Vis alle kommende hendelser (90 dager) | `@inebotten kalender` |
 | `@inebotten søk [tittel]` | Søk etter hendelser | `@inebotten søk møte` |
+| `@inebotten søk kalender [tekst]` | Eksplisitt kalendersøk | `@inebotten søk kalender møte` |
 
 ### Redigere
 
@@ -216,9 +217,10 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
 | `@inebotten watchlist` | Vis watchlist | `@inebotten watchlist` |
-| `@inebotten watchlist [ticker]` | Legg til ticker | `@inebotten watchlist AAPL` |
-| `@inebotten endre watchlist [nummer] [ticker]` | Endre ticker | `@inebotten endre watchlist 1 TSLA` |
-| `@inebotten fjern watchlist [nummer]` | Fjern ticker | `@inebotten fjern watchlist 1` |
+| `@inebotten legg til [tittel]` | Legg til film eller serie | `@inebotten legg til Inception` |
+| `@inebotten hva skal vi se?` | Få et forslag fra watchlista | `@inebotten hva skal vi se?` |
+| `@inebotten endre watchlist [nummer] [tittel]` | Endre tittel | `@inebotten endre watchlist 1 The Matrix` |
+| `@inebotten fjern watchlist [nummer]` | Fjern fra watchlist | `@inebotten fjern watchlist 1` |
 
 ## 🎂 Bursdager
 
@@ -289,8 +291,15 @@ Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) for auto-update-oppsett.
 | Data | Plassering |
 |------|------------|
 | Kalender | `~/.hermes/discord/data/calendar.json` |
+| Påminnelser | `~/.hermes/discord/data/reminders.json` |
+| Avstemninger | `~/.hermes/discord/data/polls.json` |
+| Sitater | `~/.hermes/discord/data/quotes.json` |
+| Bursdager | `~/.hermes/discord/data/birthdays.json` |
+| Watchlist | `~/.hermes/discord/data/watchlist.json` |
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` |
+| Google Calendar Credentials | `~/.hermes/credentials.json` |
 | Google Calendar Token | `~/.hermes/google_token.json` |
+| Console API-nøkkel | `~/.hermes/discord/data/console/api_key.txt` |
 | Konfigurasjon | `.env` (i prosjektmappen) |
 
 ---

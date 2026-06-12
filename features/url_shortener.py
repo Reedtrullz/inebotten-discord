@@ -5,7 +5,8 @@ Shortens long URLs using TinyURL or similar services
 """
 
 import re
-import urllib.request
+import asyncio
+import http.client
 import urllib.parse
 
 class URLShortener:
@@ -48,23 +49,37 @@ class URLShortener:
         """
         if not url:
             return None
+
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
         
         try:
-            # TinyURL API
-            api_url = f"https://tinyurl.com/api-create.php?url={urllib.parse.quote(url, safe='')}"
-            
-            with urllib.request.urlopen(api_url, timeout=10) as response:  # nosec B310
-                short_url = response.read().decode('utf-8')
-                
-                if short_url and short_url.startswith('http'):
+            api_path = f"/api-create.php?url={urllib.parse.quote(url, safe='')}"
+            connection = http.client.HTTPSConnection("tinyurl.com", timeout=10)
+            try:
+                connection.request("GET", api_path, headers={"User-Agent": "InebottenBot/1.0"})
+                response = connection.getresponse()
+                if response.status != 200:
+                    return None
+                short_url = response.read().decode('utf-8').strip()
+                short_parsed = urllib.parse.urlparse(short_url)
+
+                if short_parsed.scheme == "https" and short_parsed.netloc:
                     return {
                         'original': url,
                         'short': short_url,
                     }
+            finally:
+                connection.close()
         except Exception as e:
             print(f"[URL] Error shortening URL: {e}")
         
         return None
+
+    async def shorten_url_async(self, url):
+        """Shorten URL without blocking the event loop."""
+        return await asyncio.to_thread(self.shorten_url, url)
     
     def format_short_url(self, data, lang='no'):
         """Format shortened URL"""

@@ -6,6 +6,7 @@ One-time script to sync existing calendar items to Google Calendar
 import json
 from pathlib import Path
 from datetime import datetime
+from utils.json_storage import write_json_atomic
 
 # Load existing calendar data
 calendar_path = Path.home() / '.hermes' / 'discord' / 'data' / 'calendar.json'
@@ -80,8 +81,7 @@ for guild_id, items in data.items():
             print(f"❌ Error syncing {item['title']}: {e}")
 
 # Save updated data
-with open(calendar_path, 'w', encoding='utf-8') as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
+write_json_atomic(calendar_path, data)
 
 print(f"\n{'='*50}")
 print(f"Done! Synced: {synced_count}, Failed: {failed_count}")

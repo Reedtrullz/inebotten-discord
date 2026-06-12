@@ -147,6 +147,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             "reminders": SimpleNamespace(
                 handle_reminder_edit=noop,
                 handle_reminder_delete=noop,
+                handle_reminder_search=noop,
             ),
             "quotes": SimpleNamespace(
                 handle_quote_list=noop,
@@ -159,6 +160,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                 handle_watchlist_remove=noop,
             ),
             "birthdays": SimpleNamespace(handle_birthday_edit=noop),
+            "calendar": SimpleNamespace(handle_search=noop),
         }
         monitor.intent_router = IntentRouter(monitor)
         monitor.recording_polls = polls
@@ -287,6 +289,38 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_EDIT.value]["count"], 1)
+
+    async def test_calendar_search_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_calendar_search(message, payload):
+            calls.append((message.content, payload))
+
+        monitor.handlers["calendar"].handle_search = fake_handle_calendar_search
+        message = RecordingMessage("@inebotten søk møte")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["query"], "møte")
+        self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_SEARCH.value]["count"], 1)
+
+    async def test_reminder_search_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_reminder_search(message, payload):
+            calls.append((message.content, payload))
+
+        monitor.handlers["reminders"].handle_reminder_search = fake_handle_reminder_search
+        message = RecordingMessage("@inebotten søk påminnelse lege")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["query"], "lege")
+        self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_SEARCH.value]["count"], 1)
 
     async def test_quote_list_routes_to_handler(self):
         monitor = self.make_monitor()

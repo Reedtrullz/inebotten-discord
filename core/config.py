@@ -5,6 +5,7 @@ Centralized settings, defaults, and environment variables
 """
 
 import os
+import secrets
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
@@ -32,6 +33,8 @@ class Config:
         
         # LM Studio Configuration (default)
         self.HERMES_API_URL = os.getenv('HERMES_API_URL', 'http://127.0.0.1:3000/api/chat')
+        self.LM_STUDIO_URL = os.getenv('LM_STUDIO_URL', 'http://127.0.0.1:1234/v1')
+        self.LM_STUDIO_MODEL = os.getenv('LM_STUDIO_MODEL', 'local-model')
         self.HERMES_TEMPERATURE = float(os.getenv('HERMES_TEMPERATURE', '0.7'))
         self.HERMES_MAX_TOKENS = int(os.getenv('HERMES_MAX_TOKENS', '500'))
         
@@ -50,10 +53,18 @@ class Config:
         self.CONSOLE_ENABLED = os.getenv('CONSOLE_ENABLED', 'True').lower() == 'true'
         self.CONSOLE_HOST = os.getenv('CONSOLE_HOST', '127.0.0.1')
         self.CONSOLE_PORT = int(os.getenv('CONSOLE_PORT', '8080'))
+        self.CONSOLE_SESSION_TTL_DAYS = int(os.getenv('CONSOLE_SESSION_TTL_DAYS', '30'))
+        self.CONSOLE_LOGIN_MAX_ATTEMPTS = int(os.getenv('CONSOLE_LOGIN_MAX_ATTEMPTS', '5'))
+        self.CONSOLE_LOGIN_WINDOW_SECONDS = int(os.getenv('CONSOLE_LOGIN_WINDOW_SECONDS', '300'))
+        self.CONSOLE_COOKIE_SECURE = os.getenv('CONSOLE_COOKIE_SECURE', 'False').lower() == 'true'
         console_api_key = os.getenv('CONSOLE_API_KEY')
+        self.CONSOLE_API_KEY_FILE = (
+            Path.home() / '.hermes' / 'discord' / 'data' / 'console' / 'api_key.txt'
+        )
+        self.CONSOLE_API_KEY_AUTO_GENERATED = not bool(console_api_key)
+        self.CONSOLE_API_KEY_CREATED = False
         if not console_api_key:
-            import uuid
-            console_api_key = str(uuid.uuid4())
+            console_api_key = self._load_or_create_console_api_key()
         self.CONSOLE_API_KEY = console_api_key
         
         # Rate Limiting (conservative to avoid flags)
@@ -125,6 +136,31 @@ class Config:
             if self.env_file_loaded:
                 print(f"[CONFIG] Settings loaded from {self.env_file_loaded}")
             print(f"[CONFIG] Using LM Studio (URL: {self.HERMES_API_URL})")
+
+        if self.CONSOLE_API_KEY_AUTO_GENERATED:
+            if self.CONSOLE_API_KEY_CREATED:
+                print(f"[CONFIG] Console API key: {self.CONSOLE_API_KEY}")
+            print(f"[CONFIG] Console API key file: {self.CONSOLE_API_KEY_FILE}")
+
+    def _load_or_create_console_api_key(self) -> str:
+        try:
+            if self.CONSOLE_API_KEY_FILE.exists():
+                stored_key = self.CONSOLE_API_KEY_FILE.read_text(encoding='utf-8').strip()
+                if stored_key:
+                    return stored_key
+            self.CONSOLE_API_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            generated_key = secrets.token_urlsafe(32)
+            self.CONSOLE_API_KEY_FILE.write_text(generated_key + "\n", encoding='utf-8')
+            try:
+                os.chmod(self.CONSOLE_API_KEY_FILE, 0o600)
+            except OSError:
+                pass
+            self.CONSOLE_API_KEY_CREATED = True
+            return generated_key
+        except Exception as e:
+            print(f"[CONFIG] WARNING: Could not persist console API key: {e}")
+            self.CONSOLE_API_KEY_CREATED = True
+            return secrets.token_urlsafe(32)
     
     def get_hermes_url(self):
         """
@@ -190,6 +226,22 @@ class Config:
     @property
     def console_api_key(self):
         return self.CONSOLE_API_KEY
+
+    @property
+    def console_session_ttl_days(self):
+        return self.CONSOLE_SESSION_TTL_DAYS
+
+    @property
+    def console_login_max_attempts(self):
+        return self.CONSOLE_LOGIN_MAX_ATTEMPTS
+
+    @property
+    def console_login_window_seconds(self):
+        return self.CONSOLE_LOGIN_WINDOW_SECONDS
+
+    @property
+    def console_cookie_secure(self):
+        return self.CONSOLE_COOKIE_SECURE
 
 def get_config() -> Config:
     """

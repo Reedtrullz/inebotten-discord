@@ -15,11 +15,11 @@ Tracks sent reminders in a JSON file to avoid duplicate pings.
 import json
 import time
 import asyncio
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from zoneinfo import ZoneInfo
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 class ReminderChecker:
@@ -58,7 +58,7 @@ class ReminderChecker:
         }
 
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "reminder_log.json"
+            storage_path = hermes_discord_data_path("reminder_log.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,15 +104,10 @@ class ReminderChecker:
             }
             self.sent_log["digest_log"] = digest_log
 
-            temp_path = self.storage_path.with_suffix(".tmp")
             try:
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(self.sent_log, f, ensure_ascii=False, indent=2)
-                os.replace(temp_path, self.storage_path)
+                write_json_atomic(self.storage_path, self.sent_log)
             except Exception as e:
                 print(f"[REMIND] Sent log save error: {e}")
-                if temp_path.exists():
-                    os.remove(temp_path)
 
         await asyncio.to_thread(_write)
 
@@ -125,9 +120,7 @@ class ReminderChecker:
         # Only suppress within a 60-minute window (allow re-alert for next occurrence)
         if time.time() - sent_at < 3600:
             return True
-        # Update timestamp to keep it fresh
-        self.sent_log["reminders_sent"][key] = int(time.time())
-        return True
+        return False
 
     async def _mark_sent(self, item_id, remind_type):
         """Mark a reminder as sent"""

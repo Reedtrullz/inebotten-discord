@@ -7,8 +7,11 @@ Stores events in JSON file with optional Google Calendar sync
 
 import json
 import os
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 class EventManager:
@@ -19,7 +22,7 @@ class EventManager:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "events.json"
+            storage_path = hermes_discord_data_path("events.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,8 +58,7 @@ class EventManager:
 
     def _save_events(self):
         """Save events to storage file"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.events, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.storage_path, self.events)
 
     def create_event(
         self,
@@ -90,7 +92,7 @@ class EventManager:
                 return None
 
             # Create event ID
-            event_id = f"{guild_id}_{int(datetime.now().timestamp())}"
+            event_id = f"{guild_id}_{uuid.uuid4().hex}"
 
             event = {
                 "id": event_id,
@@ -384,7 +386,7 @@ class EventManager:
                 self.gcal.delete_event(gcal_event_id)
                 print(f"[EVENT] Deleted from Google Calendar: {gcal_event_id}")
             except Exception as e:
-                print(f"[EVENT] Failed to delete from Google Calendar: {e}")  # nosec B608
+                print(f"[EVENT] Failed to remove Google Calendar event: {e}")
 
         return deleted_event is not None or gcal_event_id is not None
 
@@ -693,7 +695,11 @@ if __name__ == "__main__":
     # Test the event manager
     print("=== Event Manager Test ===\n")
 
-    manager = EventManager(storage_path="/tmp/test_events.json")  # nosec B108
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(delete=False) as tmp:
+        storage_path = tmp.name
+    manager = EventManager(storage_path=storage_path)
 
     # Test creating events
     test_guild = "123456789"
@@ -717,5 +723,4 @@ if __name__ == "__main__":
     print(manager.format_event_list(upcoming))
 
     # Cleanup
-    if manager.storage_path.exists():
-        manager.storage_path.unlink()
+    manager.storage_path.unlink(missing_ok=True)

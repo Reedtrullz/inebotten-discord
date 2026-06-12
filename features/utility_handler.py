@@ -4,7 +4,7 @@ UtilityHandler - Handles utility commands for the selfbot.
 
 Commands:
 - Calculator and unit conversions
-- Crypto/stock prices
+- Crypto prices
 - URL shortening
 """
 
@@ -42,7 +42,7 @@ class UtilityHandler(BaseHandler):
 
     async def handle_price(self, message, price_cmd: Dict[str, Any]) -> None:
         """
-        Handle crypto/stock price commands.
+        Handle crypto price commands.
 
         Args:
             message: The Discord message
@@ -53,6 +53,12 @@ class UtilityHandler(BaseHandler):
 
             price_data = await self.crypto.get_price(price_cmd)
             response_text = self.crypto.format_price(price_data, lang)
+            if not response_text:
+                response_text = (
+                    "❌ Fant ikke prisdata akkurat nå."
+                    if lang == "no"
+                    else "❌ Could not find price data right now."
+                )
 
             await self.send_response(message, response_text)
 
@@ -70,7 +76,7 @@ class UtilityHandler(BaseHandler):
         try:
             lang = self.loc.current_lang
 
-            short_data = self.url_shortener.shorten_url(shorten_cmd["url"])
+            short_data = await self.url_shortener.shorten_url_async(shorten_cmd["url"])
             response_text = self.url_shortener.format_short_url(short_data, lang)
 
             await self.send_response(message, response_text)

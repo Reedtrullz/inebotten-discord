@@ -139,6 +139,19 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.handler.send_response.assert_awaited_once()
         self.assertIn("reminder_delete_success", self.handler.send_response.await_args.args[1])
 
+    async def test_handle_reminder_search_outputs_matches(self):
+        message = SimpleNamespace(
+            content="@inebotten søk påminnelse første",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            author=SimpleNamespace(id=7, name="Tester"),
+        )
+
+        await self.handler.handle_reminder_search(message)
+
+        self.handler.send_response.assert_awaited_once()
+        self.assertIn("Første oppgave", self.handler.send_response.await_args.args[1])
+
 
 if __name__ == "__main__":
     unittest.main()

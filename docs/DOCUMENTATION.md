@@ -322,8 +322,8 @@ Gjentagende elementer flyttes til neste dato når du fullfører dem. Bruk `slett
 
 **OAuth Flyt:**
 1. Opprett OAuth credentials i Google Cloud Console
-2. Plasser `google_client_secret.json` i `~/.hermes/`
-3. Autoriser via setup-script - token lagres i `~/.hermes/google_token.json`
+2. Plasser filen som `credentials.json` i `~/.hermes/`
+3. Autoriser via `@inebotten kalender auth` eller `python3 scripts/auth_gcal.py`; token lagres i `~/.hermes/google_token.json`
 
 **Sync-oppførsel:**
 - Oppretter events i GCal når lagt til via bot
@@ -332,7 +332,7 @@ Gjentagende elementer flyttes til neste dato når du fullfører dem. Bruk `slett
 - Viser 📌 for kun lokale elementer
 - Sletter fra GCal når element slettes i bot (Toveis-synk)
 - Oppdaterer GCal når elementer markeres som [FERDIG]
-- Bakgrunnssynk hvert 15. minutt for å hente eksterne endringer
+- Bakgrunnssynk via reminder-checker og oppstartssynk for å hente eksterne endringer
 - Starter med direkte API-kall (ingen subprocess)
 
 **GCal-slett:** Når du sletter et element i boten som er synkronisert til Google Calendar, slettes det også fra GCal automatisk.
@@ -344,7 +344,7 @@ Gjentagende elementer flyttes til neste dato når du fullfører dem. Bruk `slett
 **Funksjoner:**
 - **30-minutters varsel:** Når et element er ≤30 minutter unna, pinger boten brukeren som opprettet det i den opprinnelige kanalen
 - **Morgen-digest kl 09:00:** Poster dagens plan med alle arrangementer, sendte til kanalen der det tidligste arrangementet ble opprettet
-- **Deduplisering:** Tracking-fil i `~/.hermes/discord/reminder_log.json` forhindrer doble pings (60-min vindu)
+- **Deduplisering:** Tracking-fil i `~/.hermes/discord/data/reminder_log.json` forhindrer doble pings (60-min vindu)
 - **Kanal-sporing:** Hvert arrangement lagrer `channel_id` slik at påminnelser sendes til riktig sted
 - **Auto-avslutning:** Stopper graceful når boten stenger
 
@@ -426,7 +426,7 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 |---------|-----|----------|
 | **Avstemninger** | `poll_manager.py` | `@inebotten avstemning Tittel? Alt1, Alt2`, `@inebotten polls`, `@inebotten slett poll` |
 | **Nedtellinger** | `countdown_manager.py` | `@inebotten nedtelling til [dato]` |
-| **Watchlist** | `watchlist_manager.py` | `@inebotten watchlist add [symbol]` |
+| **Watchlist** | `watchlist_manager.py` | `@inebotten watchlist`, `@inebotten legg til Inception`, `@inebotten hva skal vi se?` |
 | **Krypto** | `crypto_manager.py` | `@inebotten pris BTC` |
 | **Horoskop** | `horoscope_manager.py` | `@inebotten horoskop [stjernetegn]` |
 | **Kalkulator** | `calculator_manager.py` | `@inebotten kalk 2+2*3` |
@@ -465,12 +465,12 @@ Botten eksponerer et webbasert dashbord på port 8080 (konfigurerbart via `CONSO
 
 **Autentisering:**
 
-Console krever API-nøkkel. Nøkkelen genereres automatisk ved oppstart hvis `CONSOLE_API_KEY` ikke er satt i `.env`.
+Console krever API-nøkkel. Hvis `CONSOLE_API_KEY` ikke er satt i `.env`, genereres en nøkkel ved første start og lagres i `~/.hermes/discord/data/console/api_key.txt`. Nettleserinnlogging oppretter en egen tidsbegrenset session-cookie; API-nøkkelen lagres ikke som cookie-verdi.
 
 | Metode | Beskrivelse |
 |--------|-------------|
 | `X-API-Key`-header | For API-klienter og programmer |
-| Cookie-session | For nettlesere — logg inn via skjema på `/login` |
+| `console_session` cookie | For nettlesere etter innlogging via skjema på `/login` |
 
 **Endpoints:**
 
@@ -596,8 +596,9 @@ HERMES_BRIDGE_PORT=3000
 # Discord Token (i .env-fil)
 DISCORD_TOKEN=***
 
-# Google Calendar (OAuth-credentials)
-# Lagret i ~/.gcal_credentials.json etter første kjøring
+# Google Calendar (OAuth)
+# OAuth client: ~/.hermes/credentials.json
+# Token: ~/.hermes/google_token.json
 ```
 
 ### Filplasseringer
@@ -606,8 +607,8 @@ DISCORD_TOKEN=***
 |-----|------------|--------|
 | Kalenderdata | `~/.hermes/discord/data/calendar.json` | Events & påminnelser |
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` | Brukerpreferanser |
-| GCal Token | `~/.gcal_token.pickle` | Google OAuth token |
-| GCal Credentials | `~/.gcal_credentials.json` | Google OAuth credentials |
+| GCal Token | `~/.hermes/google_token.json` | Google OAuth token |
+| GCal Credentials | `~/.hermes/credentials.json` | Google OAuth credentials |
 
 ---
 

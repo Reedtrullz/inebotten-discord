@@ -155,7 +155,8 @@ På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMEN
 data/tokens.json       # Bruker-tokens
 data/user_memory.json  # Personlig data
 data/calendar.json     # Personlig data
-data/client_secret*.json  # Google credentials
+~/.hermes/credentials.json     # Google OAuth client
+~/.hermes/google_token.json    # Google OAuth token
 *.log                  # Loggfiler
 ```
 

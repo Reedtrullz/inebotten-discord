@@ -2,6 +2,10 @@
 # Caddy automatically obtains and renews SSL certificates via Let's Encrypt
 
 bot.reidar.tech {
+    request_body {
+        max_size 64KB
+    }
+
     # Reverse proxy to the bot's console
     reverse_proxy http://inebotten-bot:8080
 

@@ -18,6 +18,7 @@ install -m 0755 "$SCRIPT_DIR/inebotten-webhook.py" /opt/inebotten-autoupdate/web
 
 cat >/etc/inebotten-webhook.env <<EOF
 WEBHOOK_SECRET=$SECRET
+WEBHOOK_HOST=0.0.0.0
 WEBHOOK_PORT=$PORT
 WEBHOOK_BRANCH=refs/heads/$BRANCH
 UPDATE_SERVICE=inebotten-update.service

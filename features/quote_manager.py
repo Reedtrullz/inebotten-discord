@@ -10,6 +10,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
+
 
 class QuoteManager:
     """
@@ -18,7 +20,7 @@ class QuoteManager:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "quotes.json"
+            storage_path = hermes_discord_data_path("quotes.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,8 +39,7 @@ class QuoteManager:
 
     def _save_quotes(self):
         """Save quotes to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.quotes, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.storage_path, self.quotes)
 
     def add_quote(self, guild_id, text, author, context=None):
         """
@@ -68,43 +69,37 @@ class QuoteManager:
 
         return True
 
-    def get_random_quote(self, guild_id):
+    def get_random_quote(self, guild_id=None):
         """Get a random quote from a guild"""
-        guild_key = str(guild_id)
-
-        if guild_key not in self.quotes or not self.quotes[guild_key]:
-            # Try searching all guilds
+        if guild_id is None:
             all_quotes = []
             for quotes in self.quotes.values():
                 all_quotes.extend(quotes)
+            return random.choice(all_quotes) if all_quotes else None
 
-            if all_quotes:
-                return random.choice(all_quotes)
+        guild_key = str(guild_id)
+
+        if guild_key not in self.quotes or not self.quotes[guild_key]:
             return None
 
         return random.choice(self.quotes[guild_key])
 
-    def get_quote_by_author(self, guild_id, author):
+    def get_quote_by_author(self, guild_id=None, author=None):
         """Get a random quote from a specific author"""
-        guild_key = str(guild_id)
+        if not author:
+            return None
 
         candidates = []
+        if guild_id is None:
+            scoped_quotes = []
+            for quotes in self.quotes.values():
+                scoped_quotes.extend(quotes)
+        else:
+            scoped_quotes = self.quotes.get(str(guild_id), [])
 
-        if guild_key in self.quotes:
-            candidates.extend(
-                [
-                    q
-                    for q in self.quotes[guild_key]
-                    if author.lower() in q["author"].lower()
-                ]
-            )
-
-        # Search other guilds too
-        for gid, quotes in self.quotes.items():
-            if gid != guild_key:
-                candidates.extend(
-                    [q for q in quotes if author.lower() in q["author"].lower()]
-                )
+        candidates.extend(
+            q for q in scoped_quotes if author.lower() in q.get("author", "").lower()
+        )
 
         if candidates:
             return random.choice(candidates)
@@ -269,7 +264,11 @@ def parse_quote_command(message_content):
 if __name__ == "__main__":
     print("=== Quote Manager Test ===\n")
 
-    manager = QuoteManager(storage_path="/tmp/test_quotes.json")  # nosec B108
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(delete=False) as tmp:
+        storage_path = tmp.name
+    manager = QuoteManager(storage_path=storage_path)
 
     # Add test quote
     manager.add_quote(
@@ -285,5 +284,4 @@ if __name__ == "__main__":
         print(manager.format_quote(quote))
 
     # Cleanup
-    if manager.storage_path.exists():
-        manager.storage_path.unlink()
+    manager.storage_path.unlink(missing_ok=True)

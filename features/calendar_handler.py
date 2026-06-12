@@ -44,6 +44,35 @@ class CalendarHandler(BaseHandler):
                     return rest
         return None
 
+    def _extract_calendar_search_query(self, content: str) -> Optional[str]:
+        """Extract query from calendar search commands."""
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+        patterns = [
+            r"^(?:søk|search)\s+(?:kalender|calendar)\s+(.+)$",
+            r"^(?:søk|search)\s+(.+)$",
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, cleaned, flags=re.IGNORECASE)
+            if match:
+                query = match.group(1).strip()
+                if query.lower().startswith(("på nett ", "web ", "nettet ")):
+                    return None
+                return query or None
+        return None
+
+    async def handle_search(self, message, payload=None) -> None:
+        """Handle calendar title search commands."""
+        try:
+            query = (payload or {}).get("query") or self._extract_calendar_search_query(message.content)
+            if not query:
+                await self.send_response(message, "🔎 Skriv hva du vil søke etter i kalenderen.")
+                return
+            await self.send_response(message, self.calendar.format_search_results(query))
+        except Exception as e:
+            self.log(f"Error searching calendar: {e}")
+            await self.send_response(message, "❌ Beklager, det oppstod en feil under søk i kalenderen.")
+
     async def handle_save_request(self, message, title, date, time):
         """
         Special entry point for AI-generated save requests.
@@ -126,7 +155,7 @@ class CalendarHandler(BaseHandler):
         
         try:
             day, month, year = map(int, item_data["date"].split("."))
-            time_parts = item_data.get("time", "09:00").split(":")
+            time_parts = (item_data.get("time") or "09:00").split(":")
             hour = int(time_parts[0])
             minute = int(time_parts[1]) if len(time_parts) > 1 else 0
 
@@ -408,7 +437,7 @@ class CalendarHandler(BaseHandler):
         value = value.strip()
 
         if re.match(r"^\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?$", value):
-            return value
+            return self.calendar._normalize_date_format(value)
 
         try:
             parsed = self.nlp_parser.parse_event(f"x på {value} kl 12")
@@ -458,18 +487,15 @@ class CalendarHandler(BaseHandler):
                     )
                     return
 
-                upcoming = self.calendar.get_upcoming(guild_id, days=365)
                 target_item = matches[0]
-                for i, item in enumerate(upcoming, 1):
-                    if item.get("id") == target_item.get("id"):
-                        index = i
-                        break
-
-                if index is None:
-                    await self.send_response(
-                        message, self.loc.t("calendar_edit_not_found", num=search_text)
-                    )
-                    return
+                updated_item = await self.calendar.edit_item_by_id(
+                    target_item.get("id"), **{kwarg_field: value}
+                )
+                await self.send_response(
+                    message,
+                    self.loc.t("calendar_edit_success", title=updated_item["title"]),
+                )
+                return
             elif index is None:
                 await self.send_response(
                     message, self.loc.t("calendar_edit_invalid")
@@ -498,7 +524,7 @@ class CalendarHandler(BaseHandler):
             guild_id = self.get_guild_id(message)
             channel_id = getattr(getattr(message, "channel", None), "id", None)
             
-            if not self.calendar.gcal_enabled:
+            if not self.calendar.ensure_gcal_configured():
                 await self.send_response(
                     message, 
                     "❌ Google Calendar er ikke konfigurert eller koblet til ennå."
@@ -507,11 +533,14 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, "🔄 Synkroniserer med Google Calendar...")
             
-            # Use sync_from_gcal with the current channel ID as default
             count = await self.calendar.sync_from_gcal(default_guild_id=guild_id, default_channel_id=channel_id)
+            sync_error = getattr(self.calendar, "last_gcal_sync_error", None)
+            if sync_error:
+                await self.send_response(message, f"❌ {sync_error}")
+                return
             
             if count > 0:
-                await self.send_response(message, f"✅ Ferdig! Hentet {count} nye/oppdaterte elementer fra Google Calendar.")
+                await self.send_response(message, f"✅ Ferdig! Synkroniserte {count} elementer med Google Calendar.")
                 # Show the updated list
                 await self.handle_list(message)
             else:

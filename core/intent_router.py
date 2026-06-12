@@ -46,6 +46,7 @@ class BotIntent(Enum):
     CALENDAR_DELETE = "calendar_delete"
     CALENDAR_COMPLETE = "calendar_complete"
     CALENDAR_EDIT = "calendar_edit"
+    CALENDAR_SEARCH = "calendar_search"
     CALENDAR_CLEAR = "calendar_clear"
     CALENDAR_ITEM = "calendar_item"
     POLL_CREATE = "poll_create"
@@ -75,6 +76,7 @@ class BotIntent(Enum):
     BIRTHDAY_EDIT = "birthday_edit"
     REMINDER_EDIT = "reminder_edit"
     REMINDER_DELETE = "reminder_delete"
+    REMINDER_SEARCH = "reminder_search"
     CALENDAR_AUTH = "calendar_auth"
     AI_CHAT = "ai_chat"
 
@@ -114,6 +116,10 @@ class IntentRouter:
             return IntentResult(BotIntent.REMINDER_EDIT, 0.98, {}, "reminder_edit_keyword")
         if has_any_keyword(content_lower, REMINDER_DELETE_KEYWORDS):
             return IntentResult(BotIntent.REMINDER_DELETE, 0.98, {}, "reminder_delete_keyword")
+
+        local_search = self._route_local_search_command(content)
+        if local_search:
+            return local_search
 
         if has_any_keyword(content_lower, GCAL_AUTH_KEYWORDS):
             code_match = re.search(r'(?:kode|code|auth)\s+([4/a-zA-Z0-9_\-]+)', content)
@@ -245,6 +251,69 @@ class IntentRouter:
         watchlist_cmd = self.monitor.parse_watchlist_command(content)
         if watchlist_cmd:
             return IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": watchlist_cmd}, "watchlist_parser")
+        return None
+
+    def _route_local_search_command(self, content: str) -> Optional[IntentResult]:
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+        lower = cleaned.lower()
+
+        reminder_match = re.match(
+            r"^(?:søk|search)\s+(?:påminnelse|påminnelser|reminder|reminders)\s+(.+)$",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if reminder_match:
+            query = reminder_match.group(1).strip()
+            if query:
+                return IntentResult(
+                    BotIntent.REMINDER_SEARCH,
+                    0.98,
+                    {"query": query},
+                    "reminder_search_keyword",
+                )
+
+        calendar_match = re.match(
+            r"^(?:søk|search)\s+(?:kalender|calendar)\s+(.+)$",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if calendar_match:
+            query = calendar_match.group(1).strip()
+            if query:
+                return IntentResult(
+                    BotIntent.CALENDAR_SEARCH,
+                    0.98,
+                    {"query": query},
+                    "calendar_search_keyword",
+                )
+
+        web_match = re.match(
+            r"^(?:søk\s+på\s+nett|search\s+(?:the\s+)?web)\s+(.+)$",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if web_match:
+            query = web_match.group(1).strip()
+            if query:
+                return IntentResult(
+                    BotIntent.SEARCH,
+                    0.96,
+                    {"search": {"query": query, "type": "web"}},
+                    "explicit_web_search_keyword",
+                )
+
+        bare_match = re.match(r"^(?:søk|search)\s+(.+)$", cleaned, flags=re.IGNORECASE)
+        if bare_match and not lower.startswith(("søk på nett", "search web", "search the web")):
+            query = bare_match.group(1).strip()
+            if query:
+                return IntentResult(
+                    BotIntent.CALENDAR_SEARCH,
+                    0.95,
+                    {"query": query},
+                    "calendar_search_keyword",
+                )
+
         return None
 
     def _route_calendar_item(self, content: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:

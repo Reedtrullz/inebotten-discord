@@ -4,11 +4,13 @@ import json
 import logging
 import os
 import pathlib
+import time
 from datetime import datetime
 from typing import cast
 from urllib.parse import urlparse
 
 from web_console.dashboard import render_commands_page, render_dashboard, render_login_page  # pyright: ignore[reportUnknownVariableType]
+from web_console.console_store import get_console_store
 from web_console.state_collector import (
     StateCollector,
     collect_bot_status,
@@ -24,12 +26,15 @@ from web_console.state_collector import (
 
 logger = logging.getLogger(__name__)
 
+MAX_HEADER_BYTES = 32 * 1024
+MAX_BODY_BYTES = 16 * 1024
+
 
 class ConsoleServer:
     host: str
     port: int
     api_key: str | None
-    secure_cookies: bool
+    cookie_secure: bool
     monitor: object | None
     _server: asyncio.AbstractServer | None
 
@@ -40,13 +45,35 @@ class ConsoleServer:
         api_key: str | None = None,
         monitor: object | None = None,
         secure_cookies: bool | None = None,
+        session_ttl_days: int | None = None,
+        login_max_attempts: int | None = None,
+        login_window_seconds: int | None = None,
+        cookie_secure: bool | None = None,
     ):
         self.host = host
         self.port = port
         self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
-        self.secure_cookies = secure_cookies if secure_cookies is not None else host not in {"127.0.0.1", "localhost", "::1"}
         self.monitor = monitor
         self._server = None
+        self.store = get_console_store()
+        self.session_ttl_seconds = max(
+            1,
+            int(session_ttl_days if session_ttl_days is not None else os.getenv("CONSOLE_SESSION_TTL_DAYS", "30")) * 86400,
+        )
+        self.login_max_attempts = max(
+            1,
+            int(login_max_attempts if login_max_attempts is not None else os.getenv("CONSOLE_LOGIN_MAX_ATTEMPTS", "5")),
+        )
+        self.login_window_seconds = max(
+            1,
+            int(login_window_seconds if login_window_seconds is not None else os.getenv("CONSOLE_LOGIN_WINDOW_SECONDS", "300")),
+        )
+        if cookie_secure is None:
+            cookie_secure = secure_cookies
+        if cookie_secure is None:
+            cookie_secure = os.getenv("CONSOLE_COOKIE_SECURE", "False").lower() == "true"
+        self.cookie_secure = bool(cookie_secure)
+        self._login_failures: dict[str, list[float]] = {}
 
     @property
     def actual_port(self) -> int:
@@ -86,6 +113,16 @@ class ConsoleServer:
             headers[key.strip().lower()] = value.strip()
         return headers
 
+    def _content_length(self, headers: dict[str, str]) -> int | None:
+        raw_length = headers.get("content-length", "0") or "0"
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            return None
+        if content_length < 0:
+            return None
+        return content_length
+
     def _parse_cookies(self, cookie_header: str | None) -> dict[str, str]:
         cookies: dict[str, str] = {}
         if not cookie_header:
@@ -103,10 +140,61 @@ class ConsoleServer:
         return hmac.compare_digest(candidate, self.api_key)
 
     def _is_authenticated(self, headers: dict[str, str]) -> bool:
-        if self._candidate_matches_api_key(headers.get("x-api-key")):
+        api_key = headers.get("x-api-key")
+        if self._valid_api_key(api_key):
             return True
         cookies = self._parse_cookies(headers.get("cookie"))
-        return self._candidate_matches_api_key(cookies.get("console_auth"))
+        if self.store.validate_session(cookies.get("console_session")):
+            return True
+        return False
+
+    def _valid_api_key(self, submitted: str | None) -> bool:
+        expected = "" if self.api_key is None else str(self.api_key)
+        if not submitted or not expected:
+            return False
+        return hmac.compare_digest(submitted, expected)
+
+    def _peer_key(self, writer: asyncio.StreamWriter) -> str:
+        peername = writer.get_extra_info("peername")
+        if isinstance(peername, tuple) and peername:
+            return str(peername[0])
+        return "unknown"
+
+    def _login_limited(self, peer_key: str) -> bool:
+        now = time.time()
+        failures = [
+            ts for ts in self._login_failures.get(peer_key, [])
+            if now - ts < self.login_window_seconds
+        ]
+        self._login_failures[peer_key] = failures
+        return len(failures) >= self.login_max_attempts
+
+    def _record_login_failure(self, peer_key: str) -> None:
+        failures = self._login_failures.setdefault(peer_key, [])
+        failures.append(time.time())
+        self._login_failures[peer_key] = [
+            ts for ts in failures if time.time() - ts < self.login_window_seconds
+        ]
+
+    def _clear_login_failures(self, peer_key: str) -> None:
+        self._login_failures.pop(peer_key, None)
+
+    def _secure_cookie_enabled(self, headers: dict[str, str]) -> bool:
+        forwarded_proto = headers.get("x-forwarded-proto", "").lower()
+        return self.cookie_secure or forwarded_proto == "https"
+
+    def _session_cookie_header(self, token: str, headers: dict[str, str], max_age: int | None = None) -> str:
+        max_age = self.session_ttl_seconds if max_age is None else max_age
+        parts = [
+            f"console_session={token}",
+            "Path=/",
+            "HttpOnly",
+            "SameSite=Strict",
+            f"Max-Age={max_age}",
+        ]
+        if self._secure_cookie_enabled(headers):
+            parts.append("Secure")
+        return "Set-Cookie: " + "; ".join(parts)
 
     async def _serve_static_file(self, writer: asyncio.StreamWriter, path: str) -> None:
         static_dir = pathlib.Path(__file__).parent / "static"
@@ -167,6 +255,8 @@ class ConsoleServer:
             403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
+            302: "Found",
+            429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")
 
@@ -199,6 +289,9 @@ class ConsoleServer:
             except asyncio.LimitOverrunError:
                 await self._send_response(writer, 400, {"error": "Request headers too large"})
                 return
+            if len(header_data) > MAX_HEADER_BYTES:
+                await self._send_response(writer, 400, {"error": "Request headers too large"})
+                return
 
             header_text = header_data.decode("utf-8", errors="ignore")
             lines = header_text.split("\r\n")
@@ -216,7 +309,13 @@ class ConsoleServer:
             path = parsed.path or "/"
             headers = self._parse_headers(lines[1:])
 
-            content_length = int(headers.get("content-length", "0") or 0)
+            content_length = self._content_length(headers)
+            if content_length is None:
+                await self._send_response(writer, 400, {"error": "Invalid Content-Length"})
+                return
+            if content_length > MAX_BODY_BYTES:
+                await self._send_response(writer, 413, {"error": "Request body too large"})
+                return
             body_bytes = b""
             if content_length > 0:
                 try:
@@ -245,6 +344,12 @@ class ConsoleServer:
                 return
 
             if method == "POST" and path == "/api/login":
+                peer_key = self._peer_key(writer)
+                if self._login_limited(peer_key):
+                    html = render_login_page(error="Innlogging midlertidig blokkert. Prøv igjen senere.")
+                    await self._send_response(writer, 429, html, content_type="text/html; charset=utf-8")
+                    return
+
                 body_text = body_bytes.decode("utf-8", errors="replace")
                 form_data: dict[str, str] = {}
                 for pair in body_text.split("&"):
@@ -253,11 +358,9 @@ class ConsoleServer:
                         from urllib.parse import unquote_plus
                         form_data[unquote_plus(k)] = unquote_plus(v)
                 submitted_key = form_data.get("api_key", "")
-                if self._candidate_matches_api_key(submitted_key):
-                    assert self.api_key is not None
-                    cookie_attrs = "; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
-                    if self.secure_cookies:
-                        cookie_attrs = "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000"
+                if self._valid_api_key(submitted_key):
+                    self._clear_login_failures(peer_key)
+                    token = self.store.create_session(self.session_ttl_seconds)
                     await self._send_response(
                         writer,
                         302,
@@ -265,12 +368,28 @@ class ConsoleServer:
                         content_type="text/plain",
                         extra_headers=[
                             "Location: /",
-                            "Set-Cookie: console_auth=" + self.api_key + cookie_attrs,
+                            self._session_cookie_header(token, headers),
                         ],
                     )
                 else:
-                    html = render_login_page(error="Ugyldig API-nøkkel")
+                    self._record_login_failure(peer_key)
+                    html = render_login_page(error="Innlogging feilet")
                     await self._send_response(writer, 401, html, content_type="text/html; charset=utf-8")
+                return
+
+            if method == "POST" and path == "/api/logout":
+                cookies = self._parse_cookies(headers.get("cookie"))
+                self.store.delete_session(cookies.get("console_session"))
+                await self._send_response(
+                    writer,
+                    302,
+                    "",
+                    content_type="text/plain",
+                    extra_headers=[
+                        "Location: /login",
+                        self._session_cookie_header("", headers, max_age=0),
+                    ],
+                )
                 return
 
             if method != "GET":
@@ -329,6 +448,7 @@ class ConsoleServer:
                                 query_lines = int(pair.split("=", 1)[1])
                             except ValueError:
                                 pass
+                query_lines = max(1, min(query_lines, 2000))
                 await self._send_response(writer, 200, collect_logs(query_lines))
             else:
                 await self._send_response(writer, 404, {"error": "Not found"})

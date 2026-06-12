@@ -10,9 +10,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 SECRET = os.environ.get("WEBHOOK_SECRET", "").encode()
+HOST = os.environ.get("WEBHOOK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("WEBHOOK_PORT", "9000"))
 BRANCH = os.environ.get("WEBHOOK_BRANCH", "refs/heads/master")
 UPDATE_SERVICE = os.environ.get("UPDATE_SERVICE", "inebotten-update.service")
+MAX_WEBHOOK_BODY_BYTES = int(os.environ.get("WEBHOOK_MAX_BODY_BYTES", "1048576"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -38,7 +40,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n")
             return
 
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self._send(400, "bad content-length\n")
+            return
+        if length < 0:
+            self._send(400, "bad content-length\n")
+            return
+        if length > MAX_WEBHOOK_BODY_BYTES:
+            self._send(413, "payload too large\n")
+            return
         body = self.rfile.read(length)
 
         signature = self.headers.get("X-Hub-Signature-256", "")
@@ -74,6 +86,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"Listening on 0.0.0.0:{PORT}", flush=True)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"Listening on {HOST}:{PORT}", flush=True)
     server.serve_forever()

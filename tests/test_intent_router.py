@@ -221,6 +221,26 @@ class IntentRouterTests(unittest.TestCase):
         result = self.route("endre påminnelse")
         self.assertEqual(result.intent, BotIntent.REMINDER_EDIT)
 
+    def test_calendar_search_routes_to_local_calendar_search(self):
+        result = self.route("søk møte")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_SEARCH)
+        self.assertEqual(result.payload["query"], "møte")
+
+    def test_explicit_calendar_search_routes_to_local_calendar_search(self):
+        result = self.route("søk kalender møte")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_SEARCH)
+        self.assertEqual(result.payload["query"], "møte")
+
+    def test_reminder_search_routes_to_local_reminder_search(self):
+        result = self.route("søk påminnelse lege")
+        self.assertEqual(result.intent, BotIntent.REMINDER_SEARCH)
+        self.assertEqual(result.payload["query"], "lege")
+
+    def test_web_search_phrase_does_not_route_to_calendar_search(self):
+        result = self.route("søk på nett Trondheim konserter")
+        self.assertEqual(result.intent, BotIntent.SEARCH)
+        self.assertEqual(result.payload["search"]["query"], "Trondheim konserter")
+
     def test_quote_list_routes_to_quote_list(self):
         result = self.route("liste sitater")
         self.assertEqual(result.intent, BotIntent.QUOTE_LIST)

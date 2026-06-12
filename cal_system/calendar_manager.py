@@ -6,6 +6,7 @@ Everything is just a calendar item with a date
 
 import json
 import os
+import re
 import uuid
 import asyncio
 from datetime import datetime, timedelta
@@ -63,8 +64,29 @@ class CalendarManager:
         self.gcal_enabled = gcal_manager is not None
         self.owner_email = owner_email
         self.owner_name = owner_name
+        self.last_gcal_sync_error = None
         self.SHARED_KEY = "shared"
         self.items = {}  # Will be transitioned to {self.SHARED_KEY: [...]}
+
+    def ensure_gcal_configured(self):
+        """Refresh or lazily initialize Google Calendar integration."""
+        if self.gcal and self.gcal.is_configured():
+            self.gcal_enabled = True
+            return True
+
+        try:
+            from cal_system.google_calendar_manager import GoogleCalendarManager
+
+            gcal = GoogleCalendarManager()
+            if gcal.is_configured():
+                self.gcal = gcal
+                self.gcal_enabled = True
+                return True
+        except Exception as e:
+            print(f"[CAL] Google Calendar init failed: {e}")
+
+        self.gcal_enabled = False
+        return False
 
     async def setup(self):
         """Async initialization and migration to shared calendar"""
@@ -136,15 +158,7 @@ class CalendarManager:
         channel_id=None,
     ):
         """Add a new item to the calendar"""
-        # Validate date format
-        if not self._validate_date_format(date_str):
-            # Try to fix padding if possible
-            parts = date_str.split('.')
-            if len(parts) == 3:
-                try:
-                    date_str = f"{int(parts[0]):02d}.{int(parts[1]):02d}.{int(parts[2])}"
-                except ValueError:
-                    pass
+        date_str = self._normalize_date_format(date_str)
 
         guild_key = self.SHARED_KEY
         if guild_key not in self.items:
@@ -337,10 +351,28 @@ class CalendarManager:
 
         item = items[index - 1]
 
+        self._apply_item_updates(item, title, date, time, recurrence, description)
+        self._sync_item_update_to_gcal(item)
+
+        self._save_data_sync()
+        return AwaitableDict(item)
+
+    def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None):
+        """Edit a calendar item by stable ID, including past/non-upcoming entries."""
+        guild_key = self.SHARED_KEY
+        for item in self.items.get(guild_key, []):
+            if item.get("id") == item_id:
+                self._apply_item_updates(item, title, date, time, recurrence, description)
+                self._sync_item_update_to_gcal(item)
+                self._save_data_sync()
+                return AwaitableDict(item)
+        raise ValueError(f"Fant ikke kalenderoppføring med ID: {item_id}")
+
+    def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None):
         if title is not None:
             item["title"] = title
         if date is not None:
-            item["date"] = date
+            item["date"] = self._normalize_date_format(date)
         if time is not None:
             item["time"] = time
         if recurrence is not None:
@@ -348,8 +380,26 @@ class CalendarManager:
         if description is not None:
             item["description"] = description
 
-        self._save_data_sync()
-        return AwaitableDict(item)
+    def _sync_item_update_to_gcal(self, item):
+        if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
+            return
+        try:
+            result = self.gcal.update_event(
+                item["gcal_event_id"],
+                title=item.get("title"),
+                description=item.get("description"),
+                date_str=item.get("date"),
+                time_str=item.get("time"),
+                recurrence=item.get("recurrence"),
+                rrule_day=item.get("rrule_day") or item.get("recurrence_day"),
+            )
+            if result and isinstance(result, dict):
+                if result.get("id"):
+                    item["gcal_event_id"] = result["id"]
+                if result.get("htmlLink"):
+                    item["gcal_link"] = result["htmlLink"]
+        except Exception as e:
+            print(f"[CAL] GCal edit sync failed for {item.get('title')}: {e}")
 
     def search_items(self, query):
         """Search calendar items by title (case-insensitive substring match)"""
@@ -360,6 +410,23 @@ class CalendarManager:
         matching = [item for item in items if query in item.get("title", "").lower()]
 
         return matching
+
+    def format_search_results(self, query):
+        """Format calendar search results for Discord."""
+        matches = self.search_items(query)
+        if not matches:
+            return f"🔎 Fant ingen kalenderoppføringer som matcher **{query}**."
+
+        lines = [f"🔎 **Kalenderoppføringer som matcher \"{query}\":**"]
+        for i, item in enumerate(matches[:10], 1):
+            time_str = f" kl. {item['time']}" if item.get("time") else ""
+            status = "✅" if item.get("completed") else "📌"
+            lines.append(f"{status} **{i}.** {item.get('title', '')} — _{item.get('date', '')}{time_str}_")
+
+        if len(matches) > 10:
+            lines.append(f"\n… og {len(matches) - 10} til.")
+
+        return "\n".join(lines)
 
     async def _process_completion(self, guild_key, item):
         """Internal helper to handle completion logic"""
@@ -429,30 +496,46 @@ class CalendarManager:
         """
         Pull events from Google Calendar and sync to local store
         """
-        if not self.gcal_enabled or not self.gcal.is_configured():
+        self.last_gcal_sync_error = None
+        if not self.ensure_gcal_configured():
+            self.last_gcal_sync_error = "Google Calendar er ikke konfigurert eller koblet til ennå."
             return 0
 
         fallback_channel_id = default_channel_id
 
         print("[CAL] Syncing from Google Calendar...")
-        gcal_events = self.gcal.list_upcoming_events(days=30)
+        gcal_events = self.gcal.list_upcoming_events(days=90)
         if gcal_events is None:
+            self.last_gcal_sync_error = "Kunne ikke hente hendelser fra Google Calendar."
             return 0
 
         added_count = 0
         updated_count = 0
+        removed_count = 0
 
-        # Build a map of gcal_event_id -> (guild_id, item) for quick lookup
+        # Build a map of canonical GCal IDs -> (guild_id, item) for quick lookup.
+        # Recurring events arrive as expanded instances whose "id" differs per
+        # occurrence, while "recurringEventId" points back to the master event.
         gcal_map = {}
         for guild_id, items in self.items.items():
             for item in items:
                 if item.get("gcal_event_id"):
                     gcal_map[item["gcal_event_id"]] = (guild_id, item)
 
+        processed_recurring_ids = set()
+        seen_gcal_ids = set()
         for event in gcal_events:
             gcal_id = event.get("id")
             if not gcal_id:
                 continue
+            canonical_gcal_id = event.get("recurringEventId") or gcal_id
+            seen_gcal_ids.add(gcal_id)
+            seen_gcal_ids.add(canonical_gcal_id)
+            is_recurring_instance = bool(event.get("recurringEventId"))
+            if is_recurring_instance and canonical_gcal_id in processed_recurring_ids:
+                continue
+            if is_recurring_instance:
+                processed_recurring_ids.add(canonical_gcal_id)
 
             summary = event.get("summary", "Uten tittel")
             
@@ -514,10 +597,17 @@ class CalendarManager:
             if not gcal_username or gcal_username.lower() in ["google calendar", "inebotten"]:
                 gcal_username = self.owner_name or "Google Calendar"
 
-            if gcal_id in gcal_map:
+            matched_gcal_key = canonical_gcal_id if canonical_gcal_id in gcal_map else None
+            if matched_gcal_key is None and gcal_id in gcal_map:
+                matched_gcal_key = gcal_id
+
+            if matched_gcal_key:
                 # Existing item, check for updates
-                guild_id, item = gcal_map[gcal_id]
+                guild_id, item = gcal_map[matched_gcal_key]
                 changed = False
+                if item.get("gcal_event_id") != canonical_gcal_id:
+                    item["gcal_event_id"] = canonical_gcal_id
+                    changed = True
                 
                 if item["title"] != summary:
                     item["title"] = summary
@@ -560,7 +650,7 @@ class CalendarManager:
                     title=summary,
                     date_str=date_str,
                     time_str=time_str,
-                    gcal_event_id=gcal_id,
+                    gcal_event_id=canonical_gcal_id,
                     gcal_link=event.get("htmlLink"),
                     channel_id=fallback_channel_id,
                 )
@@ -571,11 +661,58 @@ class CalendarManager:
                 
                 added_count += 1
 
-        if added_count > 0 or updated_count > 0:
+        removed_count = self._remove_missing_gcal_items(seen_gcal_ids, days=90)
+
+        if added_count > 0 or updated_count > 0 or removed_count > 0:
             await self._save_data()
-            print(f"[CAL] Sync complete: {added_count} added, {updated_count} updated")
+            print(
+                f"[CAL] Sync complete: {added_count} added, "
+                f"{updated_count} updated, {removed_count} removed"
+            )
         
-        return added_count + updated_count
+        return added_count + updated_count + removed_count
+
+    def _remove_missing_gcal_items(self, seen_gcal_ids, days=90):
+        """Remove local GCal-backed items absent from Google inside the sync window."""
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = today + timedelta(days=days)
+        removed_count = 0
+
+        for guild_id, items in list(self.items.items()):
+            kept_items = []
+            for item in items:
+                gcal_id = item.get("gcal_event_id")
+                if not gcal_id or gcal_id in seen_gcal_ids:
+                    kept_items.append(item)
+                    continue
+
+                try:
+                    item_date = datetime.strptime(item.get("date", ""), "%d.%m.%Y")
+                except (TypeError, ValueError):
+                    kept_items.append(item)
+                    continue
+
+                if not (today <= item_date <= cutoff):
+                    kept_items.append(item)
+                    continue
+
+                remote_event = None
+                if self.gcal and hasattr(self.gcal, "get_event"):
+                    try:
+                        remote_event = self.gcal.get_event(gcal_id)
+                    except Exception as e:
+                        print(f"[CAL] GCal get_event failed for {gcal_id}: {e}")
+
+                if remote_event and remote_event.get("status") != "cancelled":
+                    kept_items.append(item)
+                    continue
+
+                print(f"[CAL] Removed deleted GCal event locally: {item.get('title')}")
+                removed_count += 1
+
+            self.items[guild_id] = kept_items
+
+        return removed_count
 
     def get_upcoming(self, guild_id, days=30, include_completed=False):
         """
@@ -706,12 +843,44 @@ class CalendarManager:
         except (ValueError, TypeError):
             return False
 
+    def _normalize_date_format(self, date_str):
+        """Normalize date-ish values to DD.MM.YYYY when possible."""
+        if not isinstance(date_str, str):
+            return date_str
+
+        value = date_str.strip().replace("/", ".")
+        if self._validate_date_format(value):
+            return datetime.strptime(value, "%d.%m.%Y").strftime("%d.%m.%Y")
+
+        match = re.match(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$", value)
+        if not match:
+            return date_str
+
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year_value = match.group(3)
+        if year_value is None:
+            year = datetime.now().year
+        elif len(year_value) == 2:
+            year = 2000 + int(year_value)
+        else:
+            year = int(year_value)
+
+        try:
+            return datetime(year, month, day).strftime("%d.%m.%Y")
+        except ValueError:
+            return date_str
+
 
 if __name__ == "__main__":
     # Test
     print("=== Calendar Manager Test ===\n")
 
-    manager = CalendarManager(storage_path="/tmp/test_calendar_simple.json")  # nosec B108
+    from tempfile import NamedTemporaryFile
+
+    with NamedTemporaryFile(delete=False) as tmp:
+        storage_path = tmp.name
+    manager = CalendarManager(storage_path=storage_path)
 
     # Add various items
     manager.add_item(
@@ -755,7 +924,4 @@ if __name__ == "__main__":
     print("\n--- Calendar after ---")
     print(manager.format_list("test"))
 
-    # Cleanup
-    import os
-
-    os.remove("/tmp/test_calendar_simple.json")  # nosec B108
+    manager.storage_path.unlink(missing_ok=True)

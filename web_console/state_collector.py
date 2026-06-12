@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from utils.json_storage import hermes_discord_data_path
+
 
 def _read_json_file(path: Path, default: Any) -> Any:
     try:
@@ -201,7 +203,7 @@ def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:
 
 
 def collect_poll_data(monitor: object | None = None) -> dict[str, Any]:
-    path = Path.home() / ".hermes" / "discord" / "polls.json"
+    path = hermes_discord_data_path("polls.json")
     data = _read_json_file(path, {})
 
     active_polls: list[dict[str, Any]] = []

@@ -336,13 +336,13 @@ All persistent lagring.
 │                                                                             │
 │  Initial Auth (Engang)                                                      │
 │  ═══════════════════════                                                    │
-│  1. Bruker kjører sync_calendar_to_gcal.py                                  │
+│  1. Bruker kjører @inebotten kalender auth eller scripts/auth_gcal.py       │
 │     │                                                                       │
 │     ├─ Åpner browser for Google OAuth2                                      │
 │     │                                                                       │
 │     ├─ Bruker godkjenner tilgang                                            │
 │     │                                                                       │
-│     └─ Token lagres: ~/.gcal_token.pickle                                   │
+│     └─ Token lagres: ~/.hermes/google_token.json                            │
 │                                                                             │
 │  Sync Ved Ny Event                                                          │
 │  ═══════════════════                                                        │
@@ -451,7 +451,7 @@ All persistent lagring.
 │                                                                             │
 │  ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐  │
 │  │   Environment    │      │   Filer          │      │   Runtime        │  │
-│  │   Variabler      │      │   (JSON/Pickle)  │      │   Tilstand       │  │
+│  │   Variabler      │      │   (JSON)         │      │   Tilstand       │  │
 │  │                  │      │                  │      │                  │  │
 │  │ HERMES_BRIDGE_   │      │ data/calendar.   │      │ Conversation     │  │
 │  │   HOST/PORT      │──────│   json           │      │   threads        │  │
@@ -459,8 +459,8 @@ All persistent lagring.
 │  │ DISCORD_TOKEN    │      │ user_memory.     │      │ Rate limiters    │  │
 │  │                  │──────│   json           │      │                  │  │
 │  │                  │      │                  │      │ Hermes session   │  │
-│  │                  │      │ .gcal_token.     │      │                  │  │
-│  │                  │──────│   pickle         │      │                  │  │
+│  │                  │      │ google_token.    │      │                  │  │
+│  │                  │──────│   json           │      │                  │  │
 │  └──────────────────┘      └──────────────────┘      └──────────────────┘  │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -572,9 +572,9 @@ run_both.py
 
 ### 3. Bridge-arkitektur
 
-**Problem:** LM Studio kjører på Windows, bot på WSL Linux.
+**Problem:** LM Studio og botten kan kjøre i ulike prosesser, containere eller OS-miljøer.
 
-**Løsning:** HTTP bridge muliggjør cross-platform kommunikasjon.
+**Løsning:** HTTP bridge muliggjør lokal eller cross-platform kommunikasjon via konfigurerbar `LM_STUDIO_URL`.
 
 **Fordeler:**
 - Hver komponent kan kjøre hvor som helst
@@ -633,8 +633,8 @@ run_both.py
 | Tjeneste | Metode | Lagring |
 |----------|--------|---------|
 | Discord | User Token | .env-fil (gitignored) |
-| Google Calendar | OAuth2 | ~/.gcal_token.pickle |
-| Web Console | API-nøkkel + cookie-session | `.env` (`CONSOLE_API_KEY`) |
+| Google Calendar | OAuth2 | `~/.hermes/credentials.json` + `~/.hermes/google_token.json` |
+| Web Console | API-nøkkel + tidsbegrenset session-cookie | `.env` (`CONSOLE_API_KEY`) + `data/console/sessions.json` |
 
 ### Data-sikkerhet
 

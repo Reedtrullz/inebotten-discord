@@ -195,10 +195,29 @@ class MessageMonitor:
         self.response_count = 0
         self.error_count = 0
         self.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
+        self._background_tasks = set()
 
         self.handlers = {}
         self._register_handlers()
         self.intent_router = IntentRouter(self)
+
+    def _track_background_task(self, coro, name):
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+
+        def _done_callback(done_task):
+            self._background_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            try:
+                exc = done_task.exception()
+            except Exception:
+                return
+            if exc:
+                print(f"[MONITOR] Background task {name} failed: {exc}")
+
+        task.add_done_callback(_done_callback)
+        return task
 
     async def setup(self):
         await self.calendar.setup()
@@ -209,14 +228,24 @@ class MessageMonitor:
             print("[MONITOR] Performing initial Google Calendar sync...")
             try:
                 # Use a background task so we don't block startup
-                asyncio.create_task(self.calendar.sync_from_gcal())
+                self._track_background_task(self.calendar.sync_from_gcal(), "initial-gcal-sync")
             except Exception as e:
                 print(f"[MONITOR] Initial GCal sync failed: {e}")
 
         # Start periodic console stats persistence
-        asyncio.create_task(self._console_persistence_loop())
+        self._track_background_task(self._console_persistence_loop(), "console-persistence")
 
         print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
+
+    async def close(self):
+        """Cancel monitor-owned background tasks."""
+        tasks = list(self._background_tasks)
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
 
     async def _console_persistence_loop(self) -> None:
         """Periodically save intent and rate-limit stats to disk."""
@@ -398,6 +427,8 @@ class MessageMonitor:
             await self.handlers["calendar"].handle_complete(message)
         elif route.intent == BotIntent.CALENDAR_EDIT:
             await self.handlers["calendar"].handle_edit(message)
+        elif route.intent == BotIntent.CALENDAR_SEARCH:
+            await self.handlers["calendar"].handle_search(message, payload)
         elif route.intent == BotIntent.CALENDAR_CLEAR:
             await self.handlers["calendar"].handle_clear(message)
         elif route.intent == BotIntent.CALENDAR_ITEM:
@@ -408,6 +439,8 @@ class MessageMonitor:
             await self.handlers["reminders"].handle_reminder_edit(message, payload)
         elif route.intent == BotIntent.REMINDER_DELETE:
             await self.handlers["reminders"].handle_reminder_delete(message, payload)
+        elif route.intent == BotIntent.REMINDER_SEARCH:
+            await self.handlers["reminders"].handle_reminder_search(message, payload)
         elif route.intent == BotIntent.POLL_CREATE:
             await self.handlers["polls"].handle_poll(message, payload["poll"])
         elif route.intent == BotIntent.POLL_VOTE:
@@ -927,6 +960,8 @@ class SelfbotClient(discord.Client):
         self.monitor = None
         self.console_server = None
         self.console_task = None
+        self.reminder_checker = None
+        self.reminder_checker_task = None
         self.start_time = None
 
     async def setup_hook(self):
@@ -947,6 +982,10 @@ class SelfbotClient(discord.Client):
                 port=self.config.console_port,
                 api_key=self.config.console_api_key,
                 monitor=self.monitor,
+                session_ttl_days=self.config.console_session_ttl_days,
+                login_max_attempts=self.config.console_login_max_attempts,
+                login_window_seconds=self.config.console_login_window_seconds,
+                cookie_secure=self.config.console_cookie_secure,
             )
             await self.console_server.start()
             print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")
@@ -1094,7 +1133,10 @@ class SelfbotClient(discord.Client):
         self.reminder_checker = self._create_reminder_checker()
         if self.reminder_checker:
             await self.reminder_checker.setup()
-            asyncio.create_task(self.reminder_checker.start())
+            self.reminder_checker_task = asyncio.create_task(
+                self.reminder_checker.start(),
+                name="reminder-checker",
+            )
             print("[BOT] Calendar reminder checker started")
 
         # Check AI connector health
@@ -1154,6 +1196,27 @@ class SelfbotClient(discord.Client):
         print("[BOT] Session resumed")
 
     async def close(self):
+        if self.monitor and hasattr(self.monitor, "close"):
+            try:
+                await self.monitor.close()
+            except Exception as e:
+                print(f"[BOT] Error stopping monitor tasks: {e}")
+
+        if self.reminder_checker:
+            try:
+                self.reminder_checker.stop()
+            except Exception as e:
+                print(f"[BOT] Error stopping reminder checker: {e}")
+
+        if self.reminder_checker_task and not self.reminder_checker_task.done():
+            self.reminder_checker_task.cancel()
+            try:
+                await self.reminder_checker_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self.reminder_checker_task = None
+
         if self.console_task and not self.console_task.done():
             self.console_task.cancel()
             try:

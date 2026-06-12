@@ -1,6 +1,6 @@
 import asyncio
 
-from web_console.server import ConsoleServer
+from web_console.server import ConsoleServer, MAX_BODY_BYTES
 
 
 HOST = "127.0.0.1"
@@ -24,7 +24,15 @@ async def stop_server(server: ConsoleServer, task: asyncio.Task[None]):
         pass
 
 
-async def request(path: str, *, method: str = "GET", api_key: str | None = None, body: bytes = b"", cookie: str | None = None):
+async def request(
+    path: str,
+    *,
+    method: str = "GET",
+    api_key: str | None = None,
+    body: bytes = b"",
+    cookie: str | None = None,
+    extra_headers: list[str] | None = None,
+):
     reader, writer = await asyncio.open_connection(HOST, PORT)
     headers = [
         f"{method} {path} HTTP/1.1",
@@ -35,6 +43,8 @@ async def request(path: str, *, method: str = "GET", api_key: str | None = None,
         headers.append(f"X-API-Key: {api_key}")
     if cookie is not None:
         headers.append(f"Cookie: {cookie}")
+    if extra_headers:
+        headers.extend(extra_headers)
     if body:
         headers.append(f"Content-Length: {len(body)}")
     payload = "\r\n".join(headers).encode() + b"\r\n\r\n" + body
@@ -44,6 +54,15 @@ async def request(path: str, *, method: str = "GET", api_key: str | None = None,
     writer.close()
     await writer.wait_closed()
     return response
+
+
+def extract_cookie(response: bytes, name: str) -> str:
+    prefix = f"Set-Cookie: {name}=".encode()
+    for line in response.split(b"\r\n"):
+        if line.startswith(prefix):
+            value = line[len(prefix):].split(b";", 1)[0]
+            return value.decode()
+    raise AssertionError(f"Missing Set-Cookie for {name}")
 
 
 async def test_auth_missing_key():
@@ -306,7 +325,9 @@ async def test_api_login_valid_key():
         body = b"api_key=test-key-123"
         response = await request("/api/login", method="POST", body=body)
         assert b"302" in response
-        assert b"Set-Cookie: console_auth=" in response
+        assert b"HTTP/1.1 302 Found" in response
+        assert b"Set-Cookie: console_session=" in response
+        assert b"test-key-123" not in extract_cookie(response, "console_session").encode()
         assert b"Location: /" in response
     finally:
         await stop_server(server, task)
@@ -318,7 +339,7 @@ async def test_api_login_valid_key_sets_secure_cookie_when_enabled():
         body = b"api_key=test-key-123"
         response = await request("/api/login", method="POST", body=body)
         assert b"302" in response
-        assert b"Set-Cookie: console_auth=" in response
+        assert b"Set-Cookie: console_session=" in response
         assert b"HttpOnly" in response
         assert b"SameSite=Strict" in response
         assert b"Secure" in response
@@ -332,27 +353,95 @@ async def test_api_login_invalid_key():
         body = b"api_key=wrong-key"
         response = await request("/api/login", method="POST", body=body)
         assert b"401" in response
-        assert "Ugyldig API-nøkkel".encode("utf-8") in response
+        assert "Innlogging feilet".encode("utf-8") in response
     finally:
         await stop_server(server, task)
 
 
-async def test_dashboard_with_cookie():
+async def test_dashboard_rejects_legacy_api_key_cookie():
     server, task = await start_server()
     try:
         response = await request("/", cookie="console_auth=test-key-123")
-        assert b"200" in response
-        assert b"Inebotten Console" in response
+        assert b"api_key" in response
+        assert b'data-metric=' not in response
     finally:
         await stop_server(server, task)
 
 
-async def test_api_with_cookie():
+async def test_dashboard_with_session_cookie():
     server, task = await start_server()
     try:
-        response = await request("/api/status", cookie="console_auth=test-key-123")
+        login = await request("/api/login", method="POST", body=b"api_key=test-key-123")
+        token = extract_cookie(login, "console_session")
+        response = await request("/", cookie=f"console_session={token}")
+        assert b"200" in response
+        assert b"Inebotten Console" in response
+        assert b"<main" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_api_with_session_cookie():
+    server, task = await start_server()
+    try:
+        login = await request("/api/login", method="POST", body=b"api_key=test-key-123")
+        token = extract_cookie(login, "console_session")
+        response = await request("/api/status", cookie=f"console_session={token}")
         assert b"200" in response
         assert b'"status":' in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_logout_expires_session_cookie():
+    server, task = await start_server()
+    try:
+        login = await request("/api/login", method="POST", body=b"api_key=test-key-123")
+        token = extract_cookie(login, "console_session")
+        logout = await request("/api/logout", method="POST", cookie=f"console_session={token}")
+        assert b"302" in logout
+        assert b"Location: /login" in logout
+        assert b"Max-Age=0" in logout
+        response = await request("/api/status", cookie=f"console_session={token}")
+        assert b"401" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_login_throttles_repeated_failures():
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        login_max_attempts=2,
+        login_window_seconds=60,
+    )
+    task = asyncio.create_task(server.start())
+    await asyncio.sleep(0.1)
+    try:
+        body = b"api_key=wrong-key"
+        assert b"401" in await request("/api/login", method="POST", body=body)
+        assert b"401" in await request("/api/login", method="POST", body=body)
+        response = await request("/api/login", method="POST", body=body)
+        assert b"429" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_login_secure_cookie_when_forwarded_https():
+    server, task = await start_server()
+    try:
+        response = await request(
+            "/api/login",
+            method="POST",
+            body=b"api_key=test-key-123",
+            extra_headers=["X-Forwarded-Proto: https"],
+        )
+        cookie_line = [
+            line for line in response.split(b"\r\n")
+            if line.startswith(b"Set-Cookie: console_session=")
+        ][0]
+        assert b"Secure" in cookie_line
     finally:
         await stop_server(server, task)
 
@@ -373,5 +462,40 @@ async def test_logs_endpoint_with_lines_param():
         response = await request("/api/logs?lines=50", api_key=API_KEY)
         assert b"200" in response
         assert b"logs" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_logs_endpoint_clamps_lines_param():
+    server, task = await start_server()
+    try:
+        response = await request("/api/logs?lines=999999", api_key=API_KEY)
+        assert b"200" in response
+        assert b"logs" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_invalid_content_length_returns_400():
+    server, task = await start_server()
+    try:
+        response = await request(
+            "/api/login",
+            method="POST",
+            extra_headers=["Content-Length: not-a-number"],
+        )
+        assert b"400" in response
+        assert b"Invalid Content-Length" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_oversized_body_returns_413():
+    server, task = await start_server()
+    try:
+        body = b"x" * (MAX_BODY_BYTES + 1)
+        response = await request("/api/login", method="POST", body=body)
+        assert b"413" in response
+        assert b"Request body too large" in response
     finally:
         await stop_server(server, task)

@@ -16,9 +16,12 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 TOKEN_PATH = HERMES_HOME / "google_token.json"
-# Check both possible locations for credentials
-CREDENTIALS_PATH = HERMES_HOME / "google_credentials" / "client_secret.json"
-ALT_CREDENTIALS_PATH = Path("client_secret.json")
+# Runtime GoogleCalendarManager expects this exact OAuth client file.
+CREDENTIALS_PATH = HERMES_HOME / "credentials.json"
+LEGACY_CREDENTIALS_PATHS = [
+    HERMES_HOME / "google_credentials" / "client_secret.json",
+    Path("client_secret.json"),
+]
 
 def main():
     import argparse
@@ -48,12 +51,18 @@ def main():
         if not creds:
             print("Starting new authorization flow...")
             
-            target_cred = CREDENTIALS_PATH if CREDENTIALS_PATH.exists() else ALT_CREDENTIALS_PATH
+            target_cred = CREDENTIALS_PATH
+            if not target_cred.exists():
+                for legacy_path in LEGACY_CREDENTIALS_PATHS:
+                    if legacy_path.exists():
+                        target_cred = legacy_path
+                        break
             
             if not target_cred.exists():
-                print(f"Error: Could not find client_secret.json")
-                print(f"Looked in: {CREDENTIALS_PATH} and {ALT_CREDENTIALS_PATH}")
-                print("Please download your credentials from Google Cloud Console and place them there.")
+                print("Error: Could not find credentials.json")
+                print(f"Expected: {CREDENTIALS_PATH}")
+                print("Download an OAuth Desktop client JSON from Google Cloud Console,")
+                print("rename it to credentials.json, and place it in ~/.hermes/.")
                 sys.exit(1)
             
             flow = InstalledAppFlow.from_client_secrets_file(str(target_cred), SCOPES)

@@ -184,20 +184,53 @@ class GoogleCalendarManager:
             now = datetime.now(timezone.utc)
             end = now + timedelta(days=days)
 
-            events_result = service.events().list(
-                calendarId=self.calendar_id,
-                timeMin=now.isoformat(),
-                timeMax=end.isoformat(),
-                maxResults=50,
-                singleEvents=True,
-                orderBy="startTime",
-            ).execute()
-
-            items = events_result.get("items", [])
+            items = []
+            page_token = None
+            while True:
+                events_result = service.events().list(
+                    calendarId=self.calendar_id,
+                    timeMin=now.isoformat(),
+                    timeMax=end.isoformat(),
+                    maxResults=2500,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    pageToken=page_token,
+                ).execute()
+                items.extend(events_result.get("items", []))
+                page_token = events_result.get("nextPageToken")
+                if not page_token:
+                    break
             return items
 
         except Exception as e:
             print(f"[GCAL] Error listing events: {e}")
+            return None
+
+    def get_event(self, event_id):
+        """Fetch a single event by ID; returns None if missing or unavailable."""
+        if not self.enabled:
+            return None
+
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
+
+            creds = Credentials.from_authorized_user_file(
+                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+            )
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                self._save_credentials(creds)
+
+            service = build("calendar", "v3", credentials=creds)
+            return (
+                service.events()
+                .get(calendarId=self.calendar_id, eventId=event_id)
+                .execute()
+            )
+        except Exception as e:
+            print(f"[GCAL] Error fetching event {event_id}: {e}")
             return None
 
     def create_event(
@@ -245,21 +278,7 @@ class GoogleCalendarManager:
         # Build recurrence rule if specified
         rrule = None
         if recurrence:
-            recurrence = recurrence.lower()
-            if recurrence == "weekly":
-                if rrule_day:
-                    rrule = f"RRULE:FREQ=WEEKLY;BYDAY={rrule_day}"
-                else:
-                    rrule = "RRULE:FREQ=WEEKLY"
-            elif recurrence == "biweekly":
-                if rrule_day:
-                    rrule = f"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY={rrule_day}"
-                else:
-                    rrule = "RRULE:FREQ=WEEKLY;INTERVAL=2"
-            elif recurrence == "monthly":
-                rrule = "RRULE:FREQ=MONTHLY"
-            elif recurrence == "yearly":
-                rrule = "RRULE:FREQ=YEARLY"
+            rrule = self._build_rrule(recurrence, rrule_day)
 
         # Use direct API for all events (ensures timezone support)
         return self._create_event_api(
@@ -382,7 +401,41 @@ class GoogleCalendarManager:
             print(f"[GCAL] Error deleting event {event_id}: {e}")
             return False
 
-    def update_event(self, event_id, title=None, description=None, completed=False):
+    def _build_rrule(self, recurrence, rrule_day=None):
+        if not recurrence:
+            return None
+        recurrence = recurrence.lower()
+        if recurrence == "weekly":
+            return f"RRULE:FREQ=WEEKLY;BYDAY={rrule_day}" if rrule_day else "RRULE:FREQ=WEEKLY"
+        if recurrence == "biweekly":
+            return f"RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY={rrule_day}" if rrule_day else "RRULE:FREQ=WEEKLY;INTERVAL=2"
+        if recurrence == "monthly":
+            return "RRULE:FREQ=MONTHLY"
+        if recurrence == "yearly":
+            return "RRULE:FREQ=YEARLY"
+        return None
+
+    def _local_event_times(self, date_str, time_str=None):
+        day, month, year = date_str.split(".")
+        hour, minute = (time_str or "12:00").split(":")
+        local_tz = ZoneInfo("Europe/Oslo")
+        start_dt = datetime(
+            int(year), int(month), int(day), int(hour), int(minute), tzinfo=local_tz
+        )
+        end_dt = start_dt + timedelta(hours=1)
+        return start_dt.isoformat(), end_dt.isoformat()
+
+    def update_event(
+        self,
+        event_id,
+        title=None,
+        description=None,
+        completed=False,
+        date_str=None,
+        time_str=None,
+        recurrence=None,
+        rrule_day=None,
+    ):
         """
         Update an event in Google Calendar
         """
@@ -420,6 +473,18 @@ class GoogleCalendarManager:
             if description:
                 event["description"] = description
 
+            if date_str:
+                start_iso, end_iso = self._local_event_times(date_str, time_str)
+                event["start"] = {"dateTime": start_iso, "timeZone": "Europe/Oslo"}
+                event["end"] = {"dateTime": end_iso, "timeZone": "Europe/Oslo"}
+
+            if recurrence is not None:
+                rrule = self._build_rrule(recurrence, rrule_day)
+                if rrule:
+                    event["recurrence"] = [rrule]
+                else:
+                    event.pop("recurrence", None)
+
             result = (
                 service.events()
                 .update(calendarId=self.calendar_id, eventId=event_id, body=event)
@@ -447,7 +512,7 @@ class GoogleCalendarManager:
         try:
             # Parse date and time
             date_str = event_data.get("date", "")  # DD.MM.YYYY
-            time_str = event_data.get("time", "12:00")  # HH:MM
+            time_str = event_data.get("time") or "12:00"  # HH:MM
 
             # Parse date
             day, month, year = date_str.split(".")

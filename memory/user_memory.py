@@ -242,7 +242,11 @@ def get_user_memory():
 
 if __name__ == "__main__":
     async def main():
-        mem = UserMemory(storage_path="/tmp/test_user_memory.json")
+        from tempfile import NamedTemporaryFile
+
+        with NamedTemporaryFile(delete=False) as tmp:
+            storage_path = tmp.name
+        mem = UserMemory(storage_path=storage_path)
 
         # Simulate user interactions
         await mem.update_last_interaction("user1", "RBK-kamp", username="Ola")
@@ -254,6 +258,6 @@ if __name__ == "__main__":
         print("\nGreeting:", await mem.get_personalized_greeting("user1"))
         print("\nContext:", await mem.format_context_for_prompt("user1"))
 
-        Path("/tmp/test_user_memory.json").unlink(missing_ok=True)
+        Path(storage_path).unlink(missing_ok=True)
 
     asyncio.run(main())

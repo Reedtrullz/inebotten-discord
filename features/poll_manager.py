@@ -6,9 +6,12 @@ Simple, conversational polls for quick decisions
 
 import json
 import re
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 import random
+
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 class PollManager:
@@ -18,7 +21,7 @@ class PollManager:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = Path.home() / ".hermes" / "discord" / "polls.json"
+            storage_path = hermes_discord_data_path("polls.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,8 +41,7 @@ class PollManager:
 
     def _save_polls(self):
         """Save polls to storage"""
-        with open(self.storage_path, "w", encoding="utf-8") as f:
-            json.dump(self.polls, f, ensure_ascii=False, indent=2)
+        write_json_atomic(self.storage_path, self.polls)
 
     def create_poll(self, guild_id, question, options, created_by, created_by_id=None):
         """
@@ -55,7 +57,7 @@ class PollManager:
         Returns:
             poll_id
         """
-        poll_id = f"poll_{guild_id}_{int(datetime.now().timestamp())}"
+        poll_id = f"poll_{guild_id}_{uuid.uuid4().hex}"
 
         poll = {
             "id": poll_id,

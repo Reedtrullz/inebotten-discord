@@ -53,13 +53,13 @@ web_console/
 ## CONVENTIONS
 
 - Python string templates loaded at runtime from `dashboard.py`
-- Auth: `X-API-Key` header for API clients, cookie session (`console_auth`) for browsers
+- Auth: `X-API-Key` header for API clients, persisted session cookie (`console_session`) for browsers
 - `ConsoleServer` receives `monitor=None` initially, updated after `on_ready()`
 - `/health` is auth-exempt
-- Login form posts to `/api/login` which validates key and sets HttpOnly cookie
+- Login form posts to `/api/login` which validates key and sets an HttpOnly session cookie
 - All dashboard cards use `data-metric` attributes for client-side updates
 - Initial state delivered via `<script id="initial-data" type="application/json">`
-- Logs and stats persist across restarts via `console_store.py` (JSONL + JSON)
+- Logs, stats, and hashed browser sessions persist across restarts via `console_store.py` (JSONL + JSON)
 
 ## ANTI-PATTERNS
 
@@ -74,7 +74,7 @@ web_console/
 | `/` | Yes | Dashboard HTML |
 | `/login` | No | Login page |
 | `/health` | No | Health check JSON |
-| `/api/login` | No | POST: validate key, set cookie |
+| `/api/login` | No | POST: validate key, set session cookie |
 | `/api/status` | Yes | Bot status JSON |
 | `/api/bridge` | Yes | Bridge health JSON |
 | `/api/calendar` | Yes | Calendar data JSON |

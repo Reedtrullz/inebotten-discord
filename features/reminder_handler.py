@@ -86,6 +86,39 @@ class ReminderHandler(BaseHandler):
 
         return index, {}
 
+    def _parse_search_query(self, content: str) -> Optional[str]:
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+        match = re.match(
+            r"^(?:søk|search)\s+(?:påminnelse|påminnelser|reminder|reminders)\s+(.+)$",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        query = match.group(1).strip()
+        return query or None
+
+    async def handle_reminder_search(self, message, payload=None) -> None:
+        """Handle reminder text search commands."""
+        try:
+            guild_id = self.get_guild_id(message)
+            query = (payload or {}).get("query") or self._parse_search_query(message.content)
+            if not query:
+                await self.send_response(message, "🔎 Skriv hva du vil søke etter i påminnelser.")
+                return
+            await self.send_response(
+                message,
+                self.reminders.format_search_results(
+                    guild_id,
+                    query,
+                    getattr(self.loc, "current_lang", "no"),
+                ),
+            )
+        except Exception as e:
+            self.log(f"Error searching reminders: {e}")
+            await self.send_response(message, self.loc.t("error_generic"))
+
     async def handle_reminder_edit(self, message, payload=None) -> None:
         """Handle editing a reminder by its list index."""
         try:

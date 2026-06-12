@@ -88,6 +88,17 @@ Velg riktig GGUF-format basert på din VRAM:
 
 ## LM Studio Konfigurasjon
 
+### 0. Inebotten bridge-variabler
+
+Sett disse i `.env` hvis LM Studio ikke bruker standard lokal adresse eller hvis du vil låse modellnavnet eksplisitt:
+
+```bash
+LM_STUDIO_URL=http://127.0.0.1:1234/v1
+LM_STUDIO_MODEL=local-model
+```
+
+`HERMES_API_URL` er fortsatt adressen botten bruker mot Inebotten-bridgen, vanligvis `http://127.0.0.1:3000/api/chat`.
+
 ### 1. Last Modellen
 
 ```

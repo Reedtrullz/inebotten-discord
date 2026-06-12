@@ -135,22 +135,25 @@ Med Google Calendar-integrasjon kan Inebotten:
    └─────────────────────────────────────┘
    ```
 
-7. Lagre filen som `client_secret.json` i `~/.hermes/discord/data/`
+7. Lagre filen som `credentials.json` i `~/.hermes/`
 
 ---
 
 ## Steg 3: Autentisering
 
-### 3.1 Kjør Setup-skript
+### 3.1 Start OAuth-flyt
 
 ```bash
-cd ~/.hermes/discord
-python3 utils/sync_calendar_to_gcal.py --setup
+# Alternativ A: via Discord
+@inebotten kalender auth
+
+# Alternativ B: via terminal fra prosjektmappen
+python3 scripts/auth_gcal.py
 ```
 
 ### 3.2 Godkjenn i Nettleser
 
-1. Skriptet vil vise en URL:
+1. Botten eller skriptet viser en Google OAuth-URL:
    ```
    ===========================================
    Åpne denne URLen i nettleseren:
@@ -176,20 +179,20 @@ python3 utils/sync_calendar_to_gcal.py --setup
    ```
 
 5. Du vil bli redirected til `localhost` (feilside er normalt!)
-6. **Kopier hele URLen** fra adressefeltet
-   - Ser ut som: `http://localhost/?code=4/0Ab...&scope=...`
+6. **Kopier koden** fra redirecten eller terminalflyten
 
 ### 3.3 Fullfør Autentisering
 
-1. Lim inn URLen i terminalen når du blir spurt:
+1. Hvis du bruker Discord-flyten, send koden tilbake:
    ```
-   Lim inn redirect-URLen: http://localhost/?code=4/0Ab...
+   @inebotten kalender auth 4/0Ab...
    ```
+   Hvis du bruker `scripts/auth_gcal.py`, limer du inn koden i terminalen.
 
 2. Skriptet vil bekrefte:
    ```
    ✅ Autentisering vellykket!
-   Token lagret i: ~/.gcal_token.pickle
+   Token lagret i: ~/.hermes/google_token.json
    ```
 
 ---
@@ -199,15 +202,10 @@ python3 utils/sync_calendar_to_gcal.py --setup
 ### 4.1 Verifiser Oppsett
 
 ```bash
-python3 utils/sync_calendar_to_gcal.py --check
+python3 scripts/auth_gcal.py --no-browser
 ```
 
-Forventet output:
-```
-✅ Google Calendar autentisering: OK
-📅 Kalender tilgjengelig: Ja
-🔄 Siste sync: Aldri
-```
+Hvis tokenet finnes og kan friskes opp, skriver skriptet at eksisterende token ble funnet eller oppdatert. Du kan også kjøre `@inebotten synk kalender` i Discord for å teste en faktisk sync.
 
 ### 4.2 Test i Discord
 
@@ -299,22 +297,24 @@ Hvis kalenderen skal deles med venner:
 
 ```bash
 # Slett token
-rm ~/.gcal_token.pickle
+rm ~/.hermes/google_token.json
 
 # Kjør setup på nytt
-python3 utils/sync_calendar_to_gcal.py --setup
+python3 scripts/auth_gcal.py
 ```
 
 ### Sjekk Token
 
 ```python
 python3 -c "
-import pickle
-with open('~/.gcal_token.pickle', 'rb') as f:
-    creds = pickle.load(f)
-    print(f'Valid: {creds.valid}')
-    print(f'Expired: {creds.expired}')
-    print(f'Scopes: {creds.scopes}')
+from google.oauth2.credentials import Credentials
+creds = Credentials.from_authorized_user_file(
+    '~/.hermes/google_token.json',
+    ['https://www.googleapis.com/auth/calendar']
+)
+print(f'Valid: {creds.valid}')
+print(f'Expired: {creds.expired}')
+print(f'Scopes: {creds.scopes}')
 "
 ```
 
@@ -330,7 +330,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 ## Sikkerhetsnotater
 
-- 🔐 **Token lagres lokalt** i `~/.gcal_token.pickle` (kryptert)
+- 🔐 **Token lagres lokalt** i `~/.hermes/google_token.json`
+- 🔐 **OAuth-client lagres lokalt** i `~/.hermes/credentials.json`
 - 🔐 **Ikke del token-filen** - gir full tilgang til kalenderen
 - 🔐 **Bruk .gitignore** - token-filen skal aldri committes
 - 🔐 **Regelmessig rotasjon** - slett og opprett nytt token årlig
