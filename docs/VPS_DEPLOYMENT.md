@@ -152,3 +152,31 @@ sudo docker compose up -d
 | Docker-bygg feiler | `sudo tail -100 /var/log/inebotten-autoupdate.log` |
 | Botten starter og avslutter | `sudo docker logs --tail=200 inebotten-bot` |
 | Botten viser "Playing unknown" | `docker compose build --no-cache` (mangler `git` i imaget) |
+| Botten viser gammel commit | Oppdater installert updater og kjør `inebotten-update.service`, se under |
+
+### Botten viser gammel commit
+
+Hvis GitHub har ny commit, men Discord-statusen fortsatt viser en gammel hash,
+kan checkouten ha blitt oppdatert mens Docker-rebuild/restart feilet. Da vil en
+gammel updater kunne stoppe med "Already up to date" uten å reparere containeren.
+
+Kjør på VPS-en:
+
+```bash
+cd /opt/inebotten-discord
+git fetch origin master
+git reset --hard origin/master
+sudo install -m 0755 scripts/deploy/inebotten-update /usr/local/sbin/inebotten-update
+sudo systemctl start inebotten-update.service
+sudo tail -100 /var/log/inebotten-autoupdate.log
+sudo docker exec inebotten-bot cat /app/commit_hash.txt
+```
+
+For å oppdatere både updater, webhook og timer uten å rotere eksisterende
+webhook-secret, kan installereren kjøres på nytt:
+
+```bash
+cd /opt/inebotten-discord
+sudo ./scripts/deploy/install-autoupdate.sh
+sudo systemctl start inebotten-update.service
+```

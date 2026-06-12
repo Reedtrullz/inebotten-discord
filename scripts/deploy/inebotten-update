@@ -5,6 +5,24 @@ REPO="${INEBOTTEN_REPO:-/opt/inebotten-discord}"
 BRANCH="${INEBOTTEN_BRANCH:-master}"
 LOG="${INEBOTTEN_UPDATE_LOG:-/var/log/inebotten-autoupdate.log}"
 LOCK="${INEBOTTEN_UPDATE_LOCK:-/run/inebotten-update.lock}"
+CONTAINER="${INEBOTTEN_CONTAINER:-inebotten-bot}"
+
+COMPOSE_CMD=()
+
+detect_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD=(docker-compose)
+  else
+    echo "[$(date -Is)] ERROR: neither docker compose nor docker-compose is available"
+    exit 1
+  fi
+}
+
+running_container_commit() {
+  docker exec "$CONTAINER" sh -c 'cat /app/commit_hash.txt 2>/dev/null || true' 2>/dev/null | tr -d '\r\n'
+}
 
 exec 9>"$LOCK"
 if ! flock -n 9; then
@@ -20,21 +38,38 @@ fi
   git fetch origin "$BRANCH"
   after="$(git rev-parse "origin/$BRANCH")"
 
-  if [ "$before" = "$after" ]; then
-    echo "[$(date -Is)] Already up to date at $before"
-    exit 0
+  if [ "$before" != "$after" ]; then
+    echo "[$(date -Is)] Updating checkout $before -> $after"
+    git reset --hard "origin/$BRANCH"
+  else
+    echo "[$(date -Is)] Checkout already up to date at $before"
   fi
 
-  echo "[$(date -Is)] Updating $before -> $after"
-  git reset --hard "origin/$BRANCH"
-
+  commit_full="$(git rev-parse HEAD)"
   commit_short="$(git rev-parse --short HEAD)"
   export SOURCE_COMMIT="$commit_short"
   export COMMIT_SHA="$commit_short"
 
   python3 scripts/write_version.py
-  docker compose up -d --build --remove-orphans
+
+  detect_compose
+  deployed_commit="$(running_container_commit || true)"
+  deployed_short="${deployed_commit:0:${#commit_short}}"
+
+  if [ -n "$deployed_commit" ] && [ "$deployed_short" = "$commit_short" ]; then
+    echo "[$(date -Is)] Already deployed at $deployed_commit"
+    exit 0
+  fi
+
+  if [ -n "$deployed_commit" ]; then
+    echo "[$(date -Is)] Running container is at $deployed_commit; expected $commit_short"
+  else
+    echo "[$(date -Is)] Running container commit unavailable; rebuilding"
+  fi
+
+  "${COMPOSE_CMD[@]}" up -d --build --remove-orphans
   docker image prune -f >/dev/null || true
 
-  echo "[$(date -Is)] Update complete at $(git rev-parse HEAD)"
+  new_deployed_commit="$(running_container_commit || true)"
+  echo "[$(date -Is)] Update complete at $commit_full; container reports ${new_deployed_commit:-unknown}"
 } >> "$LOG" 2>&1
