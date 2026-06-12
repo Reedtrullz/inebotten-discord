@@ -6,9 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Accept commit hash from Coolify
-ARG SOURCE_COMMIT
+# Accept commit hash from Coolify or the local deploy script
+ARG SOURCE_COMMIT=""
+ARG COMMIT_SHA=""
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
+ENV COMMIT_SHA=$COMMIT_SHA
 
 # Set the working directory in the container
 WORKDIR /app

@@ -7,7 +7,11 @@ services:
     restart: "no"
 
   inebotten:
-    build: .
+    build:
+      context: .
+      args:
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-}
+        COMMIT_SHA: ${COMMIT_SHA:-}
     container_name: inebotten-bot
     restart: always
     user: "10001:10001"
