@@ -155,8 +155,10 @@ På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMEN
 data/tokens.json       # Bruker-tokens
 data/user_memory.json  # Personlig data
 data/calendar.json     # Personlig data
-~/.hermes/credentials.json     # Google OAuth client
-~/.hermes/google_token.json    # Google OAuth token
+~/.hermes/credentials.json     # Google OAuth client (local)
+~/.hermes/google_token.json    # Google OAuth token (local)
+/opt/apps/inebotten-discord/data/credentials.json   # Google OAuth client (Docker/VPS)
+/opt/apps/inebotten-discord/data/google_token.json  # Google OAuth token (Docker/VPS)
 *.log                  # Loggfiler
 ```
 

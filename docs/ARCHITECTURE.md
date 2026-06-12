@@ -342,7 +342,9 @@ All persistent lagring.
 │     │                                                                       │
 │     ├─ Bruker godkjenner tilgang                                            │
 │     │                                                                       │
-│     └─ Token lagres: ~/.hermes/google_token.json                            │
+│     └─ Token lagres i Hermes data: ~/.hermes/google_token.json              │
+│        Docker/VPS host-sti: /opt/apps/inebotten-discord/data/               │
+│        Fil: google_token.json                                               │
 │                                                                             │
 │  Sync Ved Ny Event                                                          │
 │  ═══════════════════                                                        │
@@ -633,7 +635,7 @@ run_both.py
 | Tjeneste | Metode | Lagring |
 |----------|--------|---------|
 | Discord | User Token | .env-fil (gitignored) |
-| Google Calendar | OAuth2 | `~/.hermes/credentials.json` + `~/.hermes/google_token.json` |
+| Google Calendar | OAuth2 | `~/.hermes/credentials.json` + `~/.hermes/google_token.json` locally; `/opt/apps/inebotten-discord/data/` on VPS/Docker |
 | Web Console | API-nøkkel + tidsbegrenset session-cookie | `.env` (`CONSOLE_API_KEY`) + `data/console/sessions.json` |
 
 ### Data-sikkerhet

@@ -60,6 +60,8 @@ What the playbook does:
 |---|---|
 | `OPENROUTER_API_KEY` | `deploy/group_vars/vps/vault.yml` (encrypted, `vault_openrouter_api_key`) |
 | `DISCORD_USER_TOKEN` | `/opt/apps/inebotten-discord/.env` on the VPS, outside the managed block |
+| Google OAuth client | `/opt/apps/inebotten-discord/data/credentials.json` on the VPS |
+| Google OAuth token | `/opt/apps/inebotten-discord/data/google_token.json` on the VPS |
 
 Edit the vault:
 ```bash
@@ -69,6 +71,16 @@ ansible-vault edit deploy/group_vars/vps/vault.yml \
 
 To rotate `DISCORD_USER_TOKEN`, ssh to the VPS and edit `.env` directly —
 the playbook does not touch it.
+
+For Google Calendar, keep both files in `/opt/apps/inebotten-discord/data`.
+That directory is mounted into the container as `/home/inebotten/.hermes`, so
+tokens stored there survive image rebuilds and bot restarts. To create or
+refresh the token on the VPS:
+
+```bash
+cd /opt/apps/inebotten-discord
+HERMES_HOME=/opt/apps/inebotten-discord/data python3 scripts/auth_gcal.py --no-browser
+```
 
 ## Verify
 

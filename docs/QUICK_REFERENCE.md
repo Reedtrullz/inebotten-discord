@@ -297,8 +297,8 @@ Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) for auto-update-oppsett.
 | Bursdager | `~/.hermes/discord/data/birthdays.json` |
 | Watchlist | `~/.hermes/discord/data/watchlist.json` |
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` |
-| Google Calendar Credentials | `~/.hermes/credentials.json` |
-| Google Calendar Token | `~/.hermes/google_token.json` |
+| Google Calendar Credentials | `~/.hermes/credentials.json` locally, `/opt/apps/inebotten-discord/data/credentials.json` on VPS/Docker |
+| Google Calendar Token | `~/.hermes/google_token.json` locally, `/opt/apps/inebotten-discord/data/google_token.json` on VPS/Docker |
 | Console API-nøkkel | `~/.hermes/discord/data/console/api_key.txt` |
 | Konfigurasjon | `.env` (i prosjektmappen) |
 
@@ -310,7 +310,7 @@ Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) for auto-update-oppsett.
 |---------|---------|
 | Botten svarer ikke | Sjekk at `run_both.py` kjører uten feil |
 | AI svarer ikke | Sjekk at LM Studio kjører på Windows |
-| GCal sync feiler | Sjekk at token ikke er utløpt (`~/.hermes/google_token.json`) |
+| GCal sync feiler | Sjekk at tokenet finnes i riktig Hermes data-mappe og kan friskes opp |
 | "Fant ikke nummer" | Bruk `@inebotten kalender` først for å se numre |
 | "Ugyldig token" | Hent ny token fra Discord (F12 > Application > Local Storage) |
 | Påminnelser kommer ikke | Sjekk at `reminder_checker.py` logger ved oppstart (`[REMIND] Reminder checker started`) |

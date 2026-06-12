@@ -36,6 +36,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create a fixed-UID non-root runtime user and its persistent data directory
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin inebotten
 ENV HOME=/home/inebotten
+ENV HERMES_HOME=/home/inebotten/.hermes
 
 # Copy the rest of the application code into the container
 COPY . .

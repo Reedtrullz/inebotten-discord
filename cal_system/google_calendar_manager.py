@@ -35,14 +35,52 @@ SKILL_PATH = (
 if str(SKILL_PATH) not in sys.path:
     sys.path.insert(0, str(SKILL_PATH))
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-# Google auth tokens are stored at HERMES_HOME root, not in a subproject dir
-TOKEN_PATH = HERMES_HOME / "google_token.json"
-# If that doesn't exist, also check relative path (for backwards compat)
-if not TOKEN_PATH.exists():
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+
+def get_hermes_home() -> Path:
+    """Return the base directory for Inebotten's persistent local state."""
+    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+
+
+def _configured_path(env_name: str) -> Path | None:
+    raw_path = os.getenv(env_name)
+    if not raw_path:
+        return None
+    return Path(raw_path).expanduser()
+
+
+def get_google_token_path() -> Path:
+    """Return the OAuth token path, preserving the historical fallback path."""
+    configured = _configured_path("GCAL_TOKEN_PATH")
+    if configured:
+        return configured
+
+    token_path = get_hermes_home() / "google_token.json"
+    if token_path.exists():
+        return token_path
+
+    # Backwards compatibility for very old local setups that placed the token
+    # next to the project checkout instead of under HERMES_HOME.
     alt_path = Path(__file__).parent.parent.parent.parent / "google_token.json"
     if alt_path.exists():
-        TOKEN_PATH = alt_path
+        return alt_path
+    return token_path
+
+
+def get_google_credentials_path() -> Path:
+    """Return the OAuth client secrets path used to start new auth flows."""
+    configured = _configured_path("GCAL_CREDENTIALS_PATH")
+    if configured:
+        return configured
+    return get_hermes_home() / "credentials.json"
+
+
+# Kept for compatibility with older imports/tests; manager instances resolve
+# these paths dynamically so env changes and Docker mounts are respected.
+HERMES_HOME = get_hermes_home()
+TOKEN_PATH = get_google_token_path()
+CREDENTIALS_PATH = get_google_credentials_path()
 
 
 class GoogleCalendarManager:
@@ -52,18 +90,32 @@ class GoogleCalendarManager:
 
     def __init__(self):
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        self.hermes_home = get_hermes_home()
+        self.token_path = get_google_token_path()
+        self.credentials_path = get_google_credentials_path()
         self.enabled = self._check_auth()
+
+    def _token_path(self) -> Path:
+        if hasattr(self, "token_path"):
+            return self.token_path
+        return get_google_token_path()
+
+    def _credentials_path(self) -> Path:
+        if hasattr(self, "credentials_path"):
+            return self.credentials_path
+        return get_google_credentials_path()
 
     def _check_auth(self):
         """Check if Google authentication is set up and actually works"""
-        if not TOKEN_PATH.exists():
+        token_path = self._token_path()
+        if not token_path.exists():
             return False
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
 
             creds = Credentials.from_authorized_user_file(
-                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+                str(token_path), SCOPES
             )
             # If token is valid right now, we're good
             if creds.valid:
@@ -73,6 +125,7 @@ class GoogleCalendarManager:
             if creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
+                    self._save_credentials(creds)
                     return True
                 except Exception as e:
                     print(f"[GCAL] Refresh failed (token revoked): {e}")
@@ -85,13 +138,14 @@ class GoogleCalendarManager:
     def _save_credentials(self, creds):
         """Persist credentials back to disk (e.g. after token refresh)"""
         try:
-            HERMES_HOME.mkdir(parents=True, exist_ok=True)
-            HERMES_HOME.chmod(0o700)
-            fd = os.open(TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            token_path = self._token_path()
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.parent.chmod(0o700)
+            fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as token:
                 token.write(creds.to_json())
-            TOKEN_PATH.chmod(0o600)
+            token_path.chmod(0o600)
         except Exception as e:
             print(f"[GCAL] Failed to save token: {e}")
 
@@ -102,28 +156,32 @@ class GoogleCalendarManager:
     def get_auth_url(self):
         """Generate an OAuth authorization URL for the user to visit"""
         from google_auth_oauthlib.flow import InstalledAppFlow
-        client_secrets_file = HERMES_HOME / "credentials.json"
+        client_secrets_file = self._credentials_path()
         
         if not client_secrets_file.exists():
-            return False, f"Fant ikke `credentials.json` i {HERMES_HOME}. Last ned OAuth 2.0 Client ID for 'Desktop app' fra Google Cloud Platform, døp filen til `credentials.json`, og legg den der."
+            return False, (
+                f"Fant ikke `credentials.json` i {client_secrets_file.parent}. "
+                "Last ned OAuth 2.0 Client ID for 'Desktop app' fra Google Cloud "
+                "Platform, døp filen til `credentials.json`, og legg den der. "
+                "I Docker/VPS skal filen ligge i den monterte data-mappen."
+            )
             
         try:
             self._auth_flow = InstalledAppFlow.from_client_secrets_file(
-                str(client_secrets_file), 
-                ["https://www.googleapis.com/auth/calendar"]
+                str(client_secrets_file),
+                SCOPES,
             )
             # Use localhost as redirect URI (OOB is deprecated)
             self._auth_flow.redirect_uri = "http://localhost:8080"
-            auth_url, _ = self._auth_flow.authorization_url(prompt='consent', access_type='offline')
+            auth_url, _ = self._auth_flow.authorization_url(
+                prompt="consent", access_type="offline"
+            )
             return True, auth_url
         except Exception as e:
             return False, f"Klarte ikke generere auth URL: {e}"
 
     def exchange_code(self, code):
         """Exchange the authorization code for a token"""
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        client_secrets_file = HERMES_HOME / "credentials.json"
-        
         if not getattr(self, '_auth_flow', None):
             return False, "Ingen aktiv påloggingsøkt funnet. Vennligst kjør `@inebotten kalender auth` først for å få en ny lenke, og prøv igjen med den nye koden."
             
@@ -173,7 +231,7 @@ class GoogleCalendarManager:
             from google.auth.transport.requests import Request
 
             creds = Credentials.from_authorized_user_file(
-                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+                str(self._token_path()), SCOPES
             )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
@@ -217,7 +275,7 @@ class GoogleCalendarManager:
             from google.auth.transport.requests import Request
 
             creds = Credentials.from_authorized_user_file(
-                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+                str(self._token_path()), SCOPES
             )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
@@ -306,7 +364,7 @@ class GoogleCalendarManager:
 
             # Load credentials
             creds = Credentials.from_authorized_user_file(
-                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+                str(self._token_path()), SCOPES
             )
             # Refresh if expired
             if creds.expired and creds.refresh_token:
@@ -386,7 +444,7 @@ class GoogleCalendarManager:
             from google.auth.transport.requests import Request
 
             creds = Credentials.from_authorized_user_file(
-                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+                str(self._token_path()), SCOPES
             )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
@@ -448,7 +506,7 @@ class GoogleCalendarManager:
             from google.auth.transport.requests import Request
 
             creds = Credentials.from_authorized_user_file(
-                str(TOKEN_PATH), ["https://www.googleapis.com/auth/calendar"]
+                str(self._token_path()), SCOPES
             )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())

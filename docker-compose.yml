@@ -21,6 +21,8 @@ services:
       # Persistent storage for calendar, memory, and tokens
       - ./data:/home/inebotten/.hermes
     environment:
+      # Keep token/config/data paths aligned with the mounted persistent volume.
+      - HERMES_HOME=/home/inebotten/.hermes
       - HERMES_BRIDGE_HOST=0.0.0.0
       - HERMES_BRIDGE_PORT=3000
       # Bind console to all interfaces so Caddy can reach it

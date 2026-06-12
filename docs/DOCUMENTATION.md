@@ -322,8 +322,8 @@ Gjentagende elementer flyttes til neste dato når du fullfører dem. Bruk `slett
 
 **OAuth Flyt:**
 1. Opprett OAuth credentials i Google Cloud Console
-2. Plasser filen som `credentials.json` i `~/.hermes/`
-3. Autoriser via `@inebotten kalender auth` eller `python3 scripts/auth_gcal.py`; token lagres i `~/.hermes/google_token.json`
+2. Plasser filen som `credentials.json` i Hermes data-mappen (`~/.hermes/` lokalt, `/opt/apps/inebotten-discord/data/` på VPS/Docker)
+3. Autoriser via `@inebotten kalender auth` eller `python3 scripts/auth_gcal.py`; token lagres i samme data-mappe som `google_token.json`
 
 **Sync-oppførsel:**
 - Oppretter events i GCal når lagt til via bot
@@ -597,8 +597,9 @@ HERMES_BRIDGE_PORT=3000
 DISCORD_TOKEN=***
 
 # Google Calendar (OAuth)
-# OAuth client: ~/.hermes/credentials.json
-# Token: ~/.hermes/google_token.json
+# OAuth client: ~/.hermes/credentials.json (local)
+# Token: ~/.hermes/google_token.json (local)
+# VPS/Docker: /opt/apps/inebotten-discord/data/{credentials.json,google_token.json}
 ```
 
 ### Filplasseringer
@@ -607,8 +608,8 @@ DISCORD_TOKEN=***
 |-----|------------|--------|
 | Kalenderdata | `~/.hermes/discord/data/calendar.json` | Events & påminnelser |
 | Brukerminne | `~/.hermes/discord/data/user_memory.json` | Brukerpreferanser |
-| GCal Token | `~/.hermes/google_token.json` | Google OAuth token |
-| GCal Credentials | `~/.hermes/credentials.json` | Google OAuth credentials |
+| GCal Token | `~/.hermes/google_token.json` locally, `/opt/apps/inebotten-discord/data/google_token.json` on VPS/Docker | Google OAuth token |
+| GCal Credentials | `~/.hermes/credentials.json` locally, `/opt/apps/inebotten-discord/data/credentials.json` on VPS/Docker | Google OAuth credentials |
 
 ---
 

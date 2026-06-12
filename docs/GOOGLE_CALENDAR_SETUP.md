@@ -135,11 +135,17 @@ Med Google Calendar-integrasjon kan Inebotten:
    └─────────────────────────────────────┘
    ```
 
-7. Lagre filen som `credentials.json` i `~/.hermes/`
+7. Lagre filen som `credentials.json` i riktig Hermes data-mappe:
+   - Lokal kjøring: `~/.hermes/credentials.json`
+   - Docker/VPS: `/opt/apps/inebotten-discord/data/credentials.json`
 
 ---
 
 ## Steg 3: Autentisering
+
+Google-tokenet må lagres i den samme persistente data-mappen som botten bruker
+ved restart. I Docker/VPS er `./data` montert som `/home/inebotten/.hermes` i
+containeren, så host-stien er `/opt/apps/inebotten-discord/data`.
 
 ### 3.1 Start OAuth-flyt
 
@@ -149,6 +155,9 @@ Med Google Calendar-integrasjon kan Inebotten:
 
 # Alternativ B: via terminal fra prosjektmappen
 python3 scripts/auth_gcal.py
+
+# Alternativ C: via terminal på VPS/Docker-host
+HERMES_HOME=/opt/apps/inebotten-discord/data python3 scripts/auth_gcal.py --no-browser
 ```
 
 ### 3.2 Godkjenn i Nettleser
@@ -194,6 +203,10 @@ python3 scripts/auth_gcal.py
    ✅ Autentisering vellykket!
    Token lagret i: ~/.hermes/google_token.json
    ```
+   På VPS skal tilsvarende sti være:
+   ```
+   /opt/apps/inebotten-discord/data/google_token.json
+   ```
 
 ---
 
@@ -203,6 +216,13 @@ python3 scripts/auth_gcal.py
 
 ```bash
 python3 scripts/auth_gcal.py --no-browser
+```
+
+På VPS:
+
+```bash
+cd /opt/apps/inebotten-discord
+HERMES_HOME=/opt/apps/inebotten-discord/data python3 scripts/auth_gcal.py --no-browser
 ```
 
 Hvis tokenet finnes og kan friskes opp, skriver skriptet at eksisterende token ble funnet eller oppdatert. Du kan også kjøre `@inebotten synk kalender` i Discord for å teste en faktisk sync.
@@ -286,12 +306,13 @@ Hvis kalenderen skal deles med venner:
 
 | Problem | Årsak | Løsning |
 |---------|-------|---------|
-| "Uautorisert" | Token utløpt | Kjør setup på nytt |
+| "Uautorisert" | Token mangler, er utløpt, eller ligger i feil mappe | Kjør setup med riktig `HERMES_HOME` |
 | "Invalid client" | Feil client_secret | Sjekk at riktig JSON er lastet ned |
 | "Access denied" | Ikke testbruker | Legg til e-post i testbrukere |
 | "Scope insufficient" | Manglende tillatelser | Sjekk at calendar-scopes er valgt |
 | "localhost refused" | Normalt! | Kopier URLen likevel |
 | Kalender vises ikke | Feil konto | Sjekk at du logget inn med riktig Google-konto |
+| Må autorisere etter hver restart | Tokenet ble lagret utenfor persistent Docker-data | Legg `credentials.json` i `/opt/apps/inebotten-discord/data` og kjør auth med `HERMES_HOME=/opt/apps/inebotten-discord/data` |
 
 ### Nullstill Autentisering
 
@@ -301,6 +322,14 @@ rm ~/.hermes/google_token.json
 
 # Kjør setup på nytt
 python3 scripts/auth_gcal.py
+```
+
+På VPS:
+
+```bash
+rm /opt/apps/inebotten-discord/data/google_token.json
+cd /opt/apps/inebotten-discord
+HERMES_HOME=/opt/apps/inebotten-discord/data python3 scripts/auth_gcal.py --no-browser
 ```
 
 ### Sjekk Token
@@ -332,6 +361,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 - 🔐 **Token lagres lokalt** i `~/.hermes/google_token.json`
 - 🔐 **OAuth-client lagres lokalt** i `~/.hermes/credentials.json`
+- 🔐 **Docker/VPS-token lagres persistent** i `/opt/apps/inebotten-discord/data/google_token.json`
+- 🔐 **Docker/VPS OAuth-client lagres persistent** i `/opt/apps/inebotten-discord/data/credentials.json`
 - 🔐 **Ikke del token-filen** - gir full tilgang til kalenderen
 - 🔐 **Bruk .gitignore** - token-filen skal aldri committes
 - 🔐 **Regelmessig rotasjon** - slett og opprett nytt token årlig
