@@ -139,7 +139,7 @@ class Config:
 
         if self.CONSOLE_API_KEY_AUTO_GENERATED:
             if self.CONSOLE_API_KEY_CREATED:
-                print(f"[CONFIG] Console API key: {self.CONSOLE_API_KEY}")
+                print("[CONFIG] Console API key generated and stored.")
             print(f"[CONFIG] Console API key file: {self.CONSOLE_API_KEY_FILE}")
 
     def _load_or_create_console_api_key(self) -> str:

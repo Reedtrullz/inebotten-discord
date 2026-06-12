@@ -6,11 +6,13 @@ from __future__ import annotations
 import importlib
 import asyncio
 import http.client
+import io
 import os
 import time
 import unittest
 import threading
 import importlib.util
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -183,6 +185,26 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
             self.assertTrue(key_path.exists())
             self.assertEqual(first.CONSOLE_API_KEY, key_path.read_text(encoding="utf-8").strip())
             self.assertEqual(second.CONSOLE_API_KEY, first.CONSOLE_API_KEY)
+
+    def test_generated_console_api_key_is_not_logged(self):
+        from core.config import Config
+
+        generated_key = "super-secret-console-key"
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            stdout = io.StringIO()
+            with patch.object(Path, "home", return_value=home):
+                with patch.object(Config, "load_env", lambda self: setattr(self, "env_file_loaded", None)):
+                    with patch.dict(os.environ, {"DISCORD_USER_TOKEN": "token"}, clear=True):
+                        with patch("core.config.secrets.token_urlsafe", return_value=generated_key):
+                            with redirect_stdout(stdout):
+                                config = Config()
+
+        output = stdout.getvalue()
+        self.assertEqual(config.CONSOLE_API_KEY, generated_key)
+        self.assertNotIn(generated_key, output)
+        self.assertIn("Console API key generated and stored", output)
+        self.assertIn("Console API key file:", output)
 
 
 class SanitizerHardeningTests(unittest.TestCase):
