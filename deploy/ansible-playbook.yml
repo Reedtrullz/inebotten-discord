@@ -21,6 +21,15 @@
       become_user: deploy
       register: source_pull
 
+    - name: Read checked-out source commit
+      ansible.builtin.command: git rev-parse --short HEAD
+      args:
+        chdir: "{{ compose_dir }}"
+      become: true
+      become_user: deploy
+      register: source_commit
+      changed_when: false
+
     - name: Ensure {{ compose_dir }}/.env exists (cannot create silently — must be present)
       ansible.builtin.stat:
         path: "{{ compose_dir }}/.env"
@@ -43,6 +52,8 @@
           AI_PROVIDER=openrouter
           OPENROUTER_API_KEY={{ vault_openrouter_api_key }}
           OPENROUTER_MODEL=google/gemma-4-31b-it:free
+          SOURCE_COMMIT={{ source_commit.stdout }}
+          COMMIT_SHA={{ source_commit.stdout }}
         mode: "0600"  # tighten — file contains an API key
       no_log: true  # don't echo the key into ansible output
 
@@ -94,6 +105,16 @@
       retries: 12
       delay: 5
 
+    - name: Read running container commit hash
+      ansible.builtin.command: docker exec inebotten-bot cat /app/commit_hash.txt
+      register: running_commit
+      changed_when: false
+
+    - name: Fail if running container is stale
+      ansible.builtin.fail:
+        msg: "Inebotten container reports {{ running_commit.stdout | default('unknown') }}, expected {{ source_commit.stdout }}"
+      when: running_commit.stdout | default('') != source_commit.stdout
+
     - name: Report deployment status
       ansible.builtin.debug:
-        msg: "✅ Inebotten deployed via docker compose; health endpoint responded with HTTP {{ health_check.status }}"
+        msg: "✅ Inebotten deployed {{ source_commit.stdout }} via docker compose; health endpoint responded with HTTP {{ health_check.status }}"

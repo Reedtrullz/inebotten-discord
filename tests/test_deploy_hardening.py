@@ -46,6 +46,20 @@ def test_ansible_ensures_data_dir_is_writable_by_runtime_uid():
     assert "recurse: true" in playbook
 
 
+def test_ansible_passes_checked_out_commit_to_compose_build():
+    playbook = (ROOT / "deploy" / "ansible-playbook.yml").read_text(encoding="utf-8")
+    assert "git rev-parse --short HEAD" in playbook
+    assert "SOURCE_COMMIT={{ source_commit.stdout }}" in playbook
+    assert "COMMIT_SHA={{ source_commit.stdout }}" in playbook
+
+
+def test_ansible_fails_if_running_container_commit_is_stale():
+    playbook = (ROOT / "deploy" / "ansible-playbook.yml").read_text(encoding="utf-8")
+    assert "docker exec inebotten-bot cat /app/commit_hash.txt" in playbook
+    assert "Fail if running container is stale" in playbook
+    assert "running_commit.stdout | default('') != source_commit.stdout" in playbook
+
+
 def test_compose_mounts_non_root_home_and_caddy_is_opt_in():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "./data:/home/inebotten/.hermes" in compose

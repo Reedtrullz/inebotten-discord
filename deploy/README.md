@@ -33,8 +33,8 @@ What the playbook does:
 
 1. **Removes any leftover standalone container** named `inebotten` from
    older deploys.
-2. **`git pull`** the source on the VPS (best-effort; existing checkouts
-   keep working without origin access).
+2. **Updates source from `origin/master`** on the VPS and records the checked-out
+   commit for Docker build metadata.
 3. **Idempotently writes a managed block to `.env`**:
    ```
    AI_PROVIDER=openrouter
@@ -50,6 +50,9 @@ What the playbook does:
    - disables the bundled compose `caddy` service (host Caddy already owns 80/443)
 5. **`docker compose up --build`** for the `inebotten` service only.
 6. **Polls `http://127.0.0.1:8081/health`** until it responds.
+7. **Verifies `/app/commit_hash.txt` inside the running container** matches the
+   checked-out commit, so stale containers fail the deploy instead of looking
+   successful.
 
 ## Secrets
 
@@ -71,6 +74,7 @@ the playbook does not touch it.
 
 ```bash
 ssh deploy@198.23.137.16 "docker ps --filter name=inebotten-bot"
+ssh deploy@198.23.137.16 "docker exec inebotten-bot cat /app/commit_hash.txt"
 ssh deploy@198.23.137.16 "docker logs --tail 20 inebotten-bot | grep -iE 'openrouter|fallback|logged in'"
 curl -s -o /dev/null -w "%{http_code}\n" https://bot.reidar.tech/
 ```
