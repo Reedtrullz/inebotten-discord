@@ -58,23 +58,32 @@ def test_dashboard_requires_auth(page: Any, console_server: ConsoleServer) -> No
 
 
 def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> None:
-    """Verify all 7 cards are visible on dashboard."""
+    """Verify the motivating dashboard sections are visible."""
     _login(page, console_server)
     content = page.content()
-    assert "Bot Status" in content
+    assert "Inebotten" in content
+    assert "Nå" in content
     assert "Bridge" in content
     assert "Kalender" in content
     assert "Avstemninger" in content
+    assert "Siste aktivitet" in content
+    assert "Diagnostikk" in content
     assert "Rate Limits" in content
     assert "Intents" in content
+    assert "Minne" in content
     assert "Logger" in content
 
 
 def test_static_assets_load(page: Any, console_server: ConsoleServer) -> None:
-    """Verify CSS and JS files load without 404."""
+    """Verify the login page loads only the assets it needs."""
     page.goto(f"{_base_url(console_server)}/login")
     content = page.content()
     assert "/static/main.css" in content
+    assert "/static/login.js" in content
+    assert "/static/app.js" not in content
+
+    _login(page, console_server)
+    content = page.content()
     assert "/static/app.js" in content
 
 
@@ -182,7 +191,7 @@ def test_nav_links_present(page: Any, console_server: ConsoleServer) -> None:
     nav = page.locator('nav[aria-label="Hovednavigasjon"]')
     assert nav.is_visible()
 
-    links = ["Status", "Bridge", "Kalender", "Avstemninger", "Rate Limits", "Intents", "Logger"]
+    links = ["Oversikt", "Status", "Kalender", "Avstemninger", "Diagnostikk", "Minne", "Kommandoer", "Logger"]
     for text in links:
         assert nav.locator(f'a:has-text("{text}")').is_visible()
 
@@ -226,3 +235,15 @@ def test_initial_data_script_present(page: Any, console_server: ConsoleServer) -
     script = page.locator("script#initial-data")
     assert script.count() == 1
     assert script.get_attribute("type") == "application/json"
+
+
+def test_demo_page_has_no_console_warnings(page: Any, console_server: ConsoleServer) -> None:
+    """Demo mode should render static data without authenticated API polling warnings."""
+    messages: list[str] = []
+    page.on("console", lambda msg: messages.append(f"{msg.type}: {msg.text}"))
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(500)
+
+    warnings = [message for message in messages if message.startswith(("warning:", "error:"))]
+    assert warnings == []

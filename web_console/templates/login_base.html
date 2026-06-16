@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="no" x-data="consoleApp()" x-init="init()" :class="theme">
+<html lang="no">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,17 +14,15 @@
       document.documentElement.classList.add(theme);
     }})();
   </script>
-  <link rel="stylesheet" href="/static/main.css">
-  <script src="/static/tailwindcss.min.js" defer></script>
-  <script src="/static/alpinejs.min.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/main.css?v=4">
+  <script src="/static/login.js?v=1" defer></script>
 </head>
-<body class="min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] flex flex-col items-center justify-center p-4 {body_class}">
-  <div class="w-full max-w-md animate-fade-in">
-    <main class="mb-4">
+<body class="{body_class}">
+  <div class="auth-shell">
+    <main class="auth-main">
       {main_content}
     </main>
-    <footer class="text-center text-[var(--text-muted)] text-sm">
+    <footer class="auth-link">
       {footer_content}
     </footer>
   </div>

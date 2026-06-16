@@ -57,13 +57,13 @@ def _uptime_fmt(seconds: int) -> str:
 
 def _status_badge(status: object) -> str:
     if isinstance(status, bool):
-        return "ok" if status else "error"
+        return "badge-online" if status else "badge-error"
     s = str(status or "").lower()
     if s in ("online", "connected", "ok", "healthy", "running", "active", "true", "yes"):
-        return "ok"
+        return "badge-online"
     if s in ("offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"):
-        return "error"
-    return "warn"
+        return "badge-error"
+    return "badge-warning"
 
 
 def _render_badge(value: object) -> str:
@@ -135,21 +135,21 @@ def _render_poll_rows(polls: object) -> list[str]:
 
 def _render_log_block(log_lines: object) -> str:
     if not isinstance(log_lines, list) or not log_lines:
-        return '<p class="text-sm text-[var(--text-muted)] text-center py-4">Ingen logger tilgjengelig</p>'
+        return '<p class="empty-state">Ingen logger tilgjengelig</p>'
 
     def _colorize_log(line: str) -> str:
         upper = line.upper()
         if "ERROR" in upper or "CRITICAL" in upper:
-            return f'<span class="text-[var(--status-error)]">{escape(line)}</span>'
+            return f'<span class="log-error">{escape(line)}</span>'
         elif "WARN" in upper:
-            return f'<span class="text-[var(--status-warning)]">{escape(line)}</span>'
+            return f'<span class="log-warn">{escape(line)}</span>'
         elif "INFO" in upper:
-            return f'<span class="text-[var(--log-text-info)]">{escape(line)}</span>'
+            return f'<span class="log-info">{escape(line)}</span>'
         else:
-            return f'<span class="text-[var(--log-text-debug)]">{escape(line)}</span>'
+            return f'<span class="log-debug">{escape(line)}</span>'
 
     colored_logs = "\n".join(_colorize_log(str(line)) for line in log_lines)
-    return f'<pre class="whitespace-pre-wrap break-words">{colored_logs}</pre>'
+    return f"<pre>{colored_logs}</pre>"
 
 
 def _initial_data_script(data: Any) -> str:
@@ -166,168 +166,251 @@ def _dashboard_footer() -> str:
     return "Inebotten &middot; Norsk Discord-selfbot"
 
 
-def _render_status_section(data: dict[str, Any]) -> str:
-    bot_status = _safe(data, "status", "status", default="ukjent")
-    uptime_sec = _safe_int(data, "status", "uptime_seconds", default=-1)
-    guilds = _safe(data, "status", "guilds")
-    users = _safe(data, "status", "users")
-    discord_connected = _safe(data, "status", "discord_connected")
-    mem_users = _safe_int(data, "memory", "user_count", default=0)
-    mem_convs = _safe_int(data, "memory", "conversation_count", default=0)
+def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
 
-    status_lower = str(bot_status).lower()
-    if status_lower == "online":
-        badge_class = "badge-online"
-        badge_text = "Online"
-    else:
-        badge_class = "badge-error"
-        badge_text = "Offline"
 
-    dc_text = "Ja" if discord_connected in (True, "true", "yes", "ja", "connected") else "Nei"
+def _rate_request_count(value: object) -> int:
+    if isinstance(value, dict):
+        for key in ("requests", "count", "total"):
+            raw = value.get(key)
+            if isinstance(raw, (int, float)):
+                return int(raw)
+        return sum(int(raw) for raw in value.values() if isinstance(raw, (int, float)))
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
 
-    return f"""<section class="card xl:col-span-2 scroll-mt-24" id="status">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold">Bot Status</h2>
-    <span class="badge {badge_class}">{badge_text}</span>
+
+def _log_counts(log_lines: object) -> dict[str, int]:
+    counts = {"error": 0, "warn": 0, "info": 0, "debug": 0}
+    if not isinstance(log_lines, list):
+        return counts
+    for line in log_lines:
+        upper = str(line).upper()
+        if "ERROR" in upper or "CRITICAL" in upper:
+            counts["error"] += 1
+        elif "WARN" in upper:
+            counts["warn"] += 1
+        elif "INFO" in upper:
+            counts["info"] += 1
+        else:
+            counts["debug"] += 1
+    return counts
+
+
+def _badge_text(value: object, *, ok: str = "OK", warn: str = "Sjekk", error: str = "Feil") -> str:
+    badge = _status_badge(value)
+    if badge == "badge-online":
+        return ok
+    if badge == "badge-error":
+        return error
+    return warn
+
+
+def _modal_button(section: str, label: str = "Detaljer") -> str:
+    return (
+        f'<button type="button" class="btn btn-secondary" '
+        f'data-section-modal="{escape(section)}">{escape(label)}</button>'
+    )
+
+
+def _metric_tile(label: str, value: object, *, metric: str | None = None) -> str:
+    metric_attr = f' data-metric="{escape(metric)}"' if metric else ""
+    return (
+        '<div class="metric">'
+        f"<span>{escape(label)}</span>"
+        f"<strong{metric_attr}>{escape(str(value))}</strong>"
+        "</div>"
+    )
+
+
+def _signal_card(tone: str, symbol: str, title: str, detail: str, value: object) -> str:
+    return f"""<div class="signal-card signal-{escape(tone)}">
+  <span class="signal-icon" aria-hidden="true">{escape(symbol)}</span>
+  <div>
+    <strong>{escape(title)}</strong>
+    <span>{escape(detail)}</span>
   </div>
-  <div class="card-body">
-    <div class="grid grid-cols-3 gap-4">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Oppetid</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.uptime">{escape(_uptime_fmt(uptime_sec))}</div>
+  <span class="signal-value">{escape(str(value))}</span>
+</div>"""
+
+
+def _render_overview_section(data: dict[str, Any]) -> str:
+    status = _section(data, "status")
+    bridge = _section(data, "bridge")
+    intents = _section(data, "intents")
+    logs = _section(data, "logs")
+    calendar = _section(data, "calendar")
+    polls = _section(data, "polls")
+
+    bot_status = status.get("status", "ukjent")
+    bridge_status = bridge.get("status", "ukjent")
+    bridge_errors = _safe_int(bridge, "errors", default=0)
+    fallback_count = _safe_int(intents, "fallback_count", default=0)
+    log_lines = logs.get("logs", [])
+    log_counts = _log_counts(log_lines)
+    active_polls = _safe_int(polls, "active_polls", default=0)
+    event_count = _safe_int(calendar, "event_count", default=0)
+    task_count = _safe_int(calendar, "task_count", default=0)
+
+    has_attention = (
+        _status_badge(bot_status) != "badge-online"
+        or _status_badge(bridge_status) == "badge-error"
+        or bridge_errors > 0
+        or log_counts["error"] > 0
+    )
+
+    if has_attention:
+        headline = "Inebotten trenger et blikk"
+        subline = "Det meste er samlet her: helsesignal, siste aktivitet og de raskeste stedene å undersøke når noe skurrer."
+        badge = '<span class="badge badge-warning">Oppmerksomhet</span>'
+    elif str(bot_status).lower() == "starting":
+        headline = "Inebotten starter opp"
+        subline = "Konsollen viser hva som er klart, hva som mangler monitor, og hvor langt botten har kommet."
+        badge = '<span class="badge badge-neutral">Starter</span>'
+    else:
+        headline = "Inebotten er våken"
+        subline = "En rask oversikt over hva botten gjør nå, hvor mye som skjer, og hva som fortjener neste klikk."
+        badge = '<span class="badge badge-online">Klar</span>'
+
+    hero_stats = "\n".join(
+        [
+            f'<div class="hero-stat"><span>Oppetid</span><strong data-metric="status.uptime">{escape(_uptime_fmt(_safe_int(status, "uptime_seconds", default=-1)))}</strong></div>',
+            f'<div class="hero-stat"><span>Servere</span><strong data-metric="status.guilds">{escape(str(status.get("guilds", "N/A")))}</strong></div>',
+            f'<div class="hero-stat"><span>Kalender</span><strong>{event_count} / {task_count}</strong></div>',
+            f'<div class="hero-stat"><span>Avstemninger</span><strong data-metric="polls.active">{active_polls}</strong></div>',
+        ]
+    )
+
+    bridge_tone = "ok" if _status_badge(bridge_status) == "badge-online" and bridge_errors == 0 else "warn"
+    if _status_badge(bridge_status) == "badge-error":
+        bridge_tone = "error"
+    fallback_tone = "warn" if fallback_count > 5 else "ok"
+    log_tone = "error" if log_counts["error"] else ("warn" if log_counts["warn"] else "ok")
+
+    signals = "\n".join(
+        [
+            _signal_card("ok" if _status_badge(bot_status) == "badge-online" else "warn", "OK", "Bot", f"Status: {bot_status}", _badge_text(bot_status, ok="Online")),
+            _signal_card(bridge_tone, "AI", "Bridge", f"LM Studio: {bridge.get('lm_studio', 'ukjent')}", _badge_text(bridge_status, ok="Tilkoblet", error="Nede")),
+            _signal_card(fallback_tone, "?", "Fallbacks", "Lav trygghet eller AI-chat-ruting", fallback_count),
+            _signal_card(log_tone, "!", "Logger", f"{log_counts['warn']} varsler, {log_counts['error']} feil", len(log_lines) if isinstance(log_lines, list) else 0),
+        ]
+    )
+
+    return f"""<section class="panel overview-panel" id="overview">
+  <div class="overview-layout">
+    <div class="overview-copy">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow">Inebotten Console</div>
+          <h1>{escape(headline)}</h1>
+        </div>
+        {badge}
       </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Servere</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.guilds">{escape(guilds)}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Brukere</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.users">{escape(users)}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Discord</div>
-        <div class="text-xl font-bold text-[var(--text-primary)]" data-metric="status.discord">{dc_text}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Minne brukere</div>
-        <div class="text-xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Samtaler</div>
-        <div class="text-xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
+      <p>{escape(subline)}</p>
+      <div class="status-strip">{hero_stats}</div>
+      <div class="next-actions">
+        <a class="next-action" href="#logs"><strong>Les siste logger</strong><span>Se hva botten nettopp gjorde.</span></a>
+        <a class="next-action" href="#calendar"><strong>Sjekk køen</strong><span>Kalender, oppgaver og avstemninger.</span></a>
+        <a class="next-action" href="#diagnostics"><strong>Åpne diagnostikk</strong><span>Bridge, intents og rate limits.</span></a>
       </div>
     </div>
+    <div class="overview-side">{signals}</div>
   </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs py-1 px-3" @click="showSectionModal('status')">Detaljer</button>
+</section>"""
+
+
+def _render_status_section(data: dict[str, Any]) -> str:
+    status = _section(data, "status")
+    bot_status = status.get("status", "ukjent")
+    uptime_sec = _safe_int(status, "uptime_seconds", default=-1)
+    dc_text = "Ja" if status.get("discord_connected") in (True, "true", "yes", "ja", "connected") else "Nei"
+    metrics = "\n".join(
+        [
+            _metric_tile("Oppetid", _uptime_fmt(uptime_sec), metric="status.uptime"),
+            _metric_tile("Servere", status.get("guilds", "N/A"), metric="status.guilds"),
+            _metric_tile("Brukere", status.get("users", "N/A"), metric="status.users"),
+            _metric_tile("Discord", dc_text, metric="status.discord"),
+        ]
+    )
+    return f"""<section class="card span-4" id="status">
+  <div class="card-header">
+    <div><h3>Nå</h3><p class="muted">Bot, Discord og oppetid.</p></div>
+    <span class="badge {_status_badge(bot_status)}">{escape(_badge_text(bot_status, ok="Online", error="Offline"))}</span>
   </div>
+  <div class="card-body"><div class="metric-grid">{metrics}</div></div>
+  <div class="card-footer">{_modal_button("status")}</div>
 </section>"""
 
 
 def _render_bridge_section(data: dict[str, Any]) -> str:
-    bridge_status = _safe(data, "bridge", "status", default="ukjent")
-    lm_status = _safe(data, "bridge", "lm_studio")
-    bridge_reqs = _safe(data, "bridge", "requests")
-    bridge_errs = _safe(data, "bridge", "errors")
-
-    status_lower = str(bridge_status).lower()
-    if status_lower in ("online", "connected", "ok", "healthy", "running", "active", "true", "yes"):
-        badge_class = "badge-online"
-        badge_text = "Tilkoblet"
-    elif status_lower in ("offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"):
-        badge_class = "badge-error"
-        badge_text = "Frakoblet"
-    else:
-        badge_class = "badge-warning"
-        badge_text = "Ukjent"
-
+    bridge = _section(data, "bridge")
+    bridge_status = bridge.get("status", "ukjent")
     err_val = _safe_int(data, "bridge", "errors", default=0)
-    err_class = "text-[var(--status-error)]" if err_val > 0 else "text-[var(--text-primary)]"
-
-    return f"""<section class="card xl:col-span-2 scroll-mt-24" id="bridge">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold">Bridge</h2>
-    <span class="badge {badge_class}">{badge_text}</span>
+    metrics = "\n".join(
+        [
+            _metric_tile("Status", bridge_status, metric="bridge.status"),
+            _metric_tile("LM Studio", bridge.get("lm_studio", "N/A"), metric="bridge.lm_studio"),
+            _metric_tile("Forespørsler", bridge.get("requests", 0), metric="bridge.requests"),
+            _metric_tile("Feil", err_val, metric="bridge.errors"),
+        ]
+    )
+    return f"""<article class="card" id="bridge">
+  <div class="card-header">
+    <div><h3>Bridge</h3><p class="muted">AI-broen og LM Studio-kontakten.</p></div>
+    <span class="badge {_status_badge(bridge_status)}">{escape(_badge_text(bridge_status, ok="Tilkoblet", error="Frakoblet"))}</span>
   </div>
-  <div class="card-body">
-    <div class="grid grid-cols-2 gap-5">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Status</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)] break-words">{escape(str(bridge_status))}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">LM Studio</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)] break-words" data-metric="bridge.lm_studio">{escape(str(lm_status))}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Forespørsler</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="bridge.requests">{escape(bridge_reqs)}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Feil</div>
-        <div class="text-2xl font-bold {err_class}" data-metric="bridge.errors">{escape(bridge_errs)}</div>
-      </div>
-    </div>
-  </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs py-1 px-3" @click="showSectionModal('bridge')">Detaljer</button>
-  </div>
-</section>"""
+  <div class="card-body"><div class="metric-grid">{metrics}</div></div>
+  <div class="card-footer">{_modal_button("bridge")}</div>
+</article>"""
 
 
 def _render_calendar_section(data: dict[str, Any]) -> str:
-    event_count = _safe(data, "calendar", "event_count")
-    task_count = _safe(data, "calendar", "task_count")
-    upcoming = data.get("calendar", {}).get("upcoming_events") if isinstance(data.get("calendar"), dict) else None
+    calendar = _section(data, "calendar")
+    event_count = calendar.get("event_count", 0)
+    task_count = calendar.get("task_count", 0)
+    upcoming = calendar.get("upcoming_events")
 
-    upcoming_html = ""
     if isinstance(upcoming, list) and upcoming:
         items = []
         for event in upcoming[:3]:
             if not isinstance(event, dict):
                 continue
             title = escape(str(event.get("title") or event.get("name") or "Uten tittel"))
-            when = escape(str(event.get("when") or event.get("start") or event.get("date") or "Ukjent tid"))
-            items.append(
-                f"""        <div class="flex items-center gap-2 py-1.5 border-b border-[var(--border-color)] last:border-0">
-          <span class="text-sm text-[var(--text-primary)] truncate flex-1 min-w-0">{title}</span>
-          <span class="text-xs text-[var(--text-muted)] whitespace-nowrap">{when}</span>
-        </div>"""
-            )
-        upcoming_html = f"""    <div class="mt-3">
-      <div class="text-sm font-medium text-[var(--text-muted)] mb-1">Kommende</div>
-{chr(10).join(items)}
-    </div>"""
+            date = event.get("date") or event.get("when") or event.get("start") or "Ukjent tid"
+            time = event.get("time")
+            when = escape(f"{date} {time}".strip() if time else str(date))
+            items.append(f'<div class="mini-row"><span>{title}</span><strong>{when}</strong></div>')
+        upcoming_html = f'<div class="mini-list">{"".join(items)}</div>'
+    else:
+        upcoming_html = '<div class="empty-state">Ingen kommende kalenderhendelser.</div>'
 
-    return f"""<section class="card scroll-mt-24" id="calendar">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold">Kalender</h2>
-    <span class="badge badge-info">{escape(event_count)} hendelser</span>
+    metrics = "\n".join(
+        [
+            _metric_tile("Hendelser", event_count, metric="calendar.events"),
+            _metric_tile("Oppgaver", task_count, metric="calendar.tasks"),
+        ]
+    )
+    return f"""<section class="card span-4" id="calendar">
+  <div class="card-header">
+    <div><h3>Kalender</h3><p class="muted">Neste hendelser og oppgaver.</p></div>
+    <span class="badge badge-neutral">{escape(str(event_count))} hendelser</span>
   </div>
   <div class="card-body">
-    <div class="grid grid-cols-2 gap-4">
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Hendelser</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="calendar.events">{escape(event_count)}</div>
-      </div>
-      <div class="metric">
-        <div class="text-sm text-[var(--text-muted)]">Oppgaver</div>
-        <div class="text-2xl font-bold text-[var(--text-primary)]" data-metric="calendar.tasks">{escape(task_count)}</div>
-      </div>
-    </div>
-{upcoming_html}
+    <div class="metric-grid">{metrics}</div>
+    {upcoming_html}
   </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs py-1 px-3" @click="showSectionModal('calendar')">Vis alle</button>
-  </div>
+  <div class="card-footer">{_modal_button("calendar", "Vis alle")}</div>
 </section>"""
 
 
 def _render_polls_section(data: dict[str, Any]) -> str:
-    active_polls = _safe(data, "polls", "active_polls")
-    polls_list = data.get("polls", {}).get("polls") if isinstance(data.get("polls"), dict) else None
+    polls = _section(data, "polls")
+    active_polls = polls.get("active_polls", 0)
+    polls_list = polls.get("polls")
 
-    polls_html = ""
     if isinstance(polls_list, list) and polls_list:
         poll_items = []
         for poll in polls_list[:1]:
@@ -341,238 +424,204 @@ def _render_polls_section(data: dict[str, Any]) -> str:
                 for option, count in votes.items():
                     pct = (count / total * 100) if total > 0 else 0
                     bars.append(
-                        f"""            <div class="grid grid-cols-[3rem_1fr_auto] gap-2 items-center mt-1">
-              <span class="text-xs text-[var(--text-secondary)] truncate">{escape(str(option))}</span>
-              <div class="h-1.5 rounded-full" style="background:var(--bg-tertiary)">
-                <div class="h-1.5 rounded-full transition-all duration-500" style="width:{pct:.1f}%;background:var(--accent)"></div>
-              </div>
-              <span class="text-xs text-[var(--text-muted)] whitespace-nowrap">{count}</span>
-            </div>"""
+                        f"""<div class="poll-row">
+  <span>{escape(str(option))}</span>
+  <div class="bar-track"><div class="bar-fill" style="width:{pct:.1f}%"></div></div>
+  <strong>{escape(str(count))}</strong>
+</div>"""
                     )
                 poll_items.append(
-                    f"""        <div class="py-2 border-b border-[var(--border-color)] last:border-0">
-          <div class="text-sm font-medium text-[var(--text-primary)]">{question}</div>
-          <div class="mt-1">{''.join(bars)}</div>
-        </div>"""
+                    f"""<div>
+  <strong>{question}</strong>
+  <div class="poll-bars">{''.join(bars)}</div>
+</div>"""
                 )
             else:
-                poll_items.append(
-                    f"""        <div class="py-2 border-b border-[var(--border-color)] last:border-0">
-          <div class="text-sm font-medium text-[var(--text-primary)]">{question}</div>
-        </div>"""
-                )
-        polls_html = f"""    <div class="mt-2">
-{chr(10).join(poll_items)}
-    </div>"""
+                poll_items.append(f"<strong>{question}</strong>")
+        polls_html = f'<div class="mini-list">{"".join(poll_items)}</div>'
     else:
-        polls_html = '    <div class="mt-2 text-sm text-[var(--text-muted)]">Ingen aktive avstemninger</div>'
+        polls_html = '<div class="empty-state">Ingen aktive avstemninger akkurat nå.</div>'
 
-    return f"""<section class="card scroll-mt-24" id="polls">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold">Avstemninger</h2>
-    <span class="badge badge-info"><span data-metric="polls.active">{escape(active_polls)}</span> aktive</span>
+    return f"""<section class="card span-4" id="polls">
+  <div class="card-header">
+    <div><h3>Avstemninger</h3><p class="muted">Aktive valg i Discord.</p></div>
+    <span class="badge badge-neutral"><span data-metric="polls.active">{escape(str(active_polls))}</span> aktive</span>
   </div>
-  <div class="card-body">
-{polls_html}
-  </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs py-1 px-3" @click="showSectionModal('polls')">Vis alle</button>
-  </div>
+  <div class="card-body">{polls_html}</div>
+  <div class="card-footer">{_modal_button("polls", "Vis alle")}</div>
 </section>"""
 
 
 def _render_rate_limits_section(data: dict[str, Any]) -> str:
-    rate_limits = data.get("rate_limits", {}) if isinstance(data.get("rate_limits"), dict) else {}
-    summary = rate_limits.get("summary") if isinstance(rate_limits, dict) else None
-    user_stats = rate_limits.get("user_stats") if isinstance(rate_limits, dict) else None
+    rate_limits = _section(data, "rate_limits")
+    user_stats = rate_limits.get("user_stats")
     total_requests = _safe_int(rate_limits, "summary", "total_requests", default=0)
 
-    table_html = ""
     if isinstance(user_stats, dict) and user_stats:
-        numeric_values = [v for v in user_stats.values() if isinstance(v, (int, float))]
-        max_count = max(numeric_values) if numeric_values else 1
+        counts = {str(user): _rate_request_count(raw) for user, raw in user_stats.items()}
+        if total_requests <= 0:
+            total_requests = sum(counts.values())
+        max_count = max(counts.values()) if counts else 1
         user_rows_html: list[str] = []
-        for user, count in sorted(user_stats.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)[:5]:
+        for user, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:5]:
             pct = min((count / max_count) * 100, 100) if max_count else 0
             user_rows_html.append(
-                f'<tr class="border-b border-[var(--border-color)] hover:bg-[var(--bg-hover)]">'
-                + f'<td class="py-2 px-4 text-sm text-[var(--text-primary)]">{escape(str(user))}</td>'
-                + f'<td class="py-2 px-4 text-sm text-[var(--text-secondary)]">{escape(str(count))}</td>'
-                + f'<td class="py-2 px-4 w-24">'
-                + f'<div class="w-full bg-gray-700 rounded h-1.5">'
-                + f'<div class="bg-blue-500 h-1.5 rounded" style="width: {pct:.0f}%"></div>'
-                + f'</div>'
-                + f'</td>'
-                + f'</tr>'
+                f"<tr><td>{escape(str(user))}</td><td>{count}</td>"
+                f'<td><div class="usage-bar bar-track"><div class="bar-fill" style="width:{pct:.0f}%"></div></div></td></tr>'
             )
-        table_html = f"""<div class="overflow-x-auto rounded-lg border border-[var(--border-color)]">
-      <table class="w-full border-collapse text-sm">
-        <thead>
-          <tr class="border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
-            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Bruker</th>
-            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Antall</th>
-            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Bruk</th>
-          </tr>
-        </thead>
-        <tbody>{''.join(user_rows_html)}</tbody>
-      </table>
-    </div>"""
+        table_html = f"""<div class="table-shell">
+  <table>
+    <thead><tr><th>Bruker</th><th>Antall</th><th>Bruk</th></tr></thead>
+    <tbody>{''.join(user_rows_html)}</tbody>
+  </table>
+</div>"""
     else:
-        table_html = '<div class="py-8 text-center text-sm text-[var(--text-muted)]">Ingen rate-limit-data</div>'
+        table_html = '<div class="empty-state">Ingen rate-limit-data ennå.</div>'
 
-    return f"""<section class="card scroll-mt-24" id="rate-limits">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Rate Limits</h2>
-    <span class="badge badge-info whitespace-nowrap gap-1"><span data-metric="rate_limits.total">{total_requests}</span><span>totalt</span></span>
+    return f"""<article class="card" id="rate-limits">
+  <div class="card-header">
+    <div><h3>Rate Limits</h3><p class="muted">Hvem som bruker botten mest.</p></div>
+    <span class="badge badge-neutral"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
-  <div class="card-body">
-    {table_html}
-  </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('rate-limits')">Detaljer</button>
-  </div>
-</section>"""
+  <div class="card-body">{table_html}</div>
+  <div class="card-footer">{_modal_button("rate-limits")}</div>
+</article>"""
 
 
 def _render_intents_section(data: dict[str, Any]) -> str:
-    intent_counts = data.get("intents", {}).get("intent_counts") if isinstance(data.get("intents"), dict) else None
+    intents = _section(data, "intents")
+    intent_counts = intents.get("intent_counts")
     fallback_count = _safe_int(data, "intents", "fallback_count", default=0)
-    fallback_badge_class = "badge-error" if fallback_count > 5 else "badge-info"
+    fallback_badge_class = "badge-warning" if fallback_count > 5 else "badge-neutral"
 
-    table_html = ""
     if isinstance(intent_counts, dict) and intent_counts:
         intent_rows_html: list[str] = []
         for intent, count in sorted(intent_counts.items(), key=lambda x: x[1] if isinstance(x[1], (int, float)) else 0, reverse=True)[:5]:
-            intent_rows_html.append(
-                f'<tr class="border-b border-[var(--border-color)] hover:bg-[var(--bg-hover)]">'
-                + f'<td class="py-2 px-4 text-sm text-[var(--text-primary)]">{escape(str(intent))}</td>'
-                + f'<td class="py-2 px-4 text-sm text-[var(--text-secondary)]">{escape(str(count))}</td>'
-                + f'</tr>'
-            )
-        table_html = f"""<div class="overflow-x-auto rounded-lg border border-[var(--border-color)]">
-      <table class="w-full border-collapse text-sm">
-        <thead>
-          <tr class="border-b border-[var(--border-color)] bg-[var(--bg-secondary)]">
-            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Intent</th>
-            <th class="py-2 px-4 text-left text-sm font-medium text-[var(--text-secondary)]">Antall</th>
-          </tr>
-        </thead>
-        <tbody>{''.join(intent_rows_html)}</tbody>
-      </table>
-    </div>"""
+            intent_rows_html.append(f"<tr><td>{escape(str(intent))}</td><td>{escape(str(count))}</td></tr>")
+        table_html = f"""<div class="table-shell">
+  <table>
+    <thead><tr><th>Intent</th><th>Antall</th></tr></thead>
+    <tbody>{''.join(intent_rows_html)}</tbody>
+  </table>
+</div>"""
     else:
-        table_html = '<div class="py-8 text-center text-sm text-[var(--text-muted)]">Ingen intent-data</div>'
+        table_html = '<div class="empty-state">Ingen intent-data ennå.</div>'
 
-    return f"""<section class="card scroll-mt-24" id="intents">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Intents</h2>
-    <span class="badge {fallback_badge_class} whitespace-nowrap">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
+    return f"""<article class="card" id="intents">
+  <div class="card-header">
+    <div><h3>Intents</h3><p class="muted">Hvordan meldinger rutes.</p></div>
+    <span class="badge {fallback_badge_class}">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
-  <div class="card-body">
-    {table_html}
-  </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('intents')">Detaljer</button>
-  </div>
-</section>"""
+  <div class="card-body">{table_html}</div>
+  <div class="card-footer">{_modal_button("intents")}</div>
+</article>"""
 
 
 def _render_memory_section(data: dict[str, Any]) -> str:
     mem_users = _safe_int(data, "memory", "user_count", default=0)
     mem_convs = _safe_int(data, "memory", "conversation_count", default=0)
+    metrics = "\n".join(
+        [
+            _metric_tile("Brukere", mem_users, metric="memory.users"),
+            _metric_tile("Samtaler", mem_convs, metric="memory.conversations"),
+        ]
+    )
 
-    return f"""<section class="card xl:col-span-2 scroll-mt-24" id="memory">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Minne</h2>
+    return f"""<section class="card span-4" id="memory">
+  <div class="card-header">
+    <div><h3>Minne</h3><p class="muted">Hva botten husker på tvers av samtaler.</p></div>
   </div>
-  <div class="card-body">
-    <div class="grid grid-cols-2 gap-4">
-      <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
-        <div class="text-3xl font-bold text-[var(--accent)]" data-metric="memory.users">{mem_users}</div>
-        <div class="text-sm text-[var(--text-muted)] mt-2">Brukere</div>
-      </div>
-      <div class="bg-[var(--bg-secondary)] rounded-lg p-4 text-center border border-[var(--border-color)]">
-        <div class="text-3xl font-bold text-[var(--accent)]" data-metric="memory.conversations">{mem_convs}</div>
-        <div class="text-sm text-[var(--text-muted)] mt-2">Samtaler</div>
-      </div>
-    </div>
-  </div>
-  <div class="card-footer flex justify-end">
-    <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('memory')">Detaljer</button>
-  </div>
+  <div class="card-body"><div class="metric-grid">{metrics}</div></div>
+  <div class="card-footer">{_modal_button("memory")}</div>
 </section>"""
 
 
 def _render_logs_section(data: dict[str, Any]) -> str:
     log_lines = data.get("logs", {}).get("logs", []) if isinstance(data.get("logs"), dict) else []
     line_count = len(log_lines) if isinstance(log_lines, list) else 0
-    return f"""<section class="card md:col-span-2 xl:col-span-4 scroll-mt-24" id="logs">
-  <div class="flex items-center justify-between gap-3 mb-4">
-    <h2 class="text-lg font-semibold text-[var(--text-primary)]">Logger</h2>
-    <span class="badge badge-info gap-1"><span>Siste</span><span data-metric="logs.count">{line_count}</span><span>linjer</span></span>
+    return f"""<section class="card span-12" id="logs">
+  <div class="card-header">
+    <div><h3>Logger</h3><p class="muted">Siste driftsspor fra prosessen.</p></div>
+    <span class="badge badge-neutral">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
   </div>
   <div class="card-body">
-    <div id="log-container" class="max-h-80 overflow-y-auto font-mono text-sm bg-[var(--bg-secondary)] rounded-lg p-5 border border-[var(--border-color)]">
-      {_render_log_block(log_lines)}
+    <div id="log-container" class="log-console">{_render_log_block(log_lines)}</div>
+  </div>
+  <div class="card-footer">
+    <button type="button" class="btn btn-secondary" data-copy-logs>Kopier</button>
+    {_modal_button("logs", "Vis alle")}
+  </div>
+</section>"""
+
+
+def _render_activity_section(data: dict[str, Any]) -> str:
+    log_lines = data.get("logs", {}).get("logs", []) if isinstance(data.get("logs"), dict) else []
+    if not isinstance(log_lines, list) or not log_lines:
+        items = '<div class="empty-state">Ingen aktivitet fanget ennå.</div>'
+    else:
+        cards = []
+        for raw in log_lines[-4:][::-1]:
+            line = str(raw)
+            upper = line.upper()
+            tone = "log-error" if "ERROR" in upper or "CRITICAL" in upper else "log-warn" if "WARN" in upper else "log-info" if "INFO" in upper else "log-debug"
+            title = line.split("]", 1)[1].strip() if "]" in line else line
+            prefix = line.split("[", 1)[0].strip() if "[" in line else "Nylig"
+            cards.append(f'<div class="activity-item"><strong class="{tone}">{escape(title[:120])}</strong><span>{escape(prefix)}</span></div>')
+        items = "".join(cards)
+    return f"""<section class="section-band span-12" id="activity">
+  <div class="section-heading">
+    <div>
+      <h2>Siste aktivitet</h2>
+      <p>De nyeste signalene før du dykker ned i tabeller og logger.</p>
     </div>
   </div>
-  <div class="card-footer flex justify-end gap-2">
-    <button class="btn text-xs px-3 py-1.5" onclick="copyLogs()">Kopier</button>
-    <button class="btn text-xs px-3 py-1.5" @click="showSectionModal('logs')">Vis alle</button>
+  <div class="activity-list">{items}</div>
+</section>"""
+
+
+def _render_diagnostics_section(data: dict[str, Any]) -> str:
+    return f"""<section class="section-band span-12" id="diagnostics">
+  <div class="section-heading">
+    <div>
+      <h2>Diagnostikk</h2>
+      <p>AI-bro, trafikk og intent-ruting samlet på ett sted.</p>
+    </div>
+  </div>
+  <div class="diagnostics-grid">
+    {_render_bridge_section(data)}
+    {_render_rate_limits_section(data)}
+    {_render_intents_section(data)}
+    {_render_memory_section(data)}
   </div>
 </section>"""
 
 
 def render_login_page(error: str | None = None) -> str:
-    error_html = f'<div class="badge badge-error w-full justify-center mb-4" role="alert">{escape(error)}</div>' if error else ""
-    main_content = f"""<div class="card relative">
-  <button type="button" class="btn-secondary absolute top-4 right-4 px-2 py-1 text-lg" onclick="toggleTheme()" aria-label="Bytt tema">
-    <span id="theme-icon">☀️</span>
+    error_html = f'<div class="badge badge-error" role="alert">{escape(error)}</div>' if error else ""
+    main_content = f"""<div class="panel auth-card">
+  <button type="button" id="login-theme-toggle" class="theme-toggle auth-theme" aria-label="Bytt tema">
+    <span id="theme-icon">Lys</span>
   </button>
-  <div class="flex items-center justify-center mb-6">
-    <div class="w-12 h-12 rounded-full bg-[var(--accent)] flex items-center justify-center text-white text-xl font-bold mr-3" style="box-shadow: var(--shadow-glow)">
-      🤖
-    </div>
+  <div class="auth-brand">
+    <div class="brand-icon" aria-hidden="true">I</div>
     <div>
-      <h1 class="text-2xl font-bold text-[var(--text-primary)]">Inebotten Console</h1>
-      <p class="text-sm text-[var(--text-secondary)]">Norsk Discord-selfbot</p>
+      <h1>Inebotten Console</h1>
+      <p class="muted">Norsk Discord-selfbot</p>
     </div>
   </div>
-  <p class="text-[var(--text-secondary)] mb-4 text-center">Skriv inn API-nøkkelen for å fortsette</p>
+  <p class="muted">Skriv inn API-nøkkelen for å fortsette.</p>
   {error_html}
-  <form method="POST" action="/api/login" class="space-y-4">
-    <div>
-      <label for="api_key" class="block text-sm font-medium text-[var(--text-secondary)] mb-1">API-nøkkel</label>
+  <form method="POST" action="/api/login" class="form-stack">
+    <div class="field-stack">
+      <label for="api_key">API-nøkkel</label>
       <input type="password" id="api_key" name="api_key" placeholder="API-nøkkel" required autofocus class="input">
     </div>
-    <button type="submit" class="btn w-full">Logg inn</button>
+    <button type="submit" class="btn">Logg inn</button>
   </form>
-  <p class="text-center mt-4 text-sm text-[var(--text-muted)]">
-    <a href="/demo" class="text-[var(--accent)] hover:underline">Se demo uten innlogging →</a>
+  <p class="auth-link">
+    <a href="/demo">Se demo uten innlogging</a>
   </p>
-</div>
-<script>
-function toggleTheme() {{
-  var html = document.documentElement;
-  var isLight = html.classList.contains('light');
-  var icon = document.getElementById('theme-icon');
-  if (isLight) {{
-    html.classList.remove('light');
-    localStorage.setItem('theme', 'dark');
-    if (icon) icon.textContent = '☀️';
-  }} else {{
-    html.classList.add('light');
-    localStorage.setItem('theme', 'light');
-    if (icon) icon.textContent = '🌙';
-  }}
-}}
-(function() {{
-  var html = document.documentElement;
-  var isLight = html.classList.contains('light');
-  var icon = document.getElementById('theme-icon');
-  if (icon) icon.textContent = isLight ? '🌙' : '☀️';
-}})();
-</script>"""
+</div>"""
     return _LOGIN_TEMPLATE.format(
         title="Inebotten Console - Logg inn",
         header_content="",
@@ -590,12 +639,12 @@ def render_dashboard(data: dict[str, Any] | None, *, is_demo: bool = False) -> s
 
     main_content = "\n".join(
         [
+            _render_overview_section(data),
             _render_status_section(data),
-            _render_bridge_section(data),
             _render_calendar_section(data),
             _render_polls_section(data),
-            _render_rate_limits_section(data),
-            _render_intents_section(data),
+            _render_activity_section(data),
+            _render_diagnostics_section(data),
             _render_logs_section(data),
         ]
     )
@@ -814,8 +863,8 @@ def render_commands_page() -> str:
             for cmd, desc in commands
         )
         return f"""<section class="card scroll-mt-24">
-  <h2 class="text-lg font-semibold mb-2">{escape(title)}</h2>
-  <p class="text-sm text-[var(--text-muted)] mb-4">{escape(description)}</p>
+  <h2>{escape(title)}</h2>
+  <p class="muted">{escape(description)}</p>
   <table>
     <thead><tr><th>Kommando</th><th>Beskrivelse</th></tr></thead>
     <tbody>{rows}</tbody>

@@ -307,8 +307,11 @@ async def test_dashboard_html():
     try:
         response = await request("/", api_key=API_KEY)
         assert b"<main" in response
-        assert b"grid" in response
-        assert b"x-data" in response
+        assert b"dashboard-grid" in response
+        assert b"data-console-app" in response
+        assert b"x-data" not in response
+        assert b"tailwindcss" not in response
+        assert b"alpinejs" not in response
         assert b"/static/main.css" in response
         assert b"/static/app.js" in response
     finally:
@@ -338,6 +341,19 @@ async def test_dashboard_has_data_metrics():
         assert b'intents.fallback' in response
         assert b'memory.users' in response
         assert b'logs.count' in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_demo_dashboard_is_auth_exempt_and_uses_static_data():
+    server, task = await start_server()
+    try:
+        response = await request("/demo")
+        assert b"200" in response
+        assert b"Inebotten" in response
+        assert b'data-console-app' in response
+        assert b'demo-mode' in response
+        assert b"/api/login" not in response
     finally:
         await stop_server(server, task)
 

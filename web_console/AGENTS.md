@@ -5,7 +5,7 @@ HTTP console for bot monitoring: status, bridge health, calendar, polls, rate li
 ## Web Console Architecture (Redesigned)
 
 ### Frontend
-- Tailwind CSS + Alpine.js (vendored in `static/`)
+- Vanilla CSS + vanilla JavaScript in `static/`
 - Dark/light theme with CSS custom properties
 - Smart polling with per-endpoint intervals
 - Modal system with focus trap
@@ -13,9 +13,8 @@ HTTP console for bot monitoring: status, bridge health, calendar, polls, rate li
 
 ### Static Assets
 - `static/main.css` — Design system
-- `static/app.js` — Alpine.js application
-- `static/alpinejs.min.js` — Alpine.js library
-- `static/tailwindcss.min.js` — Tailwind CSS CDN build
+- `static/app.js` — Dashboard polling, theme, mobile nav, and modal behavior
+- `static/login.js` — Login-page theme toggle
 
 ### Templates
 - `templates/base.html` — Dashboard base template
@@ -35,7 +34,7 @@ web_console/
 ├── state_collector.py  # Collects bot state for the dashboard
 ├── console_store.py    # Persistent JSONL log + cumulative stats storage
 ├── templates/          # Base templates (dashboard + login)
-├── static/             # CSS, JS, and vendored libraries
+├── static/             # CSS and dashboard JavaScript
 └── __init__.py
 ```
 

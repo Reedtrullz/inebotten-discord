@@ -1,440 +1,439 @@
-const _registerConsoleApp = () => {
-  Alpine.data('consoleApp', () => ({
-    theme: localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
-    mobileMenuOpen: false,
+class ConsoleApp {
+  constructor() {
+    this.theme = localStorage.getItem("theme") || (
+      window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+    );
+    this.data = {};
+    this.lastUpdated = null;
+    this.isPolling = false;
+    this.authExpired = false;
+    this.pollingControllers = {};
+    this.pollingBackoff = {};
+    this._focusTrapHandler = null;
+    this._lastFocusedElement = null;
+    this.isDemo = document.body.classList.contains("demo-mode");
+    this.pollingConfig = {
+      "/api/status": { interval: 5000, lastFetch: 0 },
+      "/api/bridge": { interval: 5000, lastFetch: 0 },
+      "/api/calendar": { interval: 10000, lastFetch: 0 },
+      "/api/polls": { interval: 10000, lastFetch: 0 },
+      "/api/rate-limits": { interval: 10000, lastFetch: 0 },
+      "/api/intents": { interval: 10000, lastFetch: 0 },
+      "/api/memory": { interval: 10000, lastFetch: 0 },
+      "/api/logs?lines=50": { interval: 30000, lastFetch: 0 },
+    };
+  }
 
-    init() {
-      document.documentElement.classList.remove('dark', 'light');
-      document.documentElement.classList.add(this.theme);
-
-      this.$watch('theme', (value) => {
-        localStorage.setItem('theme', value);
-        document.documentElement.classList.remove('dark', 'light');
-        document.documentElement.classList.add(value);
-      });
-
-      this.initData();
+  init() {
+    this.applyTheme();
+    this.bindShell();
+    this.bindModalButtons();
+    this.initData();
+    this.updateShellStatus();
+    if (!this.isDemo) {
       this.startPolling();
-
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-          this.stopPolling();
-        } else {
-          this.startPolling();
-        }
-      });
-    },
-
-    toggleTheme() {
-      this.theme = this.theme === 'dark' ? 'light' : 'dark';
-    },
-
-    activeModal: null,
-    modalData: {},
-    _focusTrapHandler: null,
-    _lastFocusedElement: null,
-
-    openModal(name, data = {}) {
-      this._lastFocusedElement = document.activeElement;
-      this.activeModal = name;
-      this.modalData = data;
-      this.$nextTick(() => {
-        this._trapFocus();
-        const modalContent = document.querySelector('[role="dialog"]');
-        if (modalContent) {
-          modalContent.focus();
-        }
-      });
-    },
-
-    closeModal() {
-      this.activeModal = null;
-      this.modalData = {};
-      this._untrapFocus();
-      if (this._lastFocusedElement) {
-        this.$nextTick(() => {
-          this._lastFocusedElement.focus();
-          this._lastFocusedElement = null;
-        });
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (this.isDemo) return;
+      if (document.visibilityState === "hidden") {
+        this.stopPolling();
+      } else {
+        this.startPolling();
       }
-    },
+    });
+  }
 
-    _trapFocus() {
-      const modal = document.querySelector('[role="dialog"]');
-      if (!modal) return;
+  bindShell() {
+    document.getElementById("theme-toggle")?.addEventListener("click", () => this.toggleTheme());
 
-      const focusableSelectors = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const menuButton = document.getElementById("mobile-menu-toggle");
+    const nav = document.getElementById("primary-nav");
+    menuButton?.addEventListener("click", () => {
+      const open = !nav?.classList.contains("is-open");
+      nav?.classList.toggle("is-open", open);
+      menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+      menuButton.querySelector(".menu-icon-open")?.toggleAttribute("hidden", open);
+      menuButton.querySelector(".menu-icon-close")?.toggleAttribute("hidden", !open);
+    });
 
-      this._focusTrapHandler = (e) => {
-        if (e.key !== 'Tab') return;
-
-        const focusableElements = Array.from(modal.querySelectorAll(focusableSelectors));
-        const first = focusableElements[0];
-        const last = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-          if (document.activeElement === first) {
-            e.preventDefault();
-            last.focus();
-          }
-        } else {
-          if (document.activeElement === last) {
-            e.preventDefault();
-            first.focus();
-          }
-        }
-      };
-
-      document.addEventListener('keydown', this._focusTrapHandler);
-    },
-
-    _untrapFocus() {
-      if (this._focusTrapHandler) {
-        document.removeEventListener('keydown', this._focusTrapHandler);
-        this._focusTrapHandler = null;
-      }
-    },
-
-    lastUpdated: null,
-    data: {},
-
-    pollingConfig: {
-      '/api/status': { interval: 5000, lastFetch: 0 },
-      '/api/bridge': { interval: 5000, lastFetch: 0 },
-      '/api/calendar': { interval: 10000, lastFetch: 0 },
-      '/api/polls': { interval: 10000, lastFetch: 0 },
-      '/api/rate-limits': { interval: 10000, lastFetch: 0 },
-      '/api/intents': { interval: 10000, lastFetch: 0 },
-      '/api/memory': { interval: 10000, lastFetch: 0 },
-      '/api/logs?lines=50': { interval: 30000, lastFetch: 0 },
-    },
-    pollingControllers: {},
-    pollingBackoff: {},
-    isPolling: false,
-    authExpired: false,
-
-    initData() {
-      const script = document.getElementById('initial-data');
-      if (script) {
-        try {
-          this.data = JSON.parse(script.textContent);
-          this.lastUpdated = new Date().toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        } catch (e) {
-          console.error('Failed to parse initial data:', e);
-        }
-      }
-    },
-
-    startPolling() {
-      if (this.isPolling || this.authExpired) return;
-      this.isPolling = true;
-
-      Object.keys(this.pollingConfig).forEach(endpoint => {
-        this.pollEndpoint(endpoint);
+    nav?.querySelectorAll("a").forEach((link) => {
+      link.addEventListener("click", () => {
+        nav.classList.remove("is-open");
+        menuButton?.setAttribute("aria-expanded", "false");
+        menuButton?.querySelector(".menu-icon-open")?.removeAttribute("hidden");
+        menuButton?.querySelector(".menu-icon-close")?.setAttribute("hidden", "");
       });
-    },
+    });
 
-    stopPolling() {
-      this.isPolling = false;
-      Object.values(this.pollingControllers).forEach(controller => {
-        controller.abort();
+    document.querySelectorAll("[data-close-modal]").forEach((button) => {
+      button.addEventListener("click", () => this.closeModal());
+    });
+    document.querySelectorAll("[data-copy-logs]").forEach((button) => {
+      button.addEventListener("click", () => copyLogs());
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") this.closeModal();
+    });
+  }
+
+  bindModalButtons() {
+    document.querySelectorAll("[data-section-modal]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.showSectionModal(button.getAttribute("data-section-modal"));
       });
-      this.pollingControllers = {};
-    },
+    });
+  }
 
-    async pollEndpoint(endpoint) {
-      if (!this.isPolling || this.authExpired) return;
+  toggleTheme() {
+    this.theme = this.theme === "dark" ? "light" : "dark";
+    localStorage.setItem("theme", this.theme);
+    this.applyTheme();
+  }
 
-      const config = this.pollingConfig[endpoint];
-      const now = Date.now();
-      const backoff = this.pollingBackoff[endpoint] || 0;
-      const interval = config.interval + backoff;
+  applyTheme() {
+    document.documentElement.classList.remove("dark", "light");
+    document.documentElement.classList.add(this.theme);
+    const icon = document.querySelector("[data-theme-icon]");
+    if (icon) icon.textContent = this.theme === "dark" ? "Lys" : "Mørk";
+  }
 
-      if (now - config.lastFetch < interval) {
-        setTimeout(() => this.pollEndpoint(endpoint), interval - (now - config.lastFetch));
+  initData() {
+    const script = document.getElementById("initial-data");
+    if (!script) return;
+    try {
+      this.data = JSON.parse(script.textContent || "{}");
+      this.touchUpdated();
+    } catch (error) {
+      console.error("Failed to parse initial data:", error);
+    }
+  }
+
+  touchUpdated() {
+    this.lastUpdated = new Date().toLocaleTimeString("no-NO", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const wrapper = document.getElementById("last-updated");
+    const value = document.querySelector("[data-last-updated-time]");
+    if (wrapper && value) {
+      value.textContent = this.lastUpdated;
+      wrapper.hidden = false;
+    }
+  }
+
+  startPolling() {
+    if (this.isPolling || this.authExpired) return;
+    this.isPolling = true;
+    Object.keys(this.pollingConfig).forEach((endpoint) => {
+      this.pollEndpoint(endpoint);
+    });
+  }
+
+  stopPolling() {
+    this.isPolling = false;
+    Object.values(this.pollingControllers).forEach((controller) => controller.abort());
+    this.pollingControllers = {};
+  }
+
+  async pollEndpoint(endpoint) {
+    if (!this.isPolling || this.authExpired) return;
+    const config = this.pollingConfig[endpoint];
+    const now = Date.now();
+    const backoff = this.pollingBackoff[endpoint] || 0;
+    const interval = config.interval + backoff;
+
+    if (now - config.lastFetch < interval) {
+      setTimeout(() => this.pollEndpoint(endpoint), interval - (now - config.lastFetch));
+      return;
+    }
+
+    this.pollingControllers[endpoint]?.abort();
+    const controller = new AbortController();
+    this.pollingControllers[endpoint] = controller;
+
+    try {
+      const response = await fetch(endpoint, {
+        credentials: "same-origin",
+        signal: controller.signal,
+      });
+      if (response.status === 401) {
+        this.authExpired = true;
+        this.stopPolling();
+        const banner = document.getElementById("auth-expired");
+        if (banner) banner.hidden = false;
         return;
       }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      if (this.pollingControllers[endpoint]) {
-        this.pollingControllers[endpoint].abort();
-      }
-
-      const controller = new AbortController();
-      this.pollingControllers[endpoint] = controller;
-
-      try {
-        const response = await fetch(endpoint, {
-          credentials: 'same-origin',
-          signal: controller.signal,
-        });
-
-        if (response.status === 401) {
-          this.authExpired = true;
-          this.stopPolling();
-          console.warn('Session expired. Please refresh to log in again.');
-          return;
-        }
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        const key = endpoint.replace('/api/', '').replace('?lines=50', '');
-        this.data[key] = data;
-
-        this.pollingBackoff[endpoint] = 0;
-        config.lastFetch = now;
-        this.lastUpdated = new Date().toLocaleTimeString('no-NO', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        this.updateDashboard(key, data);
-
-      } catch (error) {
-        if (error.name === 'AbortError') {
-          return;
-        }
-
+      const data = await response.json();
+      const key = endpoint.replace("/api/", "").replace("?lines=50", "");
+      this.data[key] = data;
+      this.pollingBackoff[endpoint] = 0;
+      config.lastFetch = now;
+      this.touchUpdated();
+      this.updateDashboard(key, data);
+    } catch (error) {
+      if (error.name !== "AbortError") {
         this.pollingBackoff[endpoint] = Math.min((this.pollingBackoff[endpoint] || 0) + config.interval, 60000);
         console.error(`Poll error for ${endpoint}:`, error);
-      } finally {
-        delete this.pollingControllers[endpoint];
       }
+    } finally {
+      delete this.pollingControllers[endpoint];
+    }
 
-      if (this.isPolling && !this.authExpired) {
-        const nextInterval = config.interval + (this.pollingBackoff[endpoint] || 0);
-        setTimeout(() => this.pollEndpoint(endpoint), nextInterval);
+    if (this.isPolling && !this.authExpired) {
+      setTimeout(() => this.pollEndpoint(endpoint), config.interval + (this.pollingBackoff[endpoint] || 0));
+    }
+  }
+
+  updateDashboard(section, data) {
+    if (!data) return;
+
+    const setText = (key, value) => {
+      document.querySelectorAll(`[data-metric="${key}"]`).forEach((el) => {
+        el.textContent = value ?? "N/A";
+      });
+    };
+
+    switch (section) {
+      case "status": {
+        setText("status.uptime", this.formatUptime(data.uptime_seconds));
+        setText("status.guilds", data.guilds);
+        setText("status.users", data.users);
+        setText("status.discord", data.discord_connected ? "Ja" : "Nei");
+        this.updateStatusBadge("#status .badge", data.status);
+        this.updateShellStatus();
+        break;
       }
-    },
-
-    updateDashboard(section, data) {
-      if (!data) return;
-
-      const setText = (key, value) => {
-        const el = document.querySelector(`[data-metric="${key}"]`);
-        if (el) el.textContent = value ?? 'N/A';
-      };
-
-      switch (section) {
-        case 'status': {
-          setText('status.uptime', this.formatUptime(data.uptime_seconds));
-          setText('status.guilds', data.guilds);
-          setText('status.users', data.users);
-          setText('status.discord', data.discord_connected ? 'Ja' : 'Nei');
-          const badge = document.querySelector('#status .badge');
-          if (badge && data.status) {
-            const online = String(data.status).toLowerCase() === 'online';
-            badge.className = `badge ${online ? 'badge-online' : 'badge-error'}`;
-            badge.textContent = online ? 'Online' : 'Offline';
-          }
-          break;
-        }
-        case 'bridge': {
-          setText('bridge.lm_studio', data.lm_studio);
-          setText('bridge.requests', data.requests);
-          setText('bridge.errors', data.errors);
-          const badge = document.querySelector('#bridge .badge');
-          if (badge && data.status) {
-            const s = String(data.status).toLowerCase();
-            let cls = 'badge-warning';
-            let text = 'Ukjent';
-            const ok = ['online', 'connected', 'ok', 'healthy', 'running', 'active', 'true', 'yes'];
-            const err = ['offline', 'disconnected', 'error', 'unhealthy', 'stopped', 'inactive', 'false', 'no'];
-            if (ok.includes(s)) { cls = 'badge-online'; text = 'Tilkoblet'; }
-            else if (err.includes(s)) { cls = 'badge-error'; text = 'Frakoblet'; }
-            badge.className = `badge ${cls}`;
-            badge.textContent = text;
-          }
-          const errEl = document.querySelector('[data-metric="bridge.errors"]');
-          if (errEl) {
-            const errVal = parseInt(data.errors, 10) || 0;
-            errEl.className = `text-xl font-bold ${errVal > 0 ? 'text-[var(--status-error)]' : 'text-[var(--text-primary)]'}`;
-          }
-          break;
-        }
-        case 'calendar': {
-          setText('calendar.events', data.event_count);
-          setText('calendar.tasks', data.task_count);
-          const badge = document.querySelector('#calendar .badge');
-          if (badge && typeof data.event_count !== 'undefined') {
-            badge.textContent = `${data.event_count} hendelser`;
-          }
-          break;
-        }
-        case 'polls': {
-          setText('polls.active', data.active_polls);
-          const badge = document.querySelector('#polls .badge');
-          if (badge && typeof data.active_polls !== 'undefined') {
-            badge.textContent = `${data.active_polls} aktive`;
-          }
-          break;
-        }
-        case 'rate-limits': {
-          const total = data.summary?.total_requests ?? 0;
-          setText('rate_limits.total', total);
-          const headerText = document.querySelector('#rate-limits .text-sm.text-\\[var\\(--text-muted\\)\\]');
-          if (headerText) {
-            headerText.textContent = `${total} forespørsler totalt`;
-          }
-          break;
-        }
-        case 'intents': {
-          setText('intents.fallback', data.fallback_count);
-          const badge = document.querySelector('#intents .badge');
-          if (badge && typeof data.fallback_count !== 'undefined') {
-            const err = (data.fallback_count || 0) > 5;
-            badge.className = `badge ${err ? 'badge-error' : 'badge-info'}`;
-            badge.textContent = `Fallbacks: ${data.fallback_count}`;
-          }
-          break;
-        }
-        case 'memory': {
-          setText('memory.users', data.user_count);
-          setText('memory.conversations', data.conversation_count);
-          break;
-        }
-        case 'logs': {
-          const lines = Array.isArray(data.logs) ? data.logs.length : 0;
-          setText('logs.count', lines);
-          const headerText = document.querySelector('#logs .text-sm.text-\\[var\\(--text-muted\\)\\]');
-          if (headerText) {
-            headerText.textContent = `Siste ${lines} linjer`;
-          }
-          break;
-        }
+      case "bridge": {
+        setText("bridge.status", data.status);
+        setText("bridge.lm_studio", data.lm_studio);
+        setText("bridge.requests", data.requests);
+        setText("bridge.errors", data.errors);
+        this.updateBridgeBadge(data.status);
+        break;
       }
-    },
+      case "calendar":
+        setText("calendar.events", data.event_count);
+        setText("calendar.tasks", data.task_count);
+        break;
+      case "polls":
+        setText("polls.active", data.active_polls);
+        break;
+      case "rate-limits":
+        setText("rate_limits.total", data.summary?.total_requests ?? 0);
+        break;
+      case "intents":
+        setText("intents.fallback", data.fallback_count);
+        break;
+      case "memory":
+        setText("memory.users", data.user_count);
+        setText("memory.conversations", data.conversation_count);
+        break;
+      case "logs":
+        setText("logs.count", Array.isArray(data.logs) ? data.logs.length : 0);
+        break;
+    }
+  }
 
-    formatUptime(seconds) {
-      if (seconds === undefined || seconds === null || seconds < 0) return 'N/A';
-      const days = Math.floor(seconds / 86400);
-      const hours = Math.floor((seconds % 86400) / 3600);
-      const mins = Math.floor((seconds % 3600) / 60);
-      const secs = seconds % 60;
-      const parts = [];
-      if (days) parts.push(`${days}d`);
-      if (hours) parts.push(`${hours}t`);
-      if (mins) parts.push(`${mins}m`);
-      if (secs || !parts.length) parts.push(`${secs}s`);
-      return parts.join(' ');
-    },
+  updateShellStatus() {
+    const status = this.data?.status?.status || "online";
+    this.updateStatusBadge("#shell-status", status);
+  }
 
-    escapeHtml(value) {
-      return String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    },
+  updateStatusBadge(selector, status) {
+    const badge = document.querySelector(selector);
+    if (!badge) return;
+    const online = String(status || "").toLowerCase() === "online";
+    badge.className = `badge ${online ? "badge-online" : "badge-warning"}`;
+    badge.textContent = online ? "Online" : "Sjekk";
+  }
 
-    showSectionModal(section) {
-      const titles = {
-        status: 'Bot-status',
-        bridge: 'Bridge',
-        calendar: 'Kalender',
-        polls: 'Avstemninger',
-        'rate-limits': 'Rate limits',
-        intents: 'Intents',
-        memory: 'Minne',
-        logs: 'Logger',
-      };
-      const data = this.data[section] || {};
-      const lines = [];
-      const add = (label, value) => lines.push(`${label}: ${value ?? 'N/A'}`);
-      const addBlank = () => lines.push('');
+  updateBridgeBadge(status) {
+    const badge = document.querySelector("#bridge .badge");
+    if (!badge) return;
+    const s = String(status || "").toLowerCase();
+    const ok = ["online", "connected", "ok", "healthy", "running", "active", "true", "yes"];
+    const err = ["offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"];
+    if (ok.includes(s)) {
+      badge.className = "badge badge-online";
+      badge.textContent = "Tilkoblet";
+    } else if (err.includes(s)) {
+      badge.className = "badge badge-error";
+      badge.textContent = "Frakoblet";
+    } else {
+      badge.className = "badge badge-warning";
+      badge.textContent = "Ukjent";
+    }
+  }
 
-      switch (section) {
-        case 'status':
-          add('Status', data.status || 'N/A');
-          add('Oppetid', this.formatUptime(data.uptime_seconds));
-          add('Servere', data.guilds ?? 'N/A');
-          add('Brukere', data.users ?? 'N/A');
-          add('Discord-tilkobling', data.discord_connected ? 'Ja' : 'Nei');
-          break;
-        case 'bridge':
-          add('Status', data.status || 'N/A');
-          add('LM Studio', data.lm_studio || 'N/A');
-          add('Forespørsler', data.requests ?? 0);
-          add('Feil', data.errors ?? 0);
-          break;
-        case 'calendar':
-          add('Hendelser', data.event_count ?? 0);
-          add('Oppgaver', data.task_count ?? 0);
-          if (Array.isArray(data.upcoming_events) && data.upcoming_events.length) {
-            addBlank();
-            lines.push('Kommende hendelser:');
-            data.upcoming_events.slice(0, 10).forEach(ev => {
-              const title = ev.title || ev.name || 'Uten tittel';
-              const when = ev.when || ev.start || ev.date || 'Ukjent tid';
-              lines.push(`- ${title} — ${when}`);
-            });
-          }
-          break;
-        case 'polls':
-          add('Aktive avstemninger', data.active_polls ?? 0);
-          break;
-        case 'rate-limits':
-          add('Totale forespørsler', data.summary?.total_requests ?? 0);
-          break;
-        case 'intents':
-          add('Fallbacks', data.fallback_count ?? 0);
-          if (data.intent_counts && Object.keys(data.intent_counts).length) {
-            addBlank();
-            lines.push('Intent-tellinger:');
-            Object.entries(data.intent_counts)
-              .sort((a, b) => (b[1] || 0) - (a[1] || 0))
-              .forEach(([intent, count]) => lines.push(`- ${intent}: ${count}`));
-          }
-          break;
-        case 'memory':
-          add('Brukere i minne', data.user_count ?? 0);
-          add('Samtaler', data.conversation_count ?? 0);
-          break;
-        case 'logs':
-          if (Array.isArray(data.logs) && data.logs.length) {
-            lines.push(...data.logs.map(line => String(line)));
-          } else {
-            lines.push('Ingen logger tilgjengelig');
-          }
-          break;
-        default:
-          lines.push('Ingen detaljer tilgjengelig');
+  formatUptime(seconds) {
+    if (seconds === undefined || seconds === null || seconds < 0) return "N/A";
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    const parts = [];
+    if (days) parts.push(`${days}d`);
+    if (hours) parts.push(`${hours}t`);
+    if (mins) parts.push(`${mins}m`);
+    if (secs || !parts.length) parts.push(`${secs}s`);
+    return parts.join(" ");
+  }
+
+  openModal(section, data = {}) {
+    this._lastFocusedElement = document.activeElement;
+    const modal = document.getElementById("section-modal");
+    const title = document.getElementById("modal-title");
+    const content = document.getElementById("modal-content");
+    if (!modal || !title || !content) return;
+    title.textContent = data.title || "Detaljer";
+    content.textContent = data.content || "";
+    modal.hidden = false;
+    document.body.classList.add("modal-open");
+    this._trapFocus(modal);
+    modal.querySelector('[role="dialog"]')?.focus();
+  }
+
+  closeModal() {
+    const modal = document.getElementById("section-modal");
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    document.body.classList.remove("modal-open");
+    this._untrapFocus();
+    this._lastFocusedElement?.focus();
+    this._lastFocusedElement = null;
+  }
+
+  _trapFocus(modal) {
+    const dialog = modal.querySelector('[role="dialog"]');
+    if (!dialog) return;
+    const focusableSelectors = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    this._focusTrapHandler = (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(dialog.querySelectorAll(focusableSelectors));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
+    };
+    document.addEventListener("keydown", this._focusTrapHandler);
+  }
 
-      this.openModal(section, { title: titles[section] || 'Detaljer', content: lines.join('\n') });
-    },
-  }));
-};
+  _untrapFocus() {
+    if (this._focusTrapHandler) {
+      document.removeEventListener("keydown", this._focusTrapHandler);
+      this._focusTrapHandler = null;
+    }
+  }
 
-if (window.Alpine) {
-  _registerConsoleApp();
-} else {
-  document.addEventListener('alpine:init', _registerConsoleApp);
+  showSectionModal(section) {
+    const titles = {
+      status: "Bot-status",
+      bridge: "Bridge",
+      calendar: "Kalender",
+      polls: "Avstemninger",
+      "rate-limits": "Rate limits",
+      intents: "Intents",
+      memory: "Minne",
+      logs: "Logger",
+    };
+    const data = section === "rate-limits"
+      ? (this.data["rate-limits"] || this.data.rate_limits || {})
+      : (this.data[section] || {});
+    const lines = [];
+    const add = (label, value) => lines.push(`${label}: ${value ?? "N/A"}`);
+    const addBlank = () => lines.push("");
+
+    switch (section) {
+      case "status":
+        add("Status", data.status || "N/A");
+        add("Oppetid", this.formatUptime(data.uptime_seconds));
+        add("Servere", data.guilds ?? "N/A");
+        add("Brukere", data.users ?? "N/A");
+        add("Discord-tilkobling", data.discord_connected ? "Ja" : "Nei");
+        break;
+      case "bridge":
+        add("Status", data.status || "N/A");
+        add("LM Studio", data.lm_studio || "N/A");
+        add("Forespørsler", data.requests ?? 0);
+        add("Feil", data.errors ?? 0);
+        break;
+      case "calendar":
+        add("Hendelser", data.event_count ?? 0);
+        add("Oppgaver", data.task_count ?? 0);
+        if (Array.isArray(data.upcoming_events) && data.upcoming_events.length) {
+          addBlank();
+          lines.push("Kommende hendelser:");
+          data.upcoming_events.slice(0, 10).forEach((event) => {
+            const title = event.title || event.name || "Uten tittel";
+            const when = event.when || event.start || event.date || "Ukjent tid";
+            lines.push(`- ${title} — ${when}`);
+          });
+        }
+        break;
+      case "polls":
+        add("Aktive avstemninger", data.active_polls ?? 0);
+        break;
+      case "rate-limits":
+        add("Totale forespørsler", data.summary?.total_requests ?? 0);
+        break;
+      case "intents":
+        add("Fallbacks", data.fallback_count ?? 0);
+        if (data.intent_counts && Object.keys(data.intent_counts).length) {
+          addBlank();
+          lines.push("Intent-tellinger:");
+          Object.entries(data.intent_counts)
+            .sort((a, b) => (b[1] || 0) - (a[1] || 0))
+            .forEach(([intent, count]) => lines.push(`- ${intent}: ${count}`));
+        }
+        break;
+      case "memory":
+        add("Brukere i minne", data.user_count ?? 0);
+        add("Samtaler", data.conversation_count ?? 0);
+        break;
+      case "logs":
+        if (Array.isArray(data.logs) && data.logs.length) {
+          lines.push(...data.logs.map((line) => String(line)));
+        } else {
+          lines.push("Ingen logger tilgjengelig");
+        }
+        break;
+      default:
+        lines.push("Ingen detaljer tilgjengelig");
+    }
+
+    this.openModal(section, { title: titles[section] || "Detaljer", content: lines.join("\n") });
+  }
 }
 
-setTimeout(() => {
-  if (typeof window.Alpine !== 'undefined' && typeof Alpine.data('consoleApp') === 'undefined') {
-    _registerConsoleApp();
-  }
-}, 50);
+document.addEventListener("DOMContentLoaded", () => {
+  window.consoleApp = new ConsoleApp();
+  window.consoleApp.init();
+});
 
 function copyLogs() {
-  const el = document.getElementById('log-container');
+  const el = document.getElementById("log-container");
   if (!el) return;
   const text = el.innerText;
   navigator.clipboard.writeText(text).then(() => {
-    const btn = document.querySelector('#logs button[onclick="copyLogs()"]');
-    if (btn) {
-      const original = btn.textContent;
-      btn.textContent = 'Kopiert!';
-      setTimeout(() => { btn.textContent = original; }, 1500);
-    }
+    const btn = document.querySelector('#logs button[data-copy-logs]');
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = "Kopiert";
+    setTimeout(() => { btn.textContent = original; }, 1500);
   }).catch(() => {
-    const btn = document.querySelector('#logs button[onclick="copyLogs()"]');
-    if (btn) {
-      const original = btn.textContent;
-      btn.textContent = 'Feilet';
-      setTimeout(() => { btn.textContent = original; }, 1500);
-    }
+    const btn = document.querySelector('#logs button[data-copy-logs]');
+    if (!btn) return;
+    const original = btn.textContent;
+    btn.textContent = "Feilet";
+    setTimeout(() => { btn.textContent = original; }, 1500);
   });
 }
