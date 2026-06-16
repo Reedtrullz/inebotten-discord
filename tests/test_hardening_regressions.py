@@ -28,7 +28,7 @@ from features.poll_manager import PollManager
 from features.quote_manager import QuoteManager
 from utils.json_storage import hermes_discord_data_path, read_json, write_json_atomic
 from utils.sanitizer import sanitize_discord_mention, sanitize_html
-from web_console.state_collector import collect_calendar_data
+from web_console.state_collector import collect_calendar_data, collect_intent_stats
 
 
 class CalendarHardeningTests(unittest.TestCase):
@@ -227,6 +227,51 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
             self.assertEqual(sessions_path.stat().st_mode & 0o777, 0o600)
             stored_sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
             self.assertNotIn(token, stored_sessions)
+
+    def test_intent_fallback_count_excludes_ai_chat(self):
+        from web_console import console_store
+        from web_console.console_store import ConsoleStore
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                store = ConsoleStore()
+                store.save_stats(
+                    {
+                        "ai_chat": {"count": 5, "low_confidence": 0, "errors": 0},
+                        "search": {"count": 2, "low_confidence": 3, "errors": 0},
+                    },
+                    {},
+                )
+
+                with patch.object(console_store, "_store", store):
+                    data = collect_intent_stats(None)
+
+            self.assertEqual(data["intent_counts"]["ai_chat"], 5)
+            self.assertEqual(data["fallback_count"], 3)
+
+    def test_console_store_ignores_legacy_unversioned_stats(self):
+        from web_console.console_store import ConsoleStore
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            stats_path = hermes_home / "discord" / "data" / "console" / "stats.json"
+            stats_path.parent.mkdir(parents=True)
+            stats_path.write_text(
+                json.dumps(
+                    {
+                        "intents": {"ai_chat": {"count": 143755, "low_confidence": 0, "errors": 0}},
+                        "rate_limits": {"user_1": 999},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                store = ConsoleStore()
+
+                self.assertEqual(store.load_intent_stats(), {})
+                self.assertEqual(store.load_rate_limit_stats(), {})
 
     def test_user_memory_default_storage_uses_hermes_home(self):
         from memory.user_memory import UserMemory

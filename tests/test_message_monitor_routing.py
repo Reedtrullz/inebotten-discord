@@ -225,6 +225,30 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("help: 3 (low: 1, err: 2)", captured["text"])
         self.assertEqual(monitor.get_intent_stats()["help"]["count"], 3)
 
+    def test_console_persistence_uses_counter_deltas(self):
+        from core import message_monitor
+
+        current = {
+            "ai_chat": {"count": 10, "low_confidence": 0, "errors": 1},
+            "search": {"count": 3, "low_confidence": 2, "errors": 0},
+        }
+        previous = {
+            "ai_chat": {"count": 7, "low_confidence": 0, "errors": 1},
+            "calendar": {"count": 5, "low_confidence": 0, "errors": 0},
+        }
+
+        self.assertEqual(
+            message_monitor._counter_stats_delta(current, previous),
+            {
+                "ai_chat": {"count": 3, "low_confidence": 0, "errors": 0},
+                "search": {"count": 3, "low_confidence": 2, "errors": 0},
+            },
+        )
+        self.assertEqual(
+            message_monitor._flat_counter_delta({"u1": 10, "u2": 1}, {"u1": 8, "u3": 9}),
+            {"u1": 2, "u2": 1},
+        )
+
     async def test_ai_fallback_no_longer_crashes_on_chat(self):
         monitor = self.make_monitor()
         message = RecordingMessage("@inebotten hva skjer?")

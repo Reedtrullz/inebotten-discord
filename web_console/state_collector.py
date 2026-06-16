@@ -299,13 +299,15 @@ def collect_intent_stats(monitor: object | None = None) -> dict[str, Any]:
     if monitor is None:
         intent_counts = {k: v.get("count", 0) for k, v in persisted.items()}
         fallback_count = sum(v.get("low_confidence", 0) for v in persisted.values())
-        fallback_count += intent_counts.get("ai_chat", 0)
         return {"intent_counts": intent_counts, "fallback_count": fallback_count}
 
     try:
         raw_stats = {}
+        get_unsaved_intent_stats = getattr(monitor, "get_unsaved_intent_stats", None)
         get_intent_stats = getattr(monitor, "get_intent_stats", None)
-        if callable(get_intent_stats):
+        if callable(get_unsaved_intent_stats):
+            raw_stats = get_unsaved_intent_stats()
+        elif callable(get_intent_stats):
             raw_stats = get_intent_stats()
         else:
             raw_stats = getattr(monitor, "intent_stats", {})
@@ -324,8 +326,6 @@ def collect_intent_stats(monitor: object | None = None) -> dict[str, Any]:
                 count = int(stats.get("count", 0) or 0)
                 intent_counts[str(intent_name)] = intent_counts.get(str(intent_name), 0) + count
                 fallback_count += int(stats.get("low_confidence", 0) or 0)
-
-        fallback_count += intent_counts.get("ai_chat", 0)
 
         return {"intent_counts": intent_counts, "fallback_count": fallback_count}
     except Exception:

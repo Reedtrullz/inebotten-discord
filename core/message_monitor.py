@@ -54,6 +54,52 @@ COMMAND_REGISTRY = [
 ]
 
 
+_COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
+
+
+def _counter_stats_delta(current, previous):
+    """Return positive per-key counter deltas for nested intent stats."""
+    delta = {}
+    previous = previous or {}
+    for name, stats in current.items():
+        if not isinstance(stats, dict):
+            continue
+        previous_stats = previous.get(name, {}) if isinstance(previous, dict) else {}
+        entry = {}
+        for key in _COUNTER_STAT_KEYS:
+            value = int(stats.get(key, 0) or 0)
+            old_value = int(previous_stats.get(key, 0) or 0) if isinstance(previous_stats, dict) else 0
+            change = value - old_value
+            if change > 0:
+                entry[key] = change
+            else:
+                entry[key] = 0
+        if any(entry.values()):
+            delta[str(name)] = entry
+    return delta
+
+
+def _flat_counter_delta(current, previous):
+    """Return positive deltas for flat cumulative counters."""
+    delta = {}
+    previous = previous or {}
+    for name, value in current.items():
+        old_value = previous.get(name, 0) if isinstance(previous, dict) else 0
+        change = int(value or 0) - int(old_value or 0)
+        if change > 0:
+            delta[str(name)] = change
+    return delta
+
+
+def _copy_counter_stats(stats):
+    copied = {}
+    for name, values in stats.items():
+        if not isinstance(values, dict):
+            continue
+        copied[str(name)] = {key: int(values.get(key, 0) or 0) for key in _COUNTER_STAT_KEYS}
+    return copied
+
+
 class AuthorizedMessage:
     """
     Delegates to a Discord message while exposing content that has passed the
@@ -195,6 +241,8 @@ class MessageMonitor:
         self.response_count = 0
         self.error_count = 0
         self.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
+        self._last_persisted_intent_stats: dict[str, dict[str, int]] = {}
+        self._last_persisted_rate_stats: dict[str, int] = {}
         self._background_tasks = set()
 
         self.handlers = {}
@@ -265,7 +313,19 @@ class MessageMonitor:
                                     count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
                                     rate_stats[user] = rate_stats.get(user, 0) + count
                                 break
-                    store.save_stats(dict(self.intent_stats), rate_stats)
+                    intent_snapshot = _copy_counter_stats(dict(self.intent_stats))
+                    intent_delta = _counter_stats_delta(
+                        intent_snapshot,
+                        getattr(self, "_last_persisted_intent_stats", {}),
+                    )
+                    rate_delta = _flat_counter_delta(
+                        rate_stats,
+                        getattr(self, "_last_persisted_rate_stats", {}),
+                    )
+                    if intent_delta or rate_delta:
+                        store.save_stats(intent_delta, rate_delta)
+                    self._last_persisted_intent_stats = intent_snapshot
+                    self._last_persisted_rate_stats = dict(rate_stats)
                 except Exception:
                     pass
         except asyncio.CancelledError:
@@ -896,6 +956,12 @@ class MessageMonitor:
 
     def get_intent_stats(self):
         return dict(self.intent_stats)
+
+    def get_unsaved_intent_stats(self):
+        return _counter_stats_delta(
+            _copy_counter_stats(dict(self.intent_stats)),
+            getattr(self, "_last_persisted_intent_stats", {}),
+        )
 
     def get_handlers_status(self):
         """Get status of all handlers"""

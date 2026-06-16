@@ -16,6 +16,13 @@ from typing import Any
 from utils.json_storage import hermes_discord_data_dir, write_json_atomic
 
 
+STATS_SCHEMA_VERSION = 2
+
+
+def _empty_stats() -> dict[str, Any]:
+    return {"version": STATS_SCHEMA_VERSION, "intents": {}, "rate_limits": {}, "last_saved": None}
+
+
 class ConsoleStore:
     """Append-only JSONL store for logs and cumulative stats."""
 
@@ -70,6 +77,9 @@ class ConsoleStore:
     def save_stats(self, intent_stats: dict[str, Any], rate_limit_stats: dict[str, int]) -> None:
         try:
             existing = self._load_stats_raw()
+            existing["version"] = STATS_SCHEMA_VERSION
+            existing.setdefault("intents", {})
+            existing.setdefault("rate_limits", {})
 
             for intent, stats in intent_stats.items():
                 if intent not in existing["intents"]:
@@ -98,10 +108,16 @@ class ConsoleStore:
         try:
             if self._stats_file.exists():
                 with self._lock, self._stats_file.open("r", encoding="utf-8") as handle:
-                    return json.load(handle)
+                    data = json.load(handle)
+                if not isinstance(data, dict) or data.get("version") != STATS_SCHEMA_VERSION:
+                    return _empty_stats()
+                data.setdefault("intents", {})
+                data.setdefault("rate_limits", {})
+                data.setdefault("last_saved", None)
+                return data
         except Exception:
             pass
-        return {"intents": {}, "rate_limits": {}, "last_saved": None}
+        return _empty_stats()
 
     def create_session(self, ttl_seconds: int, binding_hash: str | None = None) -> str:
         """Create and persist a browser session token; returns the raw token."""
