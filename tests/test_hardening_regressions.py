@@ -7,6 +7,7 @@ import importlib
 import asyncio
 import http.client
 import io
+import json
 import os
 import time
 import unittest
@@ -27,6 +28,7 @@ from features.poll_manager import PollManager
 from features.quote_manager import QuoteManager
 from utils.json_storage import hermes_discord_data_path, read_json, write_json_atomic
 from utils.sanitizer import sanitize_discord_mention, sanitize_html
+from web_console.state_collector import collect_calendar_data
 
 
 class CalendarHardeningTests(unittest.TestCase):
@@ -155,6 +157,8 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
 
             self.assertEqual(read_json(path, {}), {"ok": True})
             self.assertFalse((Path(tmp) / ".data.json.tmp").exists())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(Path(tmp).glob(".data.json.*.tmp")), [])
 
     def test_default_data_path_migrates_legacy_file(self):
         with TemporaryDirectory() as tmp:
@@ -165,10 +169,189 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
             legacy.write_text('{"legacy": true}', encoding="utf-8")
 
             with patch.object(Path, "home", return_value=home):
-                path = hermes_discord_data_path("polls.json")
+                with patch.dict(os.environ, {"HERMES_HOME": str(home / ".hermes")}):
+                    path = hermes_discord_data_path("polls.json")
 
             self.assertEqual(path, home / ".hermes" / "discord" / "data" / "polls.json")
             self.assertTrue(path.exists())
+            self.assertFalse(legacy.exists())
+
+    def test_hermes_discord_data_path_uses_hermes_home(self):
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                path = hermes_discord_data_path("nested/data.json")
+
+            self.assertEqual(path, hermes_home / "discord" / "data" / "nested" / "data.json")
+            self.assertTrue(path.parent.exists())
+
+    def test_calendar_manager_default_storage_uses_hermes_home(self):
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                manager = CalendarManager()
+
+            self.assertEqual(
+                manager.storage_path,
+                hermes_home / "discord" / "data" / "calendar.json",
+            )
+
+    def test_collect_calendar_data_reads_hermes_home(self):
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            calendar_path = hermes_home / "discord" / "data" / "calendar.json"
+            write_json_atomic(
+                calendar_path,
+                {"shared": [{"title": "Framtidsmøte", "date": "01.01.2099"}]},
+            )
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                data = collect_calendar_data()
+
+            self.assertEqual(data["event_count"], 1)
+            self.assertEqual(data["upcoming_events"][0]["title"], "Framtidsmøte")
+
+    def test_console_store_uses_hermes_home_for_sessions(self):
+        from web_console.console_store import ConsoleStore
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                store = ConsoleStore()
+                token = store.create_session(60)
+
+            sessions_path = hermes_home / "discord" / "data" / "console" / "sessions.json"
+            self.assertTrue(sessions_path.exists())
+            self.assertTrue(store.validate_session(token))
+            self.assertEqual(sessions_path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(sessions_path.stat().st_mode & 0o777, 0o600)
+            stored_sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+            self.assertNotIn(token, stored_sessions)
+
+    def test_user_memory_default_storage_uses_hermes_home(self):
+        from memory.user_memory import UserMemory
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                user_memory = UserMemory()
+
+            self.assertEqual(
+                user_memory.storage_path,
+                hermes_home / "discord" / "data" / "user_memory.json",
+            )
+
+    def test_secure_token_storage_uses_hermes_home(self):
+        from utils.secure_storage import SecureTokenStorage
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                storage = SecureTokenStorage()
+
+            self.assertEqual(storage.storage_dir, hermes_home / "discord")
+
+    def test_auth_handler_plaintext_fallback_uses_hermes_home(self):
+        from core.auth_handler import AuthHandler
+
+        class FakeConfig:
+            def get_auth_creds(self):
+                return {"type": "token", "token": "a" * 50 + ".b.c"}
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                handler = AuthHandler(FakeConfig())
+                self.assertTrue(handler._save_token_fallback())
+
+            token_path = hermes_home / "discord" / ".token"
+            self.assertEqual(token_path.read_text(encoding="utf-8"), "a" * 50 + ".b.c")
+            self.assertEqual(token_path.stat().st_mode & 0o777, 0o600)
+
+    def test_setup_logger_uses_hermes_home_by_default(self):
+        from utils.logger import setup_logger
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                logger = setup_logger(f"test-logger-{time.time_ns()}")
+                logger.info("hello")
+
+            for handler in list(logger.handlers):
+                handler.close()
+                logger.removeHandler(handler)
+
+            self.assertTrue((hermes_home / "discord" / "logs" / "inebotten.log").exists())
+
+    def test_config_console_api_key_file_uses_hermes_home(self):
+        from core.config import Config
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            with patch.object(Config, "load_env", lambda self: setattr(self, "env_file_loaded", None)):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "DISCORD_USER_TOKEN": "token",
+                        "HERMES_HOME": str(hermes_home),
+                    },
+                    clear=True,
+                ):
+                    config = Config()
+
+            self.assertEqual(
+                config.CONSOLE_API_KEY_FILE,
+                hermes_home / "discord" / "data" / "console" / "api_key.txt",
+            )
+            self.assertTrue(config.CONSOLE_API_KEY_FILE.exists())
+
+    def test_config_loads_env_from_hermes_home(self):
+        from core.config import Config
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            env_path = hermes_home / "discord" / ".env"
+            env_path.parent.mkdir(parents=True)
+            env_path.write_text(
+                "DISCORD_USER_TOKEN=token-from-hermes\nCONSOLE_API_KEY=console-from-hermes\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=True):
+                config = Config()
+
+            self.assertEqual(config.DISCORD_TOKEN, "token-from-hermes")
+            self.assertEqual(config.CONSOLE_API_KEY, "console-from-hermes")
+            self.assertEqual(config.env_file_loaded, str(env_path))
+
+    def test_default_data_path_uses_home_when_hermes_home_is_unset(self):
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.object(Path, "home", return_value=home):
+                with patch.dict(os.environ, {}, clear=True):
+                    path = hermes_discord_data_path("calendar.json")
+
+            self.assertEqual(path, home / ".hermes" / "discord" / "data" / "calendar.json")
+
+    def test_legacy_migration_uses_configured_hermes_home(self):
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            legacy_dir = hermes_home / "discord"
+            legacy_dir.mkdir(parents=True)
+            legacy = legacy_dir / "reminders.json"
+            legacy.write_text('{"legacy": true}', encoding="utf-8")
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                path = hermes_discord_data_path("polls.json")
+
+            self.assertEqual(path, hermes_home / "discord" / "data" / "polls.json")
+            self.assertFalse(path.exists())
+            self.assertTrue(legacy.exists())
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                migrated = hermes_discord_data_path("reminders.json")
+
+            self.assertEqual(migrated, hermes_home / "discord" / "data" / "reminders.json")
+            self.assertTrue(migrated.exists())
             self.assertFalse(legacy.exists())
 
     def test_generated_console_api_key_is_persisted_and_reused(self):
@@ -177,7 +360,11 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             home = Path(tmp)
             with patch.object(Path, "home", return_value=home):
-                with patch.dict(os.environ, {"DISCORD_USER_TOKEN": "token"}, clear=True):
+                with patch.dict(
+                    os.environ,
+                    {"DISCORD_USER_TOKEN": "token", "HERMES_HOME": str(home / ".hermes")},
+                    clear=True,
+                ):
                     first = Config()
                     second = Config()
 
@@ -195,7 +382,11 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
             stdout = io.StringIO()
             with patch.object(Path, "home", return_value=home):
                 with patch.object(Config, "load_env", lambda self: setattr(self, "env_file_loaded", None)):
-                    with patch.dict(os.environ, {"DISCORD_USER_TOKEN": "token"}, clear=True):
+                    with patch.dict(
+                        os.environ,
+                        {"DISCORD_USER_TOKEN": "token", "HERMES_HOME": str(home / ".hermes")},
+                        clear=True,
+                    ):
                         with patch("core.config.secrets.token_urlsafe", return_value=generated_key):
                             with redirect_stdout(stdout):
                                 config = Config()

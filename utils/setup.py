@@ -6,7 +6,8 @@ Installs required dependencies
 
 import sys
 import subprocess
-from pathlib import Path
+
+from utils.json_storage import hermes_home_path
 
 def install_requirements():
     """
@@ -56,7 +57,7 @@ def create_env_template():
     """
     Create .env.example template if it doesn't exist
     """
-    env_path = Path.home() / '.hermes' / 'discord' / '.env.example'
+    env_path = hermes_home_path() / 'discord' / '.env.example'
     
     if env_path.exists():
         return
@@ -82,6 +83,7 @@ HERMES_API_URL=http://127.0.0.1:3000/api/chat
 # POLL_INTERVAL=8
 """
     
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text(template)
     print(f"\nCreated template: {env_path}")
 

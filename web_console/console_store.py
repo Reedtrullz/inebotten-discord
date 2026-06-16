@@ -4,24 +4,28 @@ from __future__ import annotations
 
 # pyright: reportAny=false
 
-import json
 import hashlib
+import json
+import os
 import secrets
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from utils.json_storage import write_json_atomic
+from utils.json_storage import hermes_discord_data_dir, write_json_atomic
 
 
 class ConsoleStore:
     """Append-only JSONL store for logs and cumulative stats."""
 
     def __init__(self) -> None:
-        self._data_dir = Path.home() / ".hermes" / "discord" / "data" / "console"
+        self._data_dir = hermes_discord_data_dir() / "console"
         self._data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self._data_dir, 0o700)
+        except OSError:
+            pass
 
         self._logs_file = self._data_dir / "logs.jsonl"
         self._stats_file = self._data_dir / "stats.json"
@@ -40,6 +44,10 @@ class ConsoleStore:
                 for line in lines:
                     record = {"line": line, "ts": datetime.now().isoformat()}
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                try:
+                    os.chmod(self._logs_file, 0o600)
+                except OSError:
+                    pass
         except Exception:
             pass
 
@@ -95,7 +103,7 @@ class ConsoleStore:
             pass
         return {"intents": {}, "rate_limits": {}, "last_saved": None}
 
-    def create_session(self, ttl_seconds: int) -> str:
+    def create_session(self, ttl_seconds: int, binding_hash: str | None = None) -> str:
         """Create and persist a browser session token; returns the raw token."""
         token = secrets.token_urlsafe(32)
         expires_at = int(time.time()) + max(1, ttl_seconds)
@@ -105,11 +113,12 @@ class ConsoleStore:
             sessions[self._hash_token(token)] = {
                 "created_at": int(time.time()),
                 "expires_at": expires_at,
+                "binding_hash": binding_hash,
             }
             self._save_sessions_unlocked(sessions)
         return token
 
-    def validate_session(self, token: str | None) -> bool:
+    def validate_session(self, token: str | None, binding_hash: str | None = None) -> bool:
         """Return True if a session token exists and has not expired."""
         if not token:
             return False
@@ -120,6 +129,10 @@ class ConsoleStore:
             if not session:
                 return False
             if int(session.get("expires_at", 0)) <= int(time.time()):
+                sessions.pop(token_hash, None)
+                self._save_sessions_unlocked(sessions)
+                return False
+            if session.get("binding_hash") != binding_hash:
                 sessions.pop(token_hash, None)
                 self._save_sessions_unlocked(sessions)
                 return False
@@ -143,7 +156,7 @@ class ConsoleStore:
             if self._prune_sessions_unlocked(sessions):
                 self._save_sessions_unlocked(sessions)
 
-    def _load_sessions_raw_unlocked(self) -> dict[str, dict[str, int]]:
+    def _load_sessions_raw_unlocked(self) -> dict[str, dict[str, Any]]:
         try:
             if self._sessions_file.exists():
                 with self._sessions_file.open("r", encoding="utf-8") as handle:
@@ -158,10 +171,10 @@ class ConsoleStore:
             pass
         return {}
 
-    def _save_sessions_unlocked(self, sessions: dict[str, dict[str, int]]) -> None:
+    def _save_sessions_unlocked(self, sessions: dict[str, dict[str, Any]]) -> None:
         write_json_atomic(self._sessions_file, sessions)
 
-    def _prune_sessions_unlocked(self, sessions: dict[str, dict[str, int]]) -> bool:
+    def _prune_sessions_unlocked(self, sessions: dict[str, dict[str, Any]]) -> bool:
         now = int(time.time())
         before = len(sessions)
         expired = [

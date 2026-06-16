@@ -8,6 +8,13 @@ PORT = 18080
 API_KEY = "test-key-123"
 
 
+class FakeCloudflareAccessVerifier:
+    configured = True
+
+    def verify_headers(self, headers: dict[str, str]) -> bool:
+        return headers.get("cf-access-jwt-assertion") == "valid-cloudflare-token"
+
+
 async def start_server(monitor: object | None = None, *, secure_cookies: bool | None = None) -> tuple[ConsoleServer, asyncio.Task[None]]:
     server = ConsoleServer(host=HOST, port=PORT, api_key=API_KEY, monitor=monitor, secure_cookies=secure_cookies)
     task = asyncio.create_task(server.start())
@@ -90,6 +97,108 @@ async def test_auth_valid_key():
         assert b"200" in response
     finally:
         await stop_server(server, task)
+
+
+async def test_cloudflare_access_header_authenticates_when_enabled():
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        auth_mode="cloudflare_access",
+        cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
+    )
+    task = asyncio.create_task(server.start())
+    await asyncio.sleep(0.1)
+    try:
+        response = await request(
+            "/api/status",
+            extra_headers=["Cf-Access-Jwt-Assertion: valid-cloudflare-token"],
+        )
+        assert b"200" in response
+        assert b'"status":' in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_cloudflare_access_mode_keeps_api_key_recovery_auth():
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        auth_mode="cloudflare_access",
+        cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
+    )
+    task = asyncio.create_task(server.start())
+    await asyncio.sleep(0.1)
+    try:
+        response = await request("/api/status", api_key=API_KEY)
+        assert b"200" in response
+        assert b'"status":' in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_cloudflare_access_mode_does_not_show_api_key_login_without_access_token():
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        auth_mode="cloudflare_access",
+        cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
+    )
+    task = asyncio.create_task(server.start())
+    await asyncio.sleep(0.1)
+    try:
+        response = await request("/")
+        assert b"401" in response
+        assert b"Cloudflare Access authentication required" in response
+        assert b"api_key" not in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_cloudflare_access_mode_disables_browser_api_key_login():
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        auth_mode="cloudflare_access",
+        cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
+    )
+    task = asyncio.create_task(server.start())
+    await asyncio.sleep(0.1)
+    try:
+        response = await request(
+            "/api/login",
+            method="POST",
+            api_key=API_KEY,
+            body=b"api_key=test-key-123",
+        )
+        assert b"403" in response
+        assert b"Cloudflare Access mode" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_cloudflare_access_mode_requires_verifier_config():
+    server = ConsoleServer(
+        host=HOST,
+        port=0,
+        api_key=API_KEY,
+        auth_mode="cloudflare_access",
+        cloudflare_access_team_domain="",
+        cloudflare_access_audiences=[],
+        cloudflare_access_allowed_emails=[],
+    )
+    try:
+        try:
+            await server.start()
+        except RuntimeError as exc:
+            assert "Cloudflare Access" in str(exc)
+        else:
+            raise AssertionError("Cloudflare Access mode accepted missing config")
+    finally:
+        await server.stop()
 
 
 def test_missing_console_api_key_never_authenticates():
@@ -381,6 +490,22 @@ async def test_dashboard_with_session_cookie():
         await stop_server(server, task)
 
 
+async def test_session_cookie_invalid_after_api_key_rotation():
+    server, task = await start_server()
+    try:
+        login = await request("/api/login", method="POST", body=b"api_key=test-key-123")
+        token = extract_cookie(login, "console_session")
+
+        server.api_key = "rotated-key"
+
+        old_session = await request("/api/status", cookie=f"console_session={token}")
+        new_key = await request("/api/status", api_key="rotated-key")
+        assert b"401" in old_session
+        assert b"200" in new_key
+    finally:
+        await stop_server(server, task)
+
+
 async def test_api_with_session_cookie():
     server, task = await start_server()
     try:
@@ -452,6 +577,23 @@ async def test_logs_endpoint():
         response = await request("/api/logs", api_key=API_KEY)
         assert b"200" in response
         assert b"logs" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_console_responses_include_security_headers():
+    server, task = await start_server()
+    try:
+        login_page = await request("/login")
+        api_response = await request("/api/status", api_key=API_KEY)
+
+        for response in (login_page, api_response):
+            assert b"Cache-Control: no-store" in response
+            assert b"Pragma: no-cache" in response
+            assert b"X-Content-Type-Options: nosniff" in response
+            assert b"X-Frame-Options: DENY" in response
+            assert b"Referrer-Policy: no-referrer" in response
+        assert b"Content-Security-Policy:" in login_page
     finally:
         await stop_server(server, task)
 

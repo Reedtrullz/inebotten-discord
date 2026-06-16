@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from utils.json_storage import hermes_home_path
+
 
 class AuthHandler:
     """
@@ -164,7 +166,7 @@ class AuthHandler:
         Fallback method to save token to file with restricted permissions
         """
         if filepath is None:
-            filepath = Path.home() / ".hermes" / "discord" / ".token"
+            filepath = hermes_home_path() / "discord" / ".token"
 
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)

@@ -4,12 +4,11 @@ One-time script to sync existing calendar items to Google Calendar
 """
 
 import json
-from pathlib import Path
 from datetime import datetime
-from utils.json_storage import write_json_atomic
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 # Load existing calendar data
-calendar_path = Path.home() / '.hermes' / 'discord' / 'data' / 'calendar.json'
+calendar_path = hermes_discord_data_path('calendar.json')
 
 if not calendar_path.exists():
     print("No calendar data found!")

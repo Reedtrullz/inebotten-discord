@@ -10,6 +10,8 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 
+from utils.json_storage import hermes_discord_data_path, hermes_home_path
+
 _config_instance = None
 
 class Config:
@@ -57,10 +59,12 @@ class Config:
         self.CONSOLE_LOGIN_MAX_ATTEMPTS = int(os.getenv('CONSOLE_LOGIN_MAX_ATTEMPTS', '5'))
         self.CONSOLE_LOGIN_WINDOW_SECONDS = int(os.getenv('CONSOLE_LOGIN_WINDOW_SECONDS', '300'))
         self.CONSOLE_COOKIE_SECURE = os.getenv('CONSOLE_COOKIE_SECURE', 'False').lower() == 'true'
+        self.CONSOLE_AUTH_MODE = os.getenv('CONSOLE_AUTH_MODE', 'api_key').strip().lower()
+        self.CONSOLE_CF_ACCESS_TEAM_DOMAIN = os.getenv('CONSOLE_CF_ACCESS_TEAM_DOMAIN', '').strip()
+        self.CONSOLE_CF_ACCESS_AUD = self._split_csv(os.getenv('CONSOLE_CF_ACCESS_AUD', ''))
+        self.CONSOLE_CF_ACCESS_ALLOWED_EMAILS = self._split_csv(os.getenv('CONSOLE_CF_ACCESS_ALLOWED_EMAILS', ''))
         console_api_key = os.getenv('CONSOLE_API_KEY')
-        self.CONSOLE_API_KEY_FILE = (
-            Path.home() / '.hermes' / 'discord' / 'data' / 'console' / 'api_key.txt'
-        )
+        self.CONSOLE_API_KEY_FILE = hermes_discord_data_path('console/api_key.txt')
         self.CONSOLE_API_KEY_AUTO_GENERATED = not bool(console_api_key)
         self.CONSOLE_API_KEY_CREATED = False
         if not console_api_key:
@@ -92,7 +96,7 @@ class Config:
         """
         env_paths = [
             Path('.env'),  # Current directory
-            Path.home() / '.hermes' / 'discord' / '.env',  # User home
+            hermes_home_path() / 'discord' / '.env',  # Hermes home
         ]
         
         self.env_file_loaded = None
@@ -141,6 +145,8 @@ class Config:
             if self.CONSOLE_API_KEY_CREATED:
                 print("[CONFIG] Console API key generated and stored.")
             print(f"[CONFIG] Console API key file: {self.CONSOLE_API_KEY_FILE}")
+        if self.CONSOLE_AUTH_MODE == 'cloudflare_access':
+            print("[CONFIG] Web console browser auth: Cloudflare Access")
 
     def _load_or_create_console_api_key(self) -> str:
         try:
@@ -161,6 +167,9 @@ class Config:
             print(f"[CONFIG] WARNING: Could not persist console API key: {e}")
             self.CONSOLE_API_KEY_CREATED = True
             return secrets.token_urlsafe(32)
+
+    def _split_csv(self, value: str) -> list[str]:
+        return [item.strip() for item in value.split(',') if item.strip()]
     
     def get_hermes_url(self):
         """
@@ -242,6 +251,22 @@ class Config:
     @property
     def console_cookie_secure(self):
         return self.CONSOLE_COOKIE_SECURE
+
+    @property
+    def console_auth_mode(self):
+        return self.CONSOLE_AUTH_MODE
+
+    @property
+    def console_cf_access_team_domain(self):
+        return self.CONSOLE_CF_ACCESS_TEAM_DOMAIN
+
+    @property
+    def console_cf_access_audiences(self):
+        return self.CONSOLE_CF_ACCESS_AUD
+
+    @property
+    def console_cf_access_allowed_emails(self):
+        return self.CONSOLE_CF_ACCESS_ALLOWED_EMAILS
 
 def get_config() -> Config:
     """

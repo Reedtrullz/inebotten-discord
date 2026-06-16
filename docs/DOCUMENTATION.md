@@ -465,12 +465,15 @@ Botten eksponerer et webbasert dashbord på port 8080 (konfigurerbart via `CONSO
 
 **Autentisering:**
 
-Console krever API-nøkkel. Hvis `CONSOLE_API_KEY` ikke er satt i `.env`, genereres en nøkkel ved første start og lagres i `~/.hermes/discord/data/console/api_key.txt`. Nettleserinnlogging oppretter en egen tidsbegrenset session-cookie; API-nøkkelen lagres ikke som cookie-verdi.
+Console krever autentisering. Standardmodus er API-nøkkel: hvis `CONSOLE_API_KEY` ikke er satt i `.env`, genereres en nøkkel ved første start og lagres i `~/.hermes/discord/data/console/api_key.txt`. Nettleserinnlogging oppretter en egen tidsbegrenset session-cookie; API-nøkkelen lagres ikke som cookie-verdi.
+
+For produksjon bak Cloudflare Access kan `CONSOLE_AUTH_MODE=cloudflare_access` brukes. Da godtas `Cf-Access-Jwt-Assertion` bare etter signaturvalidering mot `CONSOLE_CF_ACCESS_TEAM_DOMAIN`, audience-sjekk mot `CONSOLE_CF_ACCESS_AUD`, og e-postallowlist i `CONSOLE_CF_ACCESS_ALLOWED_EMAILS`. API-key-headeren beholdes for eksplisitte serviceklienter og recovery, men nettleserinnlogging via API-nøkkelskjemaet er deaktivert i Cloudflare Access-modus.
 
 | Metode | Beskrivelse |
 |--------|-------------|
 | `X-API-Key`-header | For API-klienter og programmer |
 | `console_session` cookie | For nettlesere etter innlogging via skjema på `/login` |
+| `Cf-Access-Jwt-Assertion` | For nettlesere/proxyflyt bak Cloudflare Access når `CONSOLE_AUTH_MODE=cloudflare_access` |
 
 **Endpoints:**
 

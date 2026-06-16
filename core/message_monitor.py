@@ -986,6 +986,10 @@ class SelfbotClient(discord.Client):
                 login_max_attempts=self.config.console_login_max_attempts,
                 login_window_seconds=self.config.console_login_window_seconds,
                 cookie_secure=self.config.console_cookie_secure,
+                auth_mode=self.config.console_auth_mode,
+                cloudflare_access_team_domain=self.config.console_cf_access_team_domain,
+                cloudflare_access_audiences=self.config.console_cf_access_audiences,
+                cloudflare_access_allowed_emails=self.config.console_cf_access_allowed_emails,
             )
             await self.console_server.start()
             print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")

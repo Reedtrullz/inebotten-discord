@@ -6,9 +6,10 @@ Stores preferences, conversation history, and personal details per user
 
 import json
 import asyncio
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 class UserMemory:
@@ -18,9 +19,7 @@ class UserMemory:
 
     def __init__(self, storage_path=None):
         if storage_path is None:
-            storage_path = (
-                Path.home() / ".hermes" / "discord" / "data" / "user_memory.json"
-            )
+            storage_path = hermes_discord_data_path("user_memory.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,18 +46,10 @@ class UserMemory:
 
     async def _save_memory(self):
         """Save memory to storage atomically and asynchronously"""
-        def _write():
-            temp_path = self.storage_path.with_suffix(".tmp")
-            try:
-                with open(temp_path, "w", encoding="utf-8") as f:
-                    json.dump(self.memory, f, ensure_ascii=False, indent=2)
-                os.replace(temp_path, self.storage_path)
-            except Exception as e:
-                print(f"[MEMORY] User memory save error: {e}")
-                if temp_path.exists():
-                    os.remove(temp_path)
-
-        await asyncio.to_thread(_write)
+        try:
+            await asyncio.to_thread(write_json_atomic, self.storage_path, self.memory)
+        except Exception as e:
+            print(f"[MEMORY] User memory save error: {e}")
 
     async def get_user(self, user_id, username=None):
         """

@@ -155,7 +155,7 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
 
 
 def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:
-    path = Path.home() / ".hermes" / "discord" / "data" / "calendar.json"
+    path = hermes_discord_data_path("calendar.json")
     data = _read_json_file(path, {})
     items = _flatten_calendar_items(data)
 

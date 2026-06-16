@@ -20,6 +20,9 @@ On the VPS (already configured, here for reference):
 - A `.env` file at `/opt/apps/inebotten-discord/.env` containing
   `DISCORD_USER_TOKEN` (per-user, not in vault)
 - A host-level Caddy serving `bot.reidar.tech` → `127.0.0.1:8081`
+- Optional Cloudflare Access/Tunnel setup for browser SSO. The app can run
+  with `CONSOLE_AUTH_MODE=cloudflare_access` after Cloudflare provides the
+  team domain, application AUD tag, and allowed email list.
 
 ## Deploy
 
@@ -71,6 +74,23 @@ ansible-vault edit deploy/group_vars/vps/vault.yml \
 
 To rotate `DISCORD_USER_TOKEN`, ssh to the VPS and edit `.env` directly —
 the playbook does not touch it.
+
+For Cloudflare Access browser SSO, keep the secret-free app settings in
+`/opt/apps/inebotten-discord/.env` unless the deploy playbook is extended to
+manage them:
+
+```bash
+CONSOLE_AUTH_MODE=cloudflare_access
+CONSOLE_COOKIE_SECURE=True
+CONSOLE_CF_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
+CONSOLE_CF_ACCESS_AUD=<bot.reidar.tech Access application AUD tag>
+CONSOLE_CF_ACCESS_ALLOWED_EMAILS=<allowed GitHub/Access email>
+```
+
+In this mode Cloudflare signs the identity token in
+`Cf-Access-Jwt-Assertion`; the console validates that token before serving the
+dashboard. Keep `CONSOLE_API_KEY` available for explicit `X-API-Key` service
+clients and recovery, but browser API-key login is disabled.
 
 For Google Calendar, keep both files in `/opt/apps/inebotten-discord/data`.
 That directory is mounted into the container as `/home/inebotten/.hermes`, so

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -10,6 +11,7 @@ from typing import cast
 from urllib.parse import urlparse
 
 from web_console.dashboard import render_commands_page, render_dashboard, render_login_page  # pyright: ignore[reportUnknownVariableType]
+from web_console.cloudflare_access import CloudflareAccessVerifier
 from web_console.console_store import get_console_store
 from web_console.state_collector import (
     StateCollector,
@@ -28,6 +30,16 @@ logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 32 * 1024
 MAX_BODY_BYTES = 16 * 1024
+DEFAULT_SECURITY_HEADERS = [
+    "Cache-Control: no-store",
+    "Pragma: no-cache",
+    "X-Content-Type-Options: nosniff",
+    "X-Frame-Options: DENY",
+    "Referrer-Policy: no-referrer",
+]
+HTML_SECURITY_HEADERS = [
+    "Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+]
 
 
 class ConsoleServer:
@@ -49,6 +61,11 @@ class ConsoleServer:
         login_max_attempts: int | None = None,
         login_window_seconds: int | None = None,
         cookie_secure: bool | None = None,
+        auth_mode: str | None = None,
+        cloudflare_access_team_domain: str | None = None,
+        cloudflare_access_audiences: list[str] | None = None,
+        cloudflare_access_allowed_emails: list[str] | None = None,
+        cloudflare_access_verifier: object | None = None,
     ):
         self.host = host
         self.port = port
@@ -73,6 +90,31 @@ class ConsoleServer:
         if cookie_secure is None:
             cookie_secure = os.getenv("CONSOLE_COOKIE_SECURE", "False").lower() == "true"
         self.cookie_secure = bool(cookie_secure)
+        self.auth_mode = (auth_mode or os.getenv("CONSOLE_AUTH_MODE", "api_key")).strip().lower()
+        if self.auth_mode not in {"api_key", "cloudflare_access"}:
+            raise ValueError("CONSOLE_AUTH_MODE must be 'api_key' or 'cloudflare_access'")
+        self.cloudflare_access_verifier = cloudflare_access_verifier
+        if self.auth_mode == "cloudflare_access" and self.cloudflare_access_verifier is None:
+            team_domain = (
+                cloudflare_access_team_domain
+                if cloudflare_access_team_domain is not None
+                else os.getenv("CONSOLE_CF_ACCESS_TEAM_DOMAIN", "")
+            )
+            audiences = (
+                cloudflare_access_audiences
+                if cloudflare_access_audiences is not None
+                else self._split_env_list(os.getenv("CONSOLE_CF_ACCESS_AUD", ""))
+            )
+            allowed_emails = (
+                cloudflare_access_allowed_emails
+                if cloudflare_access_allowed_emails is not None
+                else self._split_env_list(os.getenv("CONSOLE_CF_ACCESS_ALLOWED_EMAILS", ""))
+            )
+            self.cloudflare_access_verifier = CloudflareAccessVerifier(
+                team_domain=team_domain,
+                audiences=audiences,
+                allowed_emails=allowed_emails,
+            )
         self._login_failures: dict[str, list[float]] = {}
 
     @property
@@ -89,6 +131,10 @@ class ConsoleServer:
 
         if self.api_key is None:
             raise RuntimeError("ConsoleServer requires a non-empty api_key")
+        if self.auth_mode == "cloudflare_access":
+            configured = bool(getattr(self.cloudflare_access_verifier, "configured", False))
+            if not configured:
+                raise RuntimeError("Cloudflare Access console auth requires team domain, AUD, and allowed email config")
 
         self._server = await asyncio.start_server(self.handle_request, self.host, self.port)
         sockets = self._server.sockets or []
@@ -112,6 +158,9 @@ class ConsoleServer:
             key, value = line.split(":", 1)
             headers[key.strip().lower()] = value.strip()
         return headers
+
+    def _split_env_list(self, value: str) -> list[str]:
+        return [item.strip() for item in value.split(",") if item.strip()]
 
     def _content_length(self, headers: dict[str, str]) -> int | None:
         raw_length = headers.get("content-length", "0") or "0"
@@ -144,8 +193,12 @@ class ConsoleServer:
         if self._valid_api_key(api_key):
             return True
         cookies = self._parse_cookies(headers.get("cookie"))
-        if self.store.validate_session(cookies.get("console_session")):
+        if self.store.validate_session(cookies.get("console_session"), self._session_binding_hash()):
             return True
+        if self.auth_mode == "cloudflare_access":
+            verifier = self.cloudflare_access_verifier
+            if verifier is not None and hasattr(verifier, "verify_headers"):
+                return bool(verifier.verify_headers(headers))
         return False
 
     def _valid_api_key(self, submitted: str | None) -> bool:
@@ -153,6 +206,11 @@ class ConsoleServer:
         if not submitted or not expected:
             return False
         return hmac.compare_digest(submitted, expected)
+
+    def _session_binding_hash(self) -> str | None:
+        if not self.api_key:
+            return None
+        return hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
 
     def _peer_key(self, writer: asyncio.StreamWriter) -> str:
         peername = writer.get_extra_info("peername")
@@ -275,6 +333,9 @@ class ConsoleServer:
         ]
         if extra_headers:
             header_lines.extend(extra_headers)
+        header_lines.extend(DEFAULT_SECURITY_HEADERS)
+        if content_type.startswith("text/html"):
+            header_lines.extend(HTML_SECURITY_HEADERS)
         header_lines.extend(["", ""])
 
         writer.write("\r\n".join(header_lines).encode("utf-8") + body_bytes)
@@ -328,10 +389,15 @@ class ConsoleServer:
                 await self._serve_static_file(writer, path)
                 return
 
-            auth_exempt = path in ("/health", "/api/login", "/demo", "/commands")
+            auth_exempt = path in ("/health", "/demo", "/commands")
+            if self.auth_mode == "api_key" and path == "/api/login":
+                auth_exempt = True
             authenticated = auth_exempt or self._is_authenticated(headers)
 
             if not authenticated and path in ("/", "/login"):
+                if self.auth_mode == "cloudflare_access":
+                    await self._send_response(writer, 401, {"error": "Cloudflare Access authentication required"})
+                    return
                 html = render_login_page()
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
                 return
@@ -344,6 +410,9 @@ class ConsoleServer:
                 return
 
             if method == "POST" and path == "/api/login":
+                if self.auth_mode == "cloudflare_access":
+                    await self._send_response(writer, 403, {"error": "API-key browser login is disabled in Cloudflare Access mode"})
+                    return
                 peer_key = self._peer_key(writer)
                 if self._login_limited(peer_key):
                     html = render_login_page(error="Innlogging midlertidig blokkert. Prøv igjen senere.")
@@ -360,7 +429,7 @@ class ConsoleServer:
                 submitted_key = form_data.get("api_key", "")
                 if self._valid_api_key(submitted_key):
                     self._clear_login_failures(peer_key)
-                    token = self.store.create_session(self.session_ttl_seconds)
+                    token = self.store.create_session(self.session_ttl_seconds, self._session_binding_hash())
                     await self._send_response(
                         writer,
                         302,
@@ -397,6 +466,9 @@ class ConsoleServer:
                 return
 
             if path == "/login":
+                if self.auth_mode == "cloudflare_access":
+                    await self._send_response(writer, 404, {"error": "Not found"})
+                    return
                 html = render_login_page()
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/health":

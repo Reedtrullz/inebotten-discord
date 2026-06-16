@@ -11,6 +11,8 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
+from utils.json_storage import hermes_home_path
+
 
 def setup_logger(
     name: str,
@@ -57,7 +59,7 @@ def setup_logger(
     # File handler with rotation
     if log_to_file:
         if log_dir is None:
-            log_dir = Path.home() / '.hermes' / 'discord' / 'logs'
+            log_dir = hermes_home_path() / 'discord' / 'logs'
         
         log_dir.mkdir(parents=True, exist_ok=True)
         
@@ -173,13 +175,20 @@ def install_log_capture() -> None:
     buffer = get_log_buffer()
 
     root = logging.getLogger()
-    handler = BufferHandler(buffer)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)8s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
-    root.addHandler(handler)
+    has_handler = any(
+        isinstance(handler, BufferHandler) and getattr(handler, "_buffer", None) is buffer
+        for handler in root.handlers
+    )
+    if not has_handler:
+        handler = BufferHandler(buffer)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)8s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+        root.addHandler(handler)
 
-    sys.stdout = StdoutWrapper(sys.stdout, buffer)
-    sys.stderr = StdoutWrapper(sys.stderr, buffer)
+    if not isinstance(sys.stdout, StdoutWrapper):
+        sys.stdout = StdoutWrapper(sys.stdout, buffer)
+    if not isinstance(sys.stderr, StdoutWrapper):
+        sys.stderr = StdoutWrapper(sys.stderr, buffer)
 
 
 class LoggerMixin:

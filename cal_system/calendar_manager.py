@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
+from utils.json_storage import hermes_discord_data_path
+
 
 class AwaitableDict(dict):
     """Dictionary result that can also be awaited by async handlers."""
@@ -54,9 +56,7 @@ class CalendarManager:
 
     def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None):
         if storage_path is None:
-            storage_path = (
-                Path.home() / ".hermes" / "discord" / "data" / "calendar.json"
-            )
+            storage_path = hermes_discord_data_path("calendar.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)

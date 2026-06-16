@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from utils.json_storage import hermes_home_path
+
 # Try to import keyring for system keychain storage
 try:
     import keyring
@@ -39,7 +41,7 @@ class SecureTokenStorage:
     TOKEN_KEY = "discord_token"
     
     def __init__(self):
-        self.storage_dir = Path.home() / '.hermes' / 'discord'
+        self.storage_dir = hermes_home_path() / 'discord'
         self.storage_dir.mkdir(parents=True, exist_ok=True)
     
     def save_token(self, token: str) -> bool:
