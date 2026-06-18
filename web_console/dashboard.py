@@ -727,7 +727,22 @@ def render_gcal_auth_page(
   </form>
 
   <div class="setup-note">
-    <p>Bruk en Google OAuth 2.0 Client ID av typen <strong>Desktop app</strong>. Innholdet lagres privat som <code>credentials.json</code>, og vises ikke tilbake etter lagring.</p>
+    <div class="setup-link-row">
+      <a
+        href="https://console.developers.google.com/auth/clients"
+        class="btn btn-secondary"
+        target="_blank"
+        rel="noopener noreferrer"
+      >Åpne Google Auth Clients</a>
+      <a
+        href="https://support.google.com/cloud/answer/15549257"
+        class="btn btn-ghost"
+        target="_blank"
+        rel="noopener noreferrer"
+      >Google-hjelp</a>
+    </div>
+    <p>I Google: velg <strong>CREATE CLIENT</strong>, application type <strong>Desktop app</strong>, last ned JSON-filen, og lim hele innholdet inn her.</p>
+    <p>Innholdet lagres privat som <code>credentials.json</code>, og vises ikke tilbake etter lagring.</p>
     <p>Når den er lagret: kjør <code>@inebotten kalender auth</code>, åpne Google-lenken og send koden tilbake med <code>@inebotten kalender kode &lt;kode&gt;</code>.</p>
   </div>
 </section>"""

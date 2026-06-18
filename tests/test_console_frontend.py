@@ -82,7 +82,9 @@ def test_gcal_auth_page_renders_after_login(page: Any, console_server: ConsoleSe
 
     assert page.locator("#gcal-auth").is_visible()
     assert page.locator('textarea[name="credentials_json"]').is_visible()
+    assert page.locator('a[href="https://console.developers.google.com/auth/clients"]').is_visible()
     assert "OAuth-oppsett" in page.content()
+    assert "Desktop app" in page.content()
 
 
 def test_static_assets_load(page: Any, console_server: ConsoleServer) -> None:

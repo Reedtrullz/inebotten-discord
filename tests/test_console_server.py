@@ -365,6 +365,9 @@ async def test_gcal_auth_page_renders_with_auth():
                 assert b"200" in response
                 assert "OAuth-oppsett".encode("utf-8") in response
                 assert b"credentials_json" in response
+                assert b"https://console.developers.google.com/auth/clients" in response
+                assert b"https://support.google.com/cloud/answer/15549257" in response
+                assert b"Desktop app" in response
             finally:
                 await stop_server(server, task)
 
