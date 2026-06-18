@@ -19,6 +19,8 @@ from features.base_handler import BaseHandler
 class CalendarHandler(BaseHandler):
     """Handler for calendar-related commands"""
 
+    CLEAR_CONFIRM_KEYWORDS = ("bekreft", "confirm")
+
     def __init__(self, monitor):
         super().__init__(monitor)
         self.calendar = monitor.calendar
@@ -205,18 +207,61 @@ class CalendarHandler(BaseHandler):
         """Handle clearing the entire calendar."""
         try:
             guild_id = self.get_guild_id(message)
-            
-            # Double check with the user? For now, just do it as requested.
-            count = await self.calendar.clear_calendar(guild_id)
-            
-            if count > 0:
-                await self.send_response(message, f"🗑️ **Kalenderen er tømt!** Slettet {count} elementer.")
+            current_count = len(self.calendar.items.get(self.calendar.SHARED_KEY, []))
+
+            if current_count == 0:
+                await self.send_response(message, "📭 Kalenderen er allerede tom.")
+                return
+
+            confirmed_count = self._clear_confirmation_count(message.content)
+            if confirmed_count != current_count:
+                await self.send_response(
+                    message,
+                    "⚠️ **Dette sletter hele kalenderen.**\n"
+                    f"Akkurat nå ligger det {current_count} elementer der.\n"
+                    f"Send `@inebotten tøm kalender bekreft {current_count}` hvis du virkelig vil gjøre det.",
+                )
+                return
+
+            result = await self.calendar.clear_calendar(guild_id)
+            deleted_count = result.get("deleted_count", 0)
+            failed_count = result.get("failed_count", 0)
+
+            if failed_count > 0:
+                await self.send_response(
+                    message,
+                    "⚠️ **Kalenderen er delvis tømt.** "
+                    f"Slettet {deleted_count} elementer, men {failed_count} Google Calendar-elementer "
+                    "kunne ikke slettes og er markert for ny sletting.",
+                )
+            elif deleted_count > 0:
+                await self.send_response(message, f"🗑️ **Kalenderen er tømt!** Slettet {deleted_count} elementer.")
             else:
                 await self.send_response(message, "📭 Kalenderen er allerede tom.")
-                
+
         except Exception as e:
             self.log(f"Error clearing calendar: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under tømming av kalenderen.")
+
+    def _clear_is_confirmed(self, content: str) -> bool:
+        """Require an explicit confirmation token for whole-calendar deletion."""
+        cleaned = re.sub(r"<@!?\d+>", "", content or "")
+        cleaned = cleaned.replace("@inebotten", "").lower()
+        return any(
+            re.search(rf"\b{re.escape(keyword)}\b", cleaned)
+            for keyword in self.CLEAR_CONFIRM_KEYWORDS
+        )
+
+    def _clear_confirmation_count(self, content: str) -> Optional[int]:
+        """Return the confirmed clear count when the user supplied one."""
+        if not self._clear_is_confirmed(content):
+            return None
+        cleaned = re.sub(r"<@!?\d+>", "", content or "")
+        cleaned = cleaned.replace("@inebotten", "").lower()
+        match = re.search(r"\b(?:bekreft|confirm)\s+(\d+)\b", cleaned)
+        if not match:
+            return None
+        return int(match.group(1))
 
     async def handle_delete(self, message) -> None:
         """Handle calendar item deletion."""

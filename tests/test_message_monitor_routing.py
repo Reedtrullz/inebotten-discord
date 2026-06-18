@@ -3,6 +3,7 @@
 """Async monitor routing regressions."""
 
 import unittest
+import asyncio
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -98,6 +99,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.response_count = 0
         monitor.error_count = 0
         monitor.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
+        monitor._background_tasks = set()
+        monitor._task_health = {}
+        monitor._last_persisted_intent_stats = {}
+        monitor._last_persisted_rate_stats = {}
         monitor.rate_limiter = FakeRateLimiter()
         monitor.loc = SimpleNamespace(detect_language=lambda content: "no", set_language=lambda lang: None)
         monitor.nlp_parser = SimpleNamespace(
@@ -248,6 +253,74 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             message_monitor._flat_counter_delta({"u1": 10, "u2": 1}, {"u1": 8, "u3": 9}),
             {"u1": 2, "u2": 1},
         )
+
+    async def test_failed_background_task_is_visible_in_health(self):
+        monitor = self.make_monitor()
+
+        async def boom():
+            raise RuntimeError("task failed")
+
+        monitor._track_background_task(boom(), "boom-task")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        task_health = monitor.get_task_health()["boom-task"]
+        self.assertEqual(task_health["state"], "failed")
+        self.assertIn("task failed", task_health["last_error"])
+
+    async def test_console_persistence_failure_does_not_advance_snapshot(self):
+        monitor = self.make_monitor()
+        monitor.intent_stats["search"]["count"] = 3
+
+        class FailingStore:
+            def save_stats(self, intent_stats, rate_limit_stats):
+                return False
+
+        from web_console import console_store
+
+        old_store = console_store._store
+        console_store._store = FailingStore()
+        try:
+            with self.assertRaises(RuntimeError):
+                await monitor._persist_console_stats_once()
+        finally:
+            console_store._store = old_store
+
+        self.assertEqual(monitor._last_persisted_intent_stats, {})
+
+    async def test_search_intent_uses_routed_payload(self):
+        monitor = self.make_monitor()
+        captured = {}
+
+        async def fake_ai_response(message, forced_search_info=None):
+            captured["forced_search_info"] = forced_search_info
+
+        monitor._send_ai_response = fake_ai_response
+        search_payload = {"query": "dagens nyheter", "type": "web"}
+        route = SimpleNamespace(
+            intent=BotIntent.SEARCH,
+            confidence=0.9,
+            payload={"search": search_payload},
+        )
+
+        await monitor._handle_intent(RecordingMessage("@inebotten søk på nett dagens nyheter"), route)
+
+        self.assertEqual(captured["forced_search_info"], search_payload)
+
+    async def test_dashboard_intent_uses_explicit_dashboard_handler(self):
+        monitor = self.make_monitor()
+        captured = {}
+
+        async def fake_dashboard(message):
+            captured["message"] = message
+
+        monitor._send_dashboard_response = fake_dashboard
+        route = SimpleNamespace(intent=BotIntent.DASHBOARD, confidence=0.9, payload={})
+        message = RecordingMessage("@inebotten dashboard")
+
+        await monitor._handle_intent(message, route)
+
+        self.assertIs(captured["message"], message)
 
     async def test_ai_fallback_no_longer_crashes_on_chat(self):
         monitor = self.make_monitor()

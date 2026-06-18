@@ -1,6 +1,12 @@
-# VPS-oppsett og auto-oppdatering
+# Legacy VPS-oppsett og auto-oppdatering
 
-Denne guiden dokumenterer VPS-oppsettet for Inebotten med Docker Compose, systemd og en GitHub-webhook.
+Denne guiden beskriver det eldre webhook/systemd-oppsettet. Det nåværende
+anbefalte deploy-løpet er Ansible-modellen i [`deploy/README.md`](../deploy/README.md),
+med repo checkout på `/opt/apps/inebotten-discord`, persistent `data/`, host-Caddy
+mot `127.0.0.1:8081`, og container-commit-verifikasjon etter deploy.
+
+Bruk denne filen kun hvis du vedlikeholder eller rydder opp i det gamle
+webhook-oppsettet.
 
 Flyten er slik:
 
@@ -15,7 +21,8 @@ Flyten er slik:
 Anbefalte stier:
 
 ```bash
-/opt/inebotten-discord          # Git-checkout
+/opt/apps/inebotten-discord     # Nåværende Git-checkout
+/opt/inebotten-discord          # Eldre Git-checkout brukt av webhook-flowen
 /opt/inebotten-autoupdate       # Webhook-lytter
 /usr/local/sbin/inebotten-update
 /etc/inebotten-webhook.env      # Webhook-secret og innstillinger
@@ -25,8 +32,8 @@ Anbefalte stier:
 Kjøringsdata skal ligge utenfor Git:
 
 ```bash
-/opt/inebotten-discord/.env
-/opt/inebotten-discord/data/
+/opt/apps/inebotten-discord/.env
+/opt/apps/inebotten-discord/data/
 ```
 
 ## Første Oppsett
@@ -36,12 +43,14 @@ sudo apt update
 sudo apt install -y git docker.io docker-compose-plugin python3 python3-pip python3-full openssl
 
 # Sett opp eierskap (viktig for setup.py)
-sudo git clone https://github.com/Reedtrullz/inebotten-discord.git /opt/inebotten-discord
-sudo chown -R $USER:$USER /opt/inebotten-discord
-cd /opt/inebotten-discord
+sudo git clone https://github.com/Reedtrullz/inebotten-discord.git /opt/apps/inebotten-discord
+sudo chown -R $USER:$USER /opt/apps/inebotten-discord
+cd /opt/apps/inebotten-discord
 
-# Installer avhengigheter (bruk --break-system-packages hvis ikke i venv)
-pip install --break-system-packages -r requirements.txt
+# Installer avhengigheter i et virtuelt miljø hvis du skal kjøre verktøy direkte på hosten
+python3 -m venv .venv312
+. .venv312/bin/activate
+pip install -r requirements.txt
 
 # Kjør setup wizard
 python3 setup.py
@@ -64,7 +73,7 @@ Web console er tilgjengelig på det konfigurerte domenet (f.eks. `https://bot.re
 Fra repo-checkoutet på serveren:
 
 ```bash
-cd /opt/inebotten-discord
+cd /opt/apps/inebotten-discord
 sudo WEBHOOK_PORT=9000 ./scripts/deploy/install-autoupdate.sh
 ```
 
@@ -121,14 +130,14 @@ curl http://127.0.0.1:9000/health
 Start botten på nytt:
 
 ```bash
-cd /opt/inebotten-discord
+cd /opt/apps/inebotten-discord
 sudo docker compose up -d --build
 ```
 
 Hvis du har endret `Dockerfile` (f.eks. lagt til systempakker som `git`) og Docker bruker den gamle cachede imaget, bruk `--no-cache`:
 
 ```bash
-cd /opt/inebotten-discord
+cd /opt/apps/inebotten-discord
 sudo docker compose build --no-cache
 sudo docker compose up -d
 ```
@@ -138,6 +147,7 @@ sudo docker compose up -d
 - Ikke commit `.env`, Discord-tokens, webhook-secrets eller `data/`.
 - Bruk GitHub-webhook-secret. Usignerte webhook-kall blir avvist.
 - Oppdateringstjenesten bruker med vilje `git reset --hard origin/master`; ikke behold manuelle kodeendringer på VPS-en.
+- I nåværende Ansible-flow verifiseres `/app/commit_hash.txt` i containeren etter deploy. Hvis den ikke matcher checkout-commit, skal deployen regnes som mislykket.
 - Behold varige kjøringsdata i `data/`, som mountes inn i Docker-containeren.
 - Hvis en brannmur er aktiv, åpne bare webhook-porten du trenger, vanligvis `9000/tcp`.
 
@@ -163,7 +173,7 @@ gammel updater kunne stoppe med "Already up to date" uten å reparere containere
 Kjør på VPS-en:
 
 ```bash
-cd /opt/inebotten-discord
+cd /opt/apps/inebotten-discord
 git fetch origin master
 git reset --hard origin/master
 sudo install -m 0755 scripts/deploy/inebotten-update /usr/local/sbin/inebotten-update
@@ -176,7 +186,7 @@ For å oppdatere både updater, webhook og timer uten å rotere eksisterende
 webhook-secret, kan installereren kjøres på nytt:
 
 ```bash
-cd /opt/inebotten-discord
+cd /opt/apps/inebotten-discord
 sudo ./scripts/deploy/install-autoupdate.sh
 sudo systemctl start inebotten-update.service
 ```

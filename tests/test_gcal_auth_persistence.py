@@ -10,7 +10,11 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cal_system.google_calendar_manager import GoogleCalendarManager
+from cal_system.google_calendar_manager import (
+    GoogleCalendarManager,
+    get_gcal_setup_url,
+    save_google_client_credentials,
+)
 from scripts import auth_gcal
 
 
@@ -41,6 +45,70 @@ class ValidCreds:
 
 
 class GoogleCalendarAuthPersistenceTests(unittest.TestCase):
+    def _desktop_client_json(self):
+        return {
+            "installed": {
+                "client_id": "client-id.apps.googleusercontent.com",
+                "client_secret": "client-secret",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost"],
+            }
+        }
+
+    def test_save_client_credentials_writes_private_desktop_client_file(self):
+        with TemporaryDirectory() as tmp:
+            credentials_path = Path(tmp) / "credentials.json"
+
+            with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+                ok, message = save_google_client_credentials(json.dumps(self._desktop_client_json()))
+
+            self.assertTrue(ok)
+            self.assertIn("OAuth-klienten er lagret", message)
+            self.assertEqual(json.loads(credentials_path.read_text())["installed"]["client_id"], "client-id.apps.googleusercontent.com")
+            self.assertEqual(credentials_path.stat().st_mode & 0o777, 0o600)
+
+    def test_save_client_credentials_rejects_web_client_json(self):
+        with TemporaryDirectory() as tmp:
+            credentials_path = Path(tmp) / "credentials.json"
+            web_client = {
+                "web": {
+                    "client_id": "web-client.apps.googleusercontent.com",
+                    "client_secret": "client-secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            }
+
+            with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+                ok, message = save_google_client_credentials(web_client)
+
+            self.assertFalse(ok)
+            self.assertIn("Desktop app", message)
+            self.assertFalse(credentials_path.exists())
+
+    def test_missing_credentials_message_points_to_console_setup(self):
+        with TemporaryDirectory() as tmp:
+            credentials_path = Path(tmp) / "credentials.json"
+
+            with patch.dict(
+                os.environ,
+                {
+                    "GCAL_CREDENTIALS_PATH": str(credentials_path),
+                    "CONSOLE_PUBLIC_URL": "https://console.example",
+                },
+            ):
+                manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
+                ok, message = GoogleCalendarManager.get_auth_url(manager)
+
+            self.assertFalse(ok)
+            self.assertIn("https://console.example/gcal-auth", message)
+            self.assertNotIn("legg den der", message)
+
+    def test_gcal_setup_url_uses_console_public_url(self):
+        with patch.dict(os.environ, {"CONSOLE_PUBLIC_URL": "https://bot.example/"}, clear=False):
+            self.assertEqual(get_gcal_setup_url(), "https://bot.example/gcal-auth")
+
     def test_startup_auth_refresh_persists_updated_token(self):
         with TemporaryDirectory() as tmp:
             token_path = Path(tmp) / "google_token.json"

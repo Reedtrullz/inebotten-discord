@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime
 from typing import List, Dict, Optional
 
 class SearchManager:
@@ -20,6 +21,37 @@ class SearchManager:
         # Support both naming conventions (with and without underscore)
         self.tavily_api_key = os.getenv("TAVILY_API_KEY")
         self.ddgs = None # Initialize lazily
+
+    def _normalize_result(self, result: Dict, provider: str) -> Dict:
+        """Normalize provider-specific search results before AI use."""
+        title = str(result.get("title") or result.get("name") or "Søkeresultat")
+        url = str(result.get("url") or result.get("href") or result.get("link") or "")
+        body = str(
+            result.get("raw_content")
+            or result.get("content")
+            or result.get("body")
+            or result.get("snippet")
+            or "Se kilde for detaljer."
+        )
+        body = " ".join(body.split())[:3000]
+        published_at = (
+            result.get("published_at")
+            or result.get("published_date")
+            or result.get("date")
+        )
+        freshness = "published" if published_at else ("fetched_only" if url else "unknown")
+
+        return {
+            "title": title,
+            "url": url,
+            "href": url,
+            "body": body,
+            "provider": provider,
+            "fetched_at": datetime.now().isoformat(),
+            "published_at": str(published_at) if published_at else None,
+            "freshness": freshness,
+            "has_deep_content": len(body) > 500,
+        }
         
     async def search(self, query: str, max_results: int = 3, region: str = "no-no") -> List[Dict]:
         """
@@ -44,20 +76,7 @@ class SearchManager:
                 )
                 if response and response.get('results'):
                     print(f"[SEARCH] Tavily (Advanced) success for: {query}")
-                    results = []
-                    for r in response['results']:
-                        # Get the best content available
-                        content = r.get('raw_content') or r.get('content') or ""
-                        # Clean it up: remove excess whitespace and truncate
-                        cleaned_content = " ".join(content.split())
-                        truncated_content = cleaned_content[:3000] # Limit per result
-                        
-                        results.append({
-                            "title": r['title'],
-                            "href": r['url'],
-                            "body": truncated_content
-                        })
-                    return results
+                    return [self._normalize_result(r, "tavily") for r in response["results"]]
             except Exception as e:
                 print(f"[SEARCH] Tavily failed: {e}")
 
@@ -72,7 +91,13 @@ class SearchManager:
                 lambda: list(google_search(query, num_results=max_results, lang="no"))
             )
             if urls:
-                return [{"title": "Søkeresultat", "href": url, "body": "Se kilde for detaljer."} for url in urls]
+                return [
+                    self._normalize_result(
+                        {"title": "Søkeresultat", "url": url, "body": "Se kilde for detaljer."},
+                        "google",
+                    )
+                    for url in urls
+                ]
         except Exception as e:
             print(f"[SEARCH] Google search failed: {e}")
 
@@ -87,7 +112,7 @@ class SearchManager:
                 None,
                 lambda: list(self.ddgs.text(query, region=region, max_results=max_results))
             )
-            return results
+            return [self._normalize_result(result, "duckduckgo") for result in results]
         except Exception as e:
             print(f"[SEARCH] All search providers failed: {e}")
             return []
@@ -107,7 +132,7 @@ class SearchManager:
                     lambda: client.search(query=f"news {query}", search_depth="basic", max_results=max_results)
                 )
                 if response and response.get('results'):
-                    return [{"title": r['title'], "href": r['url'], "body": r['content']} for r in response['results']]
+                    return [self._normalize_result(r, "tavily") for r in response["results"]]
             except Exception as e:
                 print(f"[SEARCH] Tavily news failed: {e}")
 
@@ -119,15 +144,29 @@ class SearchManager:
         Format search results as a string for AI context
         """
         if not results:
-            return "Ingen søkeresultater funnet. Vennligst svar basert på det du vet, men nevn at du ikke fant noe nytt på nettet akkurat nå."
+            return (
+                "Jeg fant ingen ferske kilder akkurat nå, så jeg vil ikke late som jeg har "
+                "sjekket dette. Jeg kan svare generelt hvis brukeren ønsker det, men det må "
+                "merkes som ikke-verifisert."
+            )
             
-        formatted = "HER ER SANNTIDSINFORMASJON FRA NETTET (Bruk dette som din kilde!):\n\n"
+        formatted = (
+            "SØKEKILDER FRA NETTET:\n"
+            "Bruk bare kildene under for oppdaterte påstander. Oppgi kilde med tittel "
+            "eller URL. Ikke kall noe ferskt bare fordi det ble hentet nå. Hvis "
+            "publiseringsdato mangler, si at publiseringsdato ikke var tilgjengelig.\n\n"
+        )
         for i, res in enumerate(results, 1):
             title = res.get('title', 'Ingen tittel')
             body = res.get('body', res.get('snippet', 'Se kilde for detaljer.'))
-            url = res.get('href', res.get('link', ''))
+            url = res.get('url') or res.get('href') or res.get('link', '')
+            provider = res.get("provider", "ukjent")
+            fetched_at = res.get("fetched_at", "ukjent")
+            published_at = res.get("published_at") or "ikke tilgjengelig"
+            freshness = res.get("freshness", "unknown")
             
             formatted += f"[{i}] {title}\n"
+            formatted += f"Provider: {provider} | Hentet: {fetched_at} | Publisert: {published_at} | Friskhet: {freshness}\n"
             formatted += f"Info: {body}\n"
             if url:
                 formatted += f"Kilde: {url}\n"

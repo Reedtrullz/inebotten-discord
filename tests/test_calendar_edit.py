@@ -96,6 +96,13 @@ class CalendarManagerEditSearchTests(unittest.TestCase):
 
         self.assertEqual(self.manager.search_items("middag"), [])
 
+    def test_calendar_save_uses_unique_atomic_temp_file(self):
+        self._add_item("Møte", _date(1))
+
+        leftover_temp_files = list(Path(self.tmp.name).glob("calendar.tmp"))
+
+        self.assertEqual(leftover_temp_files, [])
+
 
 class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -144,6 +151,99 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             date_str=date,
             time_str=time,
         )
+
+    async def test_handle_clear_requires_explicit_confirmation(self):
+        self._add_item("Møte", _date(1))
+        self.message.content = "@inebotten tøm kalender"
+
+        await self.handler.handle_clear(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("bekreft 1", response)
+        self.assertEqual(len(self.manager.items[self.manager.SHARED_KEY]), 1)
+
+    async def test_handle_clear_confirmed_deletes_calendar(self):
+        self._add_item("Møte", _date(1))
+        self.message.content = "@inebotten tøm kalender bekreft 1"
+
+        await self.handler.handle_clear(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("Slettet 1", response)
+        self.assertEqual(self.manager.items[self.manager.SHARED_KEY], [])
+
+    async def test_handle_clear_rejects_stale_confirmation_count(self):
+        self._add_item("Møte", _date(1))
+        self._add_item("Trening", _date(2))
+        self.message.content = "@inebotten tøm kalender bekreft 1"
+
+        await self.handler.handle_clear(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("bekreft 2", response)
+        self.assertEqual(len(self.manager.items[self.manager.SHARED_KEY]), 2)
+
+    async def test_clear_calendar_keeps_failed_gcal_deletes_pending(self):
+        class FailingDeleteGCal:
+            def __init__(self):
+                self.delete_calls = []
+
+            def delete_event(self, event_id):
+                self.delete_calls.append(event_id)
+                return False
+
+        gcal = FailingDeleteGCal()
+        manager = CalendarManager(storage_path=Path(self.tmp.name) / "gcal-calendar.json", gcal_manager=gcal)
+        manager.add_item(
+            guild_id="123",
+            user_id="111",
+            username="Alice",
+            title="GCal møte",
+            date_str=_date(1),
+            time_str="09:00",
+            gcal_event_id="gcal-1",
+        )
+
+        result = await manager.clear_calendar("123")
+
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertEqual(gcal.delete_calls, ["gcal-1"])
+        pending = manager.items[manager.SHARED_KEY][0]
+        self.assertTrue(pending["delete_pending"])
+        self.assertIn("delete_error", pending)
+        self.assertEqual(manager.get_upcoming("123"), [])
+
+    async def test_clear_calendar_removes_local_after_gcal_success(self):
+        class SuccessfulDeleteGCal:
+            def __init__(self):
+                self.delete_calls = []
+
+            def delete_event(self, event_id):
+                self.delete_calls.append(event_id)
+                return True
+
+        gcal = SuccessfulDeleteGCal()
+        manager = CalendarManager(storage_path=Path(self.tmp.name) / "gcal-calendar.json", gcal_manager=gcal)
+        manager.add_item(
+            guild_id="123",
+            user_id="111",
+            username="Alice",
+            title="GCal møte",
+            date_str=_date(1),
+            time_str="09:00",
+            gcal_event_id="gcal-1",
+        )
+
+        result = await manager.clear_calendar("123")
+
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result["failed_count"], 0)
+        self.assertEqual(gcal.delete_calls, ["gcal-1"])
+        self.assertEqual(manager.items[manager.SHARED_KEY], [])
 
     async def test_handle_edit_integration_parse_and_execute_edit(self):
         self._add_item("Møte", _date(1), time="09:00")

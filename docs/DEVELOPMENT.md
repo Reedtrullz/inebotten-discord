@@ -26,9 +26,9 @@
 git clone https://github.com/Reedtrullz/inebotten-discord.git
 cd inebotten-discord
 
-# 2. Lag virtuelt miljø
-python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# 2. Lag Python 3.12-miljø
+python3.12 -m venv .venv312
+source .venv312/bin/activate  # Windows: .venv312\Scripts\activate
 
 # 3. Installer avhengigheter
 pip install -r requirements.txt
@@ -38,9 +38,10 @@ pip install -r requirements-dev.txt
 cp .env.example .env
 # Rediger .env med dine verdier
 
-# 5. Verifiser oppsett
-python3 -m py_compile *.py
-python3 tests/test_selfbot.py
+# 5. Verifiser oppsett med samme form som CI
+python -m compileall -q ai cal_system core features memory utils web_console scripts mac_app windows_app
+python -m flake8 . --exclude=.venv312,.git,__pycache__,.pytest_cache --select=E9,F63,F7,F82
+python -m pytest -q
 ```
 
 ### Prosjektstruktur
@@ -387,36 +388,12 @@ Finn "Andre kommandoer"-tabellen og legg til:
 #### Steg 4: Test
 
 ```bash
-# Syntaks-sjekk
-python3 -m py_compile features/my_feature_manager.py
-python3 -m py_compile core/message_monitor.py
-python3 -m py_compile core/intent_router.py
-
-# Enhetstest
-python3 -c "
-from features.my_feature_manager import MyFeatureManager, parse_my_feature_command
-import tempfile
-
-# Test parser
-result = parse_my_feature_command('myfeature add test data')
-assert result is not None
-assert result[0] == 'add'
-print('✓ Parser test passed')
-
-# Test manager
-with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-    temp_path = f.name
-
-fm = MyFeatureManager(temp_path)
-success, msg = fm.add_item('guild1', 'user1', 'test')
-assert success
-print('✓ Manager test passed')
-
-print('\n✅ All tests passed!')
-"
+# Syntaks og relevante tester
+python -m compileall -q features/my_feature_manager.py core/message_monitor.py core/intent_router.py
+python -m pytest tests/test_intent_router.py tests/test_message_monitor_routing.py -q
 
 # Integrasjonstest
-python3 run_both.py
+python scripts/run_both.py
 # I Discord: "@inebotten myfeature add test"
 ```
 
@@ -839,9 +816,8 @@ git checkout -b feature/my-new-feature
 # ... rediger filer ...
 
 # Test
-python3 -m py_compile features/my_feature_manager.py
-python3 -m py_compile features/my_feature_handler.py
-python3 test_my_feature.py
+python -m compileall -q features/my_feature_manager.py features/my_feature_handler.py
+python -m pytest tests/test_intent_router.py tests/test_message_monitor_routing.py -q
 
 # Commit
 git add features/my_feature_manager.py features/my_feature_handler.py core/message_monitor.py
@@ -874,9 +850,7 @@ wc -l features/*.py core/*.py
 grep "^import\|^from" core/message_monitor.py
 
 # Test all syntaks
-for f in features/*.py core/*.py; do
-    python3 -m py_compile "$f" && echo "✓ $f"
-done
+python -m compileall -q ai cal_system core features memory utils web_console scripts mac_app windows_app
 
 # Formater JSON
 cat data/calendar.json | python3 -m json.tool

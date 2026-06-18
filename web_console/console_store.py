@@ -39,6 +39,10 @@ class ConsoleStore:
         self._sessions_file = self._data_dir / "sessions.json"
         self._first_start_file = self._data_dir / "first_start.txt"
         self._lock = threading.RLock()
+        self._last_error: str | None = None
+        self._last_error_at: str | None = None
+        self._last_stats_saved_at: str | None = None
+        self._last_log_write_at: str | None = None
 
         if not self._first_start_file.exists():
             self._first_start_file.write_text(datetime.now().isoformat(), encoding="utf-8")
@@ -55,8 +59,9 @@ class ConsoleStore:
                     os.chmod(self._logs_file, 0o600)
                 except OSError:
                     pass
-        except Exception:
-            pass
+            self._record_success("logs")
+        except Exception as exc:
+            self._record_error("append_logs", exc)
 
     def load_logs(self, count: int = 200) -> list[str]:
         try:
@@ -74,7 +79,7 @@ class ConsoleStore:
         except Exception:
             return []
 
-    def save_stats(self, intent_stats: dict[str, Any], rate_limit_stats: dict[str, int]) -> None:
+    def save_stats(self, intent_stats: dict[str, Any], rate_limit_stats: dict[str, int]) -> bool:
         try:
             existing = self._load_stats_raw()
             existing["version"] = STATS_SCHEMA_VERSION
@@ -95,8 +100,11 @@ class ConsoleStore:
 
             with self._lock:
                 write_json_atomic(self._stats_file, existing, indent=None)
-        except Exception:
-            pass
+            self._record_success("stats")
+            return True
+        except Exception as exc:
+            self._record_error("save_stats", exc)
+            return False
 
     def load_intent_stats(self) -> dict[str, dict[str, int]]:
         return self._load_stats_raw().get("intents", {})
@@ -212,6 +220,30 @@ class ConsoleStore:
         except Exception:
             pass
         return datetime.now()
+
+    def health(self) -> dict[str, Any]:
+        """Return non-secret diagnostics for console persistence."""
+        return {
+            "status": "degraded" if self._last_error else "ok",
+            "stats_schema_version": STATS_SCHEMA_VERSION,
+            "last_stats_saved_at": self._last_stats_saved_at,
+            "last_log_write_at": self._last_log_write_at,
+            "last_error": self._last_error,
+            "last_error_at": self._last_error_at,
+        }
+
+    def _record_success(self, operation: str) -> None:
+        now = datetime.now().isoformat()
+        if operation == "stats":
+            self._last_stats_saved_at = now
+        elif operation == "logs":
+            self._last_log_write_at = now
+        self._last_error = None
+        self._last_error_at = None
+
+    def _record_error(self, operation: str, exc: Exception) -> None:
+        self._last_error = f"{operation}: {exc}"
+        self._last_error_at = datetime.now().isoformat()
 
 
 _store: ConsoleStore | None = None

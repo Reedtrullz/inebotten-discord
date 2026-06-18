@@ -78,7 +78,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -300,6 +301,11 @@ pre {
 .commands-page .dashboard-grid {
   display: flex;
   flex-direction: column;
+}
+
+.setup-page .dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .panel,
@@ -753,6 +759,68 @@ pre {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
   outline: none;
+}
+
+.credentials-input {
+  min-height: 16rem;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.setup-panel {
+  display: grid;
+  gap: 1rem;
+  margin-inline: auto;
+  max-width: 56rem;
+  padding: 1.2rem;
+  width: 100%;
+}
+
+.setup-header,
+.setup-actions,
+.setup-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.setup-header {
+  align-items: flex-start;
+}
+
+.setup-header h1,
+.setup-header p,
+.setup-note p {
+  margin: 0;
+}
+
+.setup-status {
+  flex-wrap: wrap;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  padding: 0.75rem;
+}
+
+.setup-status span {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.setup-message {
+  justify-self: start;
+  white-space: normal;
+}
+
+.setup-note {
+  display: grid;
+  gap: 0.55rem;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
 }
 
 .site-footer {

@@ -16,6 +16,7 @@ from features.aurora_handler import AuroraHandler
 from features.school_holidays_handler import SchoolHolidaysHandler
 from features.help_handler import HelpHandler
 from features.daily_digest_handler import DailyDigestHandler
+from features.memory_handler import MemoryHandler
 
 __all__ = [
     "BaseHandler",
@@ -29,4 +30,5 @@ __all__ = [
     "SchoolHolidaysHandler",
     "HelpHandler",
     "DailyDigestHandler",
+    "MemoryHandler",
 ]

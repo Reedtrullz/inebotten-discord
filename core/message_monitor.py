@@ -50,6 +50,12 @@ COMMAND_REGISTRY = [
         "priority": 50,
         "scope": "any",
     },
+    {
+        "name": "memory",
+        "aliases": ["vis minnet mitt", "eksporter minnet mitt", "slett minnet mitt"],
+        "priority": 60,
+        "scope": "any",
+    },
     {"name": "ai_chat", "aliases": [], "priority": 1000, "scope": "any"},
 ]
 
@@ -244,6 +250,7 @@ class MessageMonitor:
         self._last_persisted_intent_stats: dict[str, dict[str, int]] = {}
         self._last_persisted_rate_stats: dict[str, int] = {}
         self._background_tasks = set()
+        self._task_health: dict[str, dict[str, object]] = {}
 
         self.handlers = {}
         self._register_handlers()
@@ -252,20 +259,58 @@ class MessageMonitor:
     def _track_background_task(self, coro, name):
         task = asyncio.create_task(coro, name=name)
         self._background_tasks.add(task)
+        self._set_task_health(name, state="running", started_at=datetime.now().isoformat(), last_error=None)
 
         def _done_callback(done_task):
             self._background_tasks.discard(done_task)
             if done_task.cancelled():
+                self._set_task_health(name, state="cancelled", finished_at=datetime.now().isoformat())
                 return
             try:
                 exc = done_task.exception()
             except Exception:
                 return
             if exc:
+                self._mark_task_error(name, exc, state="failed", finished_at=datetime.now().isoformat())
                 print(f"[MONITOR] Background task {name} failed: {exc}")
+            else:
+                self._set_task_health(
+                    name,
+                    state="completed",
+                    finished_at=datetime.now().isoformat(),
+                    last_ok=datetime.now().isoformat(),
+                    last_error=None,
+                    exception_type=None,
+                )
 
         task.add_done_callback(_done_callback)
         return task
+
+    def _set_task_health(self, name, **updates):
+        health = self._task_health.setdefault(name, {"state": "unknown"})
+        health.update(updates)
+
+    def _mark_task_ok(self, name):
+        self._set_task_health(
+            name,
+            state="running",
+            last_ok=datetime.now().isoformat(),
+            last_error=None,
+            exception_type=None,
+        )
+
+    def _mark_task_error(self, name, exc, *, state="degraded", **extra):
+        self._set_task_health(
+            name,
+            state=state,
+            last_error=str(exc),
+            exception_type=type(exc).__name__,
+            last_error_at=datetime.now().isoformat(),
+            **extra,
+        )
+
+    def get_task_health(self):
+        return {name: dict(values) for name, values in self._task_health.items()}
 
     async def setup(self):
         await self.calendar.setup()
@@ -301,35 +346,42 @@ class MessageMonitor:
             while True:
                 await asyncio.sleep(60)
                 try:
-                    from web_console.console_store import get_console_store
-                    store = get_console_store()
-                    rate_stats: dict[str, int] = {}
-                    overall = self.rate_limiter.get_stats() if hasattr(self.rate_limiter, "get_stats") else {}
-                    if isinstance(overall, dict):
-                        for key in ("user_stats", "per_user", "users"):
-                            candidate = overall.get(key)
-                            if isinstance(candidate, dict):
-                                for user, stats in candidate.items():
-                                    count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
-                                    rate_stats[user] = rate_stats.get(user, 0) + count
-                                break
-                    intent_snapshot = _copy_counter_stats(dict(self.intent_stats))
-                    intent_delta = _counter_stats_delta(
-                        intent_snapshot,
-                        getattr(self, "_last_persisted_intent_stats", {}),
-                    )
-                    rate_delta = _flat_counter_delta(
-                        rate_stats,
-                        getattr(self, "_last_persisted_rate_stats", {}),
-                    )
-                    if intent_delta or rate_delta:
-                        store.save_stats(intent_delta, rate_delta)
-                    self._last_persisted_intent_stats = intent_snapshot
-                    self._last_persisted_rate_stats = dict(rate_stats)
-                except Exception:
-                    pass
+                    await self._persist_console_stats_once()
+                except Exception as exc:
+                    self._mark_task_error("console-persistence", exc)
         except asyncio.CancelledError:
             pass
+
+    async def _persist_console_stats_once(self) -> None:
+        """Persist one stats delta batch and update health only after success."""
+        from web_console.console_store import get_console_store
+
+        store = get_console_store()
+        rate_stats: dict[str, int] = {}
+        overall = self.rate_limiter.get_stats() if hasattr(self.rate_limiter, "get_stats") else {}
+        if isinstance(overall, dict):
+            for key in ("user_stats", "per_user", "users"):
+                candidate = overall.get(key)
+                if isinstance(candidate, dict):
+                    for user, stats in candidate.items():
+                        count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
+                        rate_stats[user] = rate_stats.get(user, 0) + count
+                    break
+        intent_snapshot = _copy_counter_stats(dict(self.intent_stats))
+        intent_delta = _counter_stats_delta(
+            intent_snapshot,
+            getattr(self, "_last_persisted_intent_stats", {}),
+        )
+        rate_delta = _flat_counter_delta(
+            rate_stats,
+            getattr(self, "_last_persisted_rate_stats", {}),
+        )
+        if intent_delta or rate_delta:
+            if not store.save_stats(intent_delta, rate_delta):
+                raise RuntimeError("console stats save failed")
+        self._last_persisted_intent_stats = intent_snapshot
+        self._last_persisted_rate_stats = dict(rate_stats)
+        self._mark_task_ok("console-persistence")
 
     def is_mention(self, message):
         """Check if message explicitly mentions the bot."""
@@ -554,10 +606,33 @@ class MessageMonitor:
             await self.handlers["birthdays"].handle_birthday_edit(message, payload)
         elif route.intent == BotIntent.SET_LOCATION:
             await self._handle_set_location(message, payload["city"])
+        elif route.intent in (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_EXPORT, BotIntent.MEMORY_DELETE):
+            await self.handlers["memory"].handle_memory(message, payload.get("memory", {}))
+        elif route.intent == BotIntent.SEARCH:
+            await self._send_ai_response(message, forced_search_info=payload.get("search"))
+        elif route.intent == BotIntent.DASHBOARD:
+            await self._send_dashboard_response(message)
         else:
             await self._send_ai_response(message)
 
-    async def _send_ai_response(self, message):
+    async def _send_dashboard_response(self, message):
+        """Generate and send an explicit dashboard response."""
+        guild_id = message.guild.id if message.guild else message.channel.id
+        content_lower = message.content.lower()
+        from features.weather_api import extract_city
+
+        response_text = await self._generate_dashboard(
+            guild_id,
+            city_name=extract_city(message.content),
+            show_navnedag=any(
+                re.search(rf"\b{re.escape(word)}\b", content_lower)
+                for word in ["navnedag", "oppsummering", "brief", "status"]
+            ),
+            user_id=message.author.id,
+        )
+        await self._send_response(message, response_text)
+
+    async def _send_ai_response(self, message, forced_search_info=None):
         """
         Generate and send an AI response to a mention.
         Uses Hermes AI with personality system.
@@ -622,9 +697,11 @@ class MessageMonitor:
                     )
 
                     # Check for search intent
-                    search_info = self.detect_search_intent(message.content)
+                    search_info = forced_search_info or self.detect_search_intent(message.content)
                     search_context = ""
+                    search_was_requested = False
                     if search_info:
+                        search_was_requested = True
                         query = search_info["query"]
                         search_type = search_info["type"]
                         print(f"[MONITOR] Web search ({search_type}) triggered for: {query}")
@@ -651,33 +728,51 @@ class MessageMonitor:
                                         print("[MONITOR] Web Lookup: Browserbase fallback successful")
                             elif has_deep_content:
                                 print("[MONITOR] Web Lookup: Tavily provided deep content. Skipping Browserbase.")
+                        else:
+                            response_text = (
+                                "Jeg fant ingen ferske kilder akkurat nå, så jeg vil ikke late som jeg "
+                                "har sjekket dette. Jeg kan svare generelt hvis du vil, men da bør vi "
+                                "merke det som ikke-verifisert."
+                            )
 
-                    system_prompt = self.get_system_prompt(
-                        user_context=user_context,
-                        conversation_context=conversation_context,
-                        style=self.ResponseStyle.CASUAL,
-                        routed_intent=getattr(self, '_last_routed_intent', None),
-                    )
-                    
-                    # Inject search results into system prompt if available
-                    if search_context:
-                        system_prompt += f"\n\nSØKERESULTATER FRA NETTET (Du SKAL bruke dette for å svare):\n{search_context}\n"
-                        system_prompt += "\nVIKTIG: Du har nå tilgang til internett via dine søkeverktøy. ALDRI si at du ikke har sanntidstilgang eller at du ikke kan sjekke nettet når du har fått søkeresultater over. Svar naturlig og vennlig som Ine, basert på informasjonen over."
+                    if not response_text:
+                        system_prompt = self.get_system_prompt(
+                            user_context=user_context,
+                            conversation_context=conversation_context,
+                            style=self.ResponseStyle.CASUAL,
+                            routed_intent=getattr(self, '_last_routed_intent', None),
+                        )
 
-                    print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
+                        # Inject search results into system prompt if available
+                        if search_context:
+                            system_prompt += f"\n\nSØKERESULTATER FRA NETTET:\n{search_context}\n"
+                            system_prompt += (
+                                "\nVIKTIG: Bruk bare kildene over for oppdaterte påstander. "
+                                "Oppgi kilde med tittel eller URL. Ikke kall noe ferskt bare fordi "
+                                "det ble hentet nå. Hvis publiseringsdato mangler, si at "
+                                "publiseringsdato ikke var tilgjengelig. Hvis kildene spriker eller "
+                                "er svake, si det tydelig."
+                            )
+                        elif search_was_requested:
+                            system_prompt += (
+                                "\n\nSØK: Ingen kilder ble funnet. Ikke presenter svaret som live-sjekket "
+                                "eller verifisert på nettet."
+                            )
 
-                    success, ai_response = await self.hermes.generate_response(
-                        message_content=message.content,
-                        author_name=message.author.name,
-                        channel_type=channel_type,
-                        is_mention=True,
-                        system_prompt=system_prompt,
-                    )
+                        print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
 
-                    if success and ai_response:
-                        print("[MONITOR] Using personalized AI response")
-                        # Parse and execute actions before sending
-                        response_text = await self._parse_and_execute_actions(ai_response, message)
+                        success, ai_response = await self.hermes.generate_response(
+                            message_content=message.content,
+                            author_name=message.author.name,
+                            channel_type=channel_type,
+                            is_mention=True,
+                            system_prompt=system_prompt,
+                        )
+
+                        if success and ai_response:
+                            print("[MONITOR] Using personalized AI response")
+                            # Parse and execute actions before sending
+                            response_text = await self._parse_and_execute_actions(ai_response, message)
                 except Exception as e:
                     print(f"[MONITOR] Personalized AI failed: {e}")
 
@@ -733,7 +828,7 @@ class MessageMonitor:
                         print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
                         try:
                             guild_id = message.guild.id if message.guild else message.channel.id
-                            user_mem = await self.user_memory.get_memory(message.author.id)
+                            user_mem = await self.user_memory.get_user(message.author.id)
                             city_name = user_mem.get("location", "Oslo")
 
                             dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
@@ -769,7 +864,7 @@ class MessageMonitor:
             try:
                 guild_id = message.guild.id if message.guild else message.channel.id
                 # Get location from user memory
-                user_mem = await self.user_memory.get_memory(message.author.id)
+                user_mem = await self.user_memory.get_user(message.author.id)
                 city_name = user_mem.get("location", "Oslo")
                 
                 dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
@@ -989,6 +1084,7 @@ class MessageMonitor:
         from features.birthday_handler import BirthdayHandler
         from features.quote_handler import QuoteHandler
         from features.reminder_handler import ReminderHandler
+        from features.memory_handler import MemoryHandler
 
         self.handlers = {
             "fun": FunHandler(self),
@@ -1005,6 +1101,7 @@ class MessageMonitor:
             "profile": __import__('features.profile_handler', fromlist=['ProfileHandler']).ProfileHandler(self),
             "birthdays": BirthdayHandler(self),
             "quotes": QuoteHandler(self),
+            "memory": MemoryHandler(self),
         }
 
 
@@ -1203,9 +1300,9 @@ class SelfbotClient(discord.Client):
         self.reminder_checker = self._create_reminder_checker()
         if self.reminder_checker:
             await self.reminder_checker.setup()
-            self.reminder_checker_task = asyncio.create_task(
+            self.reminder_checker_task = self.monitor._track_background_task(
                 self.reminder_checker.start(),
-                name="reminder-checker",
+                "reminder-checker",
             )
             print("[BOT] Calendar reminder checker started")
 

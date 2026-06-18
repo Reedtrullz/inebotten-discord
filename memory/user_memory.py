@@ -6,6 +6,7 @@ Stores preferences, conversation history, and personal details per user
 
 import json
 import asyncio
+import copy
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -217,6 +218,42 @@ class UserMemory:
             context_parts.append("Bruker gjerne dialektuttrykk")
 
         return " | ".join(context_parts) if context_parts else ""
+
+    async def export_user_memory(self, user_id):
+        """Return a copy of one user's stored memory without creating new data."""
+        user = self.memory.get(str(user_id))
+        return copy.deepcopy(user) if isinstance(user, dict) else {}
+
+    async def format_user_memory_for_user(self, user_id, username=None):
+        """Format one user's memory for direct user-facing display."""
+        user = await self.export_user_memory(user_id)
+        if not user:
+            return "Jeg har ikke lagret noe brukerminne om deg ennå."
+
+        preferences = user.get("preferences") or {}
+        interests = user.get("interests") or []
+        topics = user.get("last_topics") or []
+        lines = [
+            "🧠 **Dette husker jeg om deg:**",
+            f"Navn: {user.get('username') or username or 'ikke lagret'}",
+            f"Sted: {user.get('location') or 'ikke lagret'}",
+            f"Interesser: {', '.join(map(str, interests)) if interests else 'ingen lagret'}",
+            f"Preferanser: {json.dumps(preferences, ensure_ascii=False)}",
+            f"Siste tema: {', '.join(map(str, topics[:5])) if topics else 'ingen lagret'}",
+            "",
+            "Skriv `@inebotten eksporter minnet mitt` for JSON, eller "
+            "`@inebotten slett minnet mitt bekreft` for å slette det.",
+        ]
+        return "\n".join(lines)
+
+    async def delete_user_memory(self, user_id):
+        """Delete one user's stored memory, returning True if anything was removed."""
+        user_key = str(user_id)
+        if user_key not in self.memory:
+            return False
+        self.memory.pop(user_key, None)
+        await self._save_memory()
+        return True
 
 
 # Singleton instance

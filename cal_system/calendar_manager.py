@@ -5,7 +5,6 @@ Everything is just a calendar item with a date
 """
 
 import json
-import os
 import re
 import uuid
 import asyncio
@@ -13,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
-from utils.json_storage import hermes_discord_data_path
+from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 class AwaitableDict(dict):
@@ -133,15 +132,10 @@ class CalendarManager:
 
     def _save_data_sync(self):
         """Save calendar data to JSON file atomically."""
-        temp_path = self.storage_path.with_suffix(".tmp")
         try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(self.items, f, ensure_ascii=False, indent=2)
-            os.replace(temp_path, self.storage_path)
+            write_json_atomic(self.storage_path, self.items, indent=2)
         except Exception as e:
             print(f"[CAL] Error saving calendar data: {e}")
-            if temp_path.exists():
-                os.remove(temp_path)
 
     def add_item(
         self,
@@ -271,25 +265,51 @@ class CalendarManager:
         """Delete all items from the shared calendar (ignoring guild_id)"""
         guild_key = self.SHARED_KEY
         if guild_key not in self.items or not self.items[guild_key]:
-            return 0
+            return {
+                "requested_count": 0,
+                "deleted_count": 0,
+                "failed_count": 0,
+                "pending_titles": [],
+            }
 
-        deleted_count = 0
         items_to_delete = list(self.items[guild_key])
-        
-        # Clear local items first to be responsive
-        self.items[guild_key] = []
-        await self._save_data()
-        
-        # Then clean up GCal if enabled
+        deleted_ids = set()
+        pending_titles = []
+        now = datetime.now().isoformat()
+
         for item in items_to_delete:
-            deleted_count += 1
             if self.gcal_enabled and item.get("gcal_event_id"):
+                delete_ok = False
+                error = None
                 try:
-                    self.gcal.delete_event(item["gcal_event_id"])
+                    delete_ok = bool(self.gcal.delete_event(item["gcal_event_id"]))
                 except Exception as e:
-                    print(f"[CAL] GCal clear delete failed for {item.get('title')}: {e}")
-        
-        return deleted_count
+                    error = str(e)
+
+                if not delete_ok:
+                    title = item.get("title", "Uten tittel")
+                    pending_titles.append(title)
+                    item["delete_pending"] = True
+                    item["delete_requested_at"] = item.get("delete_requested_at") or now
+                    item["delete_last_attempt_at"] = now
+                    item["delete_error"] = error or "Google Calendar deletion returned false"
+                    print(f"[CAL] GCal clear delete failed for {title}: {item['delete_error']}")
+                    continue
+
+            deleted_ids.add(item.get("id"))
+
+        self.items[guild_key] = [
+            item for item in self.items[guild_key]
+            if item.get("id") not in deleted_ids
+        ]
+        await self._save_data()
+
+        return {
+            "requested_count": len(items_to_delete),
+            "deleted_count": len(deleted_ids),
+            "failed_count": len(pending_titles),
+            "pending_titles": pending_titles,
+        }
 
     def complete_item(self, guild_id, item_num=None, item_id=None):
         """Mark an item as complete (ignoring guild_id for shared calendar)"""
@@ -728,6 +748,8 @@ class CalendarManager:
 
         upcoming = []
         for item in self.items[guild_key]:
+            if item.get("delete_pending"):
+                continue
             if not include_completed and item.get("completed"):
                 continue
 

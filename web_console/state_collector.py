@@ -70,6 +70,48 @@ def _anonymize_user_ids(user_stats: dict[str, dict[str, int]]) -> dict[str, dict
     return {f"user_{i+1}": user_stats[k] for i, k in enumerate(sorted_keys)}
 
 
+def _collect_task_health(monitor: object | None = None) -> dict[str, Any]:
+    if monitor is None or not hasattr(monitor, "get_task_health"):
+        return {"status": "unknown", "items": {}}
+    try:
+        items = monitor.get_task_health()
+        degraded_states = {"cancelled", "degraded", "failed"}
+        status = "degraded" if any(
+            str(task.get("state", "")).lower() in degraded_states
+            for task in items.values()
+            if isinstance(task, dict)
+        ) else "ok"
+        return {"status": status, "items": items}
+    except Exception as exc:
+        return {"status": "degraded", "items": {}, "last_error": str(exc)}
+
+
+def _collect_persistence_health() -> dict[str, Any]:
+    try:
+        from web_console.console_store import get_console_store
+
+        store = get_console_store()
+        if hasattr(store, "health"):
+            return store.health()
+    except Exception as exc:
+        return {"status": "degraded", "last_error": str(exc)}
+    return {"status": "unknown"}
+
+
+def _collect_calendar_sync_health(monitor: object | None = None) -> dict[str, Any]:
+    calendar = getattr(monitor, "calendar", None)
+    if calendar is None:
+        return {"status": "unknown", "gcal_enabled": False}
+
+    last_error = getattr(calendar, "last_gcal_sync_error", None)
+    gcal_enabled = bool(getattr(calendar, "gcal_enabled", False))
+    return {
+        "status": "degraded" if last_error else ("ok" if gcal_enabled else "disabled"),
+        "gcal_enabled": gcal_enabled,
+        "last_error": last_error,
+    }
+
+
 def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
     if monitor is None:
         return {"status": "starting", "monitor_ready": False}
@@ -111,16 +153,59 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         if users <= 0 and user is not None:
             users = 1
 
+        tasks = _collect_task_health(monitor)
+        persistence = _collect_persistence_health()
+        calendar_sync = _collect_calendar_sync_health(monitor)
+        status = "online" if user is not None else "degraded"
+        if (
+            tasks.get("status") == "degraded"
+            or persistence.get("status") == "degraded"
+            or calendar_sync.get("status") == "degraded"
+        ):
+            status = "degraded"
+
         return {
-            "status": "online" if user is not None else "degraded",
+            "status": status,
             "uptime_seconds": uptime_seconds,
             "guilds": len(guilds),
             "users": users,
             "discord_connected": user is not None,
             "monitor_ready": True,
+            "tasks": tasks,
+            "persistence": persistence,
+            "calendar_sync": calendar_sync,
         }
     except Exception:
         return {"status": "degraded", "monitor_ready": False}
+
+
+async def collect_console_health(monitor: object | None = None, *, port: int | None = None) -> dict[str, Any]:
+    bot = collect_bot_status(monitor)
+    bridge = await collect_bridge_health(monitor)
+    persistence = bot.get("persistence") or _collect_persistence_health()
+    tasks = bot.get("tasks") or _collect_task_health(monitor)
+
+    if bot.get("status") == "starting":
+        status = "starting"
+    elif (
+        bot.get("status") == "degraded"
+        or persistence.get("status") == "degraded"
+        or tasks.get("status") == "degraded"
+        or bridge.get("status") in {"error", "unavailable", "unhealthy"}
+    ):
+        status = "degraded"
+    else:
+        status = "healthy"
+
+    return {
+        "status": status,
+        "timestamp": datetime.now().isoformat(),
+        "console": {"status": "running", "port": port},
+        "bot": bot,
+        "bridge": bridge,
+        "persistence": persistence,
+        "tasks": tasks,
+    }
 
 
 async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
@@ -165,7 +250,7 @@ def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:
     task_count = 0
 
     for item in items:
-        if item.get("completed"):
+        if item.get("completed") or item.get("delete_pending"):
             continue
 
         event_count += 1

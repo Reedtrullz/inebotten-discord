@@ -11,6 +11,9 @@ import subprocess
 import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
+
+from utils.json_storage import write_json_atomic
 
 try:
     from zoneinfo import ZoneInfo
@@ -74,6 +77,97 @@ def get_google_credentials_path() -> Path:
     if configured:
         return configured
     return get_hermes_home() / "credentials.json"
+
+
+def get_console_public_url() -> str:
+    """Return the externally reachable console URL used in setup guidance."""
+    raw_url = (
+        os.getenv("CONSOLE_PUBLIC_URL")
+        or os.getenv("WEB_CONSOLE_PUBLIC_URL")
+        or "https://bot.reidar.tech"
+    )
+    return raw_url.strip().rstrip("/") or "https://bot.reidar.tech"
+
+
+def get_gcal_setup_url() -> str:
+    """Return the protected web-console page for Google Calendar setup."""
+    return f"{get_console_public_url()}/gcal-auth"
+
+
+def get_google_credentials_status() -> dict[str, Any]:
+    """Return non-secret status for the Google OAuth client credentials file."""
+    credentials_path = get_google_credentials_path()
+    return {
+        "configured": credentials_path.exists(),
+        "path": str(credentials_path),
+        "directory": str(credentials_path.parent),
+        "setup_url": get_gcal_setup_url(),
+    }
+
+
+def missing_google_credentials_message(credentials_path: Path | None = None) -> str:
+    """Return user-facing setup guidance without requiring direct VPS access."""
+    path = credentials_path or get_google_credentials_path()
+    return (
+        f"Fant ikke `credentials.json` i {path.parent}. "
+        f"Åpne {get_gcal_setup_url()} i webkonsollen, lim inn OAuth 2.0 "
+        "Client ID JSON for `Desktop app`, og lagre. Kjør deretter "
+        "`@inebotten kalender auth` på nytt."
+    )
+
+
+def _normalize_client_credentials(raw_credentials: str | dict[str, Any]) -> tuple[bool, dict[str, Any] | str]:
+    if isinstance(raw_credentials, str):
+        if not raw_credentials.strip():
+            return False, "Lim inn innholdet fra Google OAuth client JSON-filen."
+        try:
+            credentials = json.loads(raw_credentials)
+        except json.JSONDecodeError as exc:
+            return False, f"Ugyldig JSON: {exc.msg}"
+    elif isinstance(raw_credentials, dict):
+        credentials = raw_credentials
+    else:
+        return False, "Credentials må sendes som JSON eller tekst."
+
+    installed = credentials.get("installed") if isinstance(credentials, dict) else None
+    if not isinstance(installed, dict):
+        if isinstance(credentials, dict) and isinstance(credentials.get("web"), dict):
+            return False, (
+                "Dette ser ut som en `Web application`-client. "
+                "Opprett en OAuth Client ID av typen `Desktop app` i Google Cloud."
+            )
+        return False, (
+            "JSON-en må være en Google OAuth 2.0 Client ID for `Desktop app` "
+            "og inneholde et `installed`-objekt."
+        )
+
+    required_fields = ("client_id", "client_secret", "auth_uri", "token_uri")
+    missing = [field for field in required_fields if not installed.get(field)]
+    if missing:
+        return False, "OAuth JSON mangler påkrevde felt: " + ", ".join(missing)
+
+    return True, credentials
+
+
+def save_google_client_credentials(raw_credentials: str | dict[str, Any]) -> tuple[bool, str]:
+    """Validate and store Google OAuth client credentials with private file mode."""
+    ok, normalized_or_error = _normalize_client_credentials(raw_credentials)
+    if not ok:
+        return False, str(normalized_or_error)
+
+    credentials_path = get_google_credentials_path()
+    try:
+        credentials_path.parent.mkdir(parents=True, exist_ok=True)
+        credentials_path.parent.chmod(0o700)
+        write_json_atomic(credentials_path, normalized_or_error)
+        credentials_path.chmod(0o600)
+    except Exception as exc:
+        return False, f"Klarte ikke lagre OAuth-klienten: {exc}"
+
+    return True, (
+        "OAuth-klienten er lagret. Kjør `@inebotten kalender auth` på nytt "
+        "for å hente Google-innloggingslenken."
+    )
 
 
 # Kept for compatibility with older imports/tests; manager instances resolve
@@ -159,12 +253,7 @@ class GoogleCalendarManager:
         client_secrets_file = self._credentials_path()
         
         if not client_secrets_file.exists():
-            return False, (
-                f"Fant ikke `credentials.json` i {client_secrets_file.parent}. "
-                "Last ned OAuth 2.0 Client ID for 'Desktop app' fra Google Cloud "
-                "Platform, døp filen til `credentials.json`, og legg den der. "
-                "I Docker/VPS skal filen ligge i den monterte data-mappen."
-            )
+            return False, missing_google_credentials_message(client_secrets_file)
             
         try:
             self._auth_flow = InstalledAppFlow.from_client_secrets_file(

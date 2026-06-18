@@ -211,6 +211,30 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
             self.assertEqual(data["event_count"], 1)
             self.assertEqual(data["upcoming_events"][0]["title"], "Framtidsmøte")
 
+    def test_collect_calendar_data_hides_pending_delete_items(self):
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            calendar_path = hermes_home / "discord" / "data" / "calendar.json"
+            write_json_atomic(
+                calendar_path,
+                {
+                    "shared": [
+                        {
+                            "title": "Pending",
+                            "date": "01.01.2099",
+                            "delete_pending": True,
+                        },
+                        {"title": "Visible", "date": "02.01.2099"},
+                    ]
+                },
+            )
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                data = collect_calendar_data()
+
+            self.assertEqual(data["event_count"], 1)
+            self.assertEqual(data["upcoming_events"][0]["title"], "Visible")
+
     def test_console_store_uses_hermes_home_for_sessions(self):
         from web_console.console_store import ConsoleStore
 

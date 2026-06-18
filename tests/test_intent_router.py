@@ -241,6 +241,22 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.SEARCH)
         self.assertEqual(result.payload["search"]["query"], "Trondheim konserter")
 
+    def test_memory_view_routes_strictly(self):
+        result = self.route("vis minnet mitt")
+        self.assertEqual(result.intent, BotIntent.MEMORY_VIEW)
+        self.assertEqual(result.payload["memory"]["action"], "view")
+
+    def test_memory_export_routes_strictly(self):
+        result = self.route("eksporter minnet mitt")
+        self.assertEqual(result.intent, BotIntent.MEMORY_EXPORT)
+        self.assertEqual(result.payload["memory"]["action"], "export")
+
+    def test_memory_delete_requires_payload_confirmation_flag(self):
+        result = self.route("slett minnet mitt bekreft")
+        self.assertEqual(result.intent, BotIntent.MEMORY_DELETE)
+        self.assertEqual(result.payload["memory"]["action"], "delete")
+        self.assertTrue(result.payload["memory"]["confirmed"])
+
     def test_quote_list_routes_to_quote_list(self):
         result = self.route("liste sitater")
         self.assertEqual(result.intent, BotIntent.QUOTE_LIST)

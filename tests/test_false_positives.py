@@ -114,6 +114,11 @@ class FalsePositiveTests(unittest.TestCase):
         result = self.route("husk å kjøpe melk på mandag")
         self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
 
+    def test_minn_meg_pa_stays_calendar_not_memory(self):
+        result = self.route("minn meg på å kjøpe melk på mandag")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
+        self.assertNotIn(result.intent, (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_DELETE))
+
     def test_real_calendar_event(self):
         result = self.route("arrangement 17. mai kl 12:00")
         self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)

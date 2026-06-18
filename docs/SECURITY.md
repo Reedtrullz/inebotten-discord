@@ -36,8 +36,8 @@ Dette gir angripere tid til å utnytte problemet før det er fikset.
 
 ### Hvordan rapportere
 
-1. **Send e-post til:** [your-email@example.com]
-2. **Emne:** `[SECURITY] Kort beskrivelse`
+1. **Rapporter privat via GitHub Security Advisory** for `Reedtrullz/inebotten-discord`.
+2. **Ikke åpne offentlig issue** for sikkerhetsfunn.
 3. **Innhold:**
    - Beskrivelse av sårbarheten
    - Hvordan gjenskape (hvis mulig)
@@ -135,11 +135,11 @@ git pull origin master
 git log --oneline -5
 ```
 
-På VPS kan dette automatiseres med systemd og GitHub webhook. Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md). Viktige sikkerhetsregler for auto-update:
+På VPS brukes normalt Ansible-flowen i `deploy/README.md`. Den eldre systemd/GitHub-webhook-flowen er dokumentert i [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md). Viktige sikkerhetsregler for legacy auto-update:
 
 - Bruk en GitHub webhook secret.
 - Ikke commit `/etc/inebotten-webhook.env`, `.env`, tokens eller `data/`.
-- Ikke gjør manuelle kodeendringer i `/opt/inebotten-discord`; auto-update bruker `git reset --hard origin/master`.
+- Ikke gjør manuelle kodeendringer i server-checkouten; legacy auto-update bruker `git reset --hard origin/master`.
 - Sjekk `/var/log/inebotten-autoupdate.log` etter feil.
 
 ---
@@ -252,8 +252,8 @@ Vår CI sjekker automatisk:
 
 ### Sikkerhetsproblemer
 
-📧 **E-post:** [your-email@example.com]  
-🔒 **PGP:** [hvis tilgjengelig]
+🔒 **Privat rapport:** GitHub Security Advisory for `Reedtrullz/inebotten-discord`
+⚠️ **Ikke bruk offentlige issues** for sikkerhetsfunn.
 
 ### Andre spørsmål
 

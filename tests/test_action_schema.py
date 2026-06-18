@@ -33,7 +33,7 @@ class ActionSchemaTests(unittest.IsolatedAsyncioTestCase):
         monitor = MessageMonitor.__new__(MessageMonitor)
         monitor.handlers = {}
         monitor.nlp_parser = SimpleNamespace(parse_event=lambda text: {"title": "Møte"})
-        monitor.user_memory = SimpleNamespace(get_memory=AsyncMock(return_value={"location": "Oslo"}))
+        monitor.user_memory = SimpleNamespace(get_user=AsyncMock(return_value={"location": "Oslo"}))
         monitor._generate_dashboard = AsyncMock(return_value="dashboard")
         monitor._send_response = AsyncMock()
         return monitor

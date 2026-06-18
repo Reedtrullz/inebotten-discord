@@ -73,6 +73,9 @@ class BotIntent(Enum):
     SEARCH = "search"
     DASHBOARD = "dashboard"
     SET_LOCATION = "set_location"
+    MEMORY_VIEW = "memory_view"
+    MEMORY_EXPORT = "memory_export"
+    MEMORY_DELETE = "memory_delete"
     BIRTHDAY_EDIT = "birthday_edit"
     REMINDER_EDIT = "reminder_edit"
     REMINDER_DELETE = "reminder_delete"
@@ -111,6 +114,10 @@ class IntentRouter:
 
         if self._is_profile_command(content_lower):
             return IntentResult(BotIntent.PROFILE, 0.95, reason="profile_keyword")
+
+        memory_command = self._route_memory_command(content)
+        if memory_command:
+            return memory_command
 
         if has_any_keyword(content_lower, REMINDER_EDIT_KEYWORDS):
             return IntentResult(BotIntent.REMINDER_EDIT, 0.98, {}, "reminder_edit_keyword")
@@ -251,6 +258,34 @@ class IntentRouter:
         watchlist_cmd = self.monitor.parse_watchlist_command(content)
         if watchlist_cmd:
             return IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": watchlist_cmd}, "watchlist_parser")
+        return None
+
+    def _route_memory_command(self, content: str) -> Optional[IntentResult]:
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+        lower = cleaned.lower()
+
+        if any(phrase in lower for phrase in ("slett minnet mitt", "slett brukerminne", "glem meg")):
+            return IntentResult(
+                BotIntent.MEMORY_DELETE,
+                0.99,
+                {"memory": {"action": "delete", "confirmed": bool(re.search(r"\bbekreft\b|\bconfirm\b", lower))}},
+                "memory_delete_keyword",
+            )
+        if any(phrase in lower for phrase in ("eksporter minnet mitt", "export my memory", "eksporter brukerminne")):
+            return IntentResult(
+                BotIntent.MEMORY_EXPORT,
+                0.99,
+                {"memory": {"action": "export"}},
+                "memory_export_keyword",
+            )
+        if any(phrase in lower for phrase in ("vis minnet mitt", "mitt minne", "brukerminne", "hva husker du om meg")):
+            return IntentResult(
+                BotIntent.MEMORY_VIEW,
+                0.99,
+                {"memory": {"action": "view"}},
+                "memory_view_keyword",
+            )
         return None
 
     def _route_local_search_command(self, content: str) -> Optional[IntentResult]:

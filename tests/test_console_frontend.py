@@ -74,6 +74,17 @@ def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> No
     assert "Logger" in content
 
 
+def test_gcal_auth_page_renders_after_login(page: Any, console_server: ConsoleServer) -> None:
+    """Verify Google Calendar setup page is reachable from an authenticated browser session."""
+    _login(page, console_server)
+    page.goto(f"{_base_url(console_server)}/gcal-auth")
+    page.wait_for_load_state("networkidle")
+
+    assert page.locator("#gcal-auth").is_visible()
+    assert page.locator('textarea[name="credentials_json"]').is_visible()
+    assert "OAuth-oppsett" in page.content()
+
+
 def test_static_assets_load(page: Any, console_server: ConsoleServer) -> None:
     """Verify the login page loads only the assets it needs."""
     page.goto(f"{_base_url(console_server)}/login")
@@ -103,7 +114,9 @@ def test_health_endpoint_no_auth(page: Any, console_server: ConsoleServer) -> No
     response = page.request.get(f"{_base_url(console_server)}/health")
     assert response.status == 200
     body = response.json()
-    assert body.get("status") == "healthy"
+    assert body.get("status") in {"healthy", "degraded", "starting"}
+    assert body.get("console", {}).get("status") == "running"
+    assert "persistence" in body
 
 
 def test_theme_toggle_login_page(page: Any, console_server: ConsoleServer) -> None:

@@ -1,4 +1,10 @@
 import asyncio
+import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from urllib.parse import quote_plus
+from unittest.mock import patch
 
 from web_console.server import ConsoleServer, MAX_BODY_BYTES
 
@@ -6,6 +12,18 @@ from web_console.server import ConsoleServer, MAX_BODY_BYTES
 HOST = "127.0.0.1"
 PORT = 18080
 API_KEY = "test-key-123"
+
+
+def desktop_client_json() -> dict:
+    return {
+        "installed": {
+            "client_id": "client-id.apps.googleusercontent.com",
+            "client_secret": "client-secret",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
 
 
 class FakeCloudflareAccessVerifier:
@@ -70,6 +88,10 @@ def extract_cookie(response: bytes, name: str) -> str:
             value = line[len(prefix):].split(b";", 1)[0]
             return value.decode()
     raise AssertionError(f"Missing Set-Cookie for {name}")
+
+
+def json_body(response: bytes) -> dict:
+    return json.loads(response.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
 
 
 async def test_auth_missing_key():
@@ -226,6 +248,12 @@ async def test_health_no_auth():
     try:
         response = await request("/health")
         assert b"200" in response
+        body = json_body(response)
+        assert body["status"] in {"healthy", "degraded", "starting"}
+        assert body["console"]["status"] == "running"
+        assert "bot" in body
+        assert "persistence" in body
+        assert "tasks" in body
     finally:
         await stop_server(server, task)
 
@@ -316,6 +344,102 @@ async def test_dashboard_html():
         assert b"/static/app.js" in response
     finally:
         await stop_server(server, task)
+
+
+async def test_gcal_auth_page_requires_auth():
+    server, task = await start_server()
+    try:
+        response = await request("/gcal-auth")
+        assert b"401" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_gcal_auth_page_renders_with_auth():
+    with TemporaryDirectory() as tmp:
+        credentials_path = Path(tmp) / "credentials.json"
+        with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+            server, task = await start_server()
+            try:
+                response = await request("/gcal-auth", api_key=API_KEY)
+                assert b"200" in response
+                assert "OAuth-oppsett".encode("utf-8") in response
+                assert b"credentials_json" in response
+            finally:
+                await stop_server(server, task)
+
+
+async def test_gcal_credentials_post_saves_private_file():
+    with TemporaryDirectory() as tmp:
+        credentials_path = Path(tmp) / "credentials.json"
+        encoded = quote_plus(json.dumps(desktop_client_json()))
+        body = f"credentials_json={encoded}".encode("utf-8")
+
+        with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+            server, task = await start_server()
+            try:
+                response = await request(
+                    "/api/gcal/credentials",
+                    method="POST",
+                    api_key=API_KEY,
+                    body=body,
+                    extra_headers=["Content-Type: application/x-www-form-urlencoded"],
+                )
+                assert b"200" in response
+                assert "OAuth-klienten er lagret".encode("utf-8") in response
+                assert credentials_path.exists()
+                assert credentials_path.stat().st_mode & 0o777 == 0o600
+                saved = json.loads(credentials_path.read_text())
+                assert saved["installed"]["client_id"] == "client-id.apps.googleusercontent.com"
+            finally:
+                await stop_server(server, task)
+
+
+async def test_gcal_credentials_post_requires_auth_and_does_not_write():
+    with TemporaryDirectory() as tmp:
+        credentials_path = Path(tmp) / "credentials.json"
+        encoded = quote_plus(json.dumps(desktop_client_json()))
+        body = f"credentials_json={encoded}".encode("utf-8")
+
+        with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+            server, task = await start_server()
+            try:
+                response = await request(
+                    "/api/gcal/credentials",
+                    method="POST",
+                    body=body,
+                    extra_headers=["Content-Type: application/x-www-form-urlencoded"],
+                )
+                assert b"401" in response
+                assert not credentials_path.exists()
+            finally:
+                await stop_server(server, task)
+
+
+async def test_gcal_credentials_post_rejects_web_client_json():
+    with TemporaryDirectory() as tmp:
+        credentials_path = Path(tmp) / "credentials.json"
+        body = json.dumps(
+            {"web": {"client_id": "web-client", "client_secret": "secret"}}
+        ).encode("utf-8")
+
+        with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+            server, task = await start_server()
+            try:
+                response = await request(
+                    "/api/gcal/credentials",
+                    method="POST",
+                    api_key=API_KEY,
+                    body=body,
+                    extra_headers=["Content-Type: application/json"],
+                )
+                payload = json_body(response)
+                assert b"400" in response
+                assert payload["ok"] is False
+                assert "Desktop app" in payload["message"]
+                assert not credentials_path.exists()
+            finally:
+                await stop_server(server, task)
 
 
 async def test_dashboard_includes_initial_data():
@@ -653,7 +777,7 @@ async def test_oversized_body_returns_413():
     try:
         body = b"x" * (MAX_BODY_BYTES + 1)
         response = await request("/api/login", method="POST", body=body)
-        assert b"413" in response
+        assert b"HTTP/1.1 413 Payload Too Large" in response
         assert b"Request body too large" in response
     finally:
         await stop_server(server, task)

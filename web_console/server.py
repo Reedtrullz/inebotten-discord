@@ -6,11 +6,10 @@ import logging
 import os
 import pathlib
 import time
-from datetime import datetime
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
-from web_console.dashboard import render_commands_page, render_dashboard, render_login_page  # pyright: ignore[reportUnknownVariableType]
+from web_console.dashboard import render_commands_page, render_dashboard, render_gcal_auth_page, render_login_page  # pyright: ignore[reportUnknownVariableType]
 from web_console.cloudflare_access import CloudflareAccessVerifier
 from web_console.console_store import get_console_store
 from web_console.state_collector import (
@@ -18,6 +17,7 @@ from web_console.state_collector import (
     collect_bot_status,
     collect_bridge_health,
     collect_calendar_data,
+    collect_console_health,
     collect_intent_stats,
     collect_logs,
     collect_memory_stats,
@@ -172,6 +172,42 @@ class ConsoleServer:
             return None
         return content_length
 
+    def _parse_form_body(self, body_bytes: bytes) -> dict[str, str]:
+        body_text = body_bytes.decode("utf-8", errors="replace")
+        parsed = parse_qs(body_text, keep_blank_values=True)
+        return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+    def _wants_json(self, headers: dict[str, str]) -> bool:
+        return (
+            "application/json" in headers.get("accept", "").lower()
+            or "application/json" in headers.get("content-type", "").lower()
+        )
+
+    def _extract_gcal_credentials_payload(
+        self,
+        headers: dict[str, str],
+        body_bytes: bytes,
+    ) -> tuple[bool, object | str]:
+        if not body_bytes:
+            return False, "Mangler OAuth Client ID JSON."
+
+        body_text = body_bytes.decode("utf-8", errors="replace").strip()
+        content_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+
+        if content_type == "application/json" or body_text.startswith("{"):
+            try:
+                payload = json.loads(body_text)
+            except json.JSONDecodeError as exc:
+                return False, f"Ugyldig JSON: {exc.msg}"
+            if isinstance(payload, dict) and "credentials_json" in payload:
+                return True, payload.get("credentials_json", "")
+            if isinstance(payload, dict) and "credentials" in payload:
+                return True, payload.get("credentials", "")
+            return True, payload
+
+        form_data = self._parse_form_body(body_bytes)
+        return True, form_data.get("credentials_json", "")
+
     def _parse_cookies(self, cookie_header: str | None) -> dict[str, str]:
         cookies: dict[str, str] = {}
         if not cookie_header:
@@ -314,6 +350,7 @@ class ConsoleServer:
             404: "Not Found",
             405: "Method Not Allowed",
             302: "Found",
+            413: "Payload Too Large",
             429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")
@@ -446,6 +483,39 @@ class ConsoleServer:
                     await self._send_response(writer, 401, html, content_type="text/html; charset=utf-8")
                 return
 
+            if method == "POST" and path == "/api/gcal/credentials":
+                from cal_system.google_calendar_manager import (
+                    get_google_credentials_status,
+                    save_google_client_credentials,
+                )
+
+                ok, payload_or_error = self._extract_gcal_credentials_payload(headers, body_bytes)
+                if ok:
+                    saved, message = save_google_client_credentials(payload_or_error)
+                else:
+                    saved, message = False, str(payload_or_error)
+
+                status = get_google_credentials_status()
+                if self._wants_json(headers):
+                    await self._send_response(
+                        writer,
+                        200 if saved else 400,
+                        {"ok": saved, "message": message, "status": status},
+                    )
+                else:
+                    html = render_gcal_auth_page(
+                        status,
+                        message=message if saved else None,
+                        error=None if saved else message,
+                    )
+                    await self._send_response(
+                        writer,
+                        200 if saved else 400,
+                        html,
+                        content_type="text/html; charset=utf-8",
+                    )
+                return
+
             if method == "POST" and path == "/api/logout":
                 cookies = self._parse_cookies(headers.get("cookie"))
                 self.store.delete_session(cookies.get("console_session"))
@@ -475,16 +545,16 @@ class ConsoleServer:
                 await self._send_response(
                     writer,
                     200,
-                    {
-                        "status": "healthy",
-                        "console": "running",
-                        "timestamp": datetime.now().isoformat(),
-                        "port": self.port,
-                    },
+                    await collect_console_health(self.monitor, port=self.port),
                 )
             elif path == "/":
                 data = await StateCollector(self.monitor).collect_all()
                 html = render_dashboard(data)
+                await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
+            elif path == "/gcal-auth":
+                from cal_system.google_calendar_manager import get_google_credentials_status
+
+                html = render_gcal_auth_page(get_google_credentials_status())
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/commands":
                 html = render_commands_page()
@@ -510,6 +580,10 @@ class ConsoleServer:
                 await self._send_response(writer, 200, collect_intent_stats(self.monitor))
             elif path == "/api/memory":
                 await self._send_response(writer, 200, collect_memory_stats(self.monitor))
+            elif path == "/api/gcal/credentials":
+                from cal_system.google_calendar_manager import get_google_credentials_status
+
+                await self._send_response(writer, 200, get_google_credentials_status())
             elif path == "/api/logs":
                 parsed_query = urlparse(target)
                 query_lines = 200

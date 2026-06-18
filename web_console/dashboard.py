@@ -402,7 +402,10 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
     <div class="metric-grid">{metrics}</div>
     {upcoming_html}
   </div>
-  <div class="card-footer">{_modal_button("calendar", "Vis alle")}</div>
+  <div class="card-footer">
+    <a href="/gcal-auth" class="btn btn-secondary">Google-oppsett</a>
+    {_modal_button("calendar", "Vis alle")}
+  </div>
 </section>"""
 
 
@@ -662,6 +665,84 @@ def render_dashboard(data: dict[str, Any] | None, *, is_demo: bool = False) -> s
     )
 
 
+def render_gcal_auth_page(
+    status: dict[str, Any] | None,
+    *,
+    message: str | None = None,
+    error: str | None = None,
+) -> str:
+    if status is None:
+        status = {}
+
+    configured = bool(status.get("configured"))
+    path = escape(str(status.get("path") or "Ikke satt"))
+    badge_class = "badge-online" if configured else "badge-warning"
+    badge_text = "Konfigurert" if configured else "Mangler OAuth-klient"
+    message_html = (
+        f'<div class="badge badge-online setup-message" role="status">{escape(message)}</div>'
+        if message
+        else ""
+    )
+    error_html = (
+        f'<div class="badge badge-error setup-message" role="alert">{escape(error)}</div>'
+        if error
+        else ""
+    )
+
+    main_content = f"""<section class="panel setup-panel span-12" id="gcal-auth">
+  <div class="setup-header">
+    <div>
+      <p class="eyebrow">Google Calendar</p>
+      <h1>OAuth-oppsett</h1>
+      <p class="muted">Lagre Google OAuth-klienten her, og kjør deretter kalender-auth fra Discord.</p>
+    </div>
+    <span class="badge {badge_class}">{badge_text}</span>
+  </div>
+
+  <div class="setup-status">
+    <span>Lagringssti</span>
+    <code>{path}</code>
+  </div>
+
+  {message_html}
+  {error_html}
+
+  <form method="POST" action="/api/gcal/credentials" class="form-stack setup-form">
+    <div class="field-stack">
+      <label for="credentials_json">OAuth Client ID JSON</label>
+      <textarea
+        id="credentials_json"
+        name="credentials_json"
+        class="input credentials-input"
+        spellcheck="false"
+        autocomplete="off"
+        required
+        placeholder='{{"installed":{{"client_id":"...","client_secret":"..."}}}}'
+      ></textarea>
+    </div>
+    <div class="setup-actions">
+      <button type="submit" class="btn">Lagre OAuth-klient</button>
+      <a href="/" class="btn btn-secondary">Tilbake</a>
+    </div>
+  </form>
+
+  <div class="setup-note">
+    <p>Bruk en Google OAuth 2.0 Client ID av typen <strong>Desktop app</strong>. Innholdet lagres privat som <code>credentials.json</code>, og vises ikke tilbake etter lagring.</p>
+    <p>Når den er lagret: kjør <code>@inebotten kalender auth</code>, åpne Google-lenken og send koden tilbake med <code>@inebotten kalender kode &lt;kode&gt;</code>.</p>
+  </div>
+</section>"""
+
+    return _BASE_TEMPLATE.format(
+        title="Inebotten - Google Calendar OAuth",
+        header_content="",
+        main_content=main_content,
+        footer_content="Inebotten &middot; Google Calendar-oppsett",
+        body_class="dashboard-page setup-page",
+        refresh_meta="",
+        initial_data_script="",
+    )
+
+
 def render_commands_page() -> str:
     sections = [
         (
@@ -692,6 +773,8 @@ def render_commands_page() -> str:
                 ("@inebotten ferdig 2", "Marker som fullført"),
                 ("@inebotten ferdig meldekort", "Fullfør etter tittel"),
                 ("@inebotten synk", "Synkroniser med Google Calendar"),
+                ("@inebotten kalender auth", "Start Google Calendar-innlogging"),
+                ("@inebotten kalender kode <kode>", "Fullfør Google Calendar-innlogging"),
             ],
         ),
         (
