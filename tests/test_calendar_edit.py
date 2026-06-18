@@ -286,6 +286,50 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.handler.send_response.assert_awaited_once()
         self.assertIn("Møte med Ola", self.handler.send_response.await_args.args[1])
 
+    async def test_handle_delete_extracts_title_after_calendar_context(self):
+        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        self.message.content = "@inebotten kalender fjern meldekort"
+
+        await self.handler.handle_delete(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("Slettet", response)
+        self.assertIn("Send inn meldekort", response)
+        self.assertEqual(self.manager.get_upcoming("123"), [])
+
+    async def test_handle_delete_bulk_title_with_calendar_suffix(self):
+        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        self._add_item("Rosenborg - Kristiansund", _date(2), time="09:00")
+        self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
+        self.message.content = '@inebotten Slett alle "Send inn meldekort" i kalenderen'
+
+        await self.handler.handle_delete(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("Slettet 2", response)
+        remaining = self.manager.get_upcoming("123")
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["title"], "Rosenborg - Kristiansund")
+
+    async def test_handle_delete_ambiguous_title_shows_only_matching_choices(self):
+        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        self._add_item("Rosenborg - Kristiansund", _date(2), time="09:00")
+        self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
+        self.message.content = "@inebotten slett meldekort"
+
+        await self.handler.handle_delete(self.message)
+
+        self.handler.send_response.assert_awaited_once()
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn('Fant 2 treff for "meldekort"', response)
+        self.assertIn("Send inn meldekort (Uke 25 - 26)", response)
+        self.assertIn("Send inn meldekort (Uke 27 - 28)", response)
+        self.assertIn("slett alle meldekort", response)
+        self.assertNotIn("Rosenborg - Kristiansund", response)
+        self.assertEqual(len(self.manager.get_upcoming("123")), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

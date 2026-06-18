@@ -103,7 +103,7 @@ class IntentRouter:
         content_lower = content.lower().strip()
 
         # Explicit operational/help/calendar commands first.
-        if has_any_keyword(content_lower, ["kalender", "calendar"]) and has_any_keyword(content_lower, ["hjelp", "help", "guide"]):
+        if self._has_calendar_context(content_lower) and has_any_keyword(content_lower, ["hjelp", "help", "guide"]):
             return IntentResult(BotIntent.CALENDAR_HELP, 0.99, reason="calendar_help_keyword")
 
         if self._is_status_command(content_lower):
@@ -133,7 +133,7 @@ class IntentRouter:
             code = code_match.group(1) if code_match else None
             return IntentResult(BotIntent.CALENDAR_AUTH, 0.99, {"auth_code": code}, "calendar_auth_keyword")
 
-        calendar_command = self._route_calendar_command(content_lower)
+        calendar_command = self._route_calendar_command(content_lower, guild_id)
         if calendar_command:
             return calendar_command
 
@@ -233,10 +233,28 @@ class IntentRouter:
 
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
-    def _route_calendar_command(self, content_lower: str) -> Optional[IntentResult]:
-        if not has_any_keyword(content_lower, ["kalender", "calendar"]):
+    def _route_calendar_command(self, content_lower: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
+        if not self._has_calendar_context(content_lower):
             # Special case for "synk" / "sync" which can be used without "kalender"
             if not has_any_keyword(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
+                delete_target = self._extract_calendar_mutation_target(content_lower, DELETE_KEYWORDS)
+                if delete_target and self._target_looks_like_calendar_item(delete_target, guild_id):
+                    return IntentResult(
+                        BotIntent.CALENDAR_DELETE,
+                        0.94,
+                        {"target": delete_target},
+                        "calendar_delete_title_match",
+                    )
+
+                complete_target = self._extract_calendar_mutation_target(content_lower, COMPLETE_KEYWORDS)
+                if complete_target and self._target_looks_like_calendar_item(complete_target, guild_id):
+                    return IntentResult(
+                        BotIntent.CALENDAR_COMPLETE,
+                        0.94,
+                        {"target": complete_target},
+                        "calendar_complete_title_match",
+                    )
+
                 return None
 
         if has_any_keyword(content_lower, SYNC_KEYWORDS):
@@ -253,6 +271,99 @@ class IntentRouter:
         if has_any_keyword(content_lower, LIST_KEYWORDS) or content_lower in CALENDAR_KEYWORDS:
             return IntentResult(BotIntent.CALENDAR_LIST, 0.92, reason="calendar_list_keyword")
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")
+
+    def _has_calendar_context(self, content_lower: str) -> bool:
+        if has_any_keyword(content_lower, ["kalender", "calendar", "gcal"]):
+            return True
+        return bool(re.search(r"\bkalenderen\b", content_lower, flags=re.IGNORECASE))
+
+    def _extract_calendar_mutation_target(self, content_lower: str, keywords) -> Optional[str]:
+        keyword_pattern = "|".join(re.escape(keyword) for keyword in sorted(keywords, key=len, reverse=True))
+        match = re.match(rf"^(?:{keyword_pattern})\s+(.+)$", content_lower, flags=re.IGNORECASE)
+        if not match:
+            return None
+
+        target = self._normalize_calendar_target(match.group(1))
+        return target if target and len(target) > 0 else None
+
+    def _normalize_calendar_target(self, target: str) -> str:
+        target = re.sub(
+            r"\s+(?:i|fra)\s+(?:kalender(?:en)?|calendar|gcal)\s*$",
+            "",
+            target.strip(),
+            flags=re.IGNORECASE,
+        )
+        target = target.strip(" .")
+        target = self._strip_wrapping_quotes(target)
+
+        bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)$", target, flags=re.IGNORECASE)
+        if bulk_match:
+            bulk_target = self._strip_wrapping_quotes(bulk_match.group(2).strip())
+            return f"{bulk_match.group(1)} {bulk_target}".strip()
+
+        return target
+
+    def _strip_wrapping_quotes(self, value: str) -> str:
+        quote_pairs = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
+        stripped = value.strip()
+        for left, right in quote_pairs:
+            if stripped.startswith(left) and stripped.endswith(right) and len(stripped) >= 2:
+                return stripped[1:-1].strip()
+        return stripped
+
+    def _target_looks_like_calendar_item(self, target: str, guild_id: Optional[int]) -> bool:
+        if self._is_reserved_delete_target(target):
+            return False
+
+        title_query = self._calendar_title_query(target)
+        if not title_query:
+            return False
+        if title_query.isdigit():
+            return True
+        return self._calendar_title_matches(title_query, guild_id)
+
+    def _calendar_title_query(self, target: str) -> str:
+        target = self._normalize_calendar_target(target)
+        bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)$", target, flags=re.IGNORECASE)
+        if bulk_match:
+            return self._strip_wrapping_quotes(bulk_match.group(2).strip())
+        return target
+
+    def _is_reserved_delete_target(self, target: str) -> bool:
+        return has_any_keyword(
+            target,
+            (
+                "poll",
+                "avstemning",
+                "påminnelse",
+                "påminnelser",
+                "reminder",
+                "reminders",
+                "sitat",
+                "quote",
+                "quotes",
+                "watchlist",
+                "minne",
+                "memory",
+                "brukerminne",
+            ),
+        )
+
+    def _calendar_title_matches(self, title_query: str, guild_id: Optional[int]) -> bool:
+        calendar = getattr(self.monitor, "calendar", None)
+        if not calendar:
+            return False
+
+        try:
+            if hasattr(calendar, "get_upcoming"):
+                items = calendar.get_upcoming(guild_id, days=365)
+                return any(title_query.lower() in str(item.get("title", "")).lower() for item in items)
+            if hasattr(calendar, "search_items"):
+                return bool(calendar.search_items(title_query))
+        except Exception:
+            return False
+
+        return False
 
     def _route_watchlist_command(self, content: str) -> Optional[IntentResult]:
         watchlist_cmd = self.monitor.parse_watchlist_command(content)

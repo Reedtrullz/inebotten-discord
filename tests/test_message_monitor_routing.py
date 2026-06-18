@@ -165,7 +165,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                 handle_watchlist_remove=noop,
             ),
             "birthdays": SimpleNamespace(handle_birthday_edit=noop),
-            "calendar": SimpleNamespace(handle_search=noop),
+            "calendar": SimpleNamespace(handle_search=noop, handle_delete=noop),
         }
         monitor.intent_router = IntentRouter(monitor)
         monitor.recording_polls = polls
@@ -402,6 +402,27 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1]["query"], "møte")
         self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_SEARCH.value]["count"], 1)
+
+    async def test_bare_calendar_title_delete_routes_to_calendar_handler(self):
+        monitor = self.make_monitor()
+        monitor.calendar = SimpleNamespace(
+            get_upcoming=lambda guild_id, days=365: [
+                {"title": "Send inn meldekort (Uke 25 - 26)", "date": "29.06.2026", "time": "12:00"}
+            ]
+        )
+        monitor.intent_router = IntentRouter(monitor)
+        calls = []
+
+        async def fake_handle_calendar_delete(message):
+            calls.append(message.content)
+
+        monitor.handlers["calendar"].handle_delete = fake_handle_calendar_delete
+        message = RecordingMessage("@inebotten slett meldekort")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(calls, ["slett meldekort"])
+        self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_DELETE.value]["count"], 1)
 
     async def test_reminder_search_routes_to_handler(self):
         monitor = self.make_monitor()

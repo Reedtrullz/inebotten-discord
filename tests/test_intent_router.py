@@ -13,8 +13,14 @@ from features.search_manager import detect_search_intent
 
 
 class DummyMonitor:
-    def __init__(self, active_polls=False):
+    def __init__(self, active_polls=False, calendar_titles=None):
         self.nlp_parser = NaturalLanguageParser()
+        self.calendar = SimpleNamespace(
+            get_upcoming=lambda guild_id, days=365: [
+                {"title": title, "date": "29.06.2026", "time": "12:00"}
+                for title in (calendar_titles or [])
+            ]
+        )
         self.countdown = SimpleNamespace(parse_countdown_query=self._parse_countdown)
         self.poll = SimpleNamespace(
             get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
@@ -85,8 +91,11 @@ class DummyMonitor:
 
 
 class IntentRouterTests(unittest.TestCase):
-    def route(self, text, active_polls=False, monitor=None):
-        monitor = monitor or DummyMonitor(active_polls=active_polls)
+    def route(self, text, active_polls=False, monitor=None, calendar_titles=None):
+        monitor = monitor or DummyMonitor(
+            active_polls=active_polls,
+            calendar_titles=calendar_titles,
+        )
         return IntentRouter(monitor).route(text, guild_id=123)
 
     def test_conversational_future_prompt_stays_ai_chat(self):
@@ -216,6 +225,39 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_calendar_delete_still_handles_item_deletion(self):
         self.assertEqual(self.route("kalender slett 2").intent, BotIntent.CALENDAR_DELETE)
+
+    def test_calendar_delete_handles_leading_calendar_context_and_title(self):
+        result = self.route("kalender fjern meldekort")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_DELETE)
+
+    def test_calendar_delete_handles_bare_title_when_calendar_item_matches(self):
+        result = self.route(
+            "slett meldekort",
+            calendar_titles=["Send inn meldekort (Uke 25 - 26)"],
+        )
+        self.assertEqual(result.intent, BotIntent.CALENDAR_DELETE)
+        self.assertEqual(result.reason, "calendar_delete_title_match")
+
+    def test_bare_delete_without_calendar_match_stays_ai_chat(self):
+        result = self.route("slett prosjektet", calendar_titles=["Send inn meldekort"])
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+
+    def test_calendar_delete_understands_definite_calendar_form(self):
+        prompts = [
+            'Slett alle "Send inn meldekort" i kalenderen',
+            "kalenderen slett meldekort",
+            "fjern meldekort fra kalenderen",
+        ]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(self.route(prompt).intent, BotIntent.CALENDAR_DELETE)
+
+    def test_bare_numeric_delete_routes_to_calendar_delete(self):
+        self.assertEqual(self.route("slett 2").intent, BotIntent.CALENDAR_DELETE)
+
+    def test_reserved_delete_targets_keep_their_own_domains(self):
+        self.assertEqual(self.route("slett poll 2", active_polls=True).intent, BotIntent.POLL_DELETE)
+        self.assertEqual(self.route("slett sitat 1").intent, BotIntent.QUOTE_DELETE)
 
     def test_reminder_edit_routes_to_reminder_edit(self):
         result = self.route("endre påminnelse")

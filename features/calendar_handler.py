@@ -27,24 +27,86 @@ class CalendarHandler(BaseHandler):
         self.nlp_parser = monitor.nlp_parser
 
     def _extract_search_text(self, content: str) -> Optional[str]:
-        """Extract search text after the command keyword in a message.
-        Looks for text after @mention + keyword combination.
-        """
-        # Remove Discord mentions and @inebotten
-        cleaned = re.sub(r"<@!?\d+>", "", content)
+        """Extract the item title/query from calendar mutation commands."""
+        cleaned = re.sub(r"<@!?\d+>", "", content or "")
         cleaned = cleaned.replace("@inebotten", "").strip()
 
-        # Remove known command keywords
-        keywords = [
-            "slett", "delete", "fjern",
-            "ferdig", "done", "complete", "fullført",
-        ]
-        for kw in keywords:
-            if cleaned.lower().startswith(kw):
-                rest = cleaned[len(kw):].strip()
-                if rest and len(rest) > 1:
-                    return rest
+        command = r"(?:slett|delete|fjern|ferdig|done|complete|fullført)"
+        calendar = r"(?:kalender(?:en)?|calendar|gcal)"
+        patterns = (
+            rf"^(?:{calendar})\s+{command}\s+(.+)$",
+            rf"^{command}\s+(.+)$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, cleaned, flags=re.IGNORECASE)
+            if not match:
+                continue
+            target = self._normalize_calendar_target(match.group(1))
+            if target and len(target) > 0:
+                return target
         return None
+
+    def _normalize_calendar_target(self, target: str) -> str:
+        """Remove calendar context words and wrapping quotes from a target."""
+        target = re.sub(
+            r"\s+(?:i|fra)\s+(?:kalender(?:en)?|calendar|gcal)\s*$",
+            "",
+            target.strip(),
+            flags=re.IGNORECASE,
+        )
+        target = target.strip(" .")
+        target = self._strip_wrapping_quotes(target)
+
+        bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)$", target, flags=re.IGNORECASE)
+        if bulk_match:
+            bulk_target = self._strip_wrapping_quotes(bulk_match.group(2).strip())
+            return f"{bulk_match.group(1)} {bulk_target}".strip()
+
+        return target
+
+    def _strip_wrapping_quotes(self, value: str) -> str:
+        stripped = value.strip()
+        for left, right in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+            if stripped.startswith(left) and stripped.endswith(right) and len(stripped) >= 2:
+                return stripped[1:-1].strip()
+        return stripped
+
+    def _extract_bulk_title(self, search_text: str) -> Optional[str]:
+        bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)$", search_text, flags=re.IGNORECASE)
+        if not bulk_match:
+            return None
+        title = self._normalize_calendar_target(bulk_match.group(2))
+        return title or None
+
+    def _matching_upcoming_items(self, guild_id, query: str):
+        query_lower = query.lower()
+        try:
+            items = self.calendar.get_upcoming(guild_id, days=365)
+        except TypeError:
+            items = self.calendar.get_upcoming(guild_id)
+        return [
+            (index, item)
+            for index, item in enumerate(items, 1)
+            if query_lower in str(item.get("title", "")).lower()
+        ]
+
+    def _format_delete_match_prompt(self, query: str, matches) -> str:
+        lines = [f"📋 Fant {len(matches)} treff for \"{query}\" i kalenderen:"]
+        for index, item in matches[:10]:
+            time_str = f" kl. {item['time']}" if item.get("time") else ""
+            lines.append(
+                f"📅 {index}. {item.get('title', 'Uten tittel')} — "
+                f"{item.get('date', '')}{time_str}"
+            )
+
+        if len(matches) > 10:
+            lines.append(f"\n… og {len(matches) - 10} til.")
+
+        lines.append(
+            f"\nBruk `@inebotten slett [nummer]` for én bestemt, "
+            f"eller `@inebotten slett alle {query}` for alle treff."
+        )
+        return "\n".join(lines)
 
     def _extract_calendar_search_query(self, content: str) -> Optional[str]:
         """Extract query from calendar search commands."""
@@ -270,13 +332,9 @@ class CalendarHandler(BaseHandler):
             item_num = self.extract_number(message.content)
             search_text = self._extract_search_text(message.content)
 
-            # Try title-based matching first if search text found
-            if search_text and not item_num:
-                # Check for bulk delete: "alle <title>" or "all <title>"
-                lower_text = search_text.lower()
-                bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)", lower_text)
-                if bulk_match:
-                    bulk_title = bulk_match.group(2).strip()
+            if search_text:
+                bulk_title = self._extract_bulk_title(search_text)
+                if bulk_title:
                     count, deleted = await self.calendar.delete_items_by_title(guild_id, bulk_title)
                     if count > 0:
                         titles = ", ".join(deleted) if count <= 3 else f"{count} stykker"
@@ -284,13 +342,21 @@ class CalendarHandler(BaseHandler):
                     else:
                         await self.send_response(message, f"❌ Fant ingen \"{bulk_title}\" i kalenderen.")
                     return
-                else:
-                    # Single delete by title
-                    success, title = await self.calendar.delete_item_by_title(guild_id, search_text)
-                    if success:
-                        await self.send_response(message, f"✅ **Slettet! {title}**")
+
+                if not search_text.strip().isdigit():
+                    matches = self._matching_upcoming_items(guild_id, search_text)
+                    if len(matches) > 1:
+                        await self.send_response(
+                            message,
+                            self._format_delete_match_prompt(search_text, matches),
+                        )
                         return
-                    # Fall through to number/list behavior if no match
+                    if len(matches) == 1:
+                        match_index, _ = matches[0]
+                        success, title = await self.calendar.delete_item(guild_id, match_index)
+                        if success:
+                            await self.send_response(message, f"✅ **Slettet! {title}**")
+                            return
 
             if item_num:
                 success, title = await self.calendar.delete_item(guild_id, item_num)
