@@ -95,6 +95,13 @@ class PollsHandler(BaseHandler):
 
             if not active_polls:
                 response_text = self.loc.t("no_active_polls") + " 📊"
+            elif len(active_polls) > 1:
+                lines = [
+                    "📊 Det er flere aktive avstemninger. Bruk `@inebotten polls` og stem med en tydelig avstemning først."
+                ]
+                for i, poll in enumerate(active_polls, 1):
+                    lines.append(f"{i}. {poll.get('question', '?')}")
+                response_text = "\n".join(lines)
             else:
                 # Vote on the most recent poll
                 poll = active_polls[-1]
@@ -121,11 +128,29 @@ class PollsHandler(BaseHandler):
         active_polls = self.poll.get_active_polls(guild_id)
         if not active_polls:
             return None
-        if ref is None or ref == "siste":
+        if ref == "siste":
             return active_polls[-1]["id"]
+        if ref is None:
+            if len(active_polls) == 1:
+                return active_polls[-1]["id"]
+            return None
         if isinstance(ref, int) and 1 <= ref <= len(active_polls):
             return active_polls[ref - 1]["id"]
         return None
+
+    def _poll_target_response(self, guild_id, ref, action_label: str) -> str:
+        active_polls = self.poll.get_active_polls(guild_id)
+        if ref is None and len(active_polls) > 1:
+            lines = [
+                (
+                    f"📊 Det er flere aktive avstemninger. Bruk nummer, f.eks. "
+                    f"`@inebotten {action_label} poll 1`, eller skriv `siste`."
+                )
+            ]
+            for i, poll in enumerate(active_polls, 1):
+                lines.append(f"{i}. {poll.get('question', '?')}")
+            return "\n".join(lines)
+        return self.loc.t("poll_not_found")
 
     async def handle_poll_edit(self, message, payload: Dict[str, Any]) -> None:
         """
@@ -137,9 +162,10 @@ class PollsHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
-            poll_id = self._resolve_poll_id(guild_id, payload.get("target"))
+            target = payload.get("target")
+            poll_id = self._resolve_poll_id(guild_id, target)
             if poll_id is None:
-                await self.send_response(message, self.loc.t("poll_not_found"))
+                await self.send_response(message, self._poll_target_response(guild_id, target, "endre"))
                 return
 
             question = payload.get("question")
@@ -181,9 +207,10 @@ class PollsHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
-            poll_id = self._resolve_poll_id(guild_id, payload.get("target"))
+            target = payload.get("target")
+            poll_id = self._resolve_poll_id(guild_id, target)
             if poll_id is None:
-                await self.send_response(message, self.loc.t("poll_not_found"))
+                await self.send_response(message, self._poll_target_response(guild_id, target, "slett"))
                 return
 
             success, result = self.poll.delete_poll(
@@ -218,9 +245,10 @@ class PollsHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
-            poll_id = self._resolve_poll_id(guild_id, payload.get("target"))
+            target = payload.get("target")
+            poll_id = self._resolve_poll_id(guild_id, target)
             if poll_id is None:
-                await self.send_response(message, self.loc.t("poll_not_found"))
+                await self.send_response(message, self._poll_target_response(guild_id, target, "lukk"))
                 return
 
             success, result = self.poll.close_poll(

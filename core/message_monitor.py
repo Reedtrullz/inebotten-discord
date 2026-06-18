@@ -553,6 +553,12 @@ class MessageMonitor:
             await self.handlers["reminders"].handle_reminder_delete(message, payload)
         elif route.intent == BotIntent.REMINDER_SEARCH:
             await self.handlers["reminders"].handle_reminder_search(message, payload)
+        elif route.intent == BotIntent.REMINDER_CREATE:
+            await self.handlers["reminders"].handle_reminder_create(message, payload)
+        elif route.intent == BotIntent.REMINDER_LIST:
+            await self.handlers["reminders"].handle_reminder_list(message, payload)
+        elif route.intent == BotIntent.REMINDER_COMPLETE:
+            await self.handlers["reminders"].handle_reminder_complete(message, payload)
         elif route.intent == BotIntent.POLL_CREATE:
             await self.handlers["polls"].handle_poll(message, payload["poll"])
         elif route.intent == BotIntent.POLL_VOTE:
@@ -571,9 +577,13 @@ class MessageMonitor:
             watchlist_payload = payload.get("watchlist", {})
             action = watchlist_payload.get("action")
             if action == "remove":
-                await self.handlers["watchlist"].handle_watchlist_remove(message, watchlist_payload)
+                response_text = await self.handlers["watchlist"].handle_watchlist_remove(message, watchlist_payload)
+                if response_text:
+                    await self._send_response(message, response_text)
             elif action == "edit":
-                await self.handlers["watchlist"].handle_watchlist_edit(message, watchlist_payload)
+                response_text = await self.handlers["watchlist"].handle_watchlist_edit(message, watchlist_payload)
+                if response_text:
+                    await self._send_response(message, response_text)
             else:
                 await self.handlers["watchlist"].handle_watchlist(message, watchlist_payload)
         elif route.intent == BotIntent.WORD_OF_DAY:
@@ -811,19 +821,11 @@ class MessageMonitor:
                         title = action_data.get('title', '')
                         date = action_data.get('date', '')
                         time = action_data.get('time', '')
-                        print(f"[ROUTER] Detected SAVE_EVENT action (JSON): {title} on {date} at {time}")
-
-                        if "calendar" in self.handlers:
-                            try:
-                                parsed_event = self.nlp_parser.parse_event(f"{title} {date} {time}")
-                                if parsed_event:
-                                    await self.handlers["calendar"].handle_calendar_item(message, parsed_event)
-                                else:
-                                    print("[ROUTER] Ignored SAVE_EVENT action because parser could not validate it")
-                            except Exception as e:
-                                print(f"[ROUTER] Failed to save event: {e}")
-
+                        print(f"[ROUTER] Drafted SAVE_EVENT action (JSON), waiting for user confirmation: {title} on {date} at {time}")
                         cleaned_text = cleaned_text.replace(line, '').strip()
+                        cleaned_text = self._append_calendar_draft_confirmation(
+                            cleaned_text, title, date, time
+                        )
                     elif action_type == 'SHOW_DASHBOARD':
                         print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
                         try:
@@ -844,19 +846,12 @@ class MessageMonitor:
         event_match = re.search(r'\[SAVE_EVENT:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]', cleaned_text)
         if event_match:
             title, date, time = event_match.groups()
-            print(f"[ROUTER] Detected SAVE_EVENT action: {title} on {date} at {time}")
-            
-            if "calendar" in self.handlers:
-                try:
-                    parsed_event = self.nlp_parser.parse_event(f"{title} {date} {time}")
-                    if parsed_event:
-                        await self.handlers["calendar"].handle_calendar_item(message, parsed_event)
-                    else:
-                        print("[ROUTER] Ignored SAVE_EVENT action because parser could not validate it")
-                except Exception as e:
-                    print(f"[ROUTER] Failed to save event: {e}")
+            print(f"[ROUTER] Drafted SAVE_EVENT action, waiting for user confirmation: {title} on {date} at {time}")
             
             cleaned_text = cleaned_text.replace(event_match.group(0), "").strip()
+            cleaned_text = self._append_calendar_draft_confirmation(
+                cleaned_text, title, date, time
+            )
 
         # 2. Handle [SHOW_DASHBOARD]
         if '[SHOW_DASHBOARD]' in cleaned_text:
@@ -875,6 +870,25 @@ class MessageMonitor:
             cleaned_text = cleaned_text.replace('[SHOW_DASHBOARD]', "").strip()
             
         return cleaned_text
+
+    def _append_calendar_draft_confirmation(self, text, title, date, time):
+        """Ask the user to confirm model-suggested calendar writes explicitly."""
+        title = str(title or "").strip() or "Uten tittel"
+        date = str(date or "").strip()
+        time = str(time or "").strip()
+        command = f'@inebotten legg til "{title}"'
+        if date:
+            command += f" {date}"
+        if time:
+            command += f" kl {time}"
+        draft = (
+            f"📅 Jeg kan legge dette i kalenderen, men jeg lagrer det ikke uten bekreftelse:\n"
+            f"**{title}**"
+            f"{f' — {date}' if date else ''}"
+            f"{f' kl. {time}' if time else ''}\n\n"
+            f"Skriv `{command}` hvis det skal lagres."
+        )
+        return f"{text}\n\n{draft}".strip() if text else draft
 
     async def _handle_set_location(self, message, city):
         """Handle setting the user's location."""

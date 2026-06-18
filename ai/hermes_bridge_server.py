@@ -11,6 +11,7 @@ import os
 import sys
 import random
 import signal
+import time
 from datetime import datetime, date
 from urllib.parse import unquote, urlparse, parse_qs
 
@@ -206,6 +207,8 @@ class HermesBridgeServer:
         self.error_count = 0
         self.session = None
         self.lm_studio_available = None
+        self.lm_studio_checked_at = 0.0
+        self.lm_studio_cache_ttl = float(os.getenv("LM_STUDIO_HEALTH_CACHE_TTL", "10"))
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -215,7 +218,8 @@ class HermesBridgeServer:
         return self.session
 
     async def _check_lm_studio(self):
-        if self.lm_studio_available is not None:
+        now = time.monotonic()
+        if self.lm_studio_available is not None and now - self.lm_studio_checked_at < self.lm_studio_cache_ttl:
             return self.lm_studio_available
         try:
             import aiohttp
@@ -225,12 +229,14 @@ class HermesBridgeServer:
                 f"{LM_STUDIO_URL}/models", timeout=aiohttp.ClientTimeout(total=3)
             ) as resp:
                 self.lm_studio_available = resp.status == 200
+                self.lm_studio_checked_at = now
                 if self.lm_studio_available:
                     logger.info("✓ LM Studio connected!")
                 return self.lm_studio_available
         except Exception as e:
             logger.debug(f"LM Studio not available: {e}")
             self.lm_studio_available = False
+            self.lm_studio_checked_at = now
             return False
 
     async def _generate_ai_response(
@@ -444,6 +450,8 @@ class HermesBridgeServer:
             ) as resp:
                 logger.info(f"LM Studio response status: {resp.status}")
                 if resp.status == 200:
+                    self.lm_studio_available = True
+                    self.lm_studio_checked_at = time.monotonic()
                     data = await resp.json()
                     choices = data.get("choices", [])
                     if choices:
@@ -598,12 +606,18 @@ class HermesBridgeServer:
                 else:
                     error = await resp.text()
                     logger.error(f"LM Studio error {resp.status}: {error[:200]}")
+                    self.lm_studio_available = False
+                    self.lm_studio_checked_at = time.monotonic()
                     return None
         except asyncio.TimeoutError:
             logger.error("LM Studio timeout")
+            self.lm_studio_available = False
+            self.lm_studio_checked_at = time.monotonic()
             return None
         except Exception as e:
             logger.error(f"LM Studio error: {e}")
+            self.lm_studio_available = False
+            self.lm_studio_checked_at = time.monotonic()
             import traceback
 
             traceback.print_exc()
@@ -664,7 +678,7 @@ class HermesBridgeServer:
                     writer,
                     200,
                     {
-                        "status": "healthy",
+                        "status": "healthy" if lm_available else "degraded",
                         "lm_studio": "connected" if lm_available else "disconnected",
                         "requests": self.request_count,
                         "errors": self.error_count,
@@ -733,12 +747,13 @@ class HermesBridgeServer:
         system_prompt = payload.get("system_prompt")  # Extract custom system prompt
 
         if message == "health_check":
-            lm_status = "connected" if await self._check_lm_studio() else "disconnected"
+            lm_available = await self._check_lm_studio()
+            lm_status = "connected" if lm_available else "disconnected"
             await self._send_response(
                 writer,
                 200,
                 {
-                    "status": "ok",
+                    "status": "ok" if lm_available else "degraded",
                     "lm_studio": lm_status,
                     "response": f"Bridge healthy (LM Studio: {lm_status})",
                 },

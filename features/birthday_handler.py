@@ -46,6 +46,9 @@ class BirthdayHandler(BaseHandler):
             await self.send_response(message, response_text)
 
         except ValueError as exc:
+            if "Ugyldig bursdagsdato" in str(exc):
+                await self.send_response(message, f"❌ {exc}")
+                return
             name_match = re.search(r"Birthday for (.+) not found", str(exc))
             name = name_match.group(1) if name_match else ""
             response_text = self.loc.t("birthday_edit_not_found", name=name)

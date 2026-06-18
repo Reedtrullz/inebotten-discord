@@ -245,6 +245,71 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gcal.delete_calls, ["gcal-1"])
         self.assertEqual(manager.items[manager.SHARED_KEY], [])
 
+    async def test_single_gcal_delete_failure_marks_pending_not_removed(self):
+        class FailingDeleteGCal:
+            def __init__(self):
+                self.delete_calls = []
+
+            def delete_event(self, event_id):
+                self.delete_calls.append(event_id)
+                return False
+
+        gcal = FailingDeleteGCal()
+        manager = CalendarManager(storage_path=Path(self.tmp.name) / "single-gcal-calendar.json", gcal_manager=gcal)
+        manager.add_item(
+            guild_id="123",
+            user_id="111",
+            username="Alice",
+            title="GCal møte",
+            date_str=_date(1),
+            time_str="09:00",
+            gcal_event_id="gcal-1",
+        )
+
+        result = await manager.delete_item("123", 1)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["pending_count"], 1)
+        self.assertEqual(gcal.delete_calls, ["gcal-1"])
+        pending = manager.items[manager.SHARED_KEY][0]
+        self.assertTrue(pending["delete_pending"])
+        self.assertEqual(manager.get_upcoming("123"), [])
+
+    async def test_bulk_gcal_delete_failure_marks_pending_not_removed(self):
+        class FailingDeleteGCal:
+            def delete_event(self, event_id):
+                return False
+
+        manager = CalendarManager(
+            storage_path=Path(self.tmp.name) / "bulk-gcal-calendar.json",
+            gcal_manager=FailingDeleteGCal(),
+        )
+        manager.add_item(
+            guild_id="123",
+            user_id="111",
+            username="Alice",
+            title="Standup",
+            date_str=_date(1),
+            time_str="09:00",
+            gcal_event_id="gcal-1",
+        )
+
+        result = await manager.delete_items_by_title("123", "standup")
+
+        self.assertEqual(result["deleted_count"], 0)
+        self.assertEqual(result["pending_count"], 1)
+        self.assertTrue(manager.items[manager.SHARED_KEY][0]["delete_pending"])
+        self.assertEqual(manager.get_upcoming("123"), [])
+
+    def test_search_results_use_global_calendar_index(self):
+        self._add_item("Alpha", _date(1), time="09:00")
+        self._add_item("Send inn meldekort", _date(2), time="12:00")
+
+        rendered = self.manager.format_search_results("meldekort")
+
+        self.assertIn("**2.** Send inn meldekort", rendered)
+        self.assertIn("Numrene matcher", rendered)
+
     async def test_handle_edit_integration_parse_and_execute_edit(self):
         self._add_item("Møte", _date(1), time="09:00")
         self.message.content = "@inebotten endre 1 tittel: Ny tittel"
@@ -279,7 +344,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handle_search_returns_calendar_matches(self):
         self._add_item("Møte med Ola", _date(1), time="09:00")
-        self.message.content = "@inebotten søk møte"
+        self.message.content = "@inebotten søk kalender møte"
 
         await self.handler.handle_search(self.message)
 
@@ -329,6 +394,59 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("slett alle meldekort", response)
         self.assertNotIn("Rosenborg - Kristiansund", response)
         self.assertEqual(len(self.manager.get_upcoming("123")), 3)
+
+    async def test_handle_complete_ambiguous_title_prompts_without_mutating(self):
+        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
+        self.message.content = "@inebotten ferdig meldekort"
+
+        await self.handler.handle_complete(self.message)
+
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn('Fant 2 treff for "meldekort"', response)
+        self.assertFalse(any(item.get("completed") for item in self.manager.get_upcoming("123")))
+
+    async def test_handle_complete_title_with_number_does_not_use_number_as_index(self):
+        self._add_item("Send inn meldekort uke 25", _date(1), time="12:00")
+        self.message.content = "@inebotten ferdig meldekort uke 25"
+
+        await self.handler.handle_complete(self.message)
+
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("Fullført", response)
+        self.assertEqual(self.manager.get_upcoming("123"), [])
+
+    async def test_handle_complete_accepts_scoped_number_phrase(self):
+        self._add_item("Første", _date(1), time="12:00")
+        self._add_item("Andre", _date(2), time="12:00")
+        self.message.content = "@inebotten ferdig nummer 2"
+
+        await self.handler.handle_complete(self.message)
+
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("Andre", response)
+        self.assertEqual([item["title"] for item in self.manager.get_upcoming("123")], ["Første"])
+
+    async def test_handle_edit_ambiguous_title_prompts_without_mutating(self):
+        self._add_item("Møte med Ola", _date(1), time="09:00")
+        self._add_item("Møte med Kari", _date(2), time="09:00")
+        self.message.content = f"@inebotten rediger møte dato: {_date(7)}"
+
+        await self.handler.handle_edit(self.message)
+
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn('Fant 2 treff for "møte"', response)
+        self.assertNotEqual(self.manager.get_upcoming("123")[0]["date"], _date(7))
+
+    async def test_handle_edit_does_not_mutate_past_title_match(self):
+        self._add_item("Gammelt møte", _date(-3), time="09:00")
+        self.message.content = f"@inebotten rediger møte dato: {_date(7)}"
+
+        await self.handler.handle_edit(self.message)
+
+        response = self.handler.send_response.await_args.args[1]
+        self.assertIn("synlige kalenderlisten", response)
+        self.assertEqual(self.manager.search_items("møte")[0]["date"], _date(-3))
 
 
 if __name__ == "__main__":

@@ -20,6 +20,9 @@ class CalendarHandler(BaseHandler):
     """Handler for calendar-related commands"""
 
     CLEAR_CONFIRM_KEYWORDS = ("bekreft", "confirm")
+    DELETE_COMMANDS = r"(?:slett|slette|delete|fjern|fjerne)"
+    COMPLETE_COMMANDS = r"(?:ferdig|done|complete|fullfør|fullføre|fullført)"
+    MUTATION_PREFIX = r"(?:(?:kan du|kunne du|vennligst|please)\s+)?"
 
     def __init__(self, monitor):
         super().__init__(monitor)
@@ -31,11 +34,11 @@ class CalendarHandler(BaseHandler):
         cleaned = re.sub(r"<@!?\d+>", "", content or "")
         cleaned = cleaned.replace("@inebotten", "").strip()
 
-        command = r"(?:slett|delete|fjern|ferdig|done|complete|fullført)"
+        command = rf"(?:{self.DELETE_COMMANDS}|{self.COMPLETE_COMMANDS})"
         calendar = r"(?:kalender(?:en)?|calendar|gcal)"
         patterns = (
-            rf"^(?:{calendar})\s+{command}\s+(.+)$",
-            rf"^{command}\s+(.+)$",
+            rf"^{self.MUTATION_PREFIX}(?:{calendar})\s+{command}\s+(.+)$",
+            rf"^{self.MUTATION_PREFIX}{command}\s+(.+)$",
         )
         for pattern in patterns:
             match = re.match(pattern, cleaned, flags=re.IGNORECASE)
@@ -78,6 +81,15 @@ class CalendarHandler(BaseHandler):
         title = self._normalize_calendar_target(bulk_match.group(2))
         return title or None
 
+    def _extract_target_index(self, search_text: Optional[str]) -> Optional[int]:
+        if not search_text:
+            return None
+        stripped = search_text.strip()
+        if re.fullmatch(r"\d+", stripped):
+            return int(stripped)
+        scoped_match = re.fullmatch(r"(?:nummer|nr\.?)\s+(\d+)", stripped, flags=re.IGNORECASE)
+        return int(scoped_match.group(1)) if scoped_match else None
+
     def _matching_upcoming_items(self, guild_id, query: str):
         query_lower = query.lower()
         try:
@@ -90,7 +102,13 @@ class CalendarHandler(BaseHandler):
             if query_lower in str(item.get("title", "")).lower()
         ]
 
-    def _format_delete_match_prompt(self, query: str, matches) -> str:
+    def _format_match_prompt(self, query: str, matches, *, action: str) -> str:
+        action_labels = {
+            "slett": ("slette", "slett", f"eller `@inebotten slett alle {query}` for alle treff."),
+            "ferdig": ("fullføre", "ferdig", f"eller `@inebotten ferdig alle {query}` for alle treff."),
+            "rediger": ("redigere", "rediger", ""),
+        }
+        verb, command, extra_hint = action_labels[action]
         lines = [f"📋 Fant {len(matches)} treff for \"{query}\" i kalenderen:"]
         for index, item in matches[:10]:
             time_str = f" kl. {item['time']}" if item.get("time") else ""
@@ -102,11 +120,59 @@ class CalendarHandler(BaseHandler):
         if len(matches) > 10:
             lines.append(f"\n… og {len(matches) - 10} til.")
 
-        lines.append(
-            f"\nBruk `@inebotten slett [nummer]` for én bestemt, "
-            f"eller `@inebotten slett alle {query}` for alle treff."
-        )
+        hint = f"\nBruk `@inebotten {command} [nummer]` for å {verb} én bestemt"
+        if extra_hint:
+            hint += f", {extra_hint}"
+        else:
+            hint += "."
+        lines.append(hint)
         return "\n".join(lines)
+
+    def _format_delete_result(self, result, *, missing: str) -> str:
+        requested = int(result.get("requested_count", 0))
+        deleted_count = int(result.get("deleted_count", 0))
+        pending_count = int(result.get("pending_count", 0))
+        deleted_titles = list(result.get("deleted_titles", []))
+        pending_titles = list(result.get("pending_titles", []))
+
+        if requested == 0:
+            return missing
+
+        if pending_count and not deleted_count:
+            titles = ", ".join(pending_titles[:3])
+            if pending_count > 3:
+                titles = f"{pending_count} stykker"
+            return (
+                f"⚠️ **Sletting venter i Google Calendar.**\n{titles}\n\n"
+                "Jeg har skjult oppføringen lokalt som `delete_pending` og lagret feilen, "
+                "slik at den ikke forsvinner uten spor hvis Google-slettingen feiler."
+            )
+
+        if pending_count:
+            deleted = ", ".join(deleted_titles[:3]) if deleted_count <= 3 else f"{deleted_count} stykker"
+            pending = ", ".join(pending_titles[:3]) if pending_count <= 3 else f"{pending_count} stykker"
+            return (
+                f"⚠️ **Delvis slettet.**\n"
+                f"✅ Slettet: {deleted}\n"
+                f"⏳ Venter på Google Calendar: {pending}"
+            )
+
+        if result.get("bulk"):
+            titles = ", ".join(deleted_titles) if deleted_count <= 3 else f"{deleted_count} stykker"
+            return f"✅ **Slettet {deleted_count} stykker!**\n{titles}"
+
+        return f"✅ **Slettet! {result.get('title')}**"
+
+    def _format_complete_response(self, success: bool, title: str, next_date: str | None) -> str:
+        if not success:
+            return ""
+        if next_date:
+            return (
+                f"✅ **Fullført! {title}**\n\n"
+                f"📅 Neste gang: {next_date}\n\n"
+                f"Bra jobba! 🎉"
+            )
+        return f"✅ **Fullført! {title}**\n\nBra jobba! 🎉"
 
     def _extract_calendar_search_query(self, content: str) -> Optional[str]:
         """Extract query from calendar search commands."""
@@ -114,7 +180,6 @@ class CalendarHandler(BaseHandler):
         cleaned = cleaned.replace("@inebotten", "").strip()
         patterns = [
             r"^(?:søk|search)\s+(?:kalender|calendar)\s+(.+)$",
-            r"^(?:søk|search)\s+(.+)$",
         ]
         for pattern in patterns:
             match = re.match(pattern, cleaned, flags=re.IGNORECASE)
@@ -329,45 +394,51 @@ class CalendarHandler(BaseHandler):
         """Handle calendar item deletion."""
         try:
             guild_id = self.get_guild_id(message)
-            item_num = self.extract_number(message.content)
             search_text = self._extract_search_text(message.content)
+            item_num = self._extract_target_index(search_text)
 
             if search_text:
                 bulk_title = self._extract_bulk_title(search_text)
                 if bulk_title:
-                    count, deleted = await self.calendar.delete_items_by_title(guild_id, bulk_title)
-                    if count > 0:
-                        titles = ", ".join(deleted) if count <= 3 else f"{count} stykker"
-                        await self.send_response(message, f"✅ **Slettet {count} stykker!**\n{titles}")
-                    else:
-                        await self.send_response(message, f"❌ Fant ingen \"{bulk_title}\" i kalenderen.")
+                    result = await self.calendar.delete_items_by_title(guild_id, bulk_title)
+                    await self.send_response(
+                        message,
+                        self._format_delete_result(
+                            result,
+                            missing=f"❌ Fant ingen \"{bulk_title}\" i kalenderen.",
+                        ),
+                    )
                     return
 
-                if not search_text.strip().isdigit():
+                if item_num is None:
                     matches = self._matching_upcoming_items(guild_id, search_text)
                     if len(matches) > 1:
                         await self.send_response(
                             message,
-                            self._format_delete_match_prompt(search_text, matches),
+                            self._format_match_prompt(search_text, matches, action="slett"),
                         )
                         return
                     if len(matches) == 1:
                         match_index, _ = matches[0]
-                        success, title = await self.calendar.delete_item(guild_id, match_index)
-                        if success:
-                            await self.send_response(message, f"✅ **Slettet! {title}**")
-                            return
+                        result = await self.calendar.delete_item(guild_id, match_index)
+                        await self.send_response(
+                            message,
+                            self._format_delete_result(
+                                result,
+                                missing=f"❌ Fant ikke \"{search_text}\" i kalenderen.",
+                            ),
+                        )
+                        return
 
             if item_num:
-                success, title = await self.calendar.delete_item(guild_id, item_num)
-
-                if success:
-                    response_text = f"✅ **Slettet! {title}**"
-                else:
-                    response_text = (
+                result = await self.calendar.delete_item(guild_id, item_num)
+                response_text = self._format_delete_result(
+                    result,
+                    missing=(
                         f"❌ Fant ikke noe med nummer {item_num}. "
                         "Bruk `@inebotten kalender` for å se listen."
-                    )
+                    ),
+                )
             elif search_text:
                 response_text = (
                     f"❌ Fant ikke \"{search_text}\" i kalenderen. "
@@ -394,8 +465,8 @@ class CalendarHandler(BaseHandler):
         """Handle marking calendar items as complete."""
         try:
             guild_id = self.get_guild_id(message)
-            item_num = self.extract_number(message.content)
             search_text = self._extract_search_text(message.content)
+            item_num = self._extract_target_index(search_text)
 
             # Try title-based matching first if search text found
             if search_text and not item_num:
@@ -418,22 +489,19 @@ class CalendarHandler(BaseHandler):
                     await self.send_response(message, response_text)
                     return
                 else:
-                    # Single complete by title
-                    success, title, next_date = await self.calendar.complete_item_by_title(
-                        guild_id, search_text
-                    )
-                    if success:
-                        if next_date:
-                            response_text = (
-                                f"✅ **Fullført! {title}**\n\n"
-                                f"📅 Neste gang: {next_date}\n\n"
-                                f"Bra jobba! 🎉"
-                            )
-                        else:
-                            response_text = (
-                                f"✅ **Fullført! {title}**\n\n"
-                                f"Bra jobba! 🎉"
-                            )
+                    matches = self._matching_upcoming_items(guild_id, search_text)
+                    if len(matches) > 1:
+                        await self.send_response(
+                            message,
+                            self._format_match_prompt(search_text, matches, action="ferdig"),
+                        )
+                        return
+                    if len(matches) == 1:
+                        match_index, _ = matches[0]
+                        success, title, next_date = await self.calendar.complete_item(
+                            guild_id, match_index
+                        )
+                        response_text = self._format_complete_response(success, title, next_date)
                         await self.send_response(message, response_text)
                         return
                     # Fall through
@@ -443,19 +511,8 @@ class CalendarHandler(BaseHandler):
                     guild_id, item_num
                 )
 
-                if success:
-                    if next_date:
-                        response_text = (
-                            f"✅ **Fullført! {title}**\n\n"
-                            f"📅 Neste gang: {next_date}\n\n"
-                            f"Bra jobba! 🎉"
-                        )
-                    else:
-                        response_text = (
-                            f"✅ **Fullført! {title}**\n\n"
-                            f"Bra jobba! 🎉"
-                        )
-                else:
+                response_text = self._format_complete_response(success, title, next_date)
+                if not success:
                     response_text = (
                         f"❌ Fant ikke noe med nummer {item_num}. "
                         "Bruk `@inebotten kalender` for å se listen."
@@ -511,7 +568,19 @@ class CalendarHandler(BaseHandler):
         cleaned = re.sub(r"<@!?\d+>", "", content)
         cleaned = cleaned.replace("@inebotten", "").strip()
 
-        for kw in ("endre", "rediger", "edit"):
+        for kw in (
+            "kalender oppdater",
+            "kalender oppdatere",
+            "kalender rediger",
+            "kalender redigere",
+            "kalender endre",
+            "oppdater",
+            "oppdatere",
+            "endre",
+            "rediger",
+            "redigere",
+            "edit",
+        ):
             if cleaned.lower().startswith(kw):
                 cleaned = cleaned[len(kw) :].strip()
                 break
@@ -532,13 +601,11 @@ class CalendarHandler(BaseHandler):
                 search_text = re.sub(pattern, "", prefix, flags=re.IGNORECASE).strip()
                 break
 
-        num_match = re.search(r"\b(\d+)\b", search_text if field else prefix)
-        index = int(num_match.group(1)) if num_match else None
+        index_source = (search_text if field else prefix).strip()
+        index = int(index_source) if re.fullmatch(r"\d+", index_source) else None
 
         if index is not None:
-            search_text = re.sub(r"\b\d+\b", "", search_text).strip()
-            if not search_text:
-                search_text = None
+            search_text = None
         elif field and not search_text:
             search_text = None
 
@@ -597,8 +664,25 @@ class CalendarHandler(BaseHandler):
                         message, self.loc.t("calendar_edit_not_found", num=search_text)
                     )
                     return
+                upcoming_matches = self._matching_upcoming_items(guild_id, search_text)
+                if len(upcoming_matches) > 1:
+                    await self.send_response(
+                        message,
+                        self._format_match_prompt(search_text, upcoming_matches, action="rediger"),
+                    )
+                    return
 
-                target_item = matches[0]
+                if not upcoming_matches:
+                    await self.send_response(
+                        message,
+                        (
+                            f"❌ Fant ikke \"{search_text}\" i den synlige kalenderlisten. "
+                            "Bruk `@inebotten kalender` for å se hva som kan redigeres."
+                        ),
+                    )
+                    return
+
+                target_item = upcoming_matches[0][1]
                 updated_item = await self.calendar.edit_item_by_id(
                     target_item.get("id"), **{kwarg_field: value}
                 )
@@ -668,9 +752,15 @@ class CalendarHandler(BaseHandler):
                 self.calendar.gcal = GoogleCalendarManager()
                 
             code = payload.get("auth_code") if payload else None
+            requester_id = getattr(getattr(message, "author", None), "id", None)
+            channel_id = getattr(getattr(message, "channel", None), "id", None)
             
             if code:
-                success, msg = self.calendar.gcal.exchange_code(code)
+                success, msg = self.calendar.gcal.exchange_code(
+                    code,
+                    requester_id=requester_id,
+                    channel_id=channel_id,
+                )
                 if success:
                     self.calendar.gcal_enabled = True
                     await self.send_response(message, "✅ " + msg)
@@ -678,7 +768,10 @@ class CalendarHandler(BaseHandler):
                 else:
                     await self.send_response(message, "❌ " + msg)
             else:
-                success, result = self.calendar.gcal.get_auth_url()
+                success, result = self.calendar.gcal.get_auth_url(
+                    requester_id=requester_id,
+                    channel_id=channel_id,
+                )
                 if success:
                     auth_url = result
                     response_text = (

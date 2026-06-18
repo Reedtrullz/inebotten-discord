@@ -247,7 +247,7 @@ class GoogleCalendarManager:
         """Return True if Google Calendar is configured and ready"""
         return self.enabled
 
-    def get_auth_url(self):
+    def get_auth_url(self, requester_id=None, channel_id=None, ttl_seconds=900):
         """Generate an OAuth authorization URL for the user to visit"""
         from google_auth_oauthlib.flow import InstalledAppFlow
         client_secrets_file = self._credentials_path()
@@ -265,14 +265,40 @@ class GoogleCalendarManager:
             auth_url, _ = self._auth_flow.authorization_url(
                 prompt="consent", access_type="offline"
             )
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, ttl_seconds))
+            self._auth_flow_state = {
+                "requester_id": str(requester_id) if requester_id is not None else None,
+                "channel_id": str(channel_id) if channel_id is not None else None,
+                "expires_at": expires_at.isoformat(),
+            }
             return True, auth_url
         except Exception as e:
             return False, f"Klarte ikke generere auth URL: {e}"
 
-    def exchange_code(self, code):
+    def exchange_code(self, code, requester_id=None, channel_id=None):
         """Exchange the authorization code for a token"""
         if not getattr(self, '_auth_flow', None):
             return False, "Ingen aktiv påloggingsøkt funnet. Vennligst kjør `@inebotten kalender auth` først for å få en ny lenke, og prøv igjen med den nye koden."
+
+        state = getattr(self, "_auth_flow_state", {}) or {}
+        expires_at = state.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+                    self._auth_flow = None
+                    self._auth_flow_state = None
+                    return False, "Påloggingsøkten er utløpt. Kjør `@inebotten kalender auth` på nytt."
+            except Exception:
+                self._auth_flow = None
+                self._auth_flow_state = None
+                return False, "Påloggingsøkten var ugyldig. Kjør `@inebotten kalender auth` på nytt."
+
+        expected_requester = state.get("requester_id")
+        expected_channel = state.get("channel_id")
+        if expected_requester and str(requester_id) != expected_requester:
+            return False, "Denne kalenderkoden hører til en annen påloggingsøkt."
+        if expected_channel and str(channel_id) != expected_channel:
+            return False, "Denne kalenderkoden må sendes i samme kanal som startet påloggingen."
             
         try:
             flow = self._auth_flow
@@ -282,6 +308,7 @@ class GoogleCalendarManager:
             self._save_credentials(creds)
             self.enabled = True
             self._auth_flow = None # Clear flow after success
+            self._auth_flow_state = None
             return True, "Autentisering vellykket! Google Calendar er nå synkronisert og klar til bruk."
         except Exception as e:
             return False, f"Autentisering feilet: Sjekk at koden er riktig. ({e})"

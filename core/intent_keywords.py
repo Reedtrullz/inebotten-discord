@@ -22,9 +22,9 @@ CALENDAR_KEYWORDS = (
 GCAL_AUTH_KEYWORDS = ("kalender auth", "gcal auth", "kalender login", "kalender kode", "gcal kode", "kalenderkode")
 
 SYNC_KEYWORDS = ("synk", "sync", "synkroniser", "hent fra google", "oppdater fra google")
-DELETE_KEYWORDS = ("slett", "delete", "fjern")
-COMPLETE_KEYWORDS = ("ferdig", "done", "complete", "fullført")
-EDIT_KEYWORDS = ("endre", "edit", "oppdater")
+DELETE_KEYWORDS = ("slett", "slette", "delete", "fjern", "fjerne")
+COMPLETE_KEYWORDS = ("ferdig", "done", "complete", "fullfør", "fullføre", "fullført")
+EDIT_KEYWORDS = ("endre", "rediger", "redigere", "edit", "oppdater", "oppdatere")
 LIST_KEYWORDS = ("liste", "vis", "se", "oversikt")
 CLEAR_KEYWORDS = ("tøm", "clear", "empty", "slett alt", "fjern alt")
 
@@ -47,6 +47,8 @@ WATCHLIST_EDIT_KEYWORDS = ("endre watchlist", "rediger watchlist")
 
 REMINDER_EDIT_KEYWORDS = ("endre påminnelse", "rediger påminnelse", "oppdater påminnelse")
 REMINDER_DELETE_KEYWORDS = ("slett påminnelse", "fjern påminnelse")
+REMINDER_LIST_KEYWORDS = ("påminnelser", "reminders", "gjøremål", "todos", "huskeliste")
+REMINDER_COMPLETE_KEYWORDS = ("ferdig påminnelse", "fullfør påminnelse", "done reminder", "complete reminder")
 
 QUOTE_LIST_KEYWORDS = ("liste sitater", "vis sitater", "alle sitater")
 QUOTE_EDIT_KEYWORDS = ("endre sitat", "rediger sitat")
@@ -75,6 +77,8 @@ __all__ = [
     "WATCHLIST_EDIT_KEYWORDS",
     "REMINDER_EDIT_KEYWORDS",
     "REMINDER_DELETE_KEYWORDS",
+    "REMINDER_LIST_KEYWORDS",
+    "REMINDER_COMPLETE_KEYWORDS",
     "QUOTE_LIST_KEYWORDS",
     "QUOTE_EDIT_KEYWORDS",
     "QUOTE_DELETE_KEYWORDS",

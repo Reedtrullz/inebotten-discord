@@ -778,8 +778,7 @@ def render_commands_page() -> str:
                 ("@inebotten lunsj hver fredag kl 12", "Opprett gjentagende hendelse"),
                 ("@inebotten bursdag til mamma 15.05 hvert år", "Årlig gjentagelse"),
                 ("@inebotten kalender", "Vis alle kommende hendelser (90 dager)"),
-                ("@inebotten søk møte", "Søk etter hendelser"),
-                ("@inebotten søk kalender møte", "Eksplisitt kalendersøk"),
+                ("@inebotten søk kalender møte", "Søk etter hendelser"),
                 ("@inebotten endre 1 tittel: Ny tittel dato: 15.05 kl 14", "Rediger hendelse"),
                 ("@inebotten slett 2", "Slett hendelse etter nummer"),
                 ("@inebotten slett spaghetti", "Slett etter delvis tittel"),
@@ -798,7 +797,8 @@ def render_commands_page() -> str:
             [
                 ("@inebotten påminnelse Ring lege om 2 timer", "Opprett påminnelse"),
                 ("@inebotten påminnelser", "Vis aktive påminnelser"),
-                ("@inebotten endre påminnelse 1 om 1 time", "Rediger påminnelse"),
+                ("@inebotten ferdig påminnelse 1", "Fullfør påminnelse"),
+                ("@inebotten endre påminnelse 1 dato: 20.06", "Rediger påminnelse"),
                 ("@inebotten slett påminnelse 1", "Slett påminnelse"),
                 ("@inebotten søk påminnelse lege", "Søk etter påminnelse"),
             ],
@@ -808,7 +808,7 @@ def render_commands_page() -> str:
             "Opprett, stem og administrer avstemninger.",
             [
                 ("@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab", "Opprett avstemning"),
-                ("@inebotten stem 1", "Stem på alternativ"),
+                ("@inebotten stem 1", "Stem når én avstemning er aktiv"),
                 ("@inebotten polls", "Vis aktive avstemninger"),
                 ("@inebotten endre poll 1", "Rediger avstemning"),
                 ("@inebotten slett poll 1", "Slett avstemning"),
@@ -935,6 +935,15 @@ def render_commands_page() -> str:
                 ("@inebotten status dnd", "online, idle, dnd, invisible"),
                 ("@inebotten spiller CS2", "Endre aktivitet"),
                 ("@inebotten ser på Netflix", "Endre aktivitet"),
+            ],
+        ),
+        (
+            "🔐 Minne",
+            "Se, eksporter eller slett brukerminnet ditt.",
+            [
+                ("@inebotten vis minnet mitt", "Vis lagret brukerminne"),
+                ("@inebotten eksporter minnet mitt", "Eksporter som JSON"),
+                ("@inebotten slett minnet mitt bekreft", "Slett brukerminnet"),
             ],
         ),
         (

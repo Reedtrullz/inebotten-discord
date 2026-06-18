@@ -115,7 +115,7 @@
 
 4. **Start bot:**
    ```bash
-   python3 run_both.py
+python3 scripts/run_both.py
    ```
 
 ---

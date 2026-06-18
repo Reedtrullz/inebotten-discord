@@ -25,8 +25,10 @@ from core.intent_keywords import (
     QUOTE_DELETE_KEYWORDS,
     QUOTE_EDIT_KEYWORDS,
     QUOTE_LIST_KEYWORDS,
+    REMINDER_COMPLETE_KEYWORDS,
     REMINDER_DELETE_KEYWORDS,
     REMINDER_EDIT_KEYWORDS,
+    REMINDER_LIST_KEYWORDS,
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
@@ -80,6 +82,9 @@ class BotIntent(Enum):
     REMINDER_EDIT = "reminder_edit"
     REMINDER_DELETE = "reminder_delete"
     REMINDER_SEARCH = "reminder_search"
+    REMINDER_CREATE = "reminder_create"
+    REMINDER_LIST = "reminder_list"
+    REMINDER_COMPLETE = "reminder_complete"
     CALENDAR_AUTH = "calendar_auth"
     AI_CHAT = "ai_chat"
 
@@ -127,6 +132,10 @@ class IntentRouter:
         local_search = self._route_local_search_command(content)
         if local_search:
             return local_search
+
+        reminder_command = self._route_reminder_command(content, guild_id)
+        if reminder_command:
+            return reminder_command
 
         if has_any_keyword(content_lower, GCAL_AUTH_KEYWORDS):
             code_match = re.search(r'(?:kode|code|auth)\s+([4/a-zA-Z0-9_\-]+)', content)
@@ -273,13 +282,31 @@ class IntentRouter:
         return IntentResult(BotIntent.CALENDAR_LIST, 0.85, reason="calendar_keyword_default")
 
     def _has_calendar_context(self, content_lower: str) -> bool:
-        if has_any_keyword(content_lower, ["kalender", "calendar", "gcal"]):
+        stripped = content_lower.strip()
+        if re.fullmatch(
+            r"(?:arrangementer|events|kommende|kommende arrangementer|planlagt|planlagte)",
+            stripped,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        if has_any_keyword(
+            content_lower,
+            [
+                "kalender",
+                "calendar",
+                "gcal",
+            ],
+        ):
             return True
         return bool(re.search(r"\bkalenderen\b", content_lower, flags=re.IGNORECASE))
 
     def _extract_calendar_mutation_target(self, content_lower: str, keywords) -> Optional[str]:
         keyword_pattern = "|".join(re.escape(keyword) for keyword in sorted(keywords, key=len, reverse=True))
-        match = re.match(rf"^(?:{keyword_pattern})\s+(.+)$", content_lower, flags=re.IGNORECASE)
+        match = re.match(
+            rf"^(?:(?:kan du|kunne du|vennligst|please)\s+)?(?:{keyword_pattern})\s+(.+)$",
+            content_lower,
+            flags=re.IGNORECASE,
+        )
         if not match:
             return None
 
@@ -374,13 +401,22 @@ class IntentRouter:
     def _route_memory_command(self, content: str) -> Optional[IntentResult]:
         cleaned = re.sub(r"<@!?\d+>", "", content)
         cleaned = cleaned.replace("@inebotten", "").strip()
-        lower = cleaned.lower()
+        lower = re.sub(r"\s+", " ", cleaned.lower()).strip(" .!?")
 
-        if any(phrase in lower for phrase in ("slett minnet mitt", "slett brukerminne", "glem meg")):
+        delete_commands = {"slett minnet mitt", "slett brukerminne", "glem meg"}
+        confirmed_delete_commands = {
+            "slett minnet mitt bekreft",
+            "slett brukerminne bekreft",
+            "glem meg bekreft",
+            "slett minnet mitt confirm",
+            "slett brukerminne confirm",
+            "glem meg confirm",
+        }
+        if lower in delete_commands or lower in confirmed_delete_commands:
             return IntentResult(
                 BotIntent.MEMORY_DELETE,
                 0.99,
-                {"memory": {"action": "delete", "confirmed": bool(re.search(r"\bbekreft\b|\bconfirm\b", lower))}},
+                {"memory": {"action": "delete", "confirmed": lower in confirmed_delete_commands}},
                 "memory_delete_keyword",
             )
         if any(phrase in lower for phrase in ("eksporter minnet mitt", "export my memory", "eksporter brukerminne")):
@@ -454,13 +490,80 @@ class IntentRouter:
             query = bare_match.group(1).strip()
             if query:
                 return IntentResult(
-                    BotIntent.CALENDAR_SEARCH,
+                    BotIntent.SEARCH,
                     0.95,
-                    {"query": query},
-                    "calendar_search_keyword",
+                    {"search": {"query": query, "type": "web"}},
+                    "bare_web_search_keyword",
                 )
 
         return None
+
+    def _route_reminder_command(self, content: str, guild_id: Optional[int]) -> Optional[IntentResult]:
+        cleaned = re.sub(r"<@!?\d+>", "", content)
+        cleaned = cleaned.replace("@inebotten", "").strip()
+        lower = cleaned.lower()
+
+        reminder_complete_match = re.fullmatch(
+            r"(?:ferdig|fullført|fullfør|done|complete|gjort)\s+"
+            r"(?:påminnelse|påminnelser|reminder|reminders|gjøremål|todo)"
+            r"(?:\s+(\d+))?",
+            lower.strip(),
+            flags=re.IGNORECASE,
+        )
+        if reminder_complete_match:
+            number = reminder_complete_match.group(1)
+            payload = {"reminder": {"action": "complete"}}
+            if number:
+                payload["reminder"]["number"] = int(number)
+            return IntentResult(BotIntent.REMINDER_COMPLETE, 0.98, payload, "reminder_complete_keyword")
+
+        if lower.strip().isdigit() and self._has_active_reminders(guild_id):
+            return IntentResult(
+                BotIntent.REMINDER_COMPLETE,
+                0.94,
+                {"reminder": {"action": "complete", "number": int(lower.strip())}},
+                "active_reminder_numeric_complete",
+            )
+
+        if re.match(r"^(?:ferdig|fullført|fullfør|done|complete|gjort)\s+\d+\s*$", lower) and self._has_active_reminders(guild_id):
+            number = int(re.search(r"\d+", lower).group(0))
+            return IntentResult(
+                BotIntent.REMINDER_COMPLETE,
+                0.94,
+                {"reminder": {"action": "complete", "number": number}},
+                "active_reminder_complete_number",
+            )
+
+        if has_any_keyword(lower, REMINDER_LIST_KEYWORDS):
+            return IntentResult(BotIntent.REMINDER_LIST, 0.97, {"reminder": {"action": "list"}}, "reminder_list_keyword")
+
+        try:
+            from cal_system.reminder_manager import parse_reminder_command
+
+            parsed = parse_reminder_command(cleaned)
+        except Exception:
+            parsed = None
+
+        if not parsed:
+            return None
+
+        action = parsed.get("action")
+        if action == "add" and has_any_keyword(lower, ("påminnelse", "reminder", "gjøremål", "todo")):
+            return IntentResult(BotIntent.REMINDER_CREATE, 0.96, {"reminder": parsed}, "reminder_create_parser")
+        if action == "complete":
+            return IntentResult(BotIntent.REMINDER_COMPLETE, 0.95, {"reminder": parsed}, "reminder_complete_parser")
+        if action == "list":
+            return IntentResult(BotIntent.REMINDER_LIST, 0.95, {"reminder": parsed}, "reminder_list_parser")
+        return None
+
+    def _has_active_reminders(self, guild_id: Optional[int]) -> bool:
+        reminders = getattr(self.monitor, "reminders", None)
+        if not reminders or not hasattr(reminders, "get_active_reminders"):
+            return False
+        try:
+            return bool(reminders.get_active_reminders(guild_id))
+        except Exception:
+            return False
 
     def _route_calendar_item(self, content: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
         try:

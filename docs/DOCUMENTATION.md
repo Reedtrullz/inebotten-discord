@@ -124,12 +124,11 @@
 | Fil | Formål | Bruk |
 |-----|--------|------|
 | `setup.py` | Interaktivt førstegangsoppsett | `python3 setup.py` |
-| `run_both.py` | Starter bridge + selfbot samtidig | `python3 run_both.py` |
-| `selfbot_runner.py` | Kun selfbot (bridge må kjøre) | `python3 selfbot_runner.py` |
-| `hermes_bridge_server.py` | Kun bridge | `python3 hermes_bridge_server.py` |
+| `scripts/run_both.py` | Starter bridge + selfbot samtidig | `python3 scripts/run_both.py` |
+| `core/selfbot_runner.py` | Kun selfbot (bridge må kjøre) | `python3 core/selfbot_runner.py` |
+| `ai/hermes_bridge_server.py` | Kun bridge | `python3 ai/hermes_bridge_server.py` |
 | `Dockerfile` | Docker image definition | `docker build .` |
 | `docker-compose.yml` | Container orchestration | `docker-compose up` |
-| `scripts/deploy/install-autoupdate.sh` | Installerer VPS auto-update | `sudo ./scripts/deploy/install-autoupdate.sh` |
 
 ### 2. Bridge Layer (`hermes_bridge_server.py`)
 
@@ -218,7 +217,7 @@ AI-responser parses for både JSON- og tag-baserte handlinger:
 [SAVE_EVENT: Møte | 01.05.2025 | 14:00]
 ```
 
-Begge valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
+Begge valideres gjennom `nlp_parser.parse_event()` og gjøres om til en bekreftbar kalenderdraft. Kalenderen endres først når brukeren sender en eksplisitt kalenderkommando.
 
 ### 4. Kalendersystem
 
@@ -238,7 +237,7 @@ Begge valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
 
 ```json
 {
-  "guild_id": [
+  "shared": [
     {
       "id": "uuid",
       "type": "event",
@@ -259,6 +258,8 @@ Begge valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
 }
 ```
 
+Kalenderen er delt på tvers av guilds/DM-er i `shared`. Eldre guild-nøkler migreres inn i den delte kalenderen ved lasting.
+
 **Felt:**
 - `channel_id` - Discord-kanalen der elementet ble opprettet. Brukes for påminnelser.
 
@@ -272,7 +273,7 @@ Du kan slette eller fullføre elementer på tre måter:
 @inebotten ferdig 1
 ```
 
-**2. Etter tittel:** Slett/fullfør første treff på delvis tittel
+**2. Etter tittel:** Slett/fullfør ett unikt treff på delvis tittel. Hvis flere matcher, spør boten deg om nummer eller `alle`.
 ```
 @inebotten slett spaghetti
 @inebotten ferdig meldekort
@@ -618,26 +619,17 @@ DISCORD_TOKEN=***
 
 ## VPS Drift
 
-VPS-oppsettet bruker Docker Compose for botten og systemd for auto-update.
-
-| Komponent | Formål |
-|-----------|--------|
-| `inebotten-webhook.service` | Lytter på GitHub webhook og køer update-jobb |
-| `inebotten-update.service` | Henter siste `origin/master`, bygger Docker image og restarter container |
-| `inebotten-update.timer` | Fallback som poller GitHub hvert 5. minutt |
-| `/var/log/inebotten-autoupdate.log` | Update-logg |
+Gjeldende VPS-oppsett bruker Ansible-flyten i `deploy/README.md`: checkout på VPS, managed `.env`-blokk, Docker Compose override, container rebuild, `/health` JSON-sjekk og commit-hash-verifikasjon.
 
 Nyttige kommandoer:
 
 ```bash
-sudo systemctl status inebotten-webhook.service --no-pager
-sudo systemctl status inebotten-update.timer --no-pager
-sudo systemctl start inebotten-update.service
-sudo tail -f /var/log/inebotten-autoupdate.log
+ansible-playbook -i deploy/inventory.yml deploy/ansible-playbook.yml \
+  --vault-password-file ~/.vault_pass.txt
 sudo docker logs --tail=200 inebotten-bot
 ```
 
-Full guide: [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md).
+Full guide: [deploy/README.md](../deploy/README.md). [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) er eldre webhook/systemd-dokumentasjon.
 
 ---
 
@@ -646,12 +638,12 @@ Full guide: [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md).
 ### Kjøre Tester
 
 ```bash
-python3 -m pytest -q                        # Kjør alle tester (309+ passerer)
-python3 -m pytest tests/test_intent_router.py -q      # Intent-ruting
-python3 -m pytest tests/test_message_monitor_routing.py -q  # Meldingsflyt
-python3 -m pytest tests/test_false_positives.py -q    # Regresjonstester
-python3 -m pytest tests/test_action_schema.py -q      # AI-handlinger
-python3 -m py_compile *.py                  # Syntaks-sjekk alle filer
+.venv312/bin/python -m pytest -q            # Kjør hele testpakken
+.venv312/bin/python -m pytest tests/test_intent_router.py -q      # Intent-ruting
+.venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q  # Meldingsflyt
+.venv312/bin/python -m pytest tests/test_false_positives.py -q    # Regresjonstester
+.venv312/bin/python -m pytest tests/test_action_schema.py -q      # AI-handlinger
+.venv312/bin/python -m py_compile core/*.py features/*.py cal_system/*.py  # Syntaks-sjekk
 ```
 
 ### Legge til nye funksjoner
@@ -680,7 +672,7 @@ Kortversjon:
 7. **Sentral intent-router** - Én testbar beslutning per prompt
 8. **Confidence-tresholds** - Usikre intents faller tilbake til AI i stedet for å gjette
 9. **Token-aware matching** - Word-boundary matching eliminerer falske positive
-10. **Structured actions** - AI-handlinger parses trygt med validering før utførelse
+10. **Structured actions** - AI-handlinger parses trygt og blir bekreftbare drafts før kalenderendring
 11. **Kanal-scoped kontekst** - Samtalehistorikk isoleres per kanal for bedre presisjon
 
 ---

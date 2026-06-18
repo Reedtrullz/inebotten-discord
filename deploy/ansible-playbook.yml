@@ -98,10 +98,11 @@
     - name: Wait for the bot's health endpoint to come up
       ansible.builtin.uri:
         url: "http://127.0.0.1:8081/health"
-        status_code: [200, 401, 404]  # any HTTP response means the process is up
+        status_code: 200
         timeout: 5
+        return_content: true
       register: health_check
-      until: health_check is succeeded
+      until: health_check is succeeded and (health_check.json.status | default('')) == 'healthy'
       retries: 12
       delay: 5
 
@@ -117,4 +118,4 @@
 
     - name: Report deployment status
       ansible.builtin.debug:
-        msg: "✅ Inebotten deployed {{ source_commit.stdout }} via docker compose; health endpoint responded with HTTP {{ health_check.status }}"
+        msg: "✅ Inebotten deployed {{ source_commit.stdout }} via docker compose; health={{ health_check.json.status | default('unknown') }}"

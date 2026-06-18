@@ -15,7 +15,7 @@ Inebotten er mention-gated: hun ser og svarer bare på meldinger der hun er eksp
 python3 setup.py
 
 # 2. Start botten
-python3 run_both.py
+python3 scripts/run_both.py
 ```
 
 ### Web Console
@@ -54,8 +54,7 @@ For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
 | `@inebotten kalender` | Vis alle kommende hendelser (90 dager) | `@inebotten kalender` |
-| `@inebotten søk [tittel]` | Søk etter hendelser | `@inebotten søk møte` |
-| `@inebotten søk kalender [tekst]` | Eksplisitt kalendersøk | `@inebotten søk kalender møte` |
+| `@inebotten søk kalender [tekst]` | Søk etter hendelser | `@inebotten søk kalender møte` |
 
 ### Redigere
 
@@ -68,7 +67,7 @@ For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
 | `@inebotten slett [nummer]` | Slett hendelse etter nummer | `@inebotten slett 2` |
-| `@inebotten slett [tittel]` | Slett første treff på delvis tittel | `@inebotten slett spaghetti` |
+| `@inebotten slett [tittel]` | Slett ett unikt treff, spør ved flere treff | `@inebotten slett spaghetti` |
 | `@inebotten slett alle [tittel]` | Slett ALLE treff | `@inebotten slett alle spaghetti` |
 | `@inebotten slett alt` / `@inebotten fjern alt` | Slett alt (krever bekreftelse) | `@inebotten slett alt` |
 
@@ -77,7 +76,7 @@ For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
 | `@inebotten ferdig [nummer]` | Marker som fullført | `@inebotten ferdig 2` |
-| `@inebotten ferdig [tittel]` | Fullfør første treff på delvis tittel | `@inebotten ferdig meldekort` |
+| `@inebotten ferdig [tittel]` | Fullfør ett unikt treff, spør ved flere treff | `@inebotten ferdig meldekort` |
 | `@inebotten ferdig alle [tittel]` | Fullfør ALLE treff | `@inebotten ferdig alle meldekort` |
 
 ### Gjentagende Oppføringer
@@ -133,7 +132,8 @@ Du trenger ikke be om påminnelser - de skjer automatisk!
 |----------|-------------|----------|
 | `@inebotten påminnelse [tekst] om [tid]` | Opprett påminnelse | `@inebotten påminnelse Ring lege om 2 timer` |
 | `@inebotten påminnelser` | Vis aktive påminnelser | `@inebotten påminnelser` |
-| `@inebotten endre påminnelse [nummer] [felt]` | Endre påminnelse | `@inebotten endre påminnelse 1 om 1 time` |
+| `@inebotten ferdig påminnelse [nummer]` | Fullfør påminnelse | `@inebotten ferdig påminnelse 1` |
+| `@inebotten endre påminnelse [nummer] [felt]` | Endre påminnelse | `@inebotten endre påminnelse 1 dato: 20.06` |
 | `@inebotten slett påminnelse [nummer]` | Slett påminnelse | `@inebotten slett påminnelse 1` |
 | `@inebotten søk påminnelse [tekst]` | Søk etter påminnelse | `@inebotten søk påminnelse lege` |
 
@@ -158,7 +158,7 @@ Du trenger ikke be om påminnelser - de skjer automatisk!
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
 | `@inebotten avstemning [tittel]? [alt1], [alt2]` | Lag avstemning | `@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab` |
-| `@inebotten stem [nummer]` | Stem på alternativ | `@inebotten stem 1` |
+| `@inebotten stem [nummer]` | Stem når én avstemning er aktiv | `@inebotten stem 1` |
 | `@inebotten polls` | Vis aktive avstemninger | `@inebotten polls` |
 | `@inebotten endre poll [nummer]` | Endre avstemning | `@inebotten endre poll 1` |
 | `@inebotten slett poll [nummer]` | Slett avstemning | `@inebotten slett poll 1` |
@@ -216,7 +216,7 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 
 | Kommando | Beskrivelse | Eksempel |
 |----------|-------------|----------|
-| `@inebotten watchlist` | Vis watchlist | `@inebotten watchlist` |
+| `@inebotten watchlist` | Vis nummerert watchlist | `@inebotten watchlist` |
 | `@inebotten legg til [tittel]` | Legg til film eller serie | `@inebotten legg til Inception` |
 | `@inebotten hva skal vi se?` | Få et forslag fra watchlista | `@inebotten hva skal vi se?` |
 | `@inebotten endre watchlist [nummer] [tittel]` | Endre tittel | `@inebotten endre watchlist 1 The Matrix` |
@@ -253,6 +253,17 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 
 ---
 
+## 🔐 Minne og Personvern
+
+| Kommando | Beskrivelse |
+|----------|-------------|
+| `@inebotten vis minnet mitt` | Vis hva botten har lagret om deg |
+| `@inebotten eksporter minnet mitt` | Eksporter brukerminnet som JSON |
+| `@inebotten slett minnet mitt` | Vis sikker bekreftelse for sletting |
+| `@inebotten slett minnet mitt bekreft` | Slett brukerminnet ditt |
+
+---
+
 ## 🩺 Drift
 
 | Kommando | Eksempel | Beskrivelse |
@@ -260,16 +271,15 @@ Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skor
 | `@inebotten bot status` | `@inebotten bot status` | Vis uptime, AI-status, handlers og rate-limit |
 | `@inebotten health` | `@inebotten health` | Kort helsesjekk for botten |
 
-På VPS brukes systemd og Docker Compose:
+På VPS brukes dagens Ansible-flyt i `deploy/README.md`:
 
 ```bash
-sudo systemctl status inebotten-webhook.service --no-pager
-sudo systemctl status inebotten-update.timer --no-pager
-sudo tail -f /var/log/inebotten-autoupdate.log
+ansible-playbook -i deploy/inventory.yml deploy/ansible-playbook.yml \
+  --vault-password-file ~/.vault_pass.txt
 sudo docker compose ps
 ```
 
-Se [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) for auto-update-oppsett.
+Se [deploy/README.md](../deploy/README.md) for gjeldende deploy-oppsett. [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) beskriver eldre webhook/systemd-oppsett.
 
 ---
 

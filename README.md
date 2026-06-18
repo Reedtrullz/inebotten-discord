@@ -155,7 +155,7 @@ Usikre intents faller tilbake til AI-chat i stedet for å gjette. Kalender-NLP k
 
 **Structured actions:**
 
-AI kan returnere handlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Begge valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
+AI kan foreslå kalenderhandlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Forslagene blir gjort om til en bekreftbar kalenderdraft; botten endrer ikke kalenderen før du sender en vanlig, eksplisitt kalenderkommando.
 
 ## Prosjektstruktur
 
@@ -192,18 +192,18 @@ inebotten-discord/
 ## Utvikling og test
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-dev.txt
-python3 -m pytest -q
+.venv312/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
+.venv312/bin/python -m pytest -q
 ```
 
 Nyttige måltester:
 
 ```bash
-python3 -m pytest tests/test_intent_router.py -q
-python3 -m pytest tests/test_message_monitor_routing.py -q
-python3 -m pytest tests/test_false_positives.py -q
-python3 -m pytest tests/test_action_schema.py -q
-python3 -m pytest tests/test_comprehensive.py -q
+.venv312/bin/python -m pytest tests/test_intent_router.py -q
+.venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q
+.venv312/bin/python -m pytest tests/test_false_positives.py -q
+.venv312/bin/python -m pytest tests/test_action_schema.py -q
+.venv312/bin/python -m pytest tests/test_comprehensive.py -q
 ```
 
 ## Sikkerhet

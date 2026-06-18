@@ -9,10 +9,10 @@ Commands:
 - Add items to watchlist
 """
 
-import re
 from typing import Dict, Any
 
 from features.base_handler import BaseHandler
+from features.watchlist_manager import parse_watchlist_command
 
 
 class WatchlistHandler(BaseHandler):
@@ -74,9 +74,9 @@ class WatchlistHandler(BaseHandler):
         index = payload.get("index")
 
         if index is None:
-            index_match = re.search(r'\b(\d+)\b', message.content)
-            if index_match:
-                index = int(index_match.group(1))
+            parsed = parse_watchlist_command(message.content) or {}
+            if parsed.get("action") == "remove":
+                index = parsed.get("index")
 
         if index is None:
             return self.loc.t("watchlist_help", lang)
@@ -98,9 +98,9 @@ class WatchlistHandler(BaseHandler):
         index = payload.get("index")
 
         if index is None:
-            index_match = _re.search(r'\b(\d+)\b', message.content)
-            if index_match:
-                index = int(index_match.group(1))
+            parsed = parse_watchlist_command(message.content) or {}
+            if parsed.get("action") == "edit":
+                index = parsed.get("index")
 
         if index is None:
             return self.loc.t("watchlist_help", lang)

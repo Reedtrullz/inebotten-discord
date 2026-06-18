@@ -169,10 +169,10 @@ Alle disse er allerede i `.gitignore`.
 ```bash
 # ✅ Riktig
 export DISCORD_TOKEN="your-token"
-python3 run_both.py
+python3 scripts/run_both.py
 
 # ❌ Galt
-discord_token="your-token" python3 run_both.py  # Vises i shell history
+discord_token="your-token" python3 scripts/run_both.py  # Vises i shell history
 ```
 
 ### Nettverk

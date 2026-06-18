@@ -16,7 +16,8 @@ import importlib.util
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from cal_system.calendar_manager import CalendarManager
 from cal_system.event_manager import EventManager
@@ -28,7 +29,13 @@ from features.poll_manager import PollManager
 from features.quote_manager import QuoteManager
 from utils.json_storage import hermes_discord_data_path, read_json, write_json_atomic
 from utils.sanitizer import sanitize_discord_mention, sanitize_html
-from web_console.state_collector import collect_calendar_data, collect_intent_stats
+from web_console.state_collector import (
+    collect_bot_status,
+    collect_bridge_health,
+    collect_calendar_data,
+    collect_console_health,
+    collect_intent_stats,
+)
 
 
 class CalendarHardeningTests(unittest.TestCase):
@@ -297,6 +304,72 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
                 self.assertEqual(store.load_intent_stats(), {})
                 self.assertEqual(store.load_rate_limit_stats(), {})
 
+    def test_console_store_reports_corrupt_stats_as_degraded(self):
+        from web_console.console_store import ConsoleStore
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            stats_path = hermes_home / "discord" / "data" / "console" / "stats.json"
+            stats_path.parent.mkdir(parents=True)
+            stats_path.write_text("{not json", encoding="utf-8")
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                store = ConsoleStore()
+                self.assertEqual(store.load_intent_stats(), {})
+
+            self.assertEqual(store.health()["status"], "degraded")
+            self.assertIn("load_stats", store.health()["last_error"])
+
+    def test_console_store_health_clears_repaired_load_stats_error(self):
+        from web_console.console_store import ConsoleStore, STATS_SCHEMA_VERSION
+
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / "custom-hermes"
+            stats_path = hermes_home / "discord" / "data" / "console" / "stats.json"
+            stats_path.parent.mkdir(parents=True)
+            stats_path.write_text("{not json", encoding="utf-8")
+
+            with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+                store = ConsoleStore()
+                self.assertEqual(store.load_intent_stats(), {})
+                stats_path.write_text(
+                    json.dumps(
+                        {
+                            "version": STATS_SCHEMA_VERSION,
+                            "intents": {},
+                            "rate_limits": {},
+                            "last_saved": None,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                health = store.health()
+
+            self.assertEqual(health["status"], "ok")
+            self.assertIsNone(health["last_error"])
+
+    def test_bot_status_requires_discord_readiness_not_just_user(self):
+        client = SimpleNamespace(
+            user=SimpleNamespace(id=42),
+            guilds=[],
+            start_time=None,
+            latency=0.1,
+            is_ready=lambda: False,
+            is_closed=lambda: True,
+        )
+        monitor = SimpleNamespace(
+            client=client,
+            get_task_health=lambda: {},
+            calendar=None,
+        )
+
+        status = collect_bot_status(monitor)
+
+        self.assertEqual(status["status"], "degraded")
+        self.assertFalse(status["discord_connected"])
+        self.assertIn("discord_not_ready", status["degraded_reasons"])
+
     def test_user_memory_default_storage_uses_hermes_home(self):
         from memory.user_memory import UserMemory
 
@@ -550,6 +623,78 @@ class BridgeConfigHardeningTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
 
         self.assertIn(b"413", response)
+
+    async def test_openrouter_console_health_does_not_require_lm_bridge(self):
+        monitor = SimpleNamespace(
+            client=SimpleNamespace(config=SimpleNamespace(AI_PROVIDER="openrouter"))
+        )
+        bot_status = {
+            "status": "online",
+            "monitor_ready": True,
+            "persistence": {"status": "ok"},
+            "tasks": {"status": "ok"},
+        }
+        with patch("web_console.state_collector.collect_bot_status", return_value=bot_status):
+            with patch(
+                "web_console.state_collector.collect_bridge_health",
+                AsyncMock(return_value={"status": "unavailable"}),
+            ):
+                health = await collect_console_health(monitor, port=8080)
+
+        self.assertEqual(health["status"], "healthy")
+        self.assertEqual(health["ai_provider"], "openrouter")
+
+    async def test_lm_console_health_degrades_when_bridge_unavailable(self):
+        monitor = SimpleNamespace(
+            client=SimpleNamespace(config=SimpleNamespace(AI_PROVIDER="lm_studio"))
+        )
+        bot_status = {
+            "status": "online",
+            "monitor_ready": True,
+            "persistence": {"status": "ok"},
+            "tasks": {"status": "ok"},
+        }
+        with patch("web_console.state_collector.collect_bot_status", return_value=bot_status):
+            with patch(
+                "web_console.state_collector.collect_bridge_health",
+                AsyncMock(return_value={"status": "unavailable"}),
+            ):
+                health = await collect_console_health(monitor, port=8080)
+
+        self.assertEqual(health["status"], "degraded")
+
+    async def test_bridge_health_uses_configured_port(self):
+        async def handle(reader, writer):
+            await reader.read(4096)
+            body = b'{"status":"healthy","lm_studio":"connected","requests":1,"errors":0}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                + b"Content-Type: application/json\r\n"
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "HERMES_BRIDGE_HOST": "0.0.0.0",
+                    "HERMES_BRIDGE_PORT": str(port),
+                },
+                clear=False,
+            ):
+                health = await collect_bridge_health()
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        self.assertEqual(health["status"], "healthy")
+        self.assertEqual(health["port"], port)
 
 
 class WebhookHardeningTests(unittest.TestCase):

@@ -48,6 +48,27 @@ class AwaitableValue:
         return repr(self.value)
 
 
+class CalendarDeleteResult(dict):
+    """Structured delete result that still unpacks like the legacy tuples."""
+
+    def __iter__(self):
+        if self.get("bulk"):
+            yield int(self.get("deleted_count", 0))
+            yield list(self.get("deleted_titles", []))
+        else:
+            yield bool(self.get("success"))
+            yield self.get("title")
+
+    def __bool__(self):
+        return bool(self.get("success") or int(self.get("deleted_count", 0)) > 0)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            values = list(iter(self))
+            return values[key]
+        return super().__getitem__(key)
+
+
 class CalendarManager:
     """
     Manages calendar items - everything is just something happening on a date
@@ -178,6 +199,65 @@ class CalendarManager:
         self._save_data_sync()
         return AwaitableDict(item)
 
+    def _mark_delete_pending(self, item, error=None, now=None):
+        now = now or datetime.now().isoformat()
+        item["delete_pending"] = True
+        item["delete_requested_at"] = item.get("delete_requested_at") or now
+        item["delete_last_attempt_at"] = now
+        item["delete_error"] = error or "Google Calendar deletion returned false"
+
+    def _delete_from_gcal_or_mark_pending(self, item, *, now=None, context="delete"):
+        if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
+            return True
+
+        delete_ok = False
+        error = None
+        try:
+            delete_ok = bool(self.gcal.delete_event(item["gcal_event_id"]))
+        except Exception as e:
+            error = str(e)
+
+        if not delete_ok:
+            title = item.get("title", "Uten tittel")
+            self._mark_delete_pending(item, error, now)
+            print(f"[CAL] GCal {context} failed for {title}: {item['delete_error']}")
+            return False
+
+        print(f"[CAL] Deleted from GCal: {item.get('title', 'Uten tittel')}")
+        return True
+
+    def _delete_item_record(self, guild_key, item_id):
+        self.items[guild_key] = [
+            i for i in self.items.get(guild_key, []) if i.get("id") != item_id
+        ]
+
+    def _delete_one_item(self, guild_key, item_to_delete, *, now=None):
+        title = item_to_delete.get("title", "Uten tittel")
+        requested = CalendarDeleteResult(
+            {
+                "success": False,
+                "title": title,
+                "requested_count": 1,
+                "deleted_count": 0,
+                "deleted_titles": [],
+                "pending_count": 0,
+                "pending_titles": [],
+                "pending_errors": {},
+            }
+        )
+
+        if not self._delete_from_gcal_or_mark_pending(item_to_delete, now=now):
+            requested["pending_count"] = 1
+            requested["pending_titles"] = [title]
+            requested["pending_errors"] = {title: item_to_delete.get("delete_error")}
+            return requested
+
+        self._delete_item_record(guild_key, item_to_delete.get("id"))
+        requested["success"] = True
+        requested["deleted_count"] = 1
+        requested["deleted_titles"] = [title]
+        return requested
+
     def delete_item(self, guild_id, item_num):
         """Delete an item by its list number (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -185,25 +265,24 @@ class CalendarManager:
 
         if item_num is not None and 1 <= item_num <= len(items):
             item_to_delete = items[item_num - 1]
-            title = item_to_delete["title"]
-
-            # Remove from GCal if enabled
-            if self.gcal_enabled and item_to_delete.get("gcal_event_id"):
-                try:
-                    self.gcal.delete_event(item_to_delete["gcal_event_id"])
-                    print(f"[CAL] Deleted from GCal: {title}")
-                except Exception as e:
-                    print(f"[CAL] GCal delete failed: {e}")
-
-            # Remove from main list
-            self.items[guild_key] = [
-                i for i in self.items[guild_key] if i["id"] != item_to_delete["id"]
-            ]
-
+            result = self._delete_one_item(guild_key, item_to_delete)
             self._save_data_sync()
-            return AwaitableValue((True, title))
+            return AwaitableValue(result)
 
-        return AwaitableValue((False, None))
+        return AwaitableValue(
+            CalendarDeleteResult(
+                {
+                    "success": False,
+                    "title": None,
+                    "requested_count": 0,
+                    "deleted_count": 0,
+                    "deleted_titles": [],
+                    "pending_count": 0,
+                    "pending_titles": [],
+                    "pending_errors": {},
+                }
+            )
+        )
 
     async def delete_item_by_title(self, guild_id, title_search):
         """Delete a single item by title matching (ignoring guild_id for shared calendar)"""
@@ -214,52 +293,78 @@ class CalendarManager:
         title_search = title_search.lower()
         for i, item in enumerate(self.items[guild_key]):
             if title_search in item["title"].lower():
-                title = item["title"]
-                
-                # Remove from GCal if enabled
-                if self.gcal_enabled and item.get("gcal_event_id"):
-                    try:
-                        self.gcal.delete_event(item["gcal_event_id"])
-                        print(f"[CAL] Deleted from GCal: {title}")
-                    except Exception as e:
-                        print(f"[CAL] GCal delete failed: {e}")
-
-                self.items[guild_key].pop(i)
+                result = self._delete_one_item(guild_key, item)
                 await self._save_data()
-                return True, title
+                return result
 
-        return False, None
+        return CalendarDeleteResult(
+            {
+                "success": False,
+                "title": None,
+                "requested_count": 0,
+                "deleted_count": 0,
+                "deleted_titles": [],
+                "pending_count": 0,
+                "pending_titles": [],
+                "pending_errors": {},
+            }
+        )
 
     async def delete_items_by_title(self, guild_id, title_search):
         """Delete multiple items by title matching (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
         if guild_key not in self.items:
-            return 0, []
+            return CalendarDeleteResult(
+                {
+                    "bulk": True,
+                    "success": False,
+                    "requested_count": 0,
+                    "deleted_count": 0,
+                    "deleted_titles": [],
+                    "pending_count": 0,
+                    "pending_titles": [],
+                    "pending_errors": {},
+                }
+            )
 
         title_search = title_search.lower()
-        to_keep = []
+        requested = []
+        deleted_ids = set()
         deleted_titles = []
+        pending_titles = []
+        pending_errors = {}
+        now = datetime.now().isoformat()
 
         for item in self.items[guild_key]:
             if title_search in item["title"].lower():
-                deleted_titles.append(item["title"])
-                
-                # Remove from GCal if enabled
-                if self.gcal_enabled and item.get("gcal_event_id"):
-                    try:
-                        self.gcal.delete_event(item["gcal_event_id"])
-                        print(f"[CAL] Deleted from GCal (bulk): {item['title']}")
-                    except Exception as e:
-                        print(f"[CAL] GCal delete failed: {e}")
-            else:
-                to_keep.append(item)
+                requested.append(item)
+                title = item.get("title", "Uten tittel")
+                if self._delete_from_gcal_or_mark_pending(item, now=now, context="bulk delete"):
+                    deleted_ids.add(item.get("id"))
+                    deleted_titles.append(title)
+                else:
+                    pending_titles.append(title)
+                    pending_errors[title] = item.get("delete_error")
 
-        count = len(deleted_titles)
-        if count > 0:
-            self.items[guild_key] = to_keep
+        if requested:
+            self.items[guild_key] = [
+                item for item in self.items[guild_key]
+                if item.get("id") not in deleted_ids
+            ]
             await self._save_data()
 
-        return count, deleted_titles
+        return CalendarDeleteResult(
+            {
+                "bulk": True,
+                "success": bool(deleted_titles) and not pending_titles,
+                "requested_count": len(requested),
+                "deleted_count": len(deleted_titles),
+                "deleted_titles": deleted_titles,
+                "pending_count": len(pending_titles),
+                "pending_titles": pending_titles,
+                "pending_errors": pending_errors,
+            }
+        )
 
     async def clear_calendar(self, guild_id):
         """Delete all items from the shared calendar (ignoring guild_id)"""
@@ -289,10 +394,7 @@ class CalendarManager:
                 if not delete_ok:
                     title = item.get("title", "Uten tittel")
                     pending_titles.append(title)
-                    item["delete_pending"] = True
-                    item["delete_requested_at"] = item.get("delete_requested_at") or now
-                    item["delete_last_attempt_at"] = now
-                    item["delete_error"] = error or "Google Calendar deletion returned false"
+                    self._mark_delete_pending(item, error, now)
                     print(f"[CAL] GCal clear delete failed for {title}: {item['delete_error']}")
                     continue
 
@@ -427,7 +529,10 @@ class CalendarManager:
         items = self.items.get(guild_key, [])
 
         query = query.lower()
-        matching = [item for item in items if query in item.get("title", "").lower()]
+        matching = [
+            item for item in items
+            if not item.get("delete_pending") and query in item.get("title", "").lower()
+        ]
 
         return matching
 
@@ -438,14 +543,21 @@ class CalendarManager:
             return f"🔎 Fant ingen kalenderoppføringer som matcher **{query}**."
 
         lines = [f"🔎 **Kalenderoppføringer som matcher \"{query}\":**"]
-        for i, item in enumerate(matches[:10], 1):
+        upcoming_index_by_id = {
+            item.get("id"): index
+            for index, item in enumerate(self.get_upcoming(self.SHARED_KEY, days=365), 1)
+        }
+        for item in matches[:10]:
             time_str = f" kl. {item['time']}" if item.get("time") else ""
             status = "✅" if item.get("completed") else "📌"
-            lines.append(f"{status} **{i}.** {item.get('title', '')} — _{item.get('date', '')}{time_str}_")
+            index = upcoming_index_by_id.get(item.get("id"))
+            prefix = f"**{index}.** " if index is not None else ""
+            lines.append(f"{status} {prefix}{item.get('title', '')} — _{item.get('date', '')}{time_str}_")
 
         if len(matches) > 10:
             lines.append(f"\n… og {len(matches) - 10} til.")
 
+        lines.append("\nNumrene matcher `@inebotten kalender`-lista.")
         return "\n".join(lines)
 
     async def _process_completion(self, guild_key, item):

@@ -63,7 +63,7 @@ class ActionSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed["action"], "SAVE_EVENT")
         self.assertEqual(parsed["title"], "Møte")
 
-    async def test_json_action_executes_save_event(self):
+    async def test_json_action_drafts_save_event_without_mutating_calendar(self):
         monitor = self.make_monitor()
         handler = FakeCalendarHandler()
         monitor.handlers["calendar"] = handler
@@ -71,10 +71,9 @@ class ActionSchemaTests(unittest.IsolatedAsyncioTestCase):
 
         cleaned = await monitor._parse_and_execute_actions(message.content, message)
 
-        self.assertEqual(cleaned, "")
-        self.assertEqual(len(handler.calls), 1)
-        _, parsed_event = handler.calls[0]
-        self.assertEqual(parsed_event, {"title": "Møte"})
+        self.assertIn("lagrer det ikke uten bekreftelse", cleaned)
+        self.assertIn("@inebotten legg til", cleaned)
+        self.assertEqual(len(handler.calls), 0)
 
     async def test_old_format_still_parseable(self):
         monitor = self.make_monitor()
@@ -84,8 +83,8 @@ class ActionSchemaTests(unittest.IsolatedAsyncioTestCase):
 
         cleaned = await monitor._parse_and_execute_actions(message.content, message)
 
-        self.assertEqual(cleaned, "")
-        self.assertEqual(len(handler.calls), 1)
+        self.assertIn("lagrer det ikke uten bekreftelse", cleaned)
+        self.assertEqual(len(handler.calls), 0)
 
     async def test_malformed_json_ignored(self):
         monitor = self.make_monitor()

@@ -52,7 +52,7 @@ What the playbook does:
    - remaps the bot's web console to `127.0.0.1:8081` (host Caddy reverse-proxies there)
    - disables the bundled compose `caddy` service (host Caddy already owns 80/443)
 5. **`docker compose up --build`** for the `inebotten` service only.
-6. **Polls `http://127.0.0.1:8081/health`** until it responds.
+6. **Polls `http://127.0.0.1:8081/health`** until it returns HTTP 200 with JSON `status: healthy`.
 7. **Verifies `/app/commit_hash.txt` inside the running container** matches the
    checked-out commit, so stale containers fail the deploy instead of looking
    successful.

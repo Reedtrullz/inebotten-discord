@@ -574,18 +574,18 @@ if __name__ == "__main__":
 
 ```bash
 # Kjør alle tester (anbefalt)
-python3 -m pytest -q
+.venv312/bin/python -m pytest -q
 
 # Kjør spesifikk testfil
-python3 -m pytest tests/test_intent_router.py -q
-python3 -m pytest tests/test_message_monitor_routing.py -q
-python3 -m pytest tests/test_false_positives.py -q
+.venv312/bin/python -m pytest tests/test_intent_router.py -q
+.venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q
+.venv312/bin/python -m pytest tests/test_false_positives.py -q
 
 # Kjør med verbose output
-python3 -m pytest tests/ -v
+.venv312/bin/python -m pytest tests/ -v
 
 # Coverage
-python3 -m pytest tests/ --cov=. --cov-report=html
+.venv312/bin/python -m pytest tests/ --cov=. --cov-report=html
 ```
 
 ### Intent-tester

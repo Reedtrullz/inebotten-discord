@@ -47,6 +47,8 @@ class HelpHandler(BaseHandler):
                     "",
                     self.loc.t("help_reminders"),
                     "",
+                    self.loc.t("help_birthdays"),
+                    "",
                     self.loc.t("help_profile"),
                     "",
                     self.loc.t("help_fun"),

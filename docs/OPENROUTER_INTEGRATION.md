@@ -35,7 +35,7 @@ Discord-melding
   -> renset Discord-svar
 ```
 
-Handlinger fra AI blir validert lokalt før kalenderen endres. OpenRouter får derfor ikke lov til å skrive direkte til lagring uten parser-sjekk.
+Handlinger fra AI blir validert lokalt og gjort om til bekreftbare drafts. OpenRouter får derfor ikke skrive direkte til kalenderlagring.
 
 **Supported action formats:**
 
@@ -75,9 +75,9 @@ OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ## Test
 
 ```bash
-python3 -m pytest tests/test_intent_router.py -q
-python3 -m pytest tests/test_message_monitor_routing.py -q
-python3 -m pytest -q
+.venv312/bin/python -m pytest tests/test_intent_router.py -q
+.venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q
+.venv312/bin/python -m pytest -q
 ```
 
 Manuell test:

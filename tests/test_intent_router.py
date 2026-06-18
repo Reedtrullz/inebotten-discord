@@ -13,7 +13,7 @@ from features.search_manager import detect_search_intent
 
 
 class DummyMonitor:
-    def __init__(self, active_polls=False, calendar_titles=None):
+    def __init__(self, active_polls=False, calendar_titles=None, active_reminders=False):
         self.nlp_parser = NaturalLanguageParser()
         self.calendar = SimpleNamespace(
             get_upcoming=lambda guild_id, days=365: [
@@ -24,6 +24,9 @@ class DummyMonitor:
         self.countdown = SimpleNamespace(parse_countdown_query=self._parse_countdown)
         self.poll = SimpleNamespace(
             get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
+        )
+        self.reminders = SimpleNamespace(
+            get_active_reminders=lambda guild_id: [{"id": "rem1"}] if active_reminders else []
         )
         self.conversation = SimpleNamespace(
             should_show_dashboard=self._should_show_dashboard,
@@ -91,10 +94,11 @@ class DummyMonitor:
 
 
 class IntentRouterTests(unittest.TestCase):
-    def route(self, text, active_polls=False, monitor=None, calendar_titles=None):
+    def route(self, text, active_polls=False, monitor=None, calendar_titles=None, active_reminders=False):
         monitor = monitor or DummyMonitor(
             active_polls=active_polls,
             calendar_titles=calendar_titles,
+            active_reminders=active_reminders,
         )
         return IntentRouter(monitor).route(text, guild_id=123)
 
@@ -225,6 +229,8 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_calendar_delete_still_handles_item_deletion(self):
         self.assertEqual(self.route("kalender slett 2").intent, BotIntent.CALENDAR_DELETE)
+        self.assertEqual(self.route("kalender slette 2").intent, BotIntent.CALENDAR_DELETE)
+        self.assertEqual(self.route("kalender fjerne 2").intent, BotIntent.CALENDAR_DELETE)
 
     def test_calendar_delete_handles_leading_calendar_context_and_title(self):
         result = self.route("kalender fjern meldekort")
@@ -247,10 +253,18 @@ class IntentRouterTests(unittest.TestCase):
             'Slett alle "Send inn meldekort" i kalenderen',
             "kalenderen slett meldekort",
             "fjern meldekort fra kalenderen",
+            "vennligst slett meldekort fra kalenderen",
+            "kan du slette meldekort fra kalenderen",
         ]
         for prompt in prompts:
             with self.subTest(prompt=prompt):
                 self.assertEqual(self.route(prompt).intent, BotIntent.CALENDAR_DELETE)
+
+    def test_calendar_edit_variants_and_aliases_route(self):
+        self.assertEqual(self.route("kalender rediger 1 tittel: Ny").intent, BotIntent.CALENDAR_EDIT)
+        self.assertEqual(self.route("kalender oppdatere 1 tittel: Ny").intent, BotIntent.CALENDAR_EDIT)
+        self.assertEqual(self.route("arrangementer").intent, BotIntent.CALENDAR_LIST)
+        self.assertEqual(self.route("events").intent, BotIntent.CALENDAR_LIST)
 
     def test_bare_numeric_delete_routes_to_calendar_delete(self):
         self.assertEqual(self.route("slett 2").intent, BotIntent.CALENDAR_DELETE)
@@ -263,10 +277,10 @@ class IntentRouterTests(unittest.TestCase):
         result = self.route("endre påminnelse")
         self.assertEqual(result.intent, BotIntent.REMINDER_EDIT)
 
-    def test_calendar_search_routes_to_local_calendar_search(self):
+    def test_bare_search_routes_to_web_search(self):
         result = self.route("søk møte")
-        self.assertEqual(result.intent, BotIntent.CALENDAR_SEARCH)
-        self.assertEqual(result.payload["query"], "møte")
+        self.assertEqual(result.intent, BotIntent.SEARCH)
+        self.assertEqual(result.payload["search"]["query"], "møte")
 
     def test_explicit_calendar_search_routes_to_local_calendar_search(self):
         result = self.route("søk kalender møte")
@@ -277,6 +291,31 @@ class IntentRouterTests(unittest.TestCase):
         result = self.route("søk påminnelse lege")
         self.assertEqual(result.intent, BotIntent.REMINDER_SEARCH)
         self.assertEqual(result.payload["query"], "lege")
+
+    def test_reminder_create_list_and_complete_route_to_reminders(self):
+        self.assertEqual(self.route("påminnelse Ring lege om 2 timer").intent, BotIntent.REMINDER_CREATE)
+        self.assertEqual(self.route("påminnelser").intent, BotIntent.REMINDER_LIST)
+        self.assertEqual(self.route("reminders").intent, BotIntent.REMINDER_LIST)
+        self.assertEqual(self.route("ferdig 1", active_reminders=True).intent, BotIntent.REMINDER_COMPLETE)
+
+    def test_bare_calendar_complete_title_is_not_stolen_by_reminders(self):
+        result = self.route(
+            "ferdig meldekort uke 25",
+            calendar_titles=["Send inn meldekort uke 25"],
+            active_reminders=True,
+        )
+
+        self.assertEqual(result.intent, BotIntent.CALENDAR_COMPLETE)
+
+    def test_quoted_reminder_complete_does_not_route(self):
+        result = self.route('hva skjer hvis jeg skriver "ferdig påminnelse 1"?', active_reminders=True)
+
+        self.assertNotEqual(result.intent, BotIntent.REMINDER_COMPLETE)
+
+    def test_generic_calendar_context_words_do_not_hijack_phrases(self):
+        self.assertNotEqual(self.route("kommende filmer").intent, BotIntent.CALENDAR_LIST)
+        self.assertNotEqual(self.route("planlagt vedlikehold").intent, BotIntent.CALENDAR_LIST)
+        self.assertNotEqual(self.route("events in Trondheim").intent, BotIntent.CALENDAR_LIST)
 
     def test_web_search_phrase_does_not_route_to_calendar_search(self):
         result = self.route("søk på nett Trondheim konserter")
@@ -298,6 +337,10 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.MEMORY_DELETE)
         self.assertEqual(result.payload["memory"]["action"], "delete")
         self.assertTrue(result.payload["memory"]["confirmed"])
+
+    def test_quoted_memory_delete_confirmation_does_not_route(self):
+        result = self.route('hva skjer hvis jeg skriver "slett minnet mitt bekreft"?')
+        self.assertNotEqual(result.intent, BotIntent.MEMORY_DELETE)
 
     def test_quote_list_routes_to_quote_list(self):
         result = self.route("liste sitater")

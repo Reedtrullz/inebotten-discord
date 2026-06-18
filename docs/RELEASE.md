@@ -85,8 +85,8 @@ python build.py
 
 ## Før release
 
-- Kjør `python3 -m pytest -q` — alle 309+ tester skal passere.
-- Kjør `python3 -m pytest tests/test_false_positives.py -q` — regresjonstester skal passere.
+- Kjør `.venv312/bin/python -m pytest -q` — hele testpakken skal passere.
+- Kjør `.venv312/bin/python -m pytest tests/test_false_positives.py -q` — regresjonstester skal passere.
 - Test intent-routeren med relevante norske prompt-eksempler (spesielt kalender- og søke-intents).
 - Verifiser at confidence-tresholds fungerer: usikre intents skal falle tilbake til AI.
 - Bygg minst én desktop-app lokalt hvis endringen berører launcher eller packaging.

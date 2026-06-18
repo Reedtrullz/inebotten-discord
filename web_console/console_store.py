@@ -118,13 +118,17 @@ class ConsoleStore:
                 with self._lock, self._stats_file.open("r", encoding="utf-8") as handle:
                     data = json.load(handle)
                 if not isinstance(data, dict) or data.get("version") != STATS_SCHEMA_VERSION:
+                    self._record_error("load_stats", ValueError("unsupported stats schema"))
                     return _empty_stats()
                 data.setdefault("intents", {})
                 data.setdefault("rate_limits", {})
                 data.setdefault("last_saved", None)
+                if self._last_error and self._last_error.startswith("load_stats:"):
+                    self._last_error = None
+                    self._last_error_at = None
                 return data
-        except Exception:
-            pass
+        except Exception as exc:
+            self._record_error("load_stats", exc)
         return _empty_stats()
 
     def create_session(self, ttl_seconds: int, binding_hash: str | None = None) -> str:
@@ -223,14 +227,33 @@ class ConsoleStore:
 
     def health(self) -> dict[str, Any]:
         """Return non-secret diagnostics for console persistence."""
+        stats_read_error = self._stats_read_error()
+        if not stats_read_error and self._last_error and self._last_error.startswith("load_stats:"):
+            self._last_error = None
+            self._last_error_at = None
         return {
-            "status": "degraded" if self._last_error else "ok",
+            "status": "degraded" if self._last_error or stats_read_error else "ok",
             "stats_schema_version": STATS_SCHEMA_VERSION,
             "last_stats_saved_at": self._last_stats_saved_at,
             "last_log_write_at": self._last_log_write_at,
             "last_error": self._last_error,
             "last_error_at": self._last_error_at,
+            "stats_read_error": stats_read_error,
         }
+
+    def _stats_read_error(self) -> str | None:
+        try:
+            if not self._stats_file.exists():
+                return None
+            with self._lock, self._stats_file.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict):
+                return "stats file is not a JSON object"
+            if data.get("version") != STATS_SCHEMA_VERSION:
+                return "unsupported stats schema"
+            return None
+        except Exception as exc:
+            return str(exc)
 
     def _record_success(self, operation: str) -> None:
         now = datetime.now().isoformat()

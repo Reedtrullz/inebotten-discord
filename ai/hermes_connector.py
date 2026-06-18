@@ -222,11 +222,20 @@ class HermesConnector:
                 "channel_type": "health_check",
             }
 
-            success, result = await self._make_request(self.base_url, method="POST", payload=test_payload)
-            if success:
-                return True, f"API reachable"
-            else:
-                return False, result
+            session = await self._get_session()
+            async with session.post(self.base_url, json=test_payload) as response:
+                if response.status != 200:
+                    return False, f"API error (status {response.status})"
+                try:
+                    data = await response.json()
+                except json.JSONDecodeError:
+                    text = await response.text()
+                    return True, text or "API reachable"
+
+            status = str(data.get("status", "")).lower() if isinstance(data, dict) else ""
+            if status in {"degraded", "unhealthy", "error"}:
+                return False, data.get("response", status) if isinstance(data, dict) else status
+            return True, data.get("response", "API reachable") if isinstance(data, dict) else "API reachable"
 
         except Exception as e:
             return False, f"Health check error: {type(e).__name__}"

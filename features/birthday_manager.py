@@ -60,6 +60,24 @@ class BirthdayManager:
         """Save birthdays to storage"""
         write_json_atomic(self.storage_path, self.birthdays)
 
+    def _validate_birthday_date(self, day, month, year=None):
+        try:
+            datetime(int(year) if year else 2000, int(month), int(day))
+        except (TypeError, ValueError):
+            raise ValueError(f"Ugyldig bursdagsdato: {day}.{month}")
+
+    def _birthday_date_for_year(self, year, month, day):
+        """Return the observed birthday date for a year.
+
+        Leap-day birthdays are observed on 28 February in non-leap years.
+        """
+        try:
+            return datetime(year, month, day)
+        except ValueError:
+            if int(month) == 2 and int(day) == 29:
+                return datetime(year, 2, 28)
+            raise
+
     def add_birthday(self, guild_id, user_id, username, day, month, year=None):
         """
         Add a birthday for a user
@@ -76,6 +94,7 @@ class BirthdayManager:
             True if successful
         """
         try:
+            self._validate_birthday_date(day, month, year)
             guild_key = str(guild_id)
             user_key = str(user_id)
 
@@ -223,6 +242,8 @@ class BirthdayManager:
         if guild_key not in self.birthdays:
             raise ValueError(f"Birthday for {name} not found")
 
+        self._validate_birthday_date(day, month, year)
+
         name_lower = name.lower()
         target_user_id = None
         for user_id, data in self.birthdays[guild_key].items():
@@ -288,11 +309,11 @@ class BirthdayManager:
             return upcoming
 
         for user_id, data in self.birthdays[guild_key].items():
-            birthday_date = datetime(today.year, data["month"], data["day"])
+            birthday_date = self._birthday_date_for_year(today.year, data["month"], data["day"])
 
             # If birthday passed this year, check next year
             if birthday_date < today:
-                birthday_date = datetime(today.year + 1, data["month"], data["day"])
+                birthday_date = self._birthday_date_for_year(today.year + 1, data["month"], data["day"])
 
             days_until = (birthday_date - today).days
 
@@ -300,7 +321,8 @@ class BirthdayManager:
                 age = None
                 if data.get("year"):
                     age = today.year - data["year"]
-                    if (today.month, today.day) < (data["month"], data["day"]):
+                    this_year_birthday = self._birthday_date_for_year(today.year, data["month"], data["day"])
+                    if today.date() < this_year_birthday.date():
                         age -= 1
 
                 upcoming.append(

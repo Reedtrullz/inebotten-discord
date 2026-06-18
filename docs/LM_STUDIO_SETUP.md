@@ -253,7 +253,7 @@ curl "http://localhost:3000/health"
 ```bash
 # Start begge
 cd ~/.hermes/discord
-python3 run_both.py
+python3 scripts/run_both.py
 ```
 
 I Discord:
@@ -291,7 +291,7 @@ Forventet: "Jo da, det var supert! Så kjekt å høre..."
 3. **Restart bot:**
    ```bash
    # Ctrl+C for å stoppe
-   python3 run_both.py
+   python3 scripts/run_both.py
    ```
 
 ### Fra 12B til 4B (hvis du trenger hastighet)
@@ -362,7 +362,7 @@ ping 172.21.160.1  # Din IP
 curl http://172.21.160.1:1234/v1/models
 
 # 6. Hva sier bot-loggen?
-python3 run_both.py
+python3 scripts/run_both.py
 # Se etter "Loaded system prompt from..."
 # Skal si: "system_prompt_12b.txt" for 12B
 ```

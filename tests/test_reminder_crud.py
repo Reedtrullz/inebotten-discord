@@ -88,6 +88,23 @@ class ReminderManagerCRUDTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["text"], "Ta Medisin")
 
+    def test_complete_reminder_uses_display_sorted_order(self):
+        later_id = self.manager.add_reminder("123", "1", "Alice", "Lagt til først")
+        earlier_id = self.manager.add_reminder("123", "1", "Alice", "Vises først")
+        for reminder in self.manager.reminders["123"]:
+            if reminder["id"] == later_id:
+                reminder["created_at"] = "2026-06-18T12:00:00"
+            if reminder["id"] == earlier_id:
+                reminder["created_at"] = "2026-06-18T08:00:00"
+
+        success, text, _ = self.manager.complete_reminder("123", reminder_num=1)
+
+        self.assertTrue(success)
+        self.assertEqual(text, "Vises først")
+        completed = {reminder["text"]: reminder["completed"] for reminder in self.manager.reminders["123"]}
+        self.assertFalse(completed["Lagt til først"])
+        self.assertTrue(completed["Vises først"])
+
 
 class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -151,6 +168,47 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.handler.send_response.assert_awaited_once()
         self.assertIn("Første oppgave", self.handler.send_response.await_args.args[1])
+
+    async def test_handle_reminder_create_adds_reminder(self):
+        message = SimpleNamespace(
+            content="@inebotten påminnelse Ring lege 20.06",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            author=SimpleNamespace(id=7, name="Tester"),
+        )
+
+        await self.handler.handle_reminder_create(message)
+
+        texts = [reminder["text"] for reminder in self.manager.reminders["123"]]
+        self.assertIn("Ring lege", texts)
+        self.handler.send_response.assert_awaited()
+
+    async def test_handle_reminder_list_outputs_active_reminders(self):
+        message = SimpleNamespace(
+            content="@inebotten påminnelser",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            author=SimpleNamespace(id=7, name="Tester"),
+        )
+
+        await self.handler.handle_reminder_list(message)
+
+        self.handler.send_response.assert_awaited_once()
+        self.assertIn("Første oppgave", self.handler.send_response.await_args.args[1])
+
+    async def test_handle_reminder_complete_marks_done(self):
+        message = SimpleNamespace(
+            content="@inebotten ferdig påminnelse 1",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            author=SimpleNamespace(id=7, name="Tester"),
+        )
+
+        await self.handler.handle_reminder_complete(message)
+
+        self.assertTrue(self.manager.reminders["123"][0]["completed"])
+        self.handler.send_response.assert_awaited_once()
+        self.assertIn("Fullført", self.handler.send_response.await_args.args[1])
 
 
 if __name__ == "__main__":

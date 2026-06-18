@@ -123,8 +123,7 @@ class ReminderManager:
         if guild_key not in self.reminders:
             return False, None, None
 
-        # Get incomplete reminders
-        incomplete = [r for r in self.reminders[guild_key] if not r["completed"]]
+        incomplete = self.get_active_reminders(guild_id)
 
         target_reminder = None
 
@@ -441,7 +440,31 @@ def parse_reminder_command(message_content):
     Returns:
         dict with action and data, or None
     """
-    content_lower = message_content.lower()
+    cleaned_content = re.sub(r"<@!?\d+>", "", message_content)
+    cleaned_content = cleaned_content.replace("@inebotten", "").strip()
+    content_lower = cleaned_content.lower()
+
+    # Check for explicit complete reminder commands before creation, so
+    # "ferdig påminnelse 1" does not become a new reminder titled "ferdig 1".
+    complete_keywords = ["ferdig", "fullfør", "fullført", "done", "completed", "gjort", "✓"]
+    complete_pattern = "|".join(re.escape(keyword) for keyword in complete_keywords)
+    reminder_context = r"(?:påminnelse|påminnelser|reminder|reminders|gjøremål|todo)"
+    complete_match = re.fullmatch(
+        rf"\s*(?:{complete_pattern})\s+{reminder_context}(?:\s+(\d+))?\s*",
+        content_lower,
+        flags=re.IGNORECASE,
+    )
+    if complete_match:
+        number = complete_match.group(1)
+        return {"action": "complete", "number": int(number) if number else None}
+
+    # Check for list reminders before singular creation.
+    list_keywords = ["påminnelser", "gjøremål", "reminders", "todos", "huskeliste"]
+    if any(
+        re.search(rf"\b{re.escape(word)}\b", content_lower)
+        for word in list_keywords
+    ):
+        return {"action": "list"}
 
     # Check for reminder creation
     reminder_keywords = [
@@ -456,10 +479,7 @@ def parse_reminder_command(message_content):
     for keyword in reminder_keywords:
         if re.search(rf"\b{re.escape(keyword)}\b", content_lower):
             # Extract reminder text
-            text = message_content
-
-            # Remove @inebotten and keyword
-            text = text.replace("@inebotten", "").strip()
+            text = cleaned_content
 
             # Remove the keyword phrase
             patterns = [
@@ -467,8 +487,6 @@ def parse_reminder_command(message_content):
                 f"{keyword}\\s*",
             ]
             for pattern in patterns:
-                import re
-
                 text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
 
             # Clean up common prefixes
@@ -478,8 +496,6 @@ def parse_reminder_command(message_content):
                     text = text[len(prefix) :].strip()
 
             # Check for due date in text (DD.MM)
-            import re
-
             date_match = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", text)
             due_date = None
             if date_match:
@@ -494,26 +510,6 @@ def parse_reminder_command(message_content):
 
             if text and len(text) > 2:
                 return {"action": "add", "text": text, "due_date": due_date}
-
-    # Check for complete reminder
-    complete_keywords = ["ferdig", "fullført", "done", "completed", "gjort", "✓"]
-    for keyword in complete_keywords:
-        if re.search(rf"\b{re.escape(keyword)}\b", content_lower):
-            # Try to extract number
-            import re
-
-            num_match = re.search(r"\b(\d+)\b", content_lower)
-            if num_match:
-                return {"action": "complete", "number": int(num_match.group(1))}
-            return {"action": "complete", "number": None}
-
-    # Check for list reminders
-    list_keywords = ["påminnelser", "gjøremål", "reminders", "todos", "huskeliste"]
-    if any(
-        re.search(rf"\b{re.escape(word)}\b", content_lower)
-        for word in list_keywords
-    ):
-        return {"action": "list"}
 
     return None
 

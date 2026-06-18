@@ -231,7 +231,7 @@ Hvis tokenet finnes og kan friskes opp, skriver skriptet at eksisterende token b
 
 1. Start botten:
    ```bash
-   python3 run_both.py
+   python3 scripts/run_both.py
    ```
 
 2. I Discord, skriv:

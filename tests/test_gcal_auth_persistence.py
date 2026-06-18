@@ -150,6 +150,60 @@ class GoogleCalendarAuthPersistenceTests(unittest.TestCase):
             self.assertEqual(factory.call_args.args[0], str(credentials_path))
             self.assertEqual(flow.redirect_uri, "http://localhost:8080")
 
+    def test_auth_code_exchange_is_bound_to_requester(self):
+        with TemporaryDirectory() as tmp:
+            credentials_path = Path(tmp) / "credentials.json"
+            credentials_path.write_text("{}", encoding="utf-8")
+
+            class FakeFlow:
+                credentials = ValidCreds()
+                redirect_uri = None
+
+                def authorization_url(self, **kwargs):
+                    return "https://auth.example", "state"
+
+                def fetch_token(self, code):
+                    self.code = code
+
+            with patch.dict(os.environ, {"GCAL_CREDENTIALS_PATH": str(credentials_path)}):
+                with patch(
+                    "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
+                    return_value=FakeFlow(),
+                ):
+                    manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
+                    manager._save_credentials = lambda creds: None
+                    ok, _ = GoogleCalendarManager.get_auth_url(
+                        manager,
+                        requester_id=111,
+                        channel_id=222,
+                    )
+
+                    self.assertTrue(ok)
+                    wrong_ok, wrong_msg = GoogleCalendarManager.exchange_code(
+                        manager,
+                        "oauth-code",
+                        requester_id=999,
+                        channel_id=222,
+                    )
+                    missing_channel_ok, missing_channel_msg = GoogleCalendarManager.exchange_code(
+                        manager,
+                        "oauth-code",
+                        requester_id=111,
+                        channel_id=None,
+                    )
+                    right_ok, right_msg = GoogleCalendarManager.exchange_code(
+                        manager,
+                        "oauth-code",
+                        requester_id=111,
+                        channel_id=222,
+                    )
+
+            self.assertFalse(wrong_ok)
+            self.assertIn("annen påloggingsøkt", wrong_msg)
+            self.assertFalse(missing_channel_ok)
+            self.assertIn("samme kanal", missing_channel_msg)
+            self.assertTrue(right_ok, right_msg)
+
     def test_auth_script_resolves_vps_hermes_home(self):
         home, token_path, credentials_path = auth_gcal.resolve_auth_paths(
             "/opt/apps/inebotten-discord/data"

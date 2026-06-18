@@ -449,8 +449,8 @@ class Localization:
                 'en': '📅 **Events:**\n• "@inebotten match tonight at 8pm"\n• "@inebotten events" / "arrangementer"\n• "@inebotten delete 1" / "slett 1"'
             },
             'help_reminders': {
-                'no': '⏰ **Påminnelser:**\n• "@inebotten påminnelse kjøpe melk"\n• "@inebotten ferdig 1" / "done 1"\n• "@inebotten påminnelser" / "reminders"',
-                'en': '⏰ **Reminders:**\n• "@inebotten reminder buy milk"\n• "@inebotten done 1" / "ferdig 1"\n• "@inebotten reminders" / "påminnelser"'
+                'no': '⏰ **Påminnelser:**\n• "@inebotten påminnelse kjøpe melk"\n• "@inebotten ferdig påminnelse 1" / "done reminder 1"\n• "@inebotten påminnelser" / "reminders"',
+                'en': '⏰ **Reminders:**\n• "@inebotten reminder buy milk"\n• "@inebotten done reminder 1" / "ferdig påminnelse 1"\n• "@inebotten reminders" / "påminnelser"'
             },
             'help_birthdays': {
                 'no': '🎂 **Bursdager:**\n• "@inebotten bursdag 15.05"\n• "@inebotten bursdager" / "birthdays"',

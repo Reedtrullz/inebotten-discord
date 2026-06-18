@@ -193,11 +193,11 @@ Intent-system
 **Structured Actions:**
 
 `ai/action_schema.py` definerer dataclasses for AI-genererte handlinger:
-- `SaveEventAction` — lagre kalenderhendelse
+- `SaveEventAction` — foreslå kalenderhendelse som bekreftbar draft
 - `ShowDashboardAction` — vise dashboard
 - `NoAction` — ingen handling
 
-AI kan returnere handlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Begge parses og valideres gjennom `nlp_parser.parse_event()` før kalenderen endres.
+AI kan returnere handlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Begge parses og valideres gjennom `nlp_parser.parse_event()` og blir bekreftbare drafts; kalenderen endres ikke direkte av AI-responsen.
 
 #### 2.3 Natural Language Parser
 

@@ -3,10 +3,12 @@
 """Regression tests for watchlist and birthday edit/remove flows."""
 
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import patch
 
 from core.intent_router import BotIntent, IntentRouter
 from features.birthday_manager import BirthdayManager
@@ -121,6 +123,29 @@ class WatchlistBirthdayEditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.birthdays.edit_birthday(123, "Mangler Navn", 1, 1)
 
+    def test_edit_birthday_rejects_impossible_date(self):
+        self.birthdays.add_birthday(123, 1, "Ola Nordmann", 1, 1, 1990)
+
+        with self.assertRaises(ValueError):
+            self.birthdays.edit_birthday(123, "Ola Nordmann", 31, 2, 1990)
+
+        birthday = self.birthdays.birthdays["123"]["1"]
+        self.assertEqual(birthday["day"], 1)
+        self.assertEqual(birthday["month"], 1)
+
+    def test_add_birthday_rejects_impossible_date(self):
+        self.assertFalse(self.birthdays.add_birthday(123, 1, "Ola Nordmann", 31, 2, 1990))
+        self.assertEqual(self.birthdays.birthdays, {})
+
+    def test_watchlist_status_includes_numeric_order_for_actions(self):
+        self.watchlist.add_from_discord_message("Movie A", "movie", guild_id=123)
+        self.watchlist.add_from_discord_message("Series B", "series", guild_id=123)
+
+        rendered = self.watchlist.format_watchlist_status("no", guild_id=123)
+
+        self.assertIn("1. Movie A", rendered)
+        self.assertIn("2. Series B", rendered)
+
     def test_intent_routing_fjern_watchlist_routes_correctly(self):
         route = IntentRouter(DummyMonitor()).route("fjern watchlist 2", guild_id=123)
 
@@ -128,11 +153,32 @@ class WatchlistBirthdayEditTests(unittest.TestCase):
         self.assertEqual(route.payload["watchlist"]["action"], "remove")
         self.assertEqual(route.payload["watchlist"]["index"], 2)
 
+    def test_watchlist_index_must_be_scoped_to_command(self):
+        parsed = parse_watchlist_command("fjern watchlist etter 2 dager")
+
+        self.assertEqual(parsed["action"], "remove")
+        self.assertIsNone(parsed["index"])
+
     def test_intent_routing_endre_bursdag_routes_correctly(self):
         route = IntentRouter(DummyMonitor()).route("endre bursdag Ola Nordmann 02.03.1991", guild_id=123)
 
         self.assertEqual(route.intent, BotIntent.BIRTHDAY_EDIT)
         self.assertEqual(route.reason, "birthday_edit_keyword")
+
+    def test_leap_day_birthday_uses_feb_28_in_non_leap_year(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 2, 27)
+
+        self.birthdays.add_birthday(123, 1, "Leap Person", 29, 2, 1992)
+
+        with patch("features.birthday_manager.datetime", FixedDateTime):
+            upcoming = self.birthdays.get_upcoming_birthdays(123, days=2)
+
+        self.assertEqual(len(upcoming), 1)
+        self.assertEqual(upcoming[0]["username"], "Leap Person")
+        self.assertEqual(upcoming[0]["days_until"], 1)
 
 
 if __name__ == "__main__":

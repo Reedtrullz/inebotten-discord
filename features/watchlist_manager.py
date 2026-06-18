@@ -384,6 +384,16 @@ class WatchlistManager:
             f"📺 {series_label}: {summary['series_unwatched']} {unwatched_label} ({summary['series_total']} {total_label})",
         ]
 
+        items = self.get_watchlist(guild_id)
+        if items:
+            lines.append("\n🔢 **Nummerert liste:**" if lang == "no" else "\n🔢 **Numbered list:**")
+            for index, item in enumerate(items[:10], 1):
+                item_type = "film" if item.get("type") == "movie" else "serie"
+                watched = "✓ " if item.get("watched") else ""
+                lines.append(f"{index}. {watched}{item.get('title', 'Uten tittel')} ({item_type})")
+            if len(items) > 10:
+                lines.append(f"… og {len(items) - 10} til." if lang == "no" else f"… and {len(items) - 10} more.")
+
         total_unwatched = summary["movies_unwatched"] + summary["series_unwatched"]
 
         if total_unwatched == 0:
@@ -404,6 +414,17 @@ def parse_watchlist_command(message_content):
         dict with action and data, or None
     """
     content_lower = message_content.lower()
+
+    def _extract_scoped_index(phrases):
+        for phrase in phrases:
+            match = re.search(
+                rf"\b{re.escape(phrase)}\b\s*(?:(?:nummer|nr\.?)\s*)?(\d+)\b",
+                message_content,
+                flags=re.IGNORECASE,
+            )
+            if match:
+                return int(match.group(1))
+        return None
 
     # Detect language
     lang_keywords = ["filmforslag", "serieforslag", "anbefaling", "hva skal vi se"]
@@ -467,16 +488,12 @@ def parse_watchlist_command(message_content):
     # Check for removing item (before generic status match)
     remove_phrases = ["fjern watchlist", "slett watchlist", "fjern fra watchlist"]
     if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in remove_phrases):
-        number_match = re.search(r'\b(\d+)\b', message_content)
-        index = int(number_match.group(1)) if number_match else None
-        return {"action": "remove", "index": index, "lang": lang}
+        return {"action": "remove", "index": _extract_scoped_index(remove_phrases), "lang": lang}
 
     # Check for editing item (before generic status match)
     edit_phrases = ["endre watchlist", "rediger watchlist"]
     if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in edit_phrases):
-        number_match = re.search(r'\b(\d+)\b', message_content)
-        index = int(number_match.group(1)) if number_match else None
-        return {"action": "edit", "index": index, "lang": lang}
+        return {"action": "edit", "index": _extract_scoped_index(edit_phrases), "lang": lang}
 
     # Check for adding item
     add_phrases = ["legg til", "add to watchlist", "husk å se"]

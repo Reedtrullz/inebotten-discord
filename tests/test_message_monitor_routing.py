@@ -64,8 +64,11 @@ class FakeUserMemory:
 
 
 class RecordingMessage:
+    _next_id = 1
+
     def __init__(self, content):
-        self.id = 1
+        self.id = RecordingMessage._next_id
+        RecordingMessage._next_id += 1
         self.content = content
         self.mentions = []
         self.guild = None
@@ -86,7 +89,7 @@ class RecordingPollsHandler:
 
 
 class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
-    def make_monitor(self, wants_dashboard=False, active_polls=False):
+    def make_monitor(self, wants_dashboard=False, active_polls=False, active_reminders=False):
         monitor = MessageMonitor.__new__(MessageMonitor)
         monitor.client = SimpleNamespace(
             user=SimpleNamespace(id=42),
@@ -124,6 +127,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.poll = SimpleNamespace(
             get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
         )
+        monitor.reminders = SimpleNamespace(
+            get_active_reminders=lambda guild_id: [{"id": "rem1"}] if active_reminders else []
+        )
         monitor.parse_poll_command = lambda content: None
         monitor.parse_vote = lambda content: int(content) if content.strip().isdigit() else None
         def parse_watchlist_command(content):
@@ -153,6 +159,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                 handle_reminder_edit=noop,
                 handle_reminder_delete=noop,
                 handle_reminder_search=noop,
+                handle_reminder_create=noop,
+                handle_reminder_list=noop,
+                handle_reminder_complete=noop,
             ),
             "quotes": SimpleNamespace(
                 handle_quote_list=noop,
@@ -395,13 +404,36 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             calls.append((message.content, payload))
 
         monitor.handlers["calendar"].handle_search = fake_handle_calendar_search
-        message = RecordingMessage("@inebotten søk møte")
+        message = RecordingMessage("@inebotten søk kalender møte")
 
         await monitor.handle_message(message)
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1]["query"], "møte")
         self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_SEARCH.value]["count"], 1)
+
+    async def test_reminder_create_list_and_complete_route_to_handlers(self):
+        monitor = self.make_monitor(active_reminders=True)
+        calls = []
+
+        async def fake_create(message, payload):
+            calls.append(("create", payload))
+
+        async def fake_list(message, payload):
+            calls.append(("list", payload))
+
+        async def fake_complete(message, payload):
+            calls.append(("complete", payload))
+
+        monitor.handlers["reminders"].handle_reminder_create = fake_create
+        monitor.handlers["reminders"].handle_reminder_list = fake_list
+        monitor.handlers["reminders"].handle_reminder_complete = fake_complete
+
+        await monitor.handle_message(RecordingMessage("@inebotten påminnelse Ring lege om 2 timer"))
+        await monitor.handle_message(RecordingMessage("@inebotten påminnelser"))
+        await monitor.handle_message(RecordingMessage("@inebotten ferdig 1"))
+
+        self.assertEqual([call[0] for call in calls], ["create", "list", "complete"])
 
     async def test_bare_calendar_title_delete_routes_to_calendar_handler(self):
         monitor = self.make_monitor()
@@ -485,6 +517,20 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1]["action"], "remove")
         self.assertEqual(monitor.intent_stats[BotIntent.WATCHLIST.value]["count"], 1)
+
+    async def test_watchlist_remove_sends_returned_handler_response(self):
+        monitor = self.make_monitor()
+
+        async def fake_handle_watchlist_remove(message, payload):
+            return "✅ Fjernet Movie A"
+
+        monitor.handlers["watchlist"].handle_watchlist_remove = fake_handle_watchlist_remove
+        message = RecordingMessage("@inebotten fjern watchlist 1")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(message.replies, ["✅ Fjernet Movie A"])
+        self.assertEqual(monitor.response_count, 1)
 
 
 if __name__ == "__main__":

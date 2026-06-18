@@ -6,21 +6,75 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from utils.json_storage import hermes_discord_data_path
 
+_JSON_READ_ERRORS: dict[str, str] = {}
+
 
 def _read_json_file(path: Path, default: Any) -> Any:
     try:
         if not path.exists():
+            _JSON_READ_ERRORS.pop(str(path), None)
             return default
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except Exception:
+            data = json.load(handle)
+        _JSON_READ_ERRORS.pop(str(path), None)
+        return data
+    except Exception as exc:
+        _JSON_READ_ERRORS[str(path)] = str(exc)
         return default
+
+
+def _probe_json_files() -> dict[str, str]:
+    errors = dict(_JSON_READ_ERRORS)
+    for name in (
+        "calendar.json",
+        "reminders.json",
+        "birthdays.json",
+        "polls.json",
+        "watchlist.json",
+        "quotes.json",
+        "user_memory.json",
+        "events.json",
+        "reminder_log.json",
+    ):
+        path = hermes_discord_data_path(name)
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                json.load(handle)
+            errors.pop(str(path), None)
+            _JSON_READ_ERRORS.pop(str(path), None)
+        except Exception as exc:
+            errors[str(path)] = str(exc)
+            _JSON_READ_ERRORS[str(path)] = str(exc)
+    return errors
+
+
+def _configured_ai_provider(monitor: object | None = None) -> str:
+    try:
+        config = getattr(getattr(monitor, "client", None), "config", None)
+        provider = getattr(config, "AI_PROVIDER", None)
+        if provider:
+            return str(provider).strip().lower()
+    except Exception:
+        pass
+    return os.getenv("AI_PROVIDER", "lm_studio").strip().lower()
+
+
+def _bridge_endpoint() -> tuple[str, int]:
+    host = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    connect_host = os.getenv("HERMES_BRIDGE_HEALTH_HOST", "").strip()
+    if not connect_host:
+        connect_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+    port = int(os.getenv("HERMES_BRIDGE_PORT", "3000"))
+    return connect_host, port
 
 
 def _flatten_calendar_items(data: Any) -> list[dict[str, Any]]:
@@ -87,15 +141,20 @@ def _collect_task_health(monitor: object | None = None) -> dict[str, Any]:
 
 
 def _collect_persistence_health() -> dict[str, Any]:
+    read_errors = _probe_json_files()
     try:
         from web_console.console_store import get_console_store
 
         store = get_console_store()
         if hasattr(store, "health"):
-            return store.health()
+            health = dict(store.health())
+            if read_errors:
+                health["status"] = "degraded"
+                health["read_errors"] = read_errors
+            return health
     except Exception as exc:
         return {"status": "degraded", "last_error": str(exc)}
-    return {"status": "unknown"}
+    return {"status": "degraded", "read_errors": read_errors} if read_errors else {"status": "unknown"}
 
 
 def _collect_calendar_sync_health(monitor: object | None = None) -> dict[str, Any]:
@@ -124,6 +183,11 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         user = getattr(client, "user", None)
         guilds = list(getattr(client, "guilds", []) or [])
         start_time = getattr(client, "start_time", None)
+        is_ready_fn = getattr(client, "is_ready", None)
+        is_closed_fn = getattr(client, "is_closed", None)
+        is_ready = bool(is_ready_fn()) if callable(is_ready_fn) else user is not None
+        is_closed = bool(is_closed_fn()) if callable(is_closed_fn) else False
+        latency = getattr(client, "latency", None)
 
         uptime_seconds = 0
         if start_time:
@@ -156,20 +220,39 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         tasks = _collect_task_health(monitor)
         persistence = _collect_persistence_health()
         calendar_sync = _collect_calendar_sync_health(monitor)
-        status = "online" if user is not None else "degraded"
+        discord_connected = bool(user is not None and is_ready and not is_closed)
+        degraded_reasons = []
+        if user is None:
+            degraded_reasons.append("discord_user_missing")
+        if not is_ready:
+            degraded_reasons.append("discord_not_ready")
+        if is_closed:
+            degraded_reasons.append("discord_closed")
+
+        status = "online" if discord_connected else "degraded"
         if (
             tasks.get("status") == "degraded"
             or persistence.get("status") == "degraded"
             or calendar_sync.get("status") == "degraded"
         ):
             status = "degraded"
+            if tasks.get("status") == "degraded":
+                degraded_reasons.append("tasks_degraded")
+            if persistence.get("status") == "degraded":
+                degraded_reasons.append("persistence_degraded")
+            if calendar_sync.get("status") == "degraded":
+                degraded_reasons.append("calendar_sync_degraded")
 
         return {
             "status": status,
             "uptime_seconds": uptime_seconds,
             "guilds": len(guilds),
             "users": users,
-            "discord_connected": user is not None,
+            "discord_connected": discord_connected,
+            "discord_ready": is_ready,
+            "discord_closed": is_closed,
+            "latency": latency,
+            "degraded_reasons": degraded_reasons,
             "monitor_ready": True,
             "tasks": tasks,
             "persistence": persistence,
@@ -184,6 +267,9 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
     bridge = await collect_bridge_health(monitor)
     persistence = bot.get("persistence") or _collect_persistence_health()
     tasks = bot.get("tasks") or _collect_task_health(monitor)
+    ai_provider = _configured_ai_provider(monitor)
+    bridge_required = ai_provider == "lm_studio"
+    bridge_degraded = bridge.get("status") in {"error", "unavailable", "unhealthy", "degraded"} or bridge.get("lm_studio") == "disconnected"
 
     if bot.get("status") == "starting":
         status = "starting"
@@ -191,7 +277,7 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
         bot.get("status") == "degraded"
         or persistence.get("status") == "degraded"
         or tasks.get("status") == "degraded"
-        or bridge.get("status") in {"error", "unavailable", "unhealthy"}
+        or (bridge_required and bridge_degraded)
     ):
         status = "degraded"
     else:
@@ -201,6 +287,7 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
         "status": status,
         "timestamp": datetime.now().isoformat(),
         "console": {"status": "running", "port": port},
+        "ai_provider": ai_provider,
         "bot": bot,
         "bridge": bridge,
         "persistence": persistence,
@@ -209,9 +296,10 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
 
 
 async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
+    host, port = _bridge_endpoint()
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", 3000),
+            asyncio.open_connection(host, port),
             timeout=2.5,
         )
         request = b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
@@ -227,16 +315,22 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
             body = response[header_end + 4 :]
             payload = json.loads(body.decode("utf-8"))
             if isinstance(payload, dict):
+                lm_studio = payload.get("lm_studio", "unknown")
+                status = payload.get("status", "unknown")
+                if lm_studio == "disconnected" and status == "healthy":
+                    status = "degraded"
                 return {
-                    "status": payload.get("status", "unknown"),
-                    "lm_studio": payload.get("lm_studio", "unknown"),
+                    "status": status,
+                    "lm_studio": lm_studio,
+                    "host": host,
+                    "port": port,
                     "requests": payload.get("requests", 0),
                     "errors": payload.get("errors", 0),
                 }
     except Exception:
         pass
 
-    return {"status": "unavailable"}
+    return {"status": "unavailable", "host": host, "port": port}
 
 
 def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:

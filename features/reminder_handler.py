@@ -10,6 +10,7 @@ Commands:
 import re
 from typing import Dict, Optional, Tuple
 
+from cal_system.reminder_manager import parse_reminder_command
 from features.base_handler import BaseHandler
 
 
@@ -117,6 +118,99 @@ class ReminderHandler(BaseHandler):
             )
         except Exception as e:
             self.log(f"Error searching reminders: {e}")
+            await self.send_response(message, self.loc.t("error_generic"))
+
+    async def handle_reminder_create(self, message, payload=None) -> None:
+        """Handle creating reminders from routed natural language."""
+        try:
+            guild_id = self.get_guild_id(message)
+            data = (payload or {}).get("reminder") or parse_reminder_command(message.content)
+            if not data or data.get("action") != "add" or not data.get("text"):
+                await self.send_response(
+                    message,
+                    "🔔 Skriv hva jeg skal minne deg på, f.eks. `@inebotten påminnelse ring legen 20.06`.",
+                )
+                return
+
+            reminder_id = self.reminders.add_reminder(
+                guild_id=guild_id,
+                user_id=message.author.id,
+                username=message.author.name,
+                text=data["text"],
+                due_date=data.get("due_date"),
+                channel_id=getattr(getattr(message, "channel", None), "id", None),
+            )
+            due = f"\n📅 Frist: {data['due_date']}" if data.get("due_date") else ""
+            await self.send_response(
+                message,
+                f"✅ **Påminnelse lagt til!**\n{data['text']}{due}",
+            )
+        except Exception as e:
+            self.log(f"Error creating reminder: {e}")
+            await self.send_response(message, self.loc.t("error_generic"))
+
+    async def handle_reminder_list(self, message, payload=None) -> None:
+        """Handle listing active reminders."""
+        try:
+            guild_id = self.get_guild_id(message)
+            reminders_text = self.reminders.format_reminders_list(guild_id, show_completed=True)
+            if reminders_text:
+                await self.send_response(message, f"🔔 **Påminnelser:**\n{reminders_text}")
+            else:
+                await self.send_response(message, "📭 Ingen aktive påminnelser.")
+        except Exception as e:
+            self.log(f"Error listing reminders: {e}")
+            await self.send_response(message, self.loc.t("error_generic"))
+
+    async def handle_reminder_complete(self, message, payload=None) -> None:
+        """Handle completing a reminder by active-list index."""
+        try:
+            guild_id = self.get_guild_id(message)
+            data = (payload or {}).get("reminder")
+            if not data:
+                parsed = parse_reminder_command(message.content)
+                data = parsed if parsed and parsed.get("action") == "complete" else {}
+            index = data.get("number") if isinstance(data, dict) else None
+            if index is None:
+                cleaned = re.sub(r"<@!?\d+>", "", message.content)
+                cleaned = cleaned.replace("@inebotten", "").strip().lower()
+                match = re.fullmatch(
+                    r"(?:ferdig|fullført|fullfør|done|complete|gjort)\s+(\d+)",
+                    cleaned,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    index = int(match.group(1))
+
+            if index is None:
+                reminders_text = self.reminders.format_reminders_list(guild_id)
+                if reminders_text:
+                    await self.send_response(
+                        message,
+                        f"📝 Hvilken påminnelse er ferdig?\n\n{reminders_text}\n\n"
+                        "Bruk `@inebotten ferdig påminnelse [nummer]`.",
+                    )
+                else:
+                    await self.send_response(message, "📭 Ingen aktive påminnelser.")
+                return
+
+            success, text, next_date = self.reminders.complete_reminder(guild_id, reminder_num=index)
+            if not success:
+                await self.send_response(
+                    message,
+                    f"❌ Fant ikke påminnelse nummer {index}. Bruk `@inebotten påminnelser` for listen.",
+                )
+                return
+
+            if next_date:
+                await self.send_response(
+                    message,
+                    f"✅ **Fullført! {text}**\n📅 Neste gang: {next_date}",
+                )
+            else:
+                await self.send_response(message, f"✅ **Fullført! {text}**")
+        except Exception as e:
+            self.log(f"Error completing reminder: {e}")
             await self.send_response(message, self.loc.t("error_generic"))
 
     async def handle_reminder_edit(self, message, payload=None) -> None:
