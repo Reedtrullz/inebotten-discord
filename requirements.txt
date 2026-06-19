@@ -10,7 +10,7 @@ idna>=3.15
 urllib3>=2.7.0
 
 # Date/time utilities
-python-dateutil>=2.8.0
+python-dateutil>=2.9.0.post0
 
 # Safe expression evaluation
 simpleeval>=0.9.0
