@@ -1,7 +1,7 @@
 # Development dependencies
 
 # Linting
-flake8>=6.0.0
+flake8>=7.3.0
 pylint>=2.17.0
 
 # Testing
