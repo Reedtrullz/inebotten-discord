@@ -32,6 +32,6 @@ google-api-python-client>=2.195.0
 
 # Browser and Scraping
 browserbase>=1.8.0
-tavily-python>=0.3.0
+tavily-python>=0.7.26
 googlesearch-python>=1.2.0
 duckduckgo-search>=6.0.0
