@@ -1198,17 +1198,24 @@ The staged list must be exactly the seven declared files.
 **Interfaces:**
 
 - Consumes: NormalizedUtterance, UtteranceSemantics, and pure IntentCandidate collectors.
-- Produces: one IntentResult, CLARIFY, or AI_CHAT.
+- Produces: one IntentResult, CLARIFY, or AI_CHAT; the complete canonical `CALENDAR_EDIT` envelope; and the stable pure fixed-clock `parse_reminder_command(message_content, *, now=None, temporal_resolver=None)` create/edit/target vocabulary consumed unchanged by Tasks 6–7.
 - Compatibility: the current early-return source sequence is encoded by the explicit tier/order table below; confidence values, payload shapes, reason strings, and the two-position route call remain stable where behavior is not intentionally changed.
 
-**Files:**
+**Files (the complete implementation and staging scope is exactly eleven files):**
 
 - Create: core/intent_arbitration.py
 - Create: tests/test_intent_arbitration.py
 - Modify: core/intent_router.py:104-243,245-729
+- Modify: cal_system/reminder_manager.py
+- Modify: features/watchlist_manager.py
+- Modify: tests/nlu_harness.py
 - Modify: tests/test_intent_router.py
+- Modify: tests/test_reminder_crud.py
 - Modify: tests/test_false_positives.py
 - Modify: tests/fixtures/nlu_contract_v1.jsonl
+- Modify: tests/test_nlu_contract.py
+
+`tests/test_watchlist_scope.py` already contains the scoped direct watchlist parser cases and is a focused gate only. Task 5 runs it but does not modify or stage it; new route-level watchlist assertions belong in `tests/test_intent_router.py`.
 
 Encode the current early-return order with explicit lower-is-earlier tiers:
 
@@ -1225,7 +1232,7 @@ Encode the current early-return order with explicit lower-is-earlier tiers:
 | 80 | contextual web search, dashboard, location |
 | 90 | AI chat fallback |
 
-Specificity is independent of tier: 0 for implicit parser shape, 1 for domain evidence, 2 for action plus domain, 3 for action plus domain plus target/value, and 4 for exact operational/pending forms. `order` is the monotonically increasing position of the branch in the current `IntentRouter.route()` source sequence within its tier. Only tier 35 intentionally permits cross-domain ambiguity at equal specificity and confidence distance; every other tie preserves the current source order. `intent.value` is only the final deterministic tie-breaker for candidates emitted at the same source position.
+Specificity is independent of tier: 0 for implicit parser shape, 1 for domain evidence, 2 for action plus domain, 3 for action plus domain plus target/value, and 4 for exact operational/context forms. `order` is the monotonically increasing position of the branch in the current `IntentRouter.route()` source sequence within its tier. Only tier 35 intentionally permits cross-domain ambiguity at equal specificity and confidence distance; every other tie preserves the current source order. `intent.value` is only the final deterministic tie-breaker for candidates emitted at the same source position.
 
 Use the following complete branch policy. `2/3` means 3 only when the typed payload contains the required target/value and 2 otherwise; `0/3` means 3 only when the natural parser proves an action, domain, and target/value, otherwise 0. A collector must use the listed reason string rather than silently sharing a different rule.
 
@@ -1296,7 +1303,7 @@ Use the following complete branch policy. `2/3` means 3 only when the typed payl
 | location_pattern | 80 | 380 | 3 |
 | fallback | 90 | 390 | 0 |
 
-`reminder_create_parser` becomes `reminder_create_natural` once it has explicit reminder-domain evidence; `reminder_complete_parser` becomes `reminder_complete_keyword` after payload normalization. Calendar NLP emits `calendar_nlp_high` only when its existing confidence is at least 0.94. `poll_parser` uses 3 only with an explicit poll trigger plus parsed question/options and 0 for the legacy slash-only parser shape, allowing an explicit URL-shortening candidate to win. `watchlist_parser` uses specificity 3 for add/edit/remove with a typed title/index and 1 for status/suggestion. `quote_parser` uses 3 for save and 1 for get. The arbiter checks equal `(specificity, tier)` ambiguity before applying `order`; it never compares candidates from different tiers as ambiguous.
+`reminder_create_parser` becomes `reminder_create_natural` once it has explicit reminder-domain evidence; `reminder_complete_parser` becomes `reminder_complete_keyword` after payload normalization. Calendar NLP emits `calendar_nlp_high` only when its existing confidence is at least 0.94. `poll_parser` uses 3 only with an explicit poll trigger plus parsed question/options and 0 for the legacy slash-only parser shape, allowing an explicit URL-shortening candidate to win. `watchlist_parser` uses specificity 3 for add/edit/remove with a typed title/index and 1 for status/suggestion. `quote_parser` uses 3 for save and 1 for get. The arbiter checks ambiguity before applying `order` only when both leading candidates are tier 35 with equal specificity and confidence distance at most 0.05; every other same-tier tie preserves `order`. It never compares candidates from different tiers as ambiguous.
 
 - [ ] **Step 1: Write pure arbitration tests**
 
@@ -1358,6 +1365,27 @@ def test_explicit_domain_action_beats_generic_parser():
         candidates,
     )
     assert decision.selected.intent is BotIntent.SHORTEN_URL
+
+
+def test_equal_non_ambiguity_tier_preserves_source_order():
+    utterance = normalize_utterance("status hjelp")
+    candidates = [
+        IntentCandidate(
+            BotIntent.HELP, 0.95, 10, order=30,
+            reason="help_keyword", risk=IntentRisk.READ_ONLY,
+            domain_terms=("hjelp",), specificity=4,
+        ),
+        IntentCandidate(
+            BotIntent.STATUS, 0.93, 10, order=20,
+            reason="status_keyword", risk=IntentRisk.READ_ONLY,
+            domain_terms=("status",), specificity=4,
+        ),
+    ]
+    decision = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), candidates
+    )
+    assert decision.selected.intent is BotIntent.STATUS
+    assert decision.alternatives == ()
 ~~~
 
 Run:
@@ -1378,11 +1406,11 @@ arbitrate_candidates() must:
 - allow polite question-form directives such as “kan du slette kalenderen?”;
 - preserve “ikke glem” positive reminder/calendar idioms;
 - sort candidates ascending by (-specificity, priority, order, -confidence, intent.value), where larger specificity wins, smaller priority wins, smaller source order preserves the current branch sequence, and larger confidence wins;
-- return CLARIFY when the two leading candidates have different intents/domains, identical specificity and priority tiers, and an absolute confidence difference at most 0.05; collectors intentionally assign the same tier only to equally explicit competing domain interpretations;
+- return CLARIFY only when the two leading candidates have different intents/domains, identical specificity, priority exactly tier 35, and an absolute confidence difference at most 0.05; every other tie preserves source `order`;
 - return AI_CHAT when no candidate remains;
 - set requires_confirmation for every destructive result;
 - set requires_confirmation for semantic additive/mutating results;
-- isolate collector exceptions as RejectionCode.PARSER_ERROR and expose an aggregate parser-error counter without raw text or exception strings.
+- isolate each collector exception as exactly one allowlisted parser-error entry, one `RejectionCode.PARSER_ERROR` rejection count backed by an empty-payload constant-reason diagnostic candidate that never enters arbitration, and one bounded parser-error metric increment; expose no raw text, exception type, or exception string.
 
 - [ ] **Step 3a: Add collector scaffolding and compatible route wrappers**
 
@@ -1395,7 +1423,16 @@ class CollectorContext:
     semantics: UtteranceSemantics
     routing: RoutingContext | None
     guild_id: int | None
+    channel_id: int | None
+    user_id: int | None
     reference_time: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CollectorOutput:
+    candidates: tuple[IntentCandidate, ...] = ()
+    parser_errors: tuple[str, ...] = ()
+    rejections: tuple[CandidateRejection, ...] = ()
 
 
 COLLECTOR_ORDER = (
@@ -1407,13 +1444,15 @@ COLLECTOR_ORDER = (
 )
 ~~~
 
-Each named method has signature (self, context: CollectorContext) -> list[IntentCandidate] and is added with its real branches in Steps 3b–3d; do not add empty stubs. Keep `route(content, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None)` as a compatibility wrapper. Add `route_utterance(..., reference_time=None)` and `evaluate_utterance(..., reference_time=None) -> RoutedIntent`. At the public entry, use the supplied aware `reference_time` or capture exactly one value from the router's injected clock, validate it, and put it on `CollectorContext`; every temporal parser and active-state read consumes that exact value. When `routing_context` exists, derive identity from its key and reject mismatched scalar ids as `invalid_context`. Add wrapper-only and Oslo-midnight boundary tests before moving any branch.
+Each named method has signature `(self, context: CollectorContext) -> CollectorOutput` and is added with its real branches in Steps 3b–3d; do not add empty stubs. Keep `route(content, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None)` as a compatibility wrapper. Add `route_utterance(..., reference_time=None)` and `evaluate_utterance(..., reference_time=None) -> RoutedIntent`. At the public entry, use the supplied aware `reference_time` or capture exactly one value from the router's injected clock, validate it, and put it on `CollectorContext`; every temporal parser and active-state read consumes that exact value. When `routing_context` exists, derive and validate `guild_id`, `channel_id`, and `user_id` from its key, rejecting any mismatched supplied scalar as `invalid_context`; without one, preserve all three supplied scalars unchanged on the context. Add wrapper-only, identity-preservation, and Oslo-midnight boundary tests before moving any branch. No identity value is copied to result payloads or diagnostics.
+
+All collectors share one `_safe_parse` boundary. A caught exception appends the finite parser name once, appends one `CandidateRejection` with code `PARSER_ERROR` whose synthetic candidate has empty payload and constant reason `parser_error_diagnostic`, and increments the allowlisted parser metric once. The synthetic candidate is diagnostics-only and never reaches arbitration; the aggregate evaluation loop records its rejection exactly once. Production parsers are each called at most once per route, and route diagnostics preserve one entry per exception without shared mutable probe state or raw exception data.
 
 Task 5 resolver selection is explicit injection, else `monitor.nlp_parser.temporal_resolver`, else an offline/test default. This routing lane does not claim monitor-wide clock/resolver identity. Collectors pass the one captured reference explicitly, so parser providers are not reread. Keep legacy event `days_offset` through Task 5 and let typed dispatch convert/remove it later. Add resolver compatibility smoke cases for raw `HH:MM`, `noon`, and all Task 4 alias families without changing the priority/order table, risk policy, payload envelopes, or fixture schema.
 
 - [ ] **Step 3b: Migrate control, memory, calendar, and reminder branches**
 
-Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday branches into the first two collectors without changing reason strings or outer payloads. Feed control_text to evidence checks and text to payload parsers. Preserve the calendar confidence >=0.94 early tier and lower-confidence late tier. Run:
+Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday branches into the first two collectors without changing reason strings or outer payloads. Feed `control_text` to evidence checks and `text` to payload parsers. Preserve the calendar confidence >=0.94 early tier and lower-confidence late tier. Task 5 owns the complete canonical `CALENDAR_EDIT` target/change envelope and the pure `parse_reminder_command` create/edit/target vocabulary, including fixed-clock canonical timing. Reminder title cleanup must call Task 4's `TemporalResolver.strip_temporal_evidence(text, reference=now)` and must not introduce a second temporal regex grammar. Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
@@ -1425,7 +1464,7 @@ Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday br
 
 - [ ] **Step 3c: Migrate poll, watchlist, quote, and countdown branches**
 
-Move poll list/create/vote/edit/delete/close, countdown, watchlist, word-of-day, and quote branches. Keep collectors pure and isolate each parser exception as RejectionCode.PARSER_ERROR. Run:
+Move poll list/create/vote/edit/delete/close, countdown, watchlist, word-of-day, and quote branches. As a routing prerequisite, complete `features.watchlist_manager.parse_watchlist_command()` here before collecting watchlist candidates; preserve case, emit the complete typed fields, and keep generic actions inert. `tests/test_watchlist_scope.py` supplies the existing direct parser gate without entering Task 5's staged scope. Keep collectors pure and isolate each parser exception through the exact bounded diagnostic contract above. Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
@@ -1449,20 +1488,20 @@ Move aurora/school-holidays/price/horoscope/compliment/calculator/URL/digest/sea
 
 - [ ] **Step 3e: Arbitrate once and delete the old cascade**
 
-evaluate_utterance() invokes the five collectors, combines candidates and bounded diagnostics, arbitrates once, and returns RoutedIntent. route_utterance() returns only .result. Delete the old early-return cascade only after every family suite above is green. Include rejection enum counts in diagnostics, never user copy or exception text. Do not consult pending actions until Task 9.
+evaluate_utterance() invokes the five collectors, combines candidates and bounded diagnostics, arbitrates once, and returns RoutedIntent. route_utterance() returns only .result. Delete the old early-return cascade only after every family suite above is green. Include rejection enum counts in diagnostics, never user copy or exception text. This task ends at `RoutedIntent`; downstream orchestration begins in its owning later tasks.
 
 - [ ] **Step 4: Add bounded natural collector evidence**
 
 Before pinning the regressions, update collectors to emit:
 
-- CALENDAR_EDIT for polite edit/change verbs plus calendar-item evidence, using TemporalResolver for the change fields;
-- REMINDER_CREATE for “påminn/minn meg” request frames, with the reminder text retained even before Task 7 adds full timing semantics;
+- CALENDAR_EDIT for polite edit/change verbs plus calendar-item evidence, using TemporalResolver for the complete canonical target/change payload;
+- REMINDER_CREATE for “påminn/minn meg” request frames, with complete canonical title/timing output from the routing-owned fixed-clock parser;
 - HELP for “kva/ka/what can you do” capability questions;
 - SHORTEN_URL with high specificity when an explicit shorten verb and a valid URL are both present;
 - SEARCH for information questions such as train departure times, while rejecting the competing calendar mutation candidate.
 - AI_CHAT for the context-free conversational “hva skjer?” instead of the generic dashboard keyword.
 
-These are narrow collector additions backed by the exact tests below; broader reminder timing and help/feature registry parity remain in Tasks 7 and 12.
+These are narrow collector additions backed by the exact tests below. Tasks 6–7 validate, dispatch, and persist the Task 5 calendar/reminder objects but do not add recognizers or change their parser vocabulary; help/feature registry parity remains in Task 12.
 
 - [ ] **Step 5: Pin known regressions at router level**
 
@@ -1488,7 +1527,7 @@ def test_natural_language_routing_regressions(text, expected):
     assert self.route(text).intent is expected
 ~~~
 
-At this task boundary, assert the corrected intent and that no handler was invoked; Task 6 pins the complete CALENDAR_EDIT target/change payload, and Task 7 pins the REMINDER_CREATE title and canonical due time.
+At this task boundary, assert the corrected intent, the complete `CALENDAR_EDIT` target/change payload, the complete `REMINDER_CREATE` title/canonical due-time payload under the fixed Task 4 clock, and that no handler was invoked. Tasks 6–7 consume these objects unchanged for validation, dispatch, persistence, and runtime behavior.
 
 - [ ] **Step 6: Extend and run the NLU contract**
 
@@ -1518,14 +1557,31 @@ Run:
 
 Expected: PASS and zero negative mutation false positives.
 
-- [ ] **Step 7: Commit**
+After appending the 16 Task 5 rows, update `tests/test_nlu_contract.py` to assert exactly 27 rows, first id `nb-reminder-husk-mandag`, last id `en-negated-reminder-delete`, and exactly 25 critical rows.
+
+- [ ] **Step 7: Run the full local non-browser suite**
+
+Run `df -h /System/Volumes/Data` and stop below 30 GiB. Otherwise run:
+
+~~~bash
+.venv312/bin/python -m pytest -q --ignore=tests/test_console_frontend.py
+~~~
+
+Expected: the full non-browser suite passes. Browser proof remains in its owning release-gates lane.
+
+- [ ] **Step 8: Commit**
 
 ~~~bash
 git add core/intent_arbitration.py core/intent_router.py \
+  cal_system/reminder_manager.py features/watchlist_manager.py \
+  tests/nlu_harness.py \
   tests/test_intent_arbitration.py tests/test_intent_router.py \
-  tests/test_false_positives.py tests/fixtures/nlu_contract_v1.jsonl
+  tests/test_reminder_crud.py tests/test_false_positives.py \
+  tests/fixtures/nlu_contract_v1.jsonl tests/test_nlu_contract.py
 git commit -m "feat: arbitrate natural-language intent candidates"
 ~~~
+
+The staged list must be exactly the eleven declared Task 5 files. `tests/test_watchlist_scope.py` remains gate-only and unstaged.
 
 ---
 
@@ -1550,7 +1606,7 @@ git commit -m "feat: arbitrate natural-language intent candidates"
 - Modify: features/reminder_handler.py:123-285
 - Modify: features/polls_handler.py
 - Modify: features/watchlist_handler.py
-- Modify: features/watchlist_manager.py:409-530
+- Modify: features/watchlist_manager.py — transactional result/persistence compatibility only; Task 5 owns parser vocabulary
 - Modify: features/quote_handler.py
 - Modify: features/quote_manager.py:210-285
 - Modify: features/fun_handler.py
@@ -1870,14 +1926,14 @@ Pin target rules in tests: CalendarTargetPayload requires exactly one identifier
 
 `core/dispatch_result.py` uses the exact shared contract in the typed-dispatch sub-plan; do not recreate a smaller master-plan dataclass. It defines `DeliveryState(DELIVERED|NOT_DELIVERED|UNKNOWN)`, the finite `SEND_ERROR_CODES`, immutable `MessageSendResult`, `MessageSendCancelled(result)`, and `DispatchOutcome(ok, mutated, response_sent, retryable, error_code, commit_unknown, delivery_result)`. `DispatchOutcome.success()` starts with `response_sent=False`; every typed handler builds mutation/error truth first and finalizes exactly once with `base.with_delivery(send_result)`. That method alone derives `response_sent`, retains definite failure versus uncertainty, and makes `UNKNOWN` non-retryable. `DispatchCancelled` carries the fully finalized outcome when cancellation arrives after an owned send or mutation. Add construction/invariant tests from the typed sub-plan before any handler migration; no code may infer delivery from truthiness, `None`, or a global send count.
 
-- [ ] **Step 5: Populate complete routed payloads**
+- [ ] **Step 5: Validate and preserve complete routed payloads**
 
-Update collectors so:
+Task 5 already owns the `CALENDAR_EDIT`, reminder, and watchlist recognizers and their complete canonical parser outputs. This task validates and preserves those objects, wraps remaining legacy family payloads, and must not add natural-language recognizers or change `parse_reminder_command()` / `parse_watchlist_command()` vocabulary. Ensure:
 
-- calendar edit carries target plus normalized changes;
+- calendar edit retains Task 5's target plus normalized changes unchanged after validation;
 - calendar delete/complete/clear carries a target/number or an explicit all flag;
-- reminder create carries parsed text and temporal fields;
-- reminder edit/delete/complete carries number or id;
+- reminder create retains Task 5's parsed text and canonical temporal fields;
+- reminder edit/delete/complete retain Task 5's canonical action/number/id/query fields;
 - poll edit/delete/close/vote carries a positional target or stable poll ID, and vote carries its option inside the typed object;
 - birthday create/edit carries resolved Discord identity plus canonical date;
 - watchlist and quote operations carry their parser result.
@@ -1912,7 +1968,7 @@ Change reminder create/edit/delete/complete to accept ReminderCreate/ReminderEdi
 
 - [ ] **Step 6c: Migrate poll, watchlist, quote, and birthday handlers**
 
-Migrate poll edit/delete/close/vote, watchlist add/edit/remove, quote save/edit/delete, and birthday create/list/edit to their exact payload types. Birthday typed writes consume all five fields of `BirthdayWriteResult(success, mutated, sync_pending, error_code, commit_unknown)` from transactional user-ID manager APIs; retain the legacy bool-returning create and dict-returning name-edit wrappers. Extend parse_watchlist_command() to emit add title and edit index/title/type/genre/comment. Extend parse_quote_command() so `rediger|endre|edit sitat|quote <index> tekst|text: ... forfatter|author: ...` emits `{"action":"edit","index":<positive int>,"text":<optional nonblank>,"author":<optional nonblank>,"lang":...}` and delete syntax emits `{"action":"delete","index":<positive int>,"lang":...}`. Reject an edit lacking both text and author before routing. The collector must put this complete object under `payload["quote"]`; it must not discard fields when converting to QUOTE_EDIT/QUOTE_DELETE. BotIntent.QUOTE save runs through FunHandler.handle_quote_command(), so migrate that method to DispatchOutcome as well as QuoteHandler edit/delete. Run the poll/watchlist/quote/birthday focused suites, including the sentinel-content test from Step 1.
+Migrate poll edit/delete/close/vote, watchlist add/edit/remove, quote save/edit/delete, and birthday create/list/edit to their exact payload types. Birthday typed writes consume all five fields of `BirthdayWriteResult(success, mutated, sync_pending, error_code, commit_unknown)` from transactional user-ID manager APIs; retain the legacy bool-returning create and dict-returning name-edit wrappers. Verify the routing prerequisite's `parse_watchlist_command()` already emits add title and edit index/title/type/genre/comment; do not rewrite it or add recognition here. Later transactional work may still modify `features/watchlist_manager.py` for result/persistence semantics. Extend parse_quote_command() so `rediger|endre|edit sitat|quote <index> tekst|text: ... forfatter|author: ...` emits `{"action":"edit","index":<positive int>,"text":<optional nonblank>,"author":<optional nonblank>,"lang":...}` and delete syntax emits `{"action":"delete","index":<positive int>,"lang":...}`. Reject an edit lacking both text and author before routing. The collector must put this complete object under `payload["quote"]`; it must not discard fields when converting to QUOTE_EDIT/QUOTE_DELETE. BotIntent.QUOTE save runs through FunHandler.handle_quote_command(), so migrate that method to DispatchOutcome as well as QuoteHandler edit/delete. Run the poll/watchlist/quote/birthday focused suites, including the sentinel-content test from Step 1.
 
 - [ ] **Step 6d: Add the one-release raw compatibility branch**
 

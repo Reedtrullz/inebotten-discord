@@ -2362,23 +2362,27 @@ Expected: focused tests and the full suite pass; the commit contains exactly the
 
 ### Task 5: Replace first-match routing with risk-aware candidate arbitration
 
-**Files:**
+**Files (the complete implementation and staging scope is exactly eleven files):**
 
 - Create: `core/intent_arbitration.py`
 - Create: `tests/test_intent_arbitration.py`
 - Modify: `core/intent_router.py:101-729`
 - Modify: `cal_system/reminder_manager.py` — pure reminder parser vocabulary and injected-time contract only
+- Modify: `features/watchlist_manager.py` — complete pure watchlist parser prerequisite only
 - Modify: `tests/nlu_harness.py`
 - Modify: `tests/test_intent_router.py`
 - Modify: `tests/test_reminder_crud.py`
 - Modify: `tests/test_false_positives.py`
 - Modify: `tests/fixtures/nlu_contract_v1.jsonl`
+- Modify: `tests/test_nlu_contract.py`
+
+`tests/test_watchlist_scope.py` already contains the scoped direct watchlist parser cases and is a focused gate only. Task 5 runs it but does not modify or stage it; new route-level watchlist assertions belong in `tests/test_intent_router.py`.
 
 **Interfaces:**
 
 - Consumes `NormalizedUtterance`, `UtteranceSemantics`, `IntentCandidate`, `RoutingContext`, `TemporalResolver`, and the Task 2 policy/metrics sink.
 - Produces `arbitrate_candidates(utterance, semantics, candidates)`, `IntentRouter.evaluate_utterance(utterance, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None) -> RoutedIntent`, the identically parameterized `route_utterance` wrapper returning `IntentResult` defined in Step 10, and the stable pure parser signature `parse_reminder_command(message_content, *, now=None, temporal_resolver=None)` consumed unchanged by the typed runtime lane.
-- Keeps `route(content, guild_id=None)` compatible. No handler is invoked and no pending action is consulted in this plan.
+- Keeps `route(content, guild_id=None)` compatible. No handler or downstream orchestration component is invoked in this plan.
 
 - [ ] **Step 1: Write pure arbitration red tests (2–5 minutes)**
 
@@ -2486,6 +2490,28 @@ def test_equal_explicit_cross_domain_candidates_clarify():
     assert tuple(item.intent for item in decision.alternatives) == (
         BotIntent.REMINDER_CREATE, BotIntent.CALENDAR_ITEM,
     )
+
+
+def test_equal_non_ambiguity_tier_preserves_source_order():
+    utterance = normalize_utterance("status hjelp")
+    candidates = [
+        candidate(
+            BotIntent.HELP, IntentRisk.READ_ONLY, priority=10, order=30,
+            confidence=0.95, specificity=4, action_terms=(),
+            domain_terms=("hjelp",),
+        ),
+        candidate(
+            BotIntent.STATUS, IntentRisk.READ_ONLY, priority=10, order=20,
+            confidence=0.93, specificity=4, action_terms=(),
+            domain_terms=("status",),
+        ),
+    ]
+    decision = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), candidates
+    )
+    assert decision.selected is not None
+    assert decision.selected.intent is BotIntent.STATUS
+    assert decision.alternatives == ()
 
 
 def test_confirmation_policy_is_applied_after_selection():
@@ -2618,7 +2644,7 @@ def _is_conflict(first: IntentCandidate, second: IntentCandidate) -> bool:
     return (
         first.intent is not second.intent
         and first.specificity == second.specificity
-        and first.priority == second.priority
+        and first.priority == second.priority == 35
         and abs(first.confidence - second.confidence) <= 0.05
         and frozenset(first.domain_terms) != frozenset(second.domain_terms)
     )
@@ -2699,6 +2725,8 @@ class CollectorContext:
     semantics: UtteranceSemantics
     routing: RoutingContext | None
     guild_id: int | None
+    channel_id: int | None
+    user_id: int | None
     reference_time: datetime
 
 
@@ -2747,11 +2775,27 @@ Task 5 accepts an explicitly injected resolver, otherwise borrows `monitor.nlp_p
 Add helpers; every parser exception is caught here and never copied:
 
 ```python
-def _safe_parse(self, errors, parser_name, metric_family, fn, *args, **kwargs):
+def _safe_parse(
+    self, errors, rejections, parser_name, metric_family, fn, *args, **kwargs
+):
     try:
         return fn(*args, **kwargs)
     except Exception:
         errors.append(parser_name)
+        rejections.append(CandidateRejection(
+            IntentCandidate(
+                BotIntent.AI_CHAT,
+                0.0,
+                90,
+                order=389,
+                payload={},
+                reason="parser_error_diagnostic",
+                source=IntentSource.DETERMINISTIC,
+                risk=IntentRisk.READ_ONLY,
+                specificity=0,
+            ),
+            RejectionCode.PARSER_ERROR,
+        ))
         self.metrics.record_parser_error(metric_family, "exception")
         return None
 
@@ -2768,13 +2812,15 @@ def _candidate_from_result(
     )
 ```
 
+The synthetic candidate above is diagnostic-only: append it only to `CollectorOutput.rejections`, never to the arbitration candidate list. Each caught exception must produce exactly one allowlisted `parser_errors` entry, exactly one `PARSER_ERROR` rejection, and exactly one bounded `record_parser_error(..., "exception")` increment. `_safe_parse()` does not call `record_rejection()`; the single aggregate loop in `evaluate_utterance()` records that rejection once. Call each production parser at most once per route and preserve `tuple(parser_errors)` without deduplicating it. Parser names and metric families are finite values; raw exception type, message, arguments, and user text never enter the candidate, diagnostics, metrics, result, or logs.
+
 The only allowed `parser_name` values in route diagnostics are the Task 1 `ParserName` literals. Map them to metric families: both natural-language parser calls -> `calendar`; reminder -> `reminder`; poll/vote -> `poll`; watchlist -> `watchlist`; quote -> `quote`; birthday -> `birthday`; profile -> `profile`; countdown -> `countdown`; and each utility to its same short family (`price`, `horoscope`, `compliment`, `calculator`, `shorten`, `search`). Every later feature collector must call its parser through this same `_safe_parse` boundary; direct parser calls in collectors are forbidden.
 
 Every additive, mutating, or destructive conversion through `_candidate_from_result()` must pass the finite action/domain terms it actually matched in `utterance.control_text`; a parser result alone is never evidence. Add `_present_terms(control_text, finite_terms)` and use it for generic calendar NLP (`møte`, `avtale`, `arrangement`, `meeting`, `event` plus any live create verb), reminder NLP, poll/watchlist/quote/birthday/profile, and location (`bor`, `bosted`, `sted`, `location`, `flytt`, `sett`). `_unsafe_code()` requires at least one such live unmasked term for every write, checks negation against the complete live evidence tuple, and then applies the stricter destructive action-plus-domain rule. Thus an otherwise parseable write found only in inline/fenced code, a quote, or `jeg vil ikke møte i morgen kl 14` is hard-blocked even when its parser emitted empty action terms. Keep `ikke glem`/`ikkje gløym` as the existing narrow positive idiom.
 
 - [ ] **Step 6: Freeze the complete collector tier/order/specificity contract (2–5 minutes)**
 
-Lower tier is earlier. Specificity is independent: `0` implicit parser shape, `1` domain evidence, `2` action plus domain, `3` action plus domain plus target/value, `4` exact operational/context form. `order` is the old `route()` branch position inside its tier. `2/3`, `0/3`, and `1/3` use the larger value only when a nonblank typed target/value is present. The implementation must use these exact reason strings and numbers:
+Lower tier is earlier. Specificity is independent: `0` implicit parser shape, `1` domain evidence, `2` action plus domain, `3` action plus domain plus target/value, `4` exact operational/context form. `order` is the old `route()` branch position inside its tier. `2/3`, `0/3`, and `1/3` use the larger value only when a nonblank typed target/value is present. Only two leading candidates whose priority is exactly tier `35` can produce `CLARIFY`; equal candidates in every other tier preserve source `order`, even when their specificity, domain difference, and confidence distance would otherwise satisfy the ambiguity predicate. The implementation must use these exact reason strings and numbers:
 
 | Reason | Tier | Order | Specificity |
 |---|---:|---:|---:|
@@ -2860,7 +2906,7 @@ The two `*_title_match` candidates are not trusted bypasses. They carry the exac
 
 - [ ] **Step 7: Add compatibility wrapper tests before moving branches (2–5 minutes)**
 
-In `tests/test_intent_router.py`, assert `route("hjelp", 123)` equals `route_utterance(normalize_utterance("hjelp"), guild_id=123)`, and a supplied `RoutingContext` whose `key.guild_id` differs from scalar `guild_id` returns `AI_CHAT`, reason `invalid_context`, and diagnostics count `{RejectionCode.INVALID_CONTEXT: 1}`. Assert the result/payload contains no scalar identity.
+In `tests/test_intent_router.py`, assert `route("hjelp", 123)` equals `route_utterance(normalize_utterance("hjelp"), guild_id=123)`, and a supplied `RoutingContext` whose `key.guild_id` differs from scalar `guild_id` returns `AI_CHAT`, reason `invalid_context`, and diagnostics count `{RejectionCode.INVALID_CONTEXT: 1}`. Pin the same mismatch behavior for `channel_id` and `user_id`. When no `RoutingContext` exists, use a collector spy to prove all three supplied scalar IDs survive unchanged on `CollectorContext`; when one exists, prove all three values are derived from its key after validation. Assert the result/payload and diagnostics contain no scalar identity.
 
 - [ ] **Step 8: Implement route wrappers and one arbitration point (2–5 minutes)**
 
@@ -2924,6 +2970,8 @@ def evaluate_utterance(
         semantics=semantics,
         routing=routing_context,
         guild_id=guild_id,
+        channel_id=channel_id,
+        user_id=user_id,
         reference_time=captured,
     )
     candidates = []
@@ -2951,13 +2999,13 @@ def evaluate_utterance(
     return RoutedIntent(
         result,
         RouteDiagnostics(
-            parser_errors=tuple(dict.fromkeys(parser_errors)),
+            parser_errors=tuple(parser_errors),
             rejection_counts=dict(sorted(counts.items(), key=lambda item: item[0].value)),
         ),
     )
 ```
 
-`IntentRouter` records parser and rejection diagnostics only. It must not call `record_decision()`: an `AI_CHAT` fallback is an intermediate result that can still become a semantic model action. The model-actions lane makes `MessageMonitor.handle_message()` the sole final-turn decision recorder after the complete deterministic/model/pending flow resolves, preventing a false deterministic `AI_CHAT/routed` increment before a semantic route.
+`IntentRouter` records parser and rejection diagnostics only. It must not call `record_decision()`: an `AI_CHAT` fallback is an intermediate result that can still become a semantic model action. The model-actions lane makes `MessageMonitor.handle_message()` the sole final-turn decision recorder after the complete downstream routing flow resolves, preventing a false deterministic `AI_CHAT/routed` increment before a semantic route.
 
 Run: `.venv312/bin/python -m pytest tests/test_intent_router.py -q`
 
@@ -2992,7 +3040,7 @@ Expected: control/memory tests pass.
 
 - [ ] **Step 10a: Isolate temporal parser diagnostics (2–5 minutes)**
 
-Use `_safe_parse` for the two `NaturalLanguageParser` result calls. If a result has errors, create a non-executable diagnostic candidate `IntentCandidate(BotIntent.CALENDAR_ITEM, 0.0, 40, order=130, reason="calendar_temporal_invalid", risk=IntentRisk.ADDITIVE)` and add `CandidateRejection(diagnostic_candidate, RejectionCode.INVALID_TEMPORAL)`; call `metrics.record_parser_error("calendar", "invalid_temporal")`; emit no calendar candidate and no raw error payload. Rename high explicit reminder add reason to `reminder_create_natural` and its parsed `complete` reason to `reminder_complete_keyword`. Calendar NLP at confidence `>= 0.94` uses reason `calendar_nlp_high`, tier/order `40/130`; lower confidence uses `calendar_nlp`, `70/350`.
+Use `_safe_parse` with the collector's shared parser-error and rejection lists for the two `NaturalLanguageParser` result calls. If a successful parser result has semantic temporal errors, create a non-executable diagnostic candidate `IntentCandidate(BotIntent.CALENDAR_ITEM, 0.0, 40, order=130, reason="calendar_temporal_invalid", risk=IntentRisk.ADDITIVE)` and add `CandidateRejection(diagnostic_candidate, RejectionCode.INVALID_TEMPORAL)`; call `metrics.record_parser_error("calendar", "invalid_temporal")`; emit no calendar candidate and no raw error payload. An exception follows only the shared `PARSER_ERROR` path and must not also become `INVALID_TEMPORAL`. Rename high explicit reminder add reason to `reminder_create_natural` and its parsed `complete` reason to `reminder_complete_keyword`. Calendar NLP at confidence `>= 0.94` uses reason `calendar_nlp_high`, tier/order `40/130`; lower confidence uses `calendar_nlp`, `70/350`.
 
 - [ ] **Step 10b: Add the narrow natural calendar-edit candidate (2–5 minutes)**
 
@@ -3011,9 +3059,9 @@ Require a nonblank target and valid temporal evidence in the change phrase. Emit
 
 - [ ] **Step 10c: Add explicit reminder and calendar-create evidence (2–5 minutes)**
 
-This routing task owns the pure prerequisite expansion of `cal_system.reminder_manager.parse_reminder_command`; the later typed-runtime plan consumes it without changing its signature or vocabulary. Preserve compatibility calls with no keywords, but production routing always passes both `now=context.reference_time` and `temporal_resolver=self.temporal_resolver` through `_safe_parse`. The parser reads neither wall time nor a manager clock when either is supplied. It returns the complete typed `{"action":"add", "text":..., optional due_at/due_date/time/timezone/recurrence}` object; relative/yearless inputs resolve from `now`, date-only uses the documented 09:00 policy before year selection, and matched temporal text is removed from the title. Add fixed-clock parser tests for relative hours, `i morgen|i morgon|imårra`, weekdays, date-only before/after 09:00, and checklist-only input.
+This routing task owns the pure prerequisite expansion of `cal_system.reminder_manager.parse_reminder_command`; the later typed-runtime plan consumes it without changing its signature or vocabulary. Preserve compatibility calls with no keywords, but production routing always passes both `now=context.reference_time` and `temporal_resolver=self.temporal_resolver` through `_safe_parse` with the collector's shared parser-error and rejection lists. The parser reads neither wall time nor a manager clock when either is supplied. It returns the complete typed `{"action":"add", "text":..., optional due_at/due_date/time/timezone/recurrence}` object; relative/yearless inputs resolve from `now`, and date-only uses the documented 09:00 policy before year selection. Resolve one `resolver = temporal_resolver or TemporalResolver()` and clean the reminder title by calling Task 4's `resolver.strip_temporal_evidence(text, reference=now)` after bounded command-frame extraction. That shared finite evidence collector is the only temporal stripping grammar; the reminder parser must not add or maintain a second date/time regex vocabulary. Add fixed-clock parser tests for relative hours, `i morgen|i morgon|imårra`, weekdays, date-only before/after 09:00, title cleanup for every Task 4 temporal family, and checklist-only input.
 
-The same function, not a second edit parser, owns the bounded edit/target frames. `endre|rediger|edit` plus `påminnelse|påminning|reminder` and one positive visible number accepts one or more labeled `tekst|text:`, `dato|date:`, `tid|time|kl:`, and `gjentakelse|gjentaking|recurrence:` clauses, rejects duplicate/unknown/empty clauses, and returns exactly `{"action":"edit","number":N,"changes":{...canonical fields...}}`. Pin `endre påminnelse 1 tekst: Ring tannlegen` to `{"action":"edit","number":1,"changes":{"text":"Ring tannlegen"}}`. Complete/delete/list/search frames return their corresponding canonical Task-6 action discriminators and target/query fields. Add tests for every shape, parser exceptions through `_safe_parse("parse_reminder_command", "reminder", ...)`, and contradictory temporal clauses; no handler-private `_parse_edit_command` is part of production routing.
+The same function, not a second edit parser, owns the bounded edit/target frames. `endre|rediger|edit` plus `påminnelse|påminning|reminder` and one positive visible number accepts one or more labeled `tekst|text:`, `dato|date:`, `tid|time|kl:`, and `gjentakelse|gjentaking|recurrence:` clauses, rejects duplicate/unknown/empty clauses, and returns exactly `{"action":"edit","number":N,"changes":{...canonical fields...}}`. Pin `endre påminnelse 1 tekst: Ring tannlegen` to `{"action":"edit","number":1,"changes":{"text":"Ring tannlegen"}}`. Complete/delete/list/search frames return their corresponding canonical Task-6 action discriminators and target/query fields. Add tests for every shape, parser exceptions through the shared `_safe_parse` lists, and contradictory temporal clauses; no handler-private `_parse_edit_command` is part of production routing.
 
 Treat `påminn meg`, `minn meg`, Trøndelag-adjacent `minn mæ`, `husk å`, Nynorsk-adjacent `hugs å`, and `remind me` as explicit reminder-domain evidence. Reuse the production `parse_reminder_command` result; retain its whole dict under `payload["reminder"]`. Do not invent a result when the production parser returns `None`. The parser itself must return `None` for the finite media frames `husk å se <title>`, `hugs å sjå <title>`, and `remember to watch <title>` so the watchlist collector owns them; every other valid `husk/hugs` create such as `husk å kjøpe melk på mandag` is a reminder, not a generic calendar task. Use tier/order/spec `35/122/3`, confidence `0.96`, reason `reminder_create_natural`, action terms containing only the exact matched surface from `("påminn", "minn", "husk", "hugs", "remind")`, and domain terms containing the matched frame. Add focused route tests for `minn mæ om å ringe legen i morra`, `husk å kjøpe melk på mandag`, all three media exclusions, and a provider spy proving one route call reads the injected clock only once. Calendar natural create at tier 35 is emitted only when explicit `møte|avtale|arrangement|meeting|event` evidence and a validated title/date exist; otherwise it remains the high/low NLP row.
 
@@ -3061,7 +3109,7 @@ Never call `_route_watchlist_command()` from this collector because that helper 
 
 - [ ] **Step 11d: Add the bounded parser-exception regression (2–5 minutes)**
 
-Add a test monitor whose `parse_quote_command` raises `RuntimeError("SECRET_TOKEN")`; assert `diagnostics.parser_errors == ("parse_quote_command",)`, `metrics.snapshot()["parser_errors"] == {"parser=quote|code=exception": 1}`, and serialized result/diagnostics contain neither `SECRET_TOKEN` nor `RuntimeError`.
+Add a test monitor whose `parse_quote_command` raises `RuntimeError("SECRET_TOKEN")`; assert `diagnostics.parser_errors == ("parse_quote_command",)`, `diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}`, and `metrics.snapshot()["parser_errors"] == {"parser=quote|code=exception": 1}`. Inspect the collector output directly to prove it contains exactly one diagnostic-only `CandidateRejection` whose candidate has empty payload and constant reason `parser_error_diagnostic`, and that this candidate is absent from the arbitration input. Serialized result/diagnostics must contain neither `SECRET_TOKEN` nor `RuntimeError`.
 
 - [ ] **Step 11e: Run poll/watchlist/quote collector tests (2–5 minutes)**
 
@@ -3124,7 +3172,7 @@ Run:
 
 Expected: all listed suites pass.
 
-Add end-to-end negatives for inline code `` `møte i morgen kl 14` ``, fenced `slett kalenderen`, quoted `"sett bosted Oslo"`, and `jeg vil ikke møte i morgen kl 14`. Run them through both deterministic collection and `ActionBridge`; each returns the bounded unsafe fallback, stages nothing, and leaves calendar/memory spies untouched. Add equivalent unmasked positive rows to prove masking did not disable ordinary natural directives.
+Add end-to-end negatives for inline code `` `møte i morgen kl 14` ``, fenced `slett kalenderen`, quoted `"sett bosted Oslo"`, and `jeg vil ikke møte i morgen kl 14`. Run them only through deterministic `evaluate_utterance()` collection; each returns the bounded unsafe fallback and leaves calendar/memory mutation spies untouched. Add equivalent unmasked positive rows to prove masking did not disable ordinary natural directives. Downstream orchestration assertions begin in their owning later tasks and are not part of this gate.
 
 - [ ] **Step 13: Delete the old top-level cascade and prove collectors are read-only (2–5 minutes)**
 
@@ -3173,7 +3221,22 @@ For the calendar edit case also assert payload equals:
 }
 ```
 
-Use the fixed Task 4 clock for this assertion. For reminder create assert the production parser's nonblank title remains under `payload["reminder"]`; full canonical reminder timing belongs to the reminder-runtime plan. Assert destructive positive result has `risk is IntentRisk.DESTRUCTIVE` and `requires_confirmation is True`. Assert all five negative/hypothetical cases have empty payload and no handler spy calls.
+Use the fixed Task 4 clock for this assertion. With that same `NOW = 2026-07-14T12:00:00+02:00`, assert the reminder-create envelope is complete at this boundary:
+
+```python
+{
+    "reminder": {
+        "action": "add",
+        "text": "ringe legen",
+        "due_at": "2026-07-15T09:00:00+02:00",
+        "due_date": "15.07.2026",
+        "time": "09:00",
+        "timezone": "Europe/Oslo",
+    }
+}
+```
+
+Task 5 owns this canonical parser output, including timing, edit, and target shapes. Typed Tasks 6–7 validate, dispatch, and persist it without adding recognizers or changing the parser vocabulary. Assert the destructive positive result has `risk is IntentRisk.DESTRUCTIVE` and `requires_confirmation is True`. Assert all five negative/hypothetical cases have empty payload and no handler spy calls.
 
 - [ ] **Step 15: Add adjacent false-positive cases (2–5 minutes)**
 
@@ -3243,6 +3306,8 @@ Append these objects to `tests/fixtures/nlu_contract_v1.jsonl` (one line each, w
 {"id":"en-negated-reminder-delete","locale":"en","family":"negative","text":"Do not delete reminder 1","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["reminder_delete"],"fixture":"active_reminder","critical":true}
 ```
 
+In `tests/test_nlu_contract.py`, replace the Task 1 seed-cardinality assertions with the Task 5 corpus contract: exactly `27` rows, first id still `nb-reminder-husk-mandag`, last id exactly `en-negated-reminder-delete`, and exactly `25` rows with `critical is True`. This is an intentional Task 5 update to the existing test, not a new test file.
+
 - [ ] **Step 18: Run focused routing and corpus gates (2–5 minutes)**
 
 Run:
@@ -3273,15 +3338,18 @@ Expected: all non-browser repository tests pass. `tests/test_console_frontend.py
 
 ```bash
 git add core/intent_arbitration.py core/intent_router.py \
-  cal_system/reminder_manager.py tests/nlu_harness.py \
+  cal_system/reminder_manager.py features/watchlist_manager.py \
+  tests/nlu_harness.py \
   tests/test_intent_arbitration.py tests/test_intent_router.py \
   tests/test_reminder_crud.py tests/test_false_positives.py \
-  tests/fixtures/nlu_contract_v1.jsonl
+  tests/fixtures/nlu_contract_v1.jsonl tests/test_nlu_contract.py
 git commit -m "feat: arbitrate natural-language intent candidates"
 ```
+
+The staged list must be exactly the eleven declared Task 5 files. `tests/test_watchlist_scope.py` remains gate-only and unstaged.
 
 ---
 
 ## Completion evidence
 
-The implementation is complete only when all five commits exist in order, the full test suite is green, and `.artifacts/nlu-contract.json` passes the exact gate without containing utterance text, payload values, identities, URLs, or exception strings. Record the final commit SHAs and exact commands/output in the project log; do not claim handler dispatch, pending-action confirmation, AI action proposals, birthday identity routing, runtime reminder delivery, persisted observability, deployment, or live Discord verification from this foundation plan.
+The implementation is complete only when all five commits exist in order, the full non-browser suite is green, and `.artifacts/nlu-contract.json` passes the exact gate without containing utterance text, payload values, identities, URLs, or exception strings. Record the final commit SHAs and exact commands/output in the project log; do not claim handler dispatch, pending-action confirmation, AI action proposals, birthday identity routing, runtime reminder delivery, persisted observability, deployment, or live Discord verification from this foundation plan.

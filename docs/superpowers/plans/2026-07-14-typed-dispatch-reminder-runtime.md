@@ -114,7 +114,7 @@ Expected: `MessageMonitor._handle_intent`, handler entry points, `parse_reminder
 | `features/reminder_handler.py` | Typed create/list/search/edit/delete/complete adapters and all temporal fields after Task 7. |
 | `features/polls_handler.py` | Typed create/vote/edit/delete/close adapters. |
 | `features/watchlist_handler.py` | Typed add/edit/remove/status/suggest adapters. |
-| `features/watchlist_manager.py` | Complete parse-once watchlist parser output. |
+| `features/watchlist_manager.py` | Task 5 routing prerequisite already owns complete parse-once output; typed Task 2 verifies it unchanged, while later transactional-manager steps may modify only result/persistence semantics. |
 | `features/fun_handler.py` | Typed quote save/get outcome. |
 | `features/quote_handler.py` | Typed quote edit/delete outcome. |
 | `features/quote_manager.py` | Complete parse-once quote parser output. |
@@ -848,13 +848,12 @@ Expected: one commit containing only the four contract modules and their initial
 
 ---
 
-### Task 2: Populate complete payloads at the router boundary
+### Task 2: Validate and populate complete payload envelopes at the router boundary
 
 **Files:**
 
 - Modify: `core/intent_router.py`
 - Modify: `core/intent_payloads.py`
-- Modify: `features/watchlist_manager.py`
 - Modify: `features/quote_manager.py`
 - Modify: `tests/test_parse_once_dispatch.py`
 - Modify: `tests/test_intent_router.py`
@@ -864,8 +863,8 @@ Expected: one commit containing only the four contract modules and their initial
 
 **Interfaces:**
 
-- Consumes: Task 1's `ENVELOPE_KEYS` and `validate_intent_payload()` plus the routing-foundation's candidate collectors.
-- Produces: complete canonical outer envelopes at the `IntentRouter` boundary for calendar, reminder, poll, watchlist, and quote intents; every emitted envelope's mapped inner value passes Task 1 validation without consulting Discord message text. Task 1 still defines birthday validators/envelopes and Task 3 implements birthday handlers, but the later feature-parity lane exclusively owns safe birthday identity parsing and production birthday route emission.
+- Consumes: Task 1's `ENVELOPE_KEYS` and `validate_intent_payload()` plus the routing-foundation's candidate collectors and already-complete canonical `CALENDAR_EDIT`, reminder, and watchlist parser objects.
+- Produces: complete canonical outer envelopes at the `IntentRouter` boundary for calendar, reminder, poll, watchlist, and quote intents; every emitted envelope's mapped inner value passes Task 1 validation without consulting Discord message text. This task validates/wraps the routing-owned calendar, reminder, and watchlist objects without adding recognizers or changing their parser signatures/vocabulary. Task 1 still defines birthday validators/envelopes and Task 3 implements birthday handlers, but the later feature-parity lane exclusively owns safe birthday identity parsing and production birthday route emission.
 
 - [ ] **Step 2.1 (3-5 min): Add a parameterized router-envelope test.**
 
@@ -923,9 +922,13 @@ def test_quote_edit_route_keeps_text_and_author(production_router_adapter):
 
 Expected: failures show empty or target-only edit/delete payloads and watchlist/quote fields lost after parsing.
 
-- [ ] **Step 2.6 (3-5 min): Extend `parse_watchlist_command()` to return complete typed fields.**
+- [ ] **Step 2.6 (3-5 min): Verify the routing prerequisite's complete `parse_watchlist_command()` output without rewriting it.**
 
-The parser output uses `type` and `index`, not `item_type` or `number`. It removes only Inebotten's leading mention, preserves title/value case, and returns `None` rather than a partial mutating payload.
+Run the existing `tests/test_watchlist_scope.py` direct-parser gate and the Step 2.3 route assertions. Verify the Task 5 parser output uses `type` and `index`, not `item_type` or `number`; removes only Inebotten's leading mention; preserves title/value case; and returns `None` rather than a partial mutating payload. Do not edit `features/watchlist_manager.py`, add a recognizer, or duplicate those cases in a new test file. Later transactional-manager tasks may still modify that file for result/persistence semantics.
+
+~~~bash
+.venv312/bin/python -m pytest tests/test_watchlist_scope.py -q
+~~~
 
 - [ ] **Step 2.7 (3-5 min): Extend `parse_quote_command()` for save/get/list/edit/delete.**
 
@@ -940,13 +943,13 @@ QUOTE_EDIT_FIELD = re.compile(
 
 For edit, require a positive index and at least text or author. For delete, require a positive index. Return the full `QuotePayload` including `lang`.
 
-- [ ] **Step 2.8 (3-5 min): Populate complete calendar and reminder candidate payloads.**
+- [ ] **Step 2.8 (3-5 min): Validate and wrap the routing-owned calendar and reminder candidate payloads.**
 
-Interpret raw syntax once, call `validate_intent_payload()`, then wrap with the stable family key. Invalid deterministic syntax emits the existing parser diagnostic/`CLARIFY` path and never reaches a handler.
+Consume Task 5's already-complete canonical `CALENDAR_EDIT` and reminder create/edit/target objects, call `validate_intent_payload()`, then preserve them under the stable family key. Do not reinterpret raw syntax, add timing/edit/target recognizers, or change `parse_reminder_command()`. Invalid deterministic objects emit the existing bounded parser diagnostic/`CLARIFY` path and never reach a handler.
 
-- [ ] **Step 2.9 (3-5 min): Populate complete poll, watchlist, and quote payloads.**
+- [ ] **Step 2.9 (3-5 min): Populate poll/quote payloads and wrap the routing-owned watchlist object.**
 
-Do not change Task 5 arbitration priorities, confidence thresholds, risk classification, evidence policy, or the reserved birthday collector. A birthday utterance continues through the existing safe fallback until the feature-parity lane emits a resolved identity payload.
+Validate and wrap Task 5's complete watchlist parser object without modifying its recognizer. Do not change Task 5 arbitration priorities, confidence thresholds, risk classification, evidence policy, or the reserved birthday collector. A birthday utterance continues through the existing safe fallback until the feature-parity lane emits a resolved identity payload.
 
 - [ ] **Step 2.10 (2-3 min): Prove routed payloads contain no raw-text compatibility fields.**
 
@@ -959,11 +962,14 @@ Expected: all focused router/parser tests pass, including the exact quote text/a
 - [ ] **Step 2.12 (2 min): Commit parse-once router output.**
 
 ~~~bash
-git add core/intent_router.py core/intent_payloads.py features/watchlist_manager.py features/quote_manager.py tests/test_parse_once_dispatch.py tests/test_intent_router.py tests/test_poll_target.py tests/test_watchlist_birthday_edit.py tests/test_quote_crud.py
+git add core/intent_router.py core/intent_payloads.py features/quote_manager.py \
+  tests/test_parse_once_dispatch.py tests/test_intent_router.py \
+  tests/test_poll_target.py tests/test_watchlist_birthday_edit.py \
+  tests/test_quote_crud.py
 git commit -m "refactor: route complete typed action payloads"
 ~~~
 
-Expected: one commit with parsers/collectors and their tests; handlers remain unchanged.
+Expected: one commit with validator/router wrapping, quote parsing, and their tests; `features/watchlist_manager.py` is absent because Task 5 already supplied that parser, and handlers remain unchanged.
 
 ---
 ### Task 3: Migrate real handlers to typed payloads and truthful outcomes
