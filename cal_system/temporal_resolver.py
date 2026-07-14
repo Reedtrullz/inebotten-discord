@@ -34,10 +34,34 @@ DAYPART_HOURS = {
     "i ettermiddag": "14:00",
     "på ettermiddagen": "14:00",
     "i kveld": "19:00",
-    "kveld": "19:00",
     "på kvelden": "19:00",
     "i natt": "22:00",
     "på natten": "22:00",
+}
+_CONTEXT_DAYPART_HOURS = {
+    "formiddag": "10:00",
+    "ettermiddag": "14:00",
+    "kveld": "19:00",
+    "natt": "22:00",
+}
+_DAYPART_KINDS = {
+    "i morges": "morges",
+    "i formiddag": "formiddag",
+    "på formiddagen": "formiddag",
+    "i ettermiddag": "ettermiddag",
+    "på ettermiddagen": "ettermiddag",
+    "i kveld": "kveld",
+    "på kvelden": "kveld",
+    "i natt": "natt",
+    "på natten": "natt",
+    **{phrase: phrase for phrase in _CONTEXT_DAYPART_HOURS},
+}
+_DAYPART_MINUTE_RANGES = {
+    "morges": ((0, 12 * 60),),
+    "formiddag": ((6 * 60, 12 * 60),),
+    "ettermiddag": ((12 * 60, 18 * 60),),
+    "kveld": ((18 * 60, 24 * 60),),
+    "natt": ((22 * 60, 24 * 60), (0, 6 * 60)),
 }
 SPECIAL_HOURS = {
     "noon": "12:00",
@@ -281,6 +305,7 @@ class _TimeEvidence:
     canonical: str | None
     error: str | None = None
     anchor_today: bool = False
+    daypart: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -569,7 +594,12 @@ class TemporalResolver:
             return None, "invalid_time"
         return f"{hour:02d}:{minute:02d}", None
 
-    def _collect_times(self, text: str) -> list[_TimeEvidence]:
+    def _collect_times(
+        self,
+        text: str,
+        *,
+        has_date_evidence: bool = False,
+    ) -> list[_TimeEvidence]:
         evidence: list[_TimeEvidence] = []
         occupied: list[tuple[int, int]] = []
 
@@ -617,21 +647,44 @@ class TemporalResolver:
         for phrase, match in self._bounded_matches(text, DAYPART_HOURS):
             if self._overlaps(match.span(), occupied):
                 continue
-            has_explicit_time = any(
-                value.canonical is not None
-                and value.label in {"natural_time", "raw_time"}
-                for value in evidence
-            )
             evidence.append(
                 _TimeEvidence(
                     "daypart",
                     match.span(),
-                    None if has_explicit_time else DAYPART_HOURS[phrase],
+                    DAYPART_HOURS[phrase],
                     anchor_today=phrase in {"i kveld", "i natt"},
+                    daypart=_DAYPART_KINDS[phrase],
                 )
             )
             occupied.append(match.span())
+
+        if has_date_evidence:
+            for phrase, match in self._bounded_matches(
+                text,
+                _CONTEXT_DAYPART_HOURS,
+            ):
+                if self._overlaps(match.span(), occupied):
+                    continue
+                evidence.append(
+                    _TimeEvidence(
+                        "daypart",
+                        match.span(),
+                        _CONTEXT_DAYPART_HOURS[phrase],
+                        daypart=_DAYPART_KINDS[phrase],
+                    )
+                )
+                occupied.append(match.span())
         return evidence
+
+    def _daypart_accepts(self, canonical: str, daypart: str) -> bool:
+        wall_time = self._parse_time_scalar(canonical)
+        if wall_time is None:
+            return False
+        minute = wall_time.hour * 60 + wall_time.minute
+        return any(
+            start <= minute < end
+            for start, end in _DAYPART_MINUTE_RANGES[daypart]
+        )
 
     def _collect_dates(self, text: str) -> tuple[list[_DateEvidence], list[str]]:
         evidence: list[_DateEvidence] = []
@@ -723,7 +776,12 @@ class TemporalResolver:
         dates, _ = self._collect_dates(text)
         return _CollectedEvidence(
             dates=tuple(dates),
-            times=tuple(self._collect_times(text)),
+            times=tuple(
+                self._collect_times(
+                    text,
+                    has_date_evidence=bool(dates),
+                )
+            ),
             relatives=tuple(_RELATIVE_RE.finditer(text)),
         )
 
@@ -925,9 +983,26 @@ class TemporalResolver:
             )
 
         time_errors = [value.error for value in time_evidence if value.error]
-        canonical_times = {
-            value.canonical for value in time_evidence if value.canonical is not None
+        explicit_times = {
+            value.canonical
+            for value in time_evidence
+            if value.label != "daypart" and value.canonical is not None
         }
+        compatible_explicit = (
+            next(iter(explicit_times)) if len(explicit_times) == 1 else None
+        )
+        canonical_times = set(explicit_times)
+        for value in time_evidence:
+            if value.label != "daypart" or value.canonical is None:
+                continue
+            comparison_time = value.canonical
+            if (
+                compatible_explicit is not None
+                and value.daypart is not None
+                and self._daypart_accepts(compatible_explicit, value.daypart)
+            ):
+                comparison_time = compatible_explicit
+            canonical_times.add(comparison_time)
         if len(canonical_times) > 1:
             return TemporalResolution(
                 matched_text=tuple(labels),

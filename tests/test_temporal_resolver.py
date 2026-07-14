@@ -72,7 +72,6 @@ def test_raw_time_without_cue_uses_first_future_local_occurrence(raw):
         ("i ettermiddag", "14:00"),
         ("på ettermiddagen", "14:00"),
         ("i kveld", "19:00"),
-        ("kveld", "19:00"),
         ("på kvelden", "19:00"),
         ("i natt", "22:00"),
         ("på natten", "22:00"),
@@ -100,6 +99,106 @@ def test_hour_word_does_not_consume_pa_before_daypart():
     )
     assert result.errors == ()
     assert (result.date, result.time) == ("15.08.2026", "15:00")
+
+
+def test_disjoint_explicit_time_and_daypart_preserve_conflicting_evidence():
+    result = RESOLVER.resolve("kl 14 i kveld", reference=NOW)
+    assert result.matched_text == ("natural_time", "daypart")
+    assert result.errors == ("conflicting_temporal",)
+
+
+@pytest.mark.parametrize(
+    ("phrase", "explicit"),
+    [
+        ("i morges", "00:00"),
+        ("i morges", "11:59"),
+        ("i formiddag", "06:00"),
+        ("i formiddag", "11:59"),
+        ("i ettermiddag", "12:00"),
+        ("i ettermiddag", "17:59"),
+        ("i kveld", "18:00"),
+        ("i kveld", "20:00"),
+        ("i kveld", "23:59"),
+        ("i natt", "22:00"),
+        ("i natt", "23:59"),
+        ("i natt", "00:00"),
+        ("i natt", "05:59"),
+    ],
+)
+def test_explicit_time_inside_daypart_range_overrides_default(phrase, explicit):
+    result = RESOLVER.resolve(f"{phrase} kl {explicit}", reference=NOW)
+    assert result.errors == ()
+    assert result.time == explicit
+    assert result.matched_text == ("natural_time", "daypart")
+
+
+@pytest.mark.parametrize(
+    ("phrase", "explicit"),
+    [
+        ("i morges", "12:00"),
+        ("i formiddag", "05:59"),
+        ("i formiddag", "12:00"),
+        ("i ettermiddag", "11:59"),
+        ("i ettermiddag", "18:00"),
+        ("i kveld", "17:59"),
+        ("i natt", "21:59"),
+        ("i natt", "06:00"),
+    ],
+)
+def test_explicit_time_outside_daypart_range_conflicts(phrase, explicit):
+    result = RESOLVER.resolve(f"{phrase} kl {explicit}", reference=NOW)
+    assert result.matched_text == ("natural_time", "daypart")
+    assert result.errors == ("conflicting_temporal",)
+
+
+def test_context_daypart_uses_same_compatible_explicit_time_rule():
+    result = RESOLVER.resolve("imorgen kveld kl 20", reference=NOW)
+    assert result.errors == ()
+    assert (result.date, result.time) == ("15.07.2026", "20:00")
+    assert result.matched_text == ("date_alias", "natural_time", "daypart")
+
+
+def test_multiple_distinct_explicit_times_still_conflict_with_daypart():
+    result = RESOLVER.resolve("i kveld kl 20 21:00", reference=NOW)
+    assert result.matched_text == ("natural_time", "raw_time", "daypart")
+    assert result.errors == ("conflicting_temporal",)
+
+
+def test_ordinary_bare_kveld_is_not_temporal_evidence():
+    result = RESOLVER.resolve("ha en fin kveld", reference=NOW)
+    assert result.valid is True
+    assert (result.date, result.time, result.due_at) == (None, None, None)
+    assert result.matched_text == ()
+
+
+@pytest.mark.parametrize(
+    ("noun", "canonical"),
+    [
+        ("formiddag", "10:00"),
+        ("ettermiddag", "14:00"),
+        ("kveld", "19:00"),
+        ("natt", "22:00"),
+    ],
+)
+def test_bare_daypart_noun_requires_separate_live_date_evidence(noun, canonical):
+    result = RESOLVER.resolve(f"imorgen {noun}", reference=NOW)
+    assert result.valid is True
+    assert (result.date, result.time) == ("15.07.2026", canonical)
+    assert result.matched_text == ("date_alias", "daypart")
+
+
+@pytest.mark.parametrize("noun", ["formiddag", "ettermiddag", "kveld", "natt"])
+def test_bare_daypart_nouns_are_inert_in_ordinary_text(noun):
+    result = RESOLVER.resolve(f"ha en fin {noun}", reference=NOW)
+    assert result.valid is True
+    assert (result.date, result.time, result.due_at) == (None, None, None)
+    assert result.matched_text == ()
+
+
+def test_context_daypart_remains_independent_from_explicit_time():
+    result = RESOLVER.resolve("kl 14 imorgen kveld", reference=NOW)
+    assert result.matched_text == ("date_alias", "natural_time", "daypart")
+    assert result.errors == ("conflicting_temporal",)
 
 
 @pytest.mark.parametrize(
@@ -441,7 +540,17 @@ def test_naive_reference_is_rejected():
 
 
 def test_public_constant_vocabularies_are_exactly_finite():
-    assert DAYPART_HOURS["i kveld"] == "19:00"
+    assert DAYPART_HOURS == {
+        "i morges": "10:00",
+        "i formiddag": "10:00",
+        "på formiddagen": "10:00",
+        "i ettermiddag": "14:00",
+        "på ettermiddagen": "14:00",
+        "i kveld": "19:00",
+        "på kvelden": "19:00",
+        "i natt": "22:00",
+        "på natten": "22:00",
+    }
     assert SPECIAL_HOURS == {"noon": "12:00", "midnatt": "00:00", "midnight": "00:00"}
     assert "day after tomorrow" in DATE_ALIASES
 
