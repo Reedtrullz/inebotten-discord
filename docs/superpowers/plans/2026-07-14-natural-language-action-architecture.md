@@ -897,6 +897,14 @@ def test_quoted_command_is_masked_from_control_text():
     assert utterance.text == 'hva skjer hvis jeg skriver "slett påminnelse 1"?'
 
 
+def test_discord_multiline_quote_is_inert_through_eof():
+    utterance = normalize_utterance(
+        "forklar dette:\n>>> slett kalenderen\nopprett møte i morgen"
+    )
+    assert "slett" not in utterance.control_text
+    assert "opprett" not in utterance.control_text
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -905,6 +913,13 @@ def test_quoted_command_is_masked_from_control_text():
         "ikkje slett kalenderen",
         "do not delete the calendar",
         "never delete the calendar",
+        "I can't delete the calendar",
+        "I can’t delete the calendar",
+        "I cannot delete the calendar",
+        "I won't delete the calendar",
+        "I won’t delete the calendar",
+        "I shouldn't delete the calendar",
+        "I shouldn’t delete the calendar",
     ],
 )
 def test_negated_delete_is_not_a_mutation_directive(text):
@@ -925,6 +940,20 @@ def test_negated_delete_is_not_a_mutation_directive(text):
 def test_do_not_forget_idiom_remains_positive(text):
     utterance = normalize_utterance(text)
     assert analyze_utterance(utterance).allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Kan jeg slette kalenderen?", "Kan eg slette kalenderen?",
+        "Kan æ slette kalenderen?", "Can I delete the calendar?",
+        "May I delete the calendar?", "Could I delete the calendar?",
+    ],
+)
+def test_permission_question_is_information_not_a_directive(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.INFORMATION_REQUEST
+    assert semantics.allows_mutation is False
 ~~~
 
 Run:
@@ -943,6 +972,7 @@ normalize_utterance() must:
 - collapse whitespace and normalize straight/curly quote matching without changing the case-preserving text used for payloads;
 - use casefold for folded detection;
 - mask quoted spans and Discord mentions in control_text with whitespace of equal token separation;
+- treat Discord's `>>>` multiline quote marker as inert from its opener through end-of-input, while ordinary `>` quotes remain line-scoped;
 - retain quoted content in quoted_segments;
 - tokenize letters, numbers, apostrophes, colon times, and date separators;
 - never remove ordinary user mentions from text;
@@ -959,13 +989,13 @@ Detection order:
 1. exact confirmation/rejection phrases;
 2. hypothetical frames such as “hva skjer hvis”, “kva skjer om”, and “what happens if”;
 3. meta frames such as “jeg skrev” and “eksempel”;
-4. mutation-information questions, including explanatory polite forms such as “kan du forklare hvordan jeg sletter …”;
+4. mutation-information and permission questions, including explanatory polite forms such as “kan du forklare hvordan jeg sletter …” and `kan jeg|kan eg|kan æ|can I|may I|could I` followed by an action;
 5. polite directives such as “kan du”, “kunne du”, “vil du”, “could you”, and “please”;
 6. general information questions;
 7. imperative action evidence;
 8. statement fallback.
 
-is_negated_action() must inspect up to eight tokens before and four tokens after each action term and recognize ikke, ikkje, aldri, not, never, do not, and don't. The wider left window covers ordinary forms such as “jeg vil ikke at du skal slette kalenderen”. Exempt only the matching negation token in the positive reminder idioms “ikke glem”, “ikkje gløym”, and “don't forget”; a second negation remains live.
+is_negated_action() must inspect up to eight tokens before and four tokens after each action term and recognize ikke, ikkje, aldri, not, never, do not, don't/don’t, can't/can’t, cannot, won't/won’t, and shouldn't/shouldn’t. The wider left window covers ordinary forms such as “jeg vil ikke at du skal slette kalenderen”. Exempt only the matching negation token in the positive reminder idioms “ikke glem”, “ikkje gløym”, and “don't forget”; a second negation remains live. Permission-question recognition runs before polite-directive and imperative recognition.
 
 - [ ] **Step 4: Add the first safety corpus cases**
 
@@ -988,224 +1018,167 @@ Expected: PASS.
 
 ### Task 4: Resolve and validate Norwegian temporal expressions
 
-**Objective:** Parse natural dates and times with an injected Oslo clock, and reject impossible values before they become action candidates or handler mutations.
+**Objective:** Give the compatibility calendar parser and handler one bounded Europe/Oslo temporal contract. Canonicalize valid natural expressions and reject invalid, conflicting, nonexistent, or unresolved ambiguous values before CalendarManager or Google Calendar writes.
 
 **Interfaces:**
 
-- Consumes: case-preserving normalized text and an optional aware reference datetime.
-- Produces: canonical DD.MM.YYYY, HH:MM, and ISO-8601 due_at.
-- Called by: NaturalLanguageParser, calendar handlers, reminder parser, AI action validation.
+- Consumes case-preserving message text, masked control text when available, and an optional aware reference_time.
+- Produces canonical DD.MM.YYYY, HH:MM, optional offset-bearing due_at, and stable bounded diagnostics.
+- Preserves NaturalLanguageParser dictionary-or-None wrappers and CalendarHandler boolean returns.
+- Captures one reference per public parser/handler operation; an explicit aware reference causes zero provider reads.
+- Reuses monitor.nlp_parser.temporal_resolver when available, but defers sole monitor resolver/clock ownership and DispatchOutcome conversion to the later typed/model-action lanes.
 
-**Files:**
+**Files (complete implementation/staging scope: exactly seven):**
 
 - Create: cal_system/temporal_resolver.py
 - Create: tests/test_temporal_resolver.py
 - Create: tests/test_natural_language_parser_safety.py
-- Modify: cal_system/natural_language_parser.py:13-18,156-445,478-587,590-717
-- Modify: features/calendar_handler.py:225-332,614-705
+- Modify: cal_system/natural_language_parser.py
+- Modify: features/calendar_handler.py
 - Modify: tests/test_calendar_edit.py
+- Modify: tests/test_comprehensive.py
 
-- [ ] **Step 1: Write fixed-clock resolver tests**
+tests/test_intent_router.py, tests/test_false_positives.py, tests/test_calendar_sync.py, and tests/test_selfbot_comprehensive.py are gate-only here. Do not stage them and do not modify core/message_monitor.py in Task 4.
+
+- [ ] **Step 1: Write the fixed-clock compatibility and safety matrix**
+
+The resolver suite must cover:
+
+- aliases i dag/idag/today, i morgen/imorgen/imorra/imårra/i morgon/tomorrow, and i overmorgen/overmorgen/i overmorgon/overmorgon/day after tomorrow;
+- numeric and month-name dates, den N., weekdays, next/førstkommende, and relative minutes/hours/days/weeks;
+- raw HH:MM without a cue, cue hours, am/pm, noon, midnatt/midnight, and dayparts;
+- the exact regression "15. august rundt tre på ettermiddagen" -> 15.08.2026 15:00;
+- raw 25:61 as invalid_time rather than absent evidence;
+- duplicate-consistent versus conflicting date/time evidence;
+- year bounds 1900..2100, two-digit years 2000..2099, and yearless first-nonpast selection;
+- Oslo gap/fold behavior and due_at forms +01:00, +02:00, and equivalent Z instants;
+- elapsed relative durations across both DST transitions;
+- finite matched_text labels and error codes that never contain raw input.
+
+The parser and handler suites add quote/code masking, every alias, recurrence-only defaults, legacy event days_offset agreement, task-shape parity, one/zero provider reads, invalid create/edit zero-write assertions, cross-field edit gap/fold cases in both directions, boolean returns, and 3600-second GCal duration across DST.
+
+- [ ] **Step 2: Implement one finite natural-time grammar**
+
+Use one shared matcher in cal_system/temporal_resolver.py; parser/handler copies are forbidden:
 
 ~~~python
-OSLO = ZoneInfo("Europe/Oslo")
-NOW = datetime(2026, 7, 14, 12, 0, tzinfo=OSLO)
+DATE_ALIASES = {
+    "i dag": 0, "idag": 0, "today": 0,
+    "i morgen": 1, "imorgen": 1, "imorra": 1, "imårra": 1,
+    "i morgon": 1, "tomorrow": 1,
+    "i overmorgen": 2, "overmorgen": 2,
+    "i overmorgon": 2, "overmorgon": 2,
+    "day after tomorrow": 2,
+}
+DAYPART_HOURS = {
+    "i morges": "10:00",
+    "i formiddag": "10:00",
+    "på formiddagen": "10:00",
+    "i ettermiddag": "14:00",
+    "på ettermiddagen": "14:00",
+    "i kveld": "19:00",
+    "på kvelden": "19:00",
+    "i natt": "22:00",
+    "på natten": "22:00",
+}
+SPECIAL_HOURS = {
+    "noon": "12:00",
+    "midnatt": "00:00",
+    "midnight": "00:00",
+}
 
-
-@pytest.mark.parametrize(
-    ("text", "date", "time"),
-    [
-        ("i morgen kl 8", "15.07.2026", "08:00"),
-        ("i morgon klokka fjorten", "15.07.2026", "14:00"),
-        ("om to timer", "14.07.2026", "14:00"),
-        ("fredag kl 10", "17.07.2026", "10:00"),
-        ("15. august rundt tre", "15.08.2026", "15:00"),
-    ],
+_HOUR_WORD = r"[a-zæøå]+(?:[- ]+(?!på\b)[a-zæøå]+)?"
+NATURAL_TIME_RE = re.compile(
+    rf"\b(?P<cue>kl(?:okka|okken)?\.?|at|rundt|about)\s+"
+    rf"(?P<hour>-?\d{{1,2}}|{_HOUR_WORD})"
+    r"(?::(?P<minute>\d{2}))?\s*(?P<suffix>am|pm)?"
+    r"(?:\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden))?\b"
 )
-def test_resolve_supported_natural_time(text, date, time):
-    result = TemporalResolver().resolve(text, reference=NOW)
-    assert result.valid is True
-    assert result.date == date
-    assert result.time == time
-
-
-@pytest.mark.parametrize(
-    ("date_value", "time_value"),
-    [
-        ("32.13.2026", "14:00"),
-        ("29.02.2025", "14:00"),
-        ("15.07.2026", "25:61"),
-        ("15.07.2026", "-1:00"),
-    ],
-)
-def test_impossible_values_are_rejected(date_value, time_value):
-    result = TemporalResolver().validate_fields(
-        date_value,
-        time_value,
-        reference=NOW,
-    )
-    assert result.valid is False
-    assert result.errors
-
-
-def test_nonexistent_oslo_wall_time_is_rejected():
-    result = TemporalResolver().validate_fields(
-        "29.03.2026",
-        "02:30",
-        reference=NOW,
-    )
-    assert result.errors == ("invalid_time",)
-
-
-def test_ambiguous_oslo_wall_time_requires_clarification():
-    result = TemporalResolver().validate_fields(
-        "25.10.2026",
-        "02:30",
-        reference=NOW,
-    )
-    assert result.errors == ("ambiguous_time",)
 ~~~
 
-Run:
+Match aliases longest-first with word boundaries. Recognized malformed raw times remain evidence and fail. A bare/cue time uses the first future local occurrence; the explicit legacy phrases i kveld and i natt stay anchored today. Relative minutes/hours use UTC elapsed arithmetic before projecting to Oslo; local day/week offsets use calendar arithmetic.
+
+- [ ] **Step 3: Canonicalize by construction and validate instant identity**
+
+validate_fields() accepts finite D.M/DD.MM slash variants, two/four-digit years, H, and H:MM, then constructs date/time values. Canonical strings use explicit zero-padded f-strings. A yearless current-day DST gap must return invalid_time and must not roll to a future year.
+
+Build valid fold candidates by UTC round-trip. Zero is invalid_time; two distinct offsets is ambiguous_time unless due_at names exactly one candidate instant. Reject naive or mismatching due_at. Compare UTC instants:
+
+~~~python
+explicit_utc = explicit.astimezone(timezone.utc)
+matching = [
+    candidate
+    for candidate in valid_candidates
+    if explicit_utc == candidate.astimezone(timezone.utc)
+]
+if len(matching) != 1:
+    return TemporalResolution(errors=("invalid_time",))
+canonical_due_at = explicit.astimezone(OSLO).isoformat(timespec="seconds")
+~~~
+
+- [ ] **Step 4: Wrap the legacy parser without changing callers**
+
+Add optional temporal_text and reference_time keywords to parse_event_result(), parse_event(), parse_task_with_recurrence_result(), and parse_task_with_recurrence(). Result methods capture at most once; dictionary wrappers only delegate.
+
+The raw parser owns title/type/recurrence. The wrapper removes raw date/time/days_offset, overlays resolver-owned canonical temporal slots, defaults recurrence-only input to the captured reference date, revalidates the final pair, and returns item=None if no canonical date survives. Restore days_offset only for the existing event shape as canonical_date - Oslo reference.date(); the task shape must not gain it. days_offset stays compatibility-only through Task 5 and is removed by the later typed boundary.
+
+Original case-preserving text remains the title source, including straight/curly/guillemet quoted titles. Masked control text is the temporal source, so quote/code examples cannot populate date/time.
+
+- [ ] **Step 5: Add handler defense before mutation**
+
+CalendarHandler accepts optional temporal_resolver, now_provider, and reference_time seams. Constructor preference is explicit resolver, then monitor.nlp_parser.temporal_resolver, then an offline/test default. Every operation captures once when no reference is supplied.
+
+For create, validate the complete pair before any manager/GCal call. For edit:
+
+1. scalar-validate proposed values before a target read;
+2. read only the target needed for the existing title or bounded 365-day index path;
+3. combine proposed and unchanged counterpart fields;
+4. validate the effective pair;
+5. return False with zero edit/GCal calls when invalid, nonexistent, or ambiguous;
+6. perform exactly one edit when valid.
+
+This is read-before-cross-field-validation but validation-before-write. All paths retain bool returns in Task 4.
+
+Google Calendar duration uses elapsed UTC arithmetic:
+
+~~~python
+start_utc = start_dt.astimezone(timezone.utc)
+end_dt = (start_utc + timedelta(hours=1)).astimezone(OSLO)
+~~~
+
+- [ ] **Step 6: Run the complete verification ladder and commit exact scope**
 
 ~~~bash
 .venv312/bin/python -m pytest tests/test_temporal_resolver.py -q
+
+.venv312/bin/python -m pytest \
+  tests/test_temporal_resolver.py tests/test_natural_language_parser_safety.py \
+  tests/test_intent_router.py tests/test_false_positives.py -q
+
+.venv312/bin/python -m pytest \
+  tests/test_temporal_resolver.py tests/test_natural_language_parser_safety.py \
+  tests/test_calendar_edit.py tests/test_calendar_sync.py \
+  tests/test_selfbot_comprehensive.py tests/test_comprehensive.py -q
+
+df -h /System/Volumes/Data
+.venv312/bin/python -m pytest -q
 ~~~
 
-Expected: FAIL because TemporalResolver does not exist.
-
-- [ ] **Step 2: Implement canonical validation first**
-
-Implement validate_fields() with datetime construction rather than regex-only validation:
-
-- accept DD.MM, DD.MM.YYYY, slash variants, H, and H:MM;
-- yearless dates select the first non-past occurrence;
-- accept 00:00 through 23:59 only;
-- canonicalize to DD.MM.YYYY and HH:MM;
-- use ZoneInfo("Europe/Oslo");
-- detect local-time validity by round-tripping fold=0 and fold=1 candidates through UTC; reject zero valid round trips as invalid_time and two distinct valid offsets as ambiguous_time;
-- accept an ambiguous instant only when an ISO due_at includes an explicit valid UTC offset, never by silently choosing a fold;
-- default a date-only reminder time later in reminder code, not in the generic validator;
-- return errors using stable machine codes: invalid_date, invalid_time, missing_date, ambiguous_time.
-
-- [ ] **Step 3: Implement bounded natural resolution**
-
-Support:
-
-- i dag, i morgen, i morgon, imårra, tomorrow;
-- weekdays in Bokmål, Nynorsk, common Trøndelag forms, and English;
-- neste/next and førstkommende semantics pinned by tests;
-- om/in N minutter, timer, dager, or uker, including Norwegian number words zero through thirty-one;
-- numeric dates and Norwegian/English month names;
-- kl, kl., klokka, klokken, at, rundt/about;
-- 12-hour am/pm conversion;
-- default evening tokens “kveld/i kveld” to 19:00 only where the current parser already promises it.
-
-Do not parse bare future words inside information questions as mutation evidence; the resolver reports time only and leaves intent decisions to arbitration.
-
-- [ ] **Step 4: Integrate with NaturalLanguageParser**
-
-- Add now_provider to NaturalLanguageParser.__init__ with datetime.now in Oslo as the default.
-- Replace direct datetime.now calls used for resolution.
-- Call TemporalResolver for both event and task paths.
-- If time/date evidence was present but invalid, return no calendar item and expose a parse diagnostic that the router can turn into CLARIFY.
-- Preserve current title, recurrence, and type payload keys.
-
-Add a compatibility-preserving result API:
-
-~~~python
-@dataclass(frozen=True, slots=True)
-class NaturalParseResult:
-    item: dict[str, Any] | None
-    errors: tuple[str, ...] = ()
-
-
-def parse_event_result(
-    self,
-    message_content: str,
-    *,
-    temporal_text: str | None = None,
-    reference_time: datetime | None = None,
-) -> NaturalParseResult:
-    return self._parse_event_result(
-        message_content,
-        temporal_text=temporal_text,
-        reference_time=reference_time,
-    )
-
-
-def parse_event(
-    self,
-    message_content: str,
-    *,
-    temporal_text: str | None = None,
-    reference_time: datetime | None = None,
-) -> dict[str, Any] | None:
-    return self.parse_event_result(
-        message_content,
-        temporal_text=temporal_text,
-        reference_time=reference_time,
-    ).item
-
-
-def parse_task_with_recurrence_result(
-    self,
-    message_content: str,
-    *,
-    temporal_text: str | None = None,
-    reference_time: datetime | None = None,
-) -> NaturalParseResult:
-    return self._parse_task_with_recurrence_result(
-        message_content,
-        temporal_text=temporal_text,
-        reference_time=reference_time,
-    )
-
-
-def parse_task_with_recurrence(
-    self,
-    message_content: str,
-    *,
-    temporal_text: str | None = None,
-    reference_time: datetime | None = None,
-) -> dict[str, Any] | None:
-    return self.parse_task_with_recurrence_result(
-        message_content,
-        temporal_text=temporal_text,
-        reference_time=reference_time,
-    ).item
-~~~
-
-The router uses both result methods and always supplies the turn-captured aware `reference_time` plus `temporal_text=utterance.control_text`; quoted/code text remains available to raw title extraction but cannot supply temporal slots. Legacy callers keep the two dictionary-or-None wrappers and may omit the keywords. Move the current parser bodies into the named private result implementations and return stable invalid_date, invalid_time, ambiguous_time, and conflicting_temporal codes. All temporal consumers use the one monitor-owned `TemporalResolver`; defaults are offline/test compatibility only.
-
-Add:
-
-~~~python
-def test_parser_rejects_invalid_temporal_evidence():
-    parser = NaturalLanguageParser(now_provider=lambda: NOW)
-    assert parser.parse_event("møte 32.13.2026 kl 14:00") is None
-    assert parser.parse_event("møte i morgen kl 25:61") is None
-~~~
-
-- [ ] **Step 5: Add handler defense in depth**
-
-`CalendarHandler.handle_calendar_item()`, `_parse_date_value()`, and `handle_edit()` must revalidate typed date/time fields against the turn's captured `reference_time` before calling `CalendarManager`. Invalid values make zero manager calls, build `DispatchOutcome.failure("invalid_payload")`, send one Norwegian clarification, and return `base.with_delivery(send_result)`. Successful mutation methods follow the same two-stage pattern, separating mutation truth from delivery certainty so pending actions can be completed safely later.
-
-- [ ] **Step 6: Run and commit**
+Stop before the full suite if free space is below 30 GiB. Then rerun the Task 1 report-only NLU readback.
 
 ~~~bash
-.venv312/bin/python -m pytest \
+git add cal_system/temporal_resolver.py \
+  cal_system/natural_language_parser.py \
+  features/calendar_handler.py \
   tests/test_temporal_resolver.py \
   tests/test_natural_language_parser_safety.py \
   tests/test_calendar_edit.py \
-  tests/test_selfbot_comprehensive.py -q
-git add cal_system/temporal_resolver.py cal_system/natural_language_parser.py \
-  features/calendar_handler.py tests/test_temporal_resolver.py \
-  tests/test_natural_language_parser_safety.py tests/test_calendar_edit.py
+  tests/test_comprehensive.py
+git diff --cached --name-only
 git commit -m "feat: resolve and validate natural temporal expressions"
 ~~~
 
-Expected: PASS.
+The staged list must be exactly the seven declared files.
 
 ---
 
@@ -1425,7 +1398,9 @@ COLLECTOR_ORDER = (
 )
 ~~~
 
-Each named method has signature (self, context: CollectorContext) -> list[IntentCandidate] and is added with its real branches in Steps 3b–3d; do not add empty stubs. Keep `route(content, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None)` as a compatibility wrapper. Add `route_utterance(..., reference_time=None)` and `evaluate_utterance(..., reference_time=None) -> RoutedIntent`. At the public entry, use the supplied aware `reference_time` or capture exactly one value from the injected shared clock, validate it, and put it on `CollectorContext`; every temporal parser and active-state read consumes that exact value. When `routing_context` exists, derive identity from its key and reject mismatched scalar ids as `invalid_context`. Add wrapper-only and Oslo-midnight boundary tests before moving any branch.
+Each named method has signature (self, context: CollectorContext) -> list[IntentCandidate] and is added with its real branches in Steps 3b–3d; do not add empty stubs. Keep `route(content, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None)` as a compatibility wrapper. Add `route_utterance(..., reference_time=None)` and `evaluate_utterance(..., reference_time=None) -> RoutedIntent`. At the public entry, use the supplied aware `reference_time` or capture exactly one value from the router's injected clock, validate it, and put it on `CollectorContext`; every temporal parser and active-state read consumes that exact value. When `routing_context` exists, derive identity from its key and reject mismatched scalar ids as `invalid_context`. Add wrapper-only and Oslo-midnight boundary tests before moving any branch.
+
+Task 5 resolver selection is explicit injection, else `monitor.nlp_parser.temporal_resolver`, else an offline/test default. This routing lane does not claim monitor-wide clock/resolver identity. Collectors pass the one captured reference explicitly, so parser providers are not reread. Keep legacy event `days_offset` through Task 5 and let typed dispatch convert/remove it later. Add resolver compatibility smoke cases for raw `HH:MM`, `noon`, and all Task 4 alias families without changing the priority/order table, risk policy, payload envelopes, or fixture schema.
 
 - [ ] **Step 3b: Migrate control, memory, calendar, and reminder branches**
 
