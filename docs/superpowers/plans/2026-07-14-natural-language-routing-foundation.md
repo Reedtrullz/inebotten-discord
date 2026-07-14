@@ -1362,6 +1362,8 @@ def test_second_negation_is_not_erased_by_positive_forget(text):
         "Hvorfor slettet du kalenderen?",
         "Kan man slette kalenderen?",
         "Er det mulig å slette kalenderen?",
+        "Kan du forklare hvordan jeg sletter kalenderen?",
+        "Could you explain how to delete a reminder?",
         "Why did you delete the calendar?",
         "Is it possible to delete the calendar?",
     ],
@@ -1504,6 +1506,11 @@ INFORMATION_MUTATION_PATTERNS = (
     re.compile(
         r"^(?:kan\s+man|er\s+det\s+mulig\s+å|can\s+one|"
         r"is\s+it\s+possible\s+to)\b"
+    ),
+    re.compile(
+        r"^(?:kan\s+du|kunne\s+du|could\s+you|would\s+you)\s+"
+        r"(?:forklare|vise|fortelle|explain|show|tell)\b.*"
+        r"\b(?:hvordan|korleis|how)\b"
     ),
 )
 ACTION_TERMS = frozenset({

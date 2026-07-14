@@ -957,13 +957,15 @@ Define SpeechAct values DIRECTIVE, INFORMATION_REQUEST, STATEMENT, HYPOTHETICAL,
 Detection order:
 
 1. exact confirmation/rejection phrases;
-2. meta/hypothetical frames such as “hva skjer hvis”, “kva skjer om”, “what happens if”, “jeg skrev”, and “eksempel”;
-3. polite directives such as “kan du”, “kunne du”, “vil du”, “could you”, and “please”;
-4. information questions;
-5. imperative action evidence;
-6. statement fallback.
+2. hypothetical frames such as “hva skjer hvis”, “kva skjer om”, and “what happens if”;
+3. meta frames such as “jeg skrev” and “eksempel”;
+4. mutation-information questions, including explanatory polite forms such as “kan du forklare hvordan jeg sletter …”;
+5. polite directives such as “kan du”, “kunne du”, “vil du”, “could you”, and “please”;
+6. general information questions;
+7. imperative action evidence;
+8. statement fallback.
 
-is_negated_action() must inspect a three-token window on both sides of each action term and recognize ikke, ikkje, aldri, not, never, do not, and don't. Exempt the positive reminder idioms “ikke glem”, “ikkje gløym”, and “don't forget”.
+is_negated_action() must inspect up to eight tokens before and four tokens after each action term and recognize ikke, ikkje, aldri, not, never, do not, and don't. The wider left window covers ordinary forms such as “jeg vil ikke at du skal slette kalenderen”. Exempt only the matching negation token in the positive reminder idioms “ikke glem”, “ikkje gløym”, and “don't forget”; a second negation remains live.
 
 - [ ] **Step 4: Add the first safety corpus cases**
 
