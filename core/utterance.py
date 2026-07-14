@@ -8,6 +8,9 @@ _QUOTED = re.compile(
     r'"([^"\n]*)"|“([^”\n]*)”|‘([^’\n]*)’|'
     r'«([^»\n]*)»|(?<!\w)\'([^\'\n]+)\'(?!\w)'
 )
+_MULTILINE_BLOCKQUOTE = re.compile(
+    r"(?m)^ {0,3}>>>(?!>)[^\n]*(?:\n|$)"
+)
 _BLOCKQUOTE = re.compile(r"(?m)^ {0,3}>[^\n]*(?:\n|$)")
 _MENTION = re.compile(r"<@!?\d+>")
 _FENCE_OPEN = re.compile(
@@ -109,11 +112,33 @@ def normalize_utterance(raw: str) -> NormalizedUtterance:
     for start, end in inert_code:
         _mask_span(control_chars, start, end)
     quoted: list[str] = []
-    blockquotes = tuple(
+    multiline_match = next(
+        (
+            match
+            for match in _MULTILINE_BLOCKQUOTE.finditer(normalized)
+            if not _overlaps(
+                inert_code,
+                match.start(),
+                match.end(),
+            )
+        ),
+        None,
+    )
+    multiline_blockquotes = (
+        ((multiline_match.start(), len(normalized)),)
+        if multiline_match is not None
+        else ()
+    )
+    line_blockquotes = tuple(
         (match.start(), match.end())
         for match in _BLOCKQUOTE.finditer(normalized)
-        if not _overlaps(inert_code, match.start(), match.end())
+        if not _overlaps(
+            inert_code + multiline_blockquotes,
+            match.start(),
+            match.end(),
+        )
     )
+    blockquotes = tuple(sorted(multiline_blockquotes + line_blockquotes))
     for start, end in blockquotes:
         quoted.append(_collapse(normalized[start:end].lstrip(" >")))
         _mask_span(control_chars, start, end)

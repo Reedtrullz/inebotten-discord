@@ -28,6 +28,24 @@ def test_negated_delete_disallows_mutation(text):
 @pytest.mark.parametrize(
     "text",
     [
+        "I can't delete the calendar",
+        "I can’t delete the calendar",
+        "I cannot delete the calendar",
+        "I won't delete the calendar",
+        "I won’t delete the calendar",
+        "I shouldn't delete the calendar",
+        "I shouldn’t delete the calendar",
+    ],
+)
+def test_english_contraction_negations_disallow_mutation(text):
+    utterance = normalize_utterance(text)
+    assert is_negated_action(utterance, ("delete",)) is True
+    assert analyze_utterance(utterance).allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "ikke glem møte i morgen kl 14",
         "ikkje gløym møte i morgon klokka 14",
         "don't forget the meeting tomorrow at 2pm",
@@ -67,6 +85,23 @@ def test_second_negation_is_not_erased_by_positive_forget(text):
     ],
 )
 def test_questions_about_mutation_are_information_requests(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.INFORMATION_REQUEST
+    assert semantics.allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Kan jeg slette kalenderen?",
+        "Kan eg slette kalenderen?",
+        "Kan æ slette kalenderen?",
+        "Can I delete the calendar?",
+        "May I delete reminder 1?",
+        "Could I delete reminder 1?",
+    ],
+)
+def test_permission_questions_about_mutation_are_information_requests(text):
     semantics = analyze_utterance(normalize_utterance(text))
     assert semantics.speech_act is SpeechAct.INFORMATION_REQUEST
     assert semantics.allows_mutation is False

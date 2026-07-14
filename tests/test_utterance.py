@@ -69,6 +69,26 @@ def test_discord_quote_forms_are_inert_for_control_evidence(text):
     assert "delete" not in utterance.control_text
 
 
+def test_discord_multiline_quote_is_inert_through_eof():
+    utterance = normalize_utterance(
+        ">>> slett kalenderen\nopprett påminnelse i morgen"
+    )
+    assert utterance.control_text == ""
+    assert utterance.tokens == ()
+    assert utterance.quoted_segments == (
+        "slett kalenderen opprett påminnelse i morgen",
+    )
+
+
+def test_discord_single_line_quote_leaves_following_prose_live():
+    utterance = normalize_utterance(
+        "> slett kalenderen\nvis hjelp"
+    )
+    assert "slett" not in utterance.control_text
+    assert utterance.control_text == "vis hjelp"
+    assert utterance.quoted_segments == ("slett kalenderen",)
+
+
 def test_apostrophe_in_contraction_is_not_treated_as_a_quote():
     utterance = normalize_utterance("don't forget the meeting")
     assert "don't forget" in utterance.control_text

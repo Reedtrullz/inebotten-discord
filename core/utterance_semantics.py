@@ -66,6 +66,9 @@ INFORMATION_MUTATION_PATTERNS = (
         r"\b(?:hvordan|korleis|how)\b"
     ),
 )
+PERMISSION_QUESTION_PATTERN = re.compile(
+    r"^(?:kan\s+(?:jeg|eg|æ)|can\s+i|may\s+i|could\s+i)\b"
+)
 ACTION_TERMS = frozenset({
     "slett", "slette", "sletter", "slettar", "delete", "deleting",
     "fjern", "fjerne", "remove", "tøm", "tømme", "clear", "endre", "edit",
@@ -76,6 +79,8 @@ ACTION_TERMS = frozenset({
 })
 NEGATIONS = frozenset({
     "ikke", "ikkje", "aldri", "not", "never", "don't", "don’t",
+    "can't", "can’t", "cannot", "won't", "won’t",
+    "shouldn't", "shouldn’t",
 })
 POSITIVE_FORGET = ("ikke glem", "ikkje gløym", "don't forget", "don’t forget")
 
@@ -168,7 +173,16 @@ def analyze_utterance(utterance: NormalizedUtterance) -> UtteranceSemantics:
         )
     if _contains_phrase(text, META_FRAMES):
         return UtteranceSemantics(SpeechAct.META, ("meta_frame",), False)
-    if any(pattern.search(text) for pattern in INFORMATION_MUTATION_PATTERNS):
+    if (
+        any(
+            pattern.search(text)
+            for pattern in INFORMATION_MUTATION_PATTERNS
+        )
+        or (
+            PERMISSION_QUESTION_PATTERN.search(text)
+            and _contains_phrase(text, ACTION_TERMS)
+        )
+    ):
         return UtteranceSemantics(
             SpeechAct.INFORMATION_REQUEST,
             ("information_question",),
