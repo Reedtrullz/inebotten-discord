@@ -8,7 +8,7 @@ import pytest
 
 from core.eval_fixtures import EvalFixture
 from core.intent_router import BotIntent, IntentResult
-from scripts.evaluate_nlu import _report_passes
+from scripts.evaluate_nlu import _parse_args, _report_passes
 from tests.nlu_harness import (
     ADDITIVE,
     DESTRUCTIVE,
@@ -51,6 +51,23 @@ def corpus_line(**overrides):
 
 
 CORPUS_PATH = Path(__file__).parent / "fixtures" / "nlu_contract_v1.jsonl"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-0.01", "1.01"])
+@pytest.mark.parametrize("option", ["--min-overall", "--min-locale"])
+def test_cli_rejects_invalid_acceptance_thresholds(option: str, value: str):
+    with pytest.raises(SystemExit, match="2"):
+        _parse_args([option, value])
+
+
+@pytest.mark.parametrize("value", ["0", "1"])
+@pytest.mark.parametrize("option", ["--min-overall", "--min-locale"])
+def test_cli_accepts_inclusive_threshold_boundaries(option: str, value: str):
+    args = _parse_args([option, value])
+
+    assert getattr(args, option.removeprefix("--").replace("-", "_")) == float(
+        value
+    )
 
 
 def test_load_cases_rejects_duplicate_ids(tmp_path: Path):

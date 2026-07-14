@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 from typing import Any, Sequence, cast
@@ -34,14 +35,28 @@ REQUIRED_METRICS = (
 )
 
 
+def _unit_interval(value: str) -> float:
+    try:
+        threshold = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "threshold must be a number between 0 and 1"
+        ) from exc
+    if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise argparse.ArgumentTypeError(
+            "threshold must be finite and between 0 and 1"
+        )
+    return threshold
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the deterministic production-parser NLU contract."
     )
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
-    parser.add_argument("--min-overall", type=float, default=0.98)
-    parser.add_argument("--min-locale", type=float, default=0.95)
+    parser.add_argument("--min-overall", type=_unit_interval, default=0.98)
+    parser.add_argument("--min-locale", type=_unit_interval, default=0.95)
     parser.add_argument(
         "--report-only",
         action="store_true",
