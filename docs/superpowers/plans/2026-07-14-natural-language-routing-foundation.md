@@ -2187,7 +2187,7 @@ The raw legacy parser owns title, type, and recurrence only. The compatibility w
 1. Run TemporalResolver on temporal_text when supplied, otherwise on message_content.
 2. If matched temporal evidence is invalid, return NaturalParseResult(None, errors).
 3. Run the raw parser against original case-preserving message_content using the same reference.
-4. Copy its non-temporal payload, removing raw date, time, and any stale days_offset.
+4. For an unquoted raw title, call the same `strip_temporal_evidence(title, reference=captured)` collector before copying; preserve a supported quoted title verbatim even when it contains temporal words. Then copy the non-temporal payload, removing raw date, time, and any stale days_offset.
 5. Overlay only canonical resolver date/time/due_at.
 6. If recurrence exists with no explicit live date, use the canonical Oslo reference date.
 7. Revalidate the final date/time/due_at pair.
@@ -2196,7 +2196,7 @@ The raw legacy parser owns title, type, and recurrence only. The compatibility w
 
 Keep days_offset through Task 5 solely as a finite compatibility field. The later typed dispatch converts it to typed temporal data and removes it at its boundary.
 
-Expand legacy quoted-title extraction to the same straight/curly/guillemet forms recognized by Task 3. Title parsing receives original message_content, while TemporalResolver receives masked control_text when the caller has a NormalizedUtterance. Temporal words inside quotes/code can therefore remain title data but never become control slots.
+Expand legacy quoted-title extraction to the same straight/curly/guillemet forms recognized by Task 3. Title parsing receives original message_content, while TemporalResolver receives masked control_text when the caller has a NormalizedUtterance. Temporal words inside quotes/code can therefore remain title data but never become control slots. Add an unquoted relative-title regression: `møte med Ola om to timer` has title `Møte med Ola`, while a supported quoted title remains unchanged.
 
 Update tests/test_comprehensive.py only where old assertions expect noncanonical dates or stale days_offset arithmetic. Preserve each compatibility scenario; change its expected value instead of deleting the case.
 

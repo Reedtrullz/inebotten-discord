@@ -1137,7 +1137,7 @@ canonical_due_at = explicit.astimezone(OSLO).isoformat(timespec="seconds")
 
 Add optional temporal_text and reference_time keywords to parse_event_result(), parse_event(), parse_task_with_recurrence_result(), and parse_task_with_recurrence(). Result methods capture at most once; dictionary wrappers only delegate.
 
-The raw parser owns title/type/recurrence. The wrapper removes raw date/time/days_offset, overlays resolver-owned canonical temporal slots, defaults recurrence-only input to the captured reference date, revalidates the final pair, and returns item=None if no canonical date survives. Restore days_offset only for the existing event shape as canonical_date - Oslo reference.date(); the task shape must not gain it. days_offset stays compatibility-only through Task 5 and is removed by the later typed boundary.
+The raw parser owns title/type/recurrence. Before composing, the wrapper cleans an unquoted raw title through the same `strip_temporal_evidence(title, reference=captured)` collector; supported quoted titles remain verbatim data even when they contain temporal words. The wrapper removes raw date/time/days_offset, overlays resolver-owned canonical temporal slots, defaults recurrence-only input to the captured reference date, revalidates the final pair, and returns item=None if no canonical date survives. Restore days_offset only for the existing event shape as canonical_date - Oslo reference.date(); the task shape must not gain it. days_offset stays compatibility-only through Task 5 and is removed by the later typed boundary.
 
 Original case-preserving text remains the title source, including straight/curly/guillemet quoted titles. Masked control text is the temporal source, so quote/code examples cannot populate date/time.
 
