@@ -1857,7 +1857,7 @@ def test_explicit_instant_disambiguates_fold(due_at, canonical):
     assert result.due_at == canonical
 ~~~
 
-Naive due_at, a due_at whose instant does not equal either valid Oslo fold, and a due_at whose Oslo date/time disagrees with the typed fields must fail. Include elapsed-relative tests across both DST transitions so om to timer means two UTC hours even when the local wall clock jumps or repeats.
+Naive due_at, a due_at whose instant does not equal either valid Oslo fold, and a due_at whose Oslo date or HH:MM projection disagrees with the typed fields must fail. A due_at may retain nonzero whole seconds because the public time field has minute precision; validate that precise projected wall time against the fold candidates and reject microseconds. Include a real-clock regression with nonzero seconds and elapsed-relative tests across both DST transitions so om to timer means two UTC hours at canonical whole-second precision even when the local wall clock jumps or repeats.
 
 - [ ] **Step 2: Run the resolver tests red**
 
@@ -1931,11 +1931,12 @@ NATURAL_TIME_RE = re.compile(
     rf"(?P<hour>-?\d{{1,2}}|{_HOUR_WORD})"
     r"(?::(?P<minute>\d{2}))?\s*(?P<suffix>am|pm)?"
     r"(?:\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden))?\b"
+    r"(?![\w:])"
 )
 RAW_TIME_RE = re.compile(r"(?<![\d.:])(?P<hour>-?\d{1,2}):(?P<minute>\d{2})(?![\d:])")
 ~~~
 
-Alias and finite phrase matching is longest-first and bounded with (?<!\w)...(?!\w); substrings inside words are not evidence. Bare entries from _CONTEXT_DAYPART_HOURS are collected only when the utterance also has a disjoint date-evidence span. First mask or otherwise deduplicate spans so one surface span cannot be interpreted by multiple time grammars. For exactly one valid disjoint explicit time inside the finite daypart range above, compare the daypart at that explicit canonical time while retaining its daypart label and date-anchor semantics; an out-of-range pairing retains independent canonical values and therefore conflicts. Multiple distinct explicit times always conflict. Every recognized-but-invalid span remains evidence and produces a stable error.
+Alias and finite phrase matching is longest-first and bounded with (?<!\w)...(?!\w); substrings inside words are not evidence. A natural cue must consume a complete bounded numeric hour or the longest recognized number-word prefix: kl 123 is inert, at home tomorrow leaves only tomorrow as date evidence, and kl fjorten i morgen resolves both values. Unknown cue-following words are not malformed time evidence. Bare entries from _CONTEXT_DAYPART_HOURS are collected only when the utterance also has a disjoint date-evidence span. First mask or otherwise deduplicate spans so one surface span cannot be interpreted by multiple time grammars. For exactly one valid disjoint explicit time inside the finite daypart range above, compare the daypart at that explicit canonical time while retaining its daypart label and date-anchor semantics; an out-of-range pairing retains independent canonical values and therefore conflicts. Multiple distinct explicit times always conflict. Every recognized-but-invalid span remains evidence and produces a stable error.
 
 Use immutable result types:
 
@@ -2018,10 +2019,20 @@ explicit = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
 if explicit.tzinfo is None or explicit.utcoffset() is None:
     return TemporalResolution(errors=("invalid_time",))
 
+projected = explicit.astimezone(self.zone)
+if projected.microsecond != 0:
+    return TemporalResolution(errors=("invalid_time",))
+if projected.date() != parsed_date or (
+    projected.hour, projected.minute
+) != (wall_time.hour, wall_time.minute):
+    return TemporalResolution(errors=("invalid_time",))
+precise_candidates = self._valid_candidates(
+    parsed_date, projected.timetz().replace(tzinfo=None)
+)
 explicit_utc = explicit.astimezone(timezone.utc)
 matching = [
     candidate
-    for candidate in valid_candidates
+    for candidate in precise_candidates
     if explicit_utc == candidate.astimezone(timezone.utc)
 ]
 if len(matching) != 1:
@@ -2051,11 +2062,12 @@ Implement only the finite grammar pinned above:
 - Norwegian number words zero through thirty-one
 - am/pm conversion and daypart disambiguation
 
-strip_temporal_evidence() masks the source offsets returned by that same finite collector, collapses whitespace and orphaned temporal separators, and returns the remaining text. It does not call resolve() with a second clock read and does not recognize any additional surface form.
+strip_temporal_evidence() masks the source offsets returned by that same finite collector, collapses whitespace and orphaned temporal separators only when at least one temporal span was removed, and returns the remaining text. With no temporal evidence it returns the input unchanged—including trailing words such as stol på. It does not call resolve() with a second clock read and does not recognize any additional surface form.
 
 A word hour 0..11 without am/pm/daypart may be ambiguous where existing behavior cannot choose a half-day; return ambiguous_time rather than guessing. The explicit "tre på ettermiddagen" maps to 15:00. Numeric 13..23 is unambiguous. Preserve the existing natural defaults only where a test names them.
 
 Relative durations are elapsed instants: add minutes/hours in UTC, then project back to Oslo. Calendar-day and week offsets remain local calendar arithmetic. This distinction is covered across both DST transitions.
+Normalize only reference microseconds before relative arithmetic; preserve whole seconds in canonical due_at while the paired public time remains its HH:MM projection. The result must pass validate_fields() unchanged under a real clock whose seconds are nonzero.
 
 When an explicit cue or raw time has no date, choose the first future local date using the wall-time validity rules. Every explicit same-day daypart phrase beginning with i bypasses that rollover and anchors today; the generic på forms do not.
 
@@ -2826,6 +2838,8 @@ The only allowed `parser_name` values in route diagnostics are the Task 1 `Parse
 
 Every additive, mutating, or destructive conversion through `_candidate_from_result()` must pass the finite action/domain terms it actually matched in `utterance.control_text`; a parser result alone is never evidence. Add `_present_terms(control_text, finite_terms)` and use it for generic calendar NLP (`møte`, `avtale`, `arrangement`, `meeting`, `event` plus any live create verb), reminder NLP, poll/watchlist/quote/birthday/profile, and location (`bor`, `bosted`, `sted`, `location`, `flytt`, `sett`). `_unsafe_code()` requires at least one such live unmasked term for every write, checks negation against the complete live evidence tuple, and then applies the stricter destructive action-plus-domain rule. Thus an otherwise parseable write found only in inline/fenced code, a quote, or `jeg vil ikke møte i morgen kl 14` is hard-blocked even when its parser emitted empty action terms. Keep `ikke glem`/`ikkje gløym` as the existing narrow positive idiom.
 
+The control/data split is global, including read-only candidates. Every collector recognizes and gates its command frame exclusively against `context.utterance.control_text`; only after a live unmasked frame passes may it call a production parser with `context.utterance.text` to preserve case and quoted target data. Parser output can never establish the live gate. A quoted, inline-code, or fenced-code command example therefore remains inert for poll list, watchlist list/status/suggest, quote get/list, countdown, utilities, and writes alike. A live frame such as `lagre sitat "Carpe Diem"` may still pass raw text to the payload parser because `lagre sitat` remains live outside the masked target. Add end-to-end negatives for read-only command examples in all three masking forms and a positive quoted-target-data case.
+
 - [ ] **Step 6: Freeze the complete collector tier/order/specificity contract (2–5 minutes)**
 
 Lower tier is earlier. Specificity is independent: `0` implicit parser shape, `1` domain evidence, `2` action plus domain, `3` action plus domain plus target/value, `4` exact operational/context form. `order` is the old `route()` branch position inside its tier. `2/3`, `0/3`, and `1/3` use the larger value only when a nonblank typed target/value is present. Only two leading candidates whose priority is exactly tier `35` can produce `CLARIFY`; equal candidates in every other tier preserve source `order`, even when their specificity, domain difference, and confidence distance would otherwise satisfy the ambiguity predicate. The implementation must use these exact reason strings and numbers:
@@ -3095,7 +3109,7 @@ Expected: all listed suites pass.
 
 - [ ] **Step 11: Migrate poll, countdown, watchlist, quote, and content features (2–5 minutes)**
 
-`_collect_poll_watchlist_quote_candidates(context)` calls each production parser through `_safe_parse` and emits every table row from `poll_list_keyword` through `school_holidays_keyword` without returning early.
+`_collect_poll_watchlist_quote_candidates(context)` first gates every read and write command frame against `context.utterance.control_text`. Only a parser whose finite live frame passed may be called through `_safe_parse` with `context.utterance.text`; parser output never creates the gate. It emits every table row from `poll_list_keyword` through `school_holidays_keyword` without returning early.
 
 - [ ] **Step 11a: Migrate poll and countdown candidates (2–5 minutes)**
 
@@ -3112,6 +3126,7 @@ Expected: all listed suites pass.
 - [ ] **Step 11c: Migrate read-only content candidates and deduplicate parser calls (2–5 minutes)**
 
 - word-of-day, aurora, and school-holidays have read-only domain evidence and no action mutation evidence.
+- quoted, inline-code, and fenced-code examples of poll list, watchlist list/status/suggest, quote get/list, countdown, word-of-day, aurora, and school-holidays emit no feature candidate; add router-level negatives plus one live quote-save frame whose quoted target retains original case.
 
 Never call `_route_watchlist_command()` from this collector because that helper hides parser exceptions. Call `monitor.parse_watchlist_command` once and construct `IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": parsed}, "watchlist_parser")`. Likewise call poll, vote, countdown, and quote parsers once each and reuse their value for all candidate rows.
 

@@ -1056,8 +1056,10 @@ The resolver suite must cover:
 - year bounds 1900..2100, two-digit years 2000..2099, and yearless first-nonpast selection;
 - Oslo gap/fold behavior and due_at forms +01:00, +02:00, and equivalent Z instants;
 - elapsed relative durations across both DST transitions;
+- a real reference with nonzero seconds whose relative result preserves whole-second due_at and revalidates against its HH:MM projection;
+- bounded natural-hour regressions: kl 123 is inert, at home tomorrow retains only date evidence, and kl fjorten i morgen resolves 14:00 plus the date;
 - finite matched_text labels and error codes that never contain raw input.
-- shared strip_temporal_evidence cleanup for relative, weekday, numeric, raw-time, daypart, and special-hour spans, with unchanged non-temporal text and zero provider reads for an explicit reference.
+- shared strip_temporal_evidence cleanup for relative, weekday, numeric, raw-time, daypart, and special-hour spans, with byte-for-byte unchanged no-evidence text such as stol på and zero provider reads for an explicit reference.
 
 The parser and handler suites add quote/code masking, every alias, recurrence-only defaults, legacy event days_offset agreement, task-shape parity, one/zero provider reads, invalid create/edit zero-write assertions, cross-field edit gap/fold cases in both directions, boolean returns, and 3600-second GCal duration across DST.
 
@@ -1103,12 +1105,13 @@ NATURAL_TIME_RE = re.compile(
     rf"(?P<hour>-?\d{{1,2}}|{_HOUR_WORD})"
     r"(?::(?P<minute>\d{2}))?\s*(?P<suffix>am|pm)?"
     r"(?:\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden))?\b"
+    r"(?![\w:])"
 )
 ~~~
 
-Match aliases longest-first with word boundaries. Collect bare entries from _CONTEXT_DAYPART_HOURS only beside a disjoint date-evidence span. Overlapping time grammars deduplicate longest-first. Exactly one valid disjoint explicit time inside the bounded semantic range above refines the daypart default for conflict comparison while preserving its label and anchor; an out-of-range pairing or multiple distinct explicit times remains conflicting evidence. Recognized malformed raw times remain evidence and fail. A bare/cue time uses the first future local occurrence. Every explicit same-day phrase beginning with i—i morges, i formiddag, i ettermiddag, i kveld, and i natt—stays anchored today even when its wall time has passed; generic på forms without separate date evidence retain first-future behavior. Relative minutes/hours use UTC elapsed arithmetic before projecting to Oslo; local day/week offsets use calendar arithmetic.
+Match aliases longest-first with word boundaries. A cue consumes a complete bounded numeric hour or the longest recognized number-word prefix; unknown words after at/kl are inert rather than invalid time evidence. Collect bare entries from _CONTEXT_DAYPART_HOURS only beside a disjoint date-evidence span. Overlapping time grammars deduplicate longest-first. Exactly one valid disjoint explicit time inside the bounded semantic range above refines the daypart default for conflict comparison while preserving its label and anchor; an out-of-range pairing or multiple distinct explicit times remains conflicting evidence. Recognized malformed raw times remain evidence and fail. A bare/cue time uses the first future local occurrence. Every explicit same-day phrase beginning with i—i morges, i formiddag, i ettermiddag, i kveld, and i natt—stays anchored today even when its wall time has passed; generic på forms without separate date evidence retain first-future behavior. Relative minutes/hours use UTC elapsed arithmetic before projecting to Oslo; local day/week offsets use calendar arithmetic. Relative arithmetic drops only reference microseconds, retains whole seconds in due_at, and revalidates that precise instant against the HH:MM public projection.
 
-resolve() and strip_temporal_evidence() share one internal evidence collector. Internal source offsets may be used only to mask matched spans and are never present in public TemporalResolution fields. Cleanup collapses whitespace/orphaned separators and adds no second recognition grammar.
+resolve() and strip_temporal_evidence() share one internal evidence collector. Internal source offsets may be used only to mask matched spans and are never present in public TemporalResolution fields. Cleanup collapses whitespace/orphaned separators only after evidence removal, returns no-evidence text unchanged, and adds no second recognition grammar.
 
 - [ ] **Step 3: Canonicalize by construction and validate instant identity**
 
@@ -1116,7 +1119,7 @@ validate_fields() accepts finite D.M/DD.MM slash variants, two/four-digit years,
 
 validate_time(value) shares the scalar time parser, accepts only H or H:MM, returns canonical HH:MM or None, and never selects a date. It is the only pre-lookup validator for an isolated time edit.
 
-Build valid fold candidates by UTC round-trip. Zero is invalid_time; two distinct offsets is ambiguous_time unless due_at names exactly one candidate instant. Reject naive or mismatching due_at. Compare UTC instants:
+Build valid fold candidates by UTC round-trip. Zero is invalid_time; two distinct offsets is ambiguous_time unless due_at names exactly one candidate instant. Reject naive or mismatching due_at. The typed date and HH:MM must equal the Oslo projection at minute precision; a nonzero whole-second due_at is allowed and validated with precise fold candidates, while microseconds are rejected. Compare UTC instants:
 
 ~~~python
 explicit_utc = explicit.astimezone(timezone.utc)
@@ -1453,13 +1456,15 @@ COLLECTOR_ORDER = (
 
 Each named method has signature `(self, context: CollectorContext) -> CollectorOutput` and is added with its real branches in Steps 3b–3d; do not add empty stubs. Keep `route(content, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None)` as a compatibility wrapper. Add `route_utterance(..., reference_time=None)` and `evaluate_utterance(..., reference_time=None) -> RoutedIntent`. At the public entry, use the supplied aware `reference_time` or capture exactly one value from the router's injected clock, validate it, and put it on `CollectorContext`; every temporal parser and active-state read consumes that exact value. When `routing_context` exists, derive and validate `guild_id`, `channel_id`, and `user_id` from its key, rejecting any mismatched supplied scalar as `invalid_context`; without one, preserve all three supplied scalars unchanged on the context. Add wrapper-only, identity-preservation, and Oslo-midnight boundary tests before moving any branch. No identity value is copied to result payloads or diagnostics.
 
+The control/data split applies to every collector and every risk class. Recognize and gate command frames only against `context.utterance.control_text`; after a live unmasked frame passes, pass `context.utterance.text` to the production parser for case-preserving and quoted target data. Parser output never establishes a gate. Quoted, inline-code, and fenced-code read commands (including poll/watchlist/quote list or get, countdown, and content utilities) are inert just like writes, while a live frame with a quoted target remains valid. Add end-to-end negatives for all three masking forms and one positive quoted-target case.
+
 All collectors share one `_safe_parse` boundary. A caught exception appends the finite parser name once, appends one `CandidateRejection` with code `PARSER_ERROR` whose synthetic candidate has empty payload and constant reason `parser_error_diagnostic`, and increments the allowlisted parser metric once. The synthetic candidate is diagnostics-only and never reaches arbitration; the aggregate evaluation loop records its rejection exactly once. Production parsers are each called at most once per route, and route diagnostics preserve one entry per exception without shared mutable probe state or raw exception data.
 
 Task 5 resolver selection is explicit injection, else `monitor.nlp_parser.temporal_resolver`, else an offline/test default. This routing lane does not claim monitor-wide clock/resolver identity. Collectors pass the one captured reference explicitly, so parser providers are not reread. Keep legacy event `days_offset` through Task 5 and let typed dispatch convert/remove it later. Add resolver compatibility smoke cases for raw `HH:MM`, `noon`, and all Task 4 alias families without changing the priority/order table, risk policy, payload envelopes, or fixture schema.
 
 - [ ] **Step 3b: Migrate control, memory, calendar, and reminder branches**
 
-Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday branches into the first two collectors without changing reason strings or outer payloads. Feed `control_text` to evidence checks and `text` to payload parsers. Preserve the calendar confidence >=0.94 early tier and lower-confidence late tier. Task 5 owns the complete canonical `CALENDAR_EDIT` target/change envelope and the pure `parse_reminder_command` create/edit/target vocabulary, including fixed-clock canonical timing. Reminder title cleanup must call Task 4's `TemporalResolver.strip_temporal_evidence(text, reference=now)` and must not introduce a second temporal regex grammar. Run:
+Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday branches into the first two collectors without changing reason strings or outer payloads. As required globally, feed `control_text` to command/evidence gates and `text` to payload parsers only after a live gate. Preserve the calendar confidence >=0.94 early tier and lower-confidence late tier. Task 5 owns the complete canonical `CALENDAR_EDIT` target/change envelope and the pure `parse_reminder_command` create/edit/target vocabulary, including fixed-clock canonical timing. Reminder title cleanup must call Task 4's `TemporalResolver.strip_temporal_evidence(text, reference=now)` and must not introduce a second temporal regex grammar. Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
@@ -1471,7 +1476,7 @@ Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday br
 
 - [ ] **Step 3c: Migrate poll, watchlist, quote, and countdown branches**
 
-Move poll list/create/vote/edit/delete/close, countdown, watchlist, word-of-day, and quote branches. As a routing prerequisite, complete `features.watchlist_manager.parse_watchlist_command()` here before collecting watchlist candidates; preserve case, emit the complete typed fields, and keep generic actions inert. `tests/test_watchlist_scope.py` supplies the existing direct parser gate without entering Task 5's staged scope. Keep collectors pure and isolate each parser exception through the exact bounded diagnostic contract above. Run:
+Move poll list/create/vote/edit/delete/close, countdown, watchlist, word-of-day, and quote branches. Gate every read/write frame on `control_text` before calling its raw-text payload parser; quoted/code-only feature examples must remain inert, while quoted target data following a live frame retains case. As a routing prerequisite, complete `features/watchlist_manager.parse_watchlist_command()` here before collecting watchlist candidates; preserve case, emit the complete typed fields, and keep generic actions inert. `tests/test_watchlist_scope.py` supplies the existing direct parser gate without entering Task 5's staged scope. Keep collectors pure and isolate each parser exception through the exact bounded diagnostic contract above. Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
