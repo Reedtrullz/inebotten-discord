@@ -2,10 +2,18 @@
 # pyright: reportDeprecated=false, reportExplicitAny=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportAny=false, reportUnusedImport=false
 """Central intent router for Inebotten message handling."""
 
-from dataclasses import dataclass, field
-from enum import Enum
 import re
 from typing import Any, Dict, Optional
+
+from core.intent_models import (
+    BotIntent,
+    IntentCandidate,
+    IntentResult,
+    IntentRisk,
+    IntentSource,
+    RouteDiagnostics,
+    RoutedIntent,
+)
 
 from core.intent_keywords import (
     AURORA_KEYWORDS,
@@ -36,67 +44,6 @@ from core.intent_keywords import (
     GCAL_AUTH_KEYWORDS,
 )
 from core.intent_utils import has_any_keyword
-
-
-class BotIntent(Enum):
-    HELP = "help"
-    STATUS = "status"
-    PROFILE = "profile"
-    CALENDAR_HELP = "calendar_help"
-    CALENDAR_LIST = "calendar_list"
-    CALENDAR_SYNC = "calendar_sync"
-    CALENDAR_DELETE = "calendar_delete"
-    CALENDAR_COMPLETE = "calendar_complete"
-    CALENDAR_EDIT = "calendar_edit"
-    CALENDAR_SEARCH = "calendar_search"
-    CALENDAR_CLEAR = "calendar_clear"
-    CALENDAR_ITEM = "calendar_item"
-    POLL_CREATE = "poll_create"
-    POLL_VOTE = "poll_vote"
-    POLL_EDIT = "poll_edit"
-    POLL_DELETE = "poll_delete"
-    POLL_CLOSE = "poll_close"
-    POLL_LIST = "poll_list"
-    COUNTDOWN = "countdown"
-    WATCHLIST = "watchlist"
-    WORD_OF_DAY = "word_of_day"
-    QUOTE = "quote"
-    QUOTE_LIST = "quote_list"
-    QUOTE_EDIT = "quote_edit"
-    QUOTE_DELETE = "quote_delete"
-    AURORA = "aurora"
-    SCHOOL_HOLIDAYS = "school_holidays"
-    PRICE = "price"
-    HOROSCOPE = "horoscope"
-    COMPLIMENT = "compliment"
-    CALCULATOR = "calculator"
-    SHORTEN_URL = "shorten_url"
-    DAILY_DIGEST = "daily_digest"
-    SEARCH = "search"
-    DASHBOARD = "dashboard"
-    SET_LOCATION = "set_location"
-    MEMORY_VIEW = "memory_view"
-    MEMORY_EXPORT = "memory_export"
-    MEMORY_DELETE = "memory_delete"
-    BIRTHDAY_EDIT = "birthday_edit"
-    REMINDER_EDIT = "reminder_edit"
-    REMINDER_DELETE = "reminder_delete"
-    REMINDER_SEARCH = "reminder_search"
-    REMINDER_CREATE = "reminder_create"
-    REMINDER_LIST = "reminder_list"
-    REMINDER_COMPLETE = "reminder_complete"
-    CALENDAR_AUTH = "calendar_auth"
-    AI_CHAT = "ai_chat"
-
-
-@dataclass(frozen=True)
-class IntentResult:
-    intent: BotIntent
-    confidence: float
-    payload: Dict[str, Any] = field(default_factory=dict)
-    reason: str = ""
-
-
 
 class IntentRouter:
     """Routes cleaned, authorized message text to one concrete bot intent."""

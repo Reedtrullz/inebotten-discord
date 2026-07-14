@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimum confidence thresholds for intent dispatch."""
 
-from core.intent_router import BotIntent
+from core.intent_models import BotIntent
 
 
 CONFIDENCE_THRESHOLDS = {
