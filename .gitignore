@@ -65,6 +65,7 @@ desktop.ini
 
 # Test artifacts
 .pytest_cache/
+.artifacts/
 .coverage
 htmlcov/
 .tox/

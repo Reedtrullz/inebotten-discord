@@ -2,6 +2,27 @@
 
 > Automatisk testing og forbedring av botens naturlige samtaleevner
 
+## Deterministisk NLU-kontrakt
+
+Den versjonerte NLU-kontrakten kjører de samme parserinngangene som produksjon,
+men bruker bare avgrenset tilstand i minnet. Den konstruerer ikke Discord,
+filbaserte managere eller utfører nettverks-I/O.
+
+Kjør dagens baseline uten å blokkere på planlagte gjenkjenningsgap:
+
+```bash
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json \
+  --report-only
+```
+
+Utelat `--report-only` når kontrakten skal brukes som en streng akseptanseport.
+Rapporten har et stabilt, personvernsikkert skjema med toppnivåfeltene
+`schema_version`, `totals`, `metrics`, `by_locale`, `by_family`,
+`parser_errors_by_name` og `cases`. Saks-ID-er hashes, og rapporten inneholder
+aldri ytringstekst, payload-verdier eller unntakstekst.
+
 ## Hva dette gjør
 
 1. **Tester** botten med 50 naturlige meldinger
