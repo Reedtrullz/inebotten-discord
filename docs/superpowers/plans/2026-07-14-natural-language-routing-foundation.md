@@ -59,7 +59,7 @@ Execution order is strict: Task 1 provides the executable harness plus a report-
 
 - Consumes current `core.intent_router.IntentRouter`, `IntentResult`, production parser functions, `NaturalLanguageParser`, `CountdownManager`, and file-free `ConversationContext`.
 - Produces `EvalFixture`, `EvalCase`, `EvalResult`, `load_cases(path)`, `build_production_router(fixture)`, `evaluate_case(case, router, guild_id=123)`, `aggregate_intent_report(results)`, and a privacy-safe JSON report.
-- Task 5 changes only `ProductionRouterAdapter.evaluate()` to read `RoutedIntent.diagnostics.parser_errors`; corpus/report types remain stable.
+- Task 5 changes the adapter's parser binding from `ParserProbe.wrap(...)` proxies to raw production callables and updates `ProductionRouterAdapter.evaluate()` to read `RoutedIntent.diagnostics.parser_errors`; corpus/report types remain stable.
 
 - [ ] **Step 1: Write loader and evaluator contract tests (2–5 minutes)**
 
