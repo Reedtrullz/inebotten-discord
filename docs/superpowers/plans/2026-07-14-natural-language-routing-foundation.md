@@ -1812,7 +1812,7 @@ Pin the finite daypart behavior:
 - The bare nouns formiddag, ettermiddag, kveld, and natt are time evidence only when the same utterance contains separate live date evidence, so imorgen kveld resolves to 19:00 while ordinary text such as ha en fin kveld remains non-temporal.
 - A disjoint explicit time may refine a daypart default only inside this finite semantic range: morges 00:00..<12:00, formiddag 06:00..<12:00, ettermiddag 12:00..<18:00, kveld 18:00..<24:00, and natt 22:00..<24:00 or 00:00..<06:00. Thus i kveld kl 20 remains valid and anchored today, while kl 14 i kveld and kl 14 imorgen kveld return conflicting_temporal. Multiple distinct explicit times still conflict. Longest-first overlap lets one phrase such as rundt tre på ettermiddagen resolve as a single natural-time span.
 - A cue/bare time without date uses the first future local occurrence.
-- The explicit legacy phrases i kveld and i natt remain anchored to today's date even after their default wall time has passed.
+- Every explicit same-day phrase beginning with i—i morges, i formiddag, i ettermiddag, i kveld, and i natt—remains anchored to today's date even after its default or refined wall time has passed. The generic på formiddagen, på ettermiddagen, på kvelden, and på natten forms without separate date evidence still select the first future local occurrence.
 
 Include a regression proving the hour-word matcher does not swallow the daypart introducer:
 
@@ -2057,7 +2057,7 @@ A word hour 0..11 without am/pm/daypart may be ambiguous where existing behavior
 
 Relative durations are elapsed instants: add minutes/hours in UTC, then project back to Oslo. Calendar-day and week offsets remain local calendar arithmetic. This distinction is covered across both DST transitions.
 
-When an explicit cue or raw time has no date, choose the first future local date using the wall-time validity rules. Only the explicit compatibility phrases i kveld and i natt bypass that rollover and anchor today.
+When an explicit cue or raw time has no date, choose the first future local date using the wall-time validity rules. Every explicit same-day daypart phrase beginning with i bypasses that rollover and anchors today; the generic på forms do not.
 
 - [ ] **Step 6: Run the resolver suite green**
 
