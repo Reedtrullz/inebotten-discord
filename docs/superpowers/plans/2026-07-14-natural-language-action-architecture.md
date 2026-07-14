@@ -602,7 +602,7 @@ def classify_eval_risk(intent: str, payload: Mapping[str, object]) -> str:
 - Reports contain ids and aggregate intent names, never case text.
 - Wrap production parser callables in the Task 1 adapter so exceptions set EvalResult.parser_error before returning no candidate. Once Task 5 adds evaluate_utterance(), evaluate_case() consumes RoutedIntent.diagnostics directly; it must snapshot per call, not read shared last-route state.
 
-- [ ] **Step 3: Seed a green corpus from current production contracts**
+- [ ] **Step 3: Seed the exact baseline corpus before recognizer changes**
 
 Add at least these exact JSONL rows to tests/fixtures/nlu_contract_v1.jsonl:
 
@@ -631,9 +631,10 @@ scripts/evaluate_nlu.py must accept:
 --report PATH
 --min-overall 0.98
 --min-locale 0.95
+--report-only
 ~~~
 
-It creates the report parent directory, writes stable sorted JSON with a trailing newline, prints one aggregate summary line, and exits 1 when any acceptance threshold fails.
+It creates the report parent directory, writes stable sorted JSON with a trailing newline, and prints one aggregate summary line. Strict mode exits 1 when any acceptance threshold fails. `--report-only` computes and reports the exact same would-pass/would-fail result but exits 0 without weakening thresholds or changing report content; Task 1 uses it only to capture the pre-change production baseline, while routing-foundation Task 5 runs the first strict behavior gate.
 
 At the top of the script, insert the repository root derived from Path(__file__).resolve().parents[1] into sys.path before importing core or tests modules, matching the repository entry-point convention. Add .artifacts/ to .gitignore so local reports do not dirty the worktree.
 
@@ -645,10 +646,11 @@ Run:
 .venv312/bin/python -m pytest tests/test_nlu_contract.py -q
 .venv312/bin/python scripts/evaluate_nlu.py \
   --corpus tests/fixtures/nlu_contract_v1.jsonl \
-  --report .artifacts/nlu-contract.json
+  --report .artifacts/nlu-contract.json \
+  --report-only
 ~~~
 
-Expected: PASS and a report containing no utterance text.
+Expected: harness tests PASS; the report-only CLI exits 0, may expose the planned reminder/calendar gaps, and writes a report containing no utterance text. Do not claim the strict behavior gate is green until routing-foundation Task 5.
 
 - [ ] **Step 6: Commit**
 
