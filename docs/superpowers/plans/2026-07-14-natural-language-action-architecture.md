@@ -1025,6 +1025,7 @@ Expected: PASS.
 - Consumes case-preserving message text, masked control text when available, and an optional aware reference_time.
 - Produces canonical DD.MM.YYYY, HH:MM, optional offset-bearing due_at, and stable bounded diagnostics.
 - Exposes validate_time(value) for date-independent H/H:MM edit-slot canonicalization; combined date/time DST safety remains in validate_fields().
+- Exposes strip_temporal_evidence(text, reference=None) for in-process title cleanup through the same finite evidence collector; raw offsets never enter TemporalResolution, diagnostics, metrics, or reports.
 - Preserves NaturalLanguageParser dictionary-or-None wrappers and CalendarHandler boolean returns.
 - Captures one reference per public parser/handler operation; an explicit aware reference causes zero provider reads.
 - Reuses monitor.nlp_parser.temporal_resolver when available, but defers sole monitor resolver/clock ownership and DispatchOutcome conversion to the later typed/model-action lanes.
@@ -1055,6 +1056,7 @@ The resolver suite must cover:
 - Oslo gap/fold behavior and due_at forms +01:00, +02:00, and equivalent Z instants;
 - elapsed relative durations across both DST transitions;
 - finite matched_text labels and error codes that never contain raw input.
+- shared strip_temporal_evidence cleanup for relative, weekday, numeric, raw-time, daypart, and special-hour spans, with unchanged non-temporal text and zero provider reads for an explicit reference.
 
 The parser and handler suites add quote/code masking, every alias, recurrence-only defaults, legacy event days_offset agreement, task-shape parity, one/zero provider reads, invalid create/edit zero-write assertions, cross-field edit gap/fold cases in both directions, boolean returns, and 3600-second GCal duration across DST.
 
@@ -1098,6 +1100,8 @@ NATURAL_TIME_RE = re.compile(
 ~~~
 
 Match aliases longest-first with word boundaries. Recognized malformed raw times remain evidence and fail. A bare/cue time uses the first future local occurrence; the explicit legacy phrases i kveld and i natt stay anchored today. Relative minutes/hours use UTC elapsed arithmetic before projecting to Oslo; local day/week offsets use calendar arithmetic.
+
+resolve() and strip_temporal_evidence() share one internal evidence collector. Internal source offsets may be used only to mask matched spans and are never present in public TemporalResolution fields. Cleanup collapses whitespace/orphaned separators and adds no second recognition grammar.
 
 - [ ] **Step 3: Canonicalize by construction and validate instant identity**
 

@@ -1740,6 +1740,7 @@ The following suites are verification-only in this task and are not staged unles
 - TemporalResolver.resolve(text, reference=None) returns a TemporalResolution with canonical DD.MM.YYYY, HH:MM, optional offset-bearing due_at, bounded matched_text labels, stable error codes, and a valid property.
 - TemporalResolver.validate_fields(date_value, time_value, due_at=None, reference=None) validates scalar fields and the combined Oslo wall time. It never accepts a value through regex shape alone.
 - TemporalResolver.validate_time(value) validates and canonicalizes an isolated H or H:MM field without inventing a date; it returns HH:MM or None. Cross-field DST validation still happens through validate_fields after the target date is known.
+- TemporalResolver.strip_temporal_evidence(text, reference=None) removes only spans recognized by the resolver's shared finite grammar and returns collapsed non-temporal text. It never exposes raw spans through TemporalResolution or diagnostics, and an explicit reference causes zero provider reads.
 - NaturalLanguageParser.parse_event() and parse_task_with_recurrence() remain dictionary-or-None wrappers. New parse_event_result() and parse_task_with_recurrence_result() methods expose bounded errors.
 - Parser and handler reference_time keywords are optional compatibility seams. Each public operation either uses the supplied aware instant without reading a provider or captures its provider exactly once.
 - CalendarHandler methods continue returning bool in Task 4. DispatchOutcome and delivery-certainty conversion belong to the later typed-dispatch task.
@@ -1797,6 +1798,8 @@ def test_resolve_finite_compatibility_vocabulary(text, date, time):
 ~~~
 
 Add direct cases for raw 00:00, 08:05, and 23:59 without kl/at; raw 25:61 must report invalid_time instead of disappearing as no evidence. Test cue hours, am/pm, number words zero through thirty-one, Norwegian/English month names, weekdays, neste/next and førstkommende semantics, and relative minutes/hours/days/weeks.
+
+Pin shared title cleanup without exposing spans: strip_temporal_evidence("ring legen i morgen kl 14", reference=NOW) returns "ring legen"; relative, weekday, numeric-date, raw-time, daypart, and special-hour forms use the same collector; non-temporal text is unchanged; explicit reference reads the provider zero times. The method must not maintain a second regex vocabulary.
 
 Pin the finite daypart behavior:
 
@@ -1972,11 +1975,19 @@ class TemporalResolver:
 
     def validate_time(self, value: str) -> str | None:
         ...
+
+    def strip_temporal_evidence(
+        self,
+        text: str,
+        *,
+        reference: datetime | None = None,
+    ) -> str:
+        ...
 ~~~
 
 The reference boundary is strict: a supplied reference is used without reading now_provider; an omitted reference reads now_provider exactly once; naive values raise ValueError("temporal_reference_must_be_aware"); the captured value is converted to Europe/Oslo.
 
-Collect independent date, time, and relative evidence before selecting values. Equal canonical evidence deduplicates. More than one distinct canonical value in a category, or a relative expression combined with an absolute date/time/daypart, returns only conflicting_temporal. Diagnostic labels are finite names such as date_alias, numeric_date, month_date, weekday, relative, natural_time, raw_time, special_hour, and daypart; never put raw user text in TemporalResolution.
+Collect independent date, time, and relative evidence before selecting values. The internal evidence objects may retain source offsets only for in-process cleanup; they are never serialized or copied into TemporalResolution. resolve() and strip_temporal_evidence() must call this same collector. Equal canonical evidence deduplicates. More than one distinct canonical value in a category, or a relative expression combined with an absolute date/time/daypart, returns only conflicting_temporal. Diagnostic labels are finite names such as date_alias, numeric_date, month_date, weekday, relative, natural_time, raw_time, special_hour, and daypart; never put raw user text or offsets in TemporalResolution.
 
 - [ ] **Step 4: Implement canonical validation, year selection, and DST identity**
 
@@ -2031,6 +2042,8 @@ Implement only the finite grammar pinned above:
 - natural cue time, raw HH:MM, special hour, and daypart evidence
 - Norwegian number words zero through thirty-one
 - am/pm conversion and daypart disambiguation
+
+strip_temporal_evidence() masks the source offsets returned by that same finite collector, collapses whitespace and orphaned temporal separators, and returns the remaining text. It does not call resolve() with a second clock read and does not recognize any additional surface form.
 
 A word hour 0..11 without am/pm/daypart may be ambiguous where existing behavior cannot choose a half-day; return ambiguous_time rather than guessing. The explicit "tre på ettermiddagen" maps to 15:00. Numeric 13..23 is unambiguous. Preserve the existing natural defaults only where a test names them.
 
