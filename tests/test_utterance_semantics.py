@@ -105,6 +105,7 @@ def test_permission_questions_about_mutation_are_information_requests(text):
     semantics = analyze_utterance(normalize_utterance(text))
     assert semantics.speech_act is SpeechAct.INFORMATION_REQUEST
     assert semantics.allows_mutation is False
+    assert semantics.reasons == ("permission_question",)
 
 
 @pytest.mark.parametrize(

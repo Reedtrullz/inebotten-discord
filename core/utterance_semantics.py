@@ -173,19 +173,22 @@ def analyze_utterance(utterance: NormalizedUtterance) -> UtteranceSemantics:
         )
     if _contains_phrase(text, META_FRAMES):
         return UtteranceSemantics(SpeechAct.META, ("meta_frame",), False)
-    if (
-        any(
-            pattern.search(text)
-            for pattern in INFORMATION_MUTATION_PATTERNS
-        )
-        or (
-            PERMISSION_QUESTION_PATTERN.search(text)
-            and _contains_phrase(text, ACTION_TERMS)
-        )
+    if any(
+        pattern.search(text)
+        for pattern in INFORMATION_MUTATION_PATTERNS
     ):
         return UtteranceSemantics(
             SpeechAct.INFORMATION_REQUEST,
             ("information_question",),
+            False,
+        )
+    if (
+        PERMISSION_QUESTION_PATTERN.search(text)
+        and _contains_phrase(text, ACTION_TERMS)
+    ):
+        return UtteranceSemantics(
+            SpeechAct.INFORMATION_REQUEST,
+            ("permission_question",),
             False,
         )
     if _contains_phrase(text, POLITE_DIRECTIVES):
