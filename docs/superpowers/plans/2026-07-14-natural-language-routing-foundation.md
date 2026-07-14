@@ -1,0 +1,3550 @@
+# Natural-Language Routing Foundation Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build an offline-evaluable, typed, temporally safe natural-language routing foundation that preserves existing deterministic behavior while blocking unsafe write interpretations and arbitrating competing candidates.
+
+**Architecture:** Authorized message text is normalized losslessly, classified for speech act and negation, and offered to pure deterministic candidate collectors. A policy layer assigns risk, a temporal resolver validates Oslo-local dates and times, and one arbiter selects, clarifies, blocks, or falls back while exposing bounded diagnostics. A production-parser evaluation harness gates the migration without Discord, persisted user data, network calls, or AI.
+
+**Tech Stack:** Python 3.12, stdlib `dataclasses`, `enum`, `json`, `re`, `zoneinfo`, existing `pytest`/`pytest-asyncio`, and the repository's existing parser functions.
+
+## Global Constraints
+
+- Run all Python commands with `.venv312/bin/python`; do not add a runtime dependency.
+- Before a long test loop run `df -h /System/Volumes/Data`; stop and report when available space is below `30Gi`.
+- Preserve the authorization order in `core/message_monitor.py`: the existing bot mention is required in both guilds and DMs, then allowed-user/channel checks run before normalization, metrics, routing, or AI. Untagged DMs remain ignored. Tasks in this plan do not modify that file.
+- Preserve every existing `BotIntent` value, the first four positional fields of `IntentResult`, public `IntentRouter.route(content, guild_id=None)`, compatible payload envelopes, confidence values, and reason strings unless a regression case in Task 5 explicitly changes behavior.
+- User-facing copy remains Norwegian; code, enum values, metric keys, and stable error codes remain English.
+- All parser and collector failures are fail-closed and bounded: reports/diagnostics may contain allowlisted parser names and enum codes, never utterance text, payload values, URLs, Discord identities, or exception strings.
+- Evaluation is local and deterministic: no Discord construction, `MessageMonitor` construction, file-backed manager, network, live AI, or system-time dependency in fixed-clock tests.
+- Unknown or malformed `WATCHLIST`/`QUOTE` umbrella actions classify as `DESTRUCTIVE`.
+- A destructive route always requires confirmation. A semantic-source additive or mutating route also requires confirmation. This plan stages no action and dispatches no handler.
+- Collector methods may inspect bounded active state but must not mutate managers.
+- Do not modify `~/.codex/config.toml`, secrets, tokens, `.env` values, or persisted user data.
+
+---
+
+## File and interface map
+
+| File | Responsibility |
+|---|---|
+| `core/eval_fixtures.py` | Shared names for bounded, in-memory evaluation state. |
+| `tests/nlu_harness.py` | JSONL loader, production-parser adapter, privacy-safe results, exact metrics. |
+| `scripts/evaluate_nlu.py` | Stable JSON report and acceptance gate. |
+| `core/intent_models.py` | Intent, risk, candidate, rejection, route, and diagnostics contracts. |
+| `core/intent_policy.py` | Exhaustive base/action risk classification. |
+| `core/message_context.py` | Already-resolved identities passed into routing. |
+| `core/nlu_metrics.py` | In-memory bounded counters; persistence is outside this plan. |
+| `core/utterance.py` | Lossless normalization plus masked control text. |
+| `core/utterance_semantics.py` | Speech-act, quoted-action, and negation safety analysis. |
+| `cal_system/temporal_resolver.py` | Fixed-clock Oslo date/time resolution and DST validation. |
+| `core/intent_arbitration.py` | Pure risk-aware filtering, ordering, ambiguity, and confirmation policy. |
+| `core/intent_router.py` | Compatibility wrapper and five deterministic candidate collectors. |
+
+Execution order is strict: Task 1 provides the executable harness plus a report-only pre-change baseline; Task 2 provides shared types; Task 3 provides safety semantics; Task 4 provides validated temporal evidence; Task 5 migrates the router, reconnects bounded route diagnostics, and runs the first strict behavior gate. A future corpus row is never required to be green before its owning production task.
+
+### Task 1: Add the deterministic production-parser evaluation gate
+
+**Files:**
+
+- Create: `core/eval_fixtures.py`
+- Create: `tests/nlu_harness.py`
+- Create: `tests/fixtures/nlu_contract_v1.jsonl`
+- Create: `tests/test_nlu_contract.py`
+- Create: `scripts/evaluate_nlu.py`
+- Modify: `tests/README_TESTING.md`
+- Modify: `.gitignore`
+
+**Interfaces:**
+
+- Consumes current `core.intent_router.IntentRouter`, `IntentResult`, production parser functions, `NaturalLanguageParser`, `CountdownManager`, and file-free `ConversationContext`.
+- Produces `EvalFixture`, `EvalCase`, `EvalResult`, `load_cases(path)`, `build_production_router(fixture)`, `evaluate_case(case, router, guild_id=123)`, `aggregate_intent_report(results)`, and a privacy-safe JSON report.
+- Task 5 changes only `ProductionRouterAdapter.evaluate()` to read `RoutedIntent.diagnostics.parser_errors`; corpus/report types remain stable.
+
+- [ ] **Step 1: Write loader and evaluator contract tests (2–5 minutes)**
+
+Create `tests/test_nlu_contract.py` with these imports and cases (retain the repository's normal imports around them):
+
+```python
+import json
+from pathlib import Path
+
+import pytest
+
+from core.eval_fixtures import EvalFixture
+from core.intent_router import BotIntent, IntentResult
+from tests.nlu_harness import (
+    EvalCase,
+    EvalResult,
+    aggregate_intent_report,
+    evaluate_case,
+    load_cases,
+)
+
+
+class StubRouter:
+    def __init__(self, result: IntentResult):
+        self.result = result
+
+    def evaluate(self, text: str, *, guild_id: int | None):
+        return self.result, ()
+
+
+def corpus_line(**overrides):
+    value = {
+        "id": "one",
+        "locale": "nb",
+        "family": "chat",
+        "text": "hei",
+        "expected_intent": "ai_chat",
+        "expected_payload": {},
+        "forbidden_intents": [],
+        "fixture": "empty",
+        "critical": False,
+    }
+    value.update(overrides)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def test_load_cases_rejects_duplicate_ids(tmp_path: Path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text(corpus_line() + "\n" + corpus_line(locale="nn") + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate eval id: one"):
+        load_cases(path)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"expected_payload": []}, "expected_payload must be an object"),
+        ({"expected_payload": {"calendar_item..time": "14:00"}}, "invalid payload path"),
+        ({"expected_intent": "not_real"}, "unknown expected intent"),
+        ({"forbidden_intents": ["not_real"]}, "unknown forbidden intent"),
+        ({"fixture": "not_real"}, "unknown fixture"),
+    ],
+)
+def test_load_cases_rejects_malformed_contract(tmp_path: Path, override, message):
+    path = tmp_path / "cases.jsonl"
+    path.write_text(corpus_line(**override) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        load_cases(path)
+
+
+def test_evaluator_uses_router_result_and_labeled_payload():
+    case = EvalCase(
+        id="help-nn",
+        locale="nn",
+        family="help",
+        text="Kva kan du gjere?",
+        expected_intent="help",
+        expected_payload={},
+        forbidden_intents=("calendar_item",),
+        fixture=EvalFixture.EMPTY,
+        critical=True,
+    )
+    result = evaluate_case(
+        case,
+        StubRouter(IntentResult(BotIntent.HELP, 0.96, {}, "help_keyword")),
+        guild_id=123,
+    )
+    assert result.actual_intent == "help"
+    assert result.intent_match is True
+    assert result.payload_labeled is False
+    assert result.payload_match is True
+```
+
+- [ ] **Step 2: Run the Task 1 red test (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_nlu_contract.py -q`
+
+Expected: collection fails with `ModuleNotFoundError: No module named 'tests.nlu_harness'`.
+
+- [ ] **Step 3: Add the fixture enum and exact harness contracts (2–5 minutes)**
+
+Create `core/eval_fixtures.py`:
+
+```python
+from enum import Enum
+
+
+class EvalFixture(str, Enum):
+    EMPTY = "empty"
+    ACTIVE_POLL = "active_poll"
+    ACTIVE_REMINDER = "active_reminder"
+    CALENDAR_TITLE_MEETING = "calendar_title_meeting"
+    MENTIONED_USER_42 = "mentioned_user_42"
+    MIXED_STATE = "mixed_state"
+```
+
+Create the following public contracts at the top of `tests/nlu_harness.py`:
+
+```python
+from __future__ import annotations
+
+from collections import Counter
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+import json
+from pathlib import Path
+import re
+from types import SimpleNamespace
+from typing import Literal, Protocol, TypeAlias
+
+from cal_system.natural_language_parser import NaturalLanguageParser
+from core.eval_fixtures import EvalFixture
+from core.intent_router import BotIntent, IntentResult, IntentRouter
+
+ParserName: TypeAlias = Literal[
+    "parse_task_with_recurrence", "parse_event", "parse_countdown_query",
+    "parse_poll_command", "parse_vote", "parse_watchlist_command",
+    "parse_quote_command", "parse_price_command", "parse_horoscope_command",
+    "parse_compliment_command", "parse_calculator_command",
+    "parse_shorten_command", "detect_search_intent", "parse_reminder_command",
+    "parse_birthday_command", "parse_profile_command",
+]
+RiskName: TypeAlias = Literal["read_only", "additive", "mutating", "destructive"]
+
+CASE_KEYS = frozenset({
+    "id", "locale", "family", "text", "expected_intent", "expected_payload",
+    "forbidden_intents", "fixture", "critical",
+})
+PAYLOAD_PATH = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
+
+
+@dataclass(frozen=True, slots=True)
+class EvalCase:
+    id: str
+    locale: Literal["nb", "nn", "en"]
+    family: str
+    text: str
+    expected_intent: str
+    expected_payload: Mapping[str, object]
+    forbidden_intents: tuple[str, ...]
+    fixture: EvalFixture
+    critical: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EvalResult:
+    id: str
+    locale: str
+    family: str
+    expected_intent: str
+    actual_intent: str
+    expected_risk: RiskName
+    actual_risk: RiskName
+    intent_match: bool
+    payload_labeled: bool
+    payload_match: bool
+    forbidden_hit: bool
+    parser_names: tuple[ParserName, ...]
+    critical: bool
+
+    @property
+    def parser_error(self) -> bool:
+        return bool(self.parser_names)
+
+
+class EvaluationRouter(Protocol):
+    def evaluate(
+        self, text: str, *, guild_id: int | None
+    ) -> tuple[IntentResult, tuple[ParserName, ...]]: ...
+```
+
+Define `EVAL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")` and the finite `EVAL_FAMILIES = frozenset({"chat", "help", "negative", "calendar_create", "calendar_read", "calendar_search", "calendar_edit", "calendar_complete", "calendar_delete", "calendar_clear", "calendar_sync", "calendar_auth", "reminder_create", "reminder_read", "reminder_search", "reminder_edit", "reminder_complete", "reminder_delete", "poll_create", "poll_read", "poll_vote", "poll_edit", "poll_close", "poll_delete", "watchlist", "quote", "birthday", "weather", "location", "utility", "profile", "memory", "status", "dashboard", "fun", "search", "temporal"})`. Implement `load_cases(path: Path) -> tuple[EvalCase, ...]` with these exact rules: ignore blank lines; reject non-JSON constants by passing `parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid JSON constant: {value}"))`; each line must decode to a mapping whose keyset equals `CASE_KEYS`; `id` must full-match `EVAL_ID_RE`, `family` must be in `EVAL_FAMILIES`, and `text` is a nonblank string; locale is exactly `nb`, `nn`, or `en`; `type(critical) is bool`; `expected_intent` and every forbidden intent are members of `{intent.value for intent in BotIntent}`; `expected_payload` is a dict whose keys match `PAYLOAD_PATH` and values are JSON scalars or lists of JSON scalars; and fixture is accepted by `EvalFixture(value)`. Reject `expected_intent in forbidden_intents`. For `expected_intent == "watchlist"`, require `watchlist.action` in `{status,list,suggest,add,edit,remove}`; for `expected_intent == "quote"`, require `quote.action` in `{get,save}`. Use the error fragments asserted above and `f"duplicate eval id: {case.id}"`. Add rejection tests for uppercase/space/slash/overlong IDs and unknown families, and one accepted `calendar_clear` row.
+
+- [ ] **Step 4: Add the independent, exhaustive local risk classifier (2–5 minutes)**
+
+Add this complete classifier to `tests/nlu_harness.py`; it must not import `core.intent_policy`:
+
+```python
+READ_ONLY = frozenset({
+    "help", "status", "calendar_help", "calendar_list", "calendar_search",
+    "poll_list", "countdown", "word_of_day", "quote_list", "aurora",
+    "school_holidays", "price", "horoscope", "compliment", "calculator",
+    "shorten_url", "daily_digest", "search", "dashboard", "memory_view",
+    "memory_export", "reminder_search", "reminder_list", "birthday_list",
+    "clarify", "action_confirm", "action_cancel", "action_select",
+    "action_correct", "ai_chat",
+})
+ADDITIVE = frozenset({
+    "calendar_item", "poll_create", "reminder_create", "birthday_create",
+})
+MUTATING = frozenset({
+    "profile", "calendar_sync", "calendar_complete", "calendar_edit",
+    "poll_vote", "poll_edit", "poll_close", "quote_edit", "set_location",
+    "birthday_edit", "reminder_edit", "reminder_complete", "calendar_auth",
+})
+DESTRUCTIVE = frozenset({
+    "calendar_delete", "calendar_clear", "poll_delete", "quote_delete",
+    "memory_delete", "reminder_delete",
+})
+WATCHLIST_ACTION_RISK: dict[str, RiskName] = {
+    "status": "read_only", "list": "read_only", "suggest": "read_only",
+    "add": "additive", "edit": "mutating", "remove": "destructive",
+}
+QUOTE_ACTION_RISK: dict[str, RiskName] = {
+    "get": "read_only", "save": "additive",
+}
+
+
+def nested_string(payload: Mapping[str, object], envelope: str, key: str) -> str:
+    nested = payload.get(envelope)
+    if not isinstance(nested, Mapping):
+        return ""
+    value = nested.get(key)
+    return value.casefold().strip() if isinstance(value, str) else ""
+
+
+def classify_eval_risk(intent: str, payload: Mapping[str, object]) -> RiskName:
+    if intent == "watchlist":
+        return WATCHLIST_ACTION_RISK.get(
+            nested_string(payload, "watchlist", "action"), "destructive"
+        )
+    if intent == "quote":
+        return QUOTE_ACTION_RISK.get(
+            nested_string(payload, "quote", "action"), "destructive"
+        )
+    for values, risk in (
+        (READ_ONLY, "read_only"), (ADDITIVE, "additive"),
+        (MUTATING, "mutating"), (DESTRUCTIVE, "destructive"),
+    ):
+        if intent in values:
+            return risk
+    raise AssertionError(f"unclassified eval intent: {intent}")
+
+
+def classify_expected_eval_risk(case: EvalCase) -> RiskName:
+    if case.expected_intent in {"watchlist", "quote"}:
+        action = case.expected_payload[f"{case.expected_intent}.action"]
+        payload = {case.expected_intent: {"action": action}}
+    else:
+        payload = {}
+    return classify_eval_risk(case.expected_intent, payload)
+```
+
+Add an exhaustiveness test using the current intent values plus Task 2's seven additions:
+
+```python
+def test_local_eval_risk_partition_is_complete():
+    target = {intent.value for intent in BotIntent} | {
+        "clarify", "birthday_create", "birthday_list", "action_confirm",
+        "action_cancel", "action_select", "action_correct",
+    }
+    assert READ_ONLY | ADDITIVE | MUTATING | DESTRUCTIVE | {"watchlist", "quote"} == target
+```
+
+- [ ] **Step 5: Implement the parser probe and production adapter (2–5 minutes)**
+
+Use a fresh probe and monitor for every case. Add the following classes and bind the real functions from the listed modules; do not construct a production manager:
+
+```python
+class ParserProbe:
+    def __init__(self) -> None:
+        self._names: list[ParserName] = []
+
+    def call(self, name: ParserName, fn: Callable[..., object], *args: object) -> object | None:
+        try:
+            return fn(*args)
+        except Exception:
+            self._names.append(name)
+            return None
+
+    def wrap(self, name: ParserName, fn: Callable[..., object]) -> Callable[..., object | None]:
+        return lambda *args: self.call(name, fn, *args)
+
+    def reset(self) -> None:
+        self._names.clear()
+
+    def snapshot(self) -> tuple[ParserName, ...]:
+        return tuple(dict.fromkeys(self._names))
+
+
+class ProductionRouterAdapter:
+    def __init__(self, monitor: object, probe: ParserProbe) -> None:
+        self._router = IntentRouter(monitor)
+        self._probe = probe
+
+    def evaluate(self, text: str, *, guild_id: int | None):
+        self._probe.reset()
+        result = self._router.route(text, guild_id=guild_id)
+        return result, self._probe.snapshot()
+```
+
+`build_production_router(fixture: EvalFixture) -> EvaluationRouter` imports and wraps these exact callables: `NaturalLanguageParser.parse_task_with_recurrence`, `.parse_event`; `cal_system.reminder_manager.parse_reminder_command`; `CountdownManager().parse_countdown_query`; `features.poll_manager.parse_poll_command`, `.parse_vote`; `features.watchlist_manager.parse_watchlist_command`; `features.quote_manager.parse_quote_command`; `features.birthday_manager.parse_birthday_command`; `features.crypto_manager.parse_price_command`; `features.horoscope_manager.parse_horoscope_command`; `features.compliments_manager.parse_compliment_command`; `features.calculator_manager.parse_calculator_command`; `features.url_shortener.parse_shorten_command`; and `features.search_manager.detect_search_intent`. Use `ConversationContext()` directly. The later profile-parity task attaches `features.profile_commands.parse_profile_command` through the same finite `ParserName` registry when that module exists.
+
+Build a `SimpleNamespace` monitor with `nlp_parser`, `countdown`, the wrapped parser functions, `conversation`, and these in-memory accessors only:
+
+```python
+calendar_record = {"id": "calendar-1", "title": "Møte med Ola", "date": "15.07.2026", "time": "10:00"}
+reminder_record = {"id": "reminder-1", "title": "Ring legen", "completed": False}
+poll_record = {"id": "poll-1", "status": "active", "question": "Pizza?"}
+
+calendar = SimpleNamespace(get_upcoming=lambda guild_id, days=365: calendar_rows)
+reminders = SimpleNamespace(get_active_reminders=lambda guild_id: reminder_rows)
+poll = SimpleNamespace(get_active_polls=lambda guild_id: poll_rows)
+resolved_mentions = {42: "Ola"} if fixture in {EvalFixture.MENTIONED_USER_42, EvalFixture.MIXED_STATE} else {}
+```
+
+`ACTIVE_POLL`, `ACTIVE_REMINDER`, and `CALENDAR_TITLE_MEETING` expose their one record; `MIXED_STATE` exposes all records and the mention; `EMPTY` exposes none. Attach `guild_id=123`, `channel_id=456`, `author_id=7`, `author_name="Kari"`, and `resolved_mentions` as scalar fixture metadata without any Discord objects.
+
+- [ ] **Step 6: Implement payload matching, evaluation, and exact formulas (2–5 minutes)**
+
+Implement `dotted_payload_matches(payload, labels)` by walking each dot-separated path only through `Mapping` objects and comparing the leaf with `==`; a missing segment is false. `evaluate_case()` sets `payload_labeled=bool(case.expected_payload)`, makes unlabeled payloads pass, and computes both risks with the independent classifier.
+
+Each metric object is exactly `{"numerator": int, "denominator": int, "rate": float, "defined": bool}`; use rate `0.0` when denominator is zero and set `defined=False`. Implement formulas exactly:
+
+```text
+overall exact = count(intent_match) / count(all)
+per locale exact = count(intent_match in locale) / count(locale)
+per family exact = count(intent_match in family) / count(family)
+labeled payload accuracy = count(payload_match where payload_labeled) / count(payload_labeled)
+parser error rate = count(parser_names is nonempty) / count(all)
+negative mutation false-positive rate = count(family == "negative" and actual_risk != "read_only") / count(family == "negative")
+critical action recall = count(intent_match for critical expected intent not in {"ai_chat", "clarify"}) / count(critical expected intent not in {"ai_chat", "clarify"})
+destructive action precision = count(actual_risk == "destructive" and expected_risk == "destructive" and intent_match and (not payload_labeled or payload_match)) / count(actual_risk == "destructive")
+```
+
+The report schema contains only `schema_version`, `totals`, `metrics`, `by_locale`, `by_family`, `parser_errors_by_name`, and `cases`. `metrics` has exactly `overall_exact_intent_accuracy`, `labeled_payload_accuracy`, `parser_error_rate`, `negative_mutation_false_positive_rate`, `critical_action_recall`, and `destructive_action_precision`, each using the metric-object shape above. `by_locale` and `by_family` map each finite allowlisted label directly to one exact-intent metric object; they do not add another wrapper key. A case object contains only `id`, `expected_intent`, `actual_intent`, `expected_risk`, `actual_risk`, `intent_match`, `payload_labeled`, `payload_match`, `forbidden_hit`, `parser_names`, and `critical`. Its public `id` is `sha256(source_id.encode("utf-8")).hexdigest()[:16]`, never the source corpus label; this keeps reports correlatable within a run without copying arbitrary fixture metadata.
+
+Add aggregate tests with (a) one correct destructive, one negative/read-only, and one labeled payload result; (b) expected `watchlist/status` versus actual `watchlist/remove`, proving destructive precision is `0/1` despite matching intent; and (c) every required zero denominator returning `defined=False`.
+
+- [ ] **Step 7: Seed the exact corpus (2–5 minutes)**
+
+Create `tests/fixtures/nlu_contract_v1.jsonl` with these lines, one object per line:
+
+```jsonl
+{"id":"nb-reminder-husk-mandag","locale":"nb","family":"reminder_create","text":"husk å kjøpe melk på mandag","expected_intent":"reminder_create","expected_payload":{"reminder.action":"add"},"forbidden_intents":["calendar_item","watchlist"],"fixture":"empty","critical":true}
+{"id":"nb-event-time","locale":"nb","family":"calendar_create","text":"møte med Ola i morgen kl 14","expected_intent":"calendar_item","expected_payload":{"calendar_item.time":"14:00"},"forbidden_intents":["ai_chat"],"fixture":"empty","critical":true}
+{"id":"en-event-pm","locale":"en","family":"calendar_create","text":"meeting tomorrow at 3pm","expected_intent":"calendar_item","expected_payload":{"calendar_item.time":"15:00"},"forbidden_intents":["ai_chat"],"fixture":"empty","critical":true}
+{"id":"nb-context-search","locale":"nb","family":"search","text":"hva skjer i Trondheim i helga?","expected_intent":"search","expected_payload":{"search.type":"web"},"forbidden_intents":["calendar_item"],"fixture":"empty","critical":false}
+{"id":"nb-help","locale":"nb","family":"help","text":"hjelp","expected_intent":"help","expected_payload":{},"forbidden_intents":["ai_chat"],"fixture":"empty","critical":true}
+{"id":"nb-calendar-list","locale":"nb","family":"calendar_read","text":"vis kalenderen","expected_intent":"calendar_list","expected_payload":{},"forbidden_intents":["calendar_item"],"fixture":"empty","critical":true}
+{"id":"nb-reminder-list","locale":"nb","family":"reminder_read","text":"vis påminnelser","expected_intent":"reminder_list","expected_payload":{},"forbidden_intents":["calendar_item"],"fixture":"active_reminder","critical":true}
+{"id":"nb-destructive-positive","locale":"nb","family":"calendar_clear","text":"slett kalenderen","expected_intent":"calendar_clear","expected_payload":{"calendar_target.all":true},"forbidden_intents":["ai_chat","calendar_delete"],"fixture":"empty","critical":true}
+{"id":"nb-calc","locale":"nb","family":"utility","text":"regn ut 2+2","expected_intent":"calculator","expected_payload":{"calculator.expression":"2+2"},"forbidden_intents":["ai_chat"],"fixture":"empty","critical":false}
+{"id":"nb-conversational-future","locale":"nb","family":"negative","text":"jeg skal bare høre hva du synes om RBK i morgen","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["calendar_item"],"fixture":"empty","critical":true}
+{"id":"nn-conversational-future","locale":"nn","family":"negative","text":"Kva meiner du om RBK i morgon?","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["calendar_item"],"fixture":"empty","critical":true}
+```
+
+- [ ] **Step 8: Add the CLI and privacy gate (2–5 minutes)**
+
+Create `scripts/evaluate_nlu.py`. Before project imports, add `Path(__file__).resolve().parents[1]` to `sys.path`. Parse `--corpus PATH`, `--report PATH`, `--min-overall FLOAT` default `0.98`, `--min-locale FLOAT` default `0.95`, and a boolean `--report-only`. Build a fresh adapter per case, create the report parent, write sorted indented JSON with a trailing newline, and print one aggregate line.
+
+In strict mode, exit `1` when any required metric is undefined; `parser_error_rate != 0`; `negative_mutation_false_positive_rate != 0`; destructive precision, critical recall, or labeled payload accuracy is not `1.0`; overall is below `--min-overall`; any represented locale is below `--min-locale`; or any forbidden hit exists. Otherwise exit `0`. With `--report-only`, compute and print the exact same would-pass/would-fail decision but exit `0`; do not alter thresholds, cases, report content, or metric math. Task 1 uses this only to prove the current production adapter runs before the planned recognizers exist. Task 5 runs strict mode and must pass.
+
+Add a privacy test whose source text is `Ring Kari https://secret.example/token kl 14` and whose syntactically valid source id contains `secret-token`; assert `Ring`, `Kari`, `secret.example`, `secret-token`, and `token` are absent from `json.dumps(report)`. Separately inject `family="secret-token"` and assert the loader rejects it before evaluation. Add `.artifacts/` to `.gitignore`. Add the command and schema description to `tests/README_TESTING.md`.
+
+- [ ] **Step 9: Run the complete Task 1 gate (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest tests/test_nlu_contract.py -q
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json \
+  --report-only
+```
+
+Expected: harness tests pass; the baseline CLI exits `0` in report-only mode and may report the planned reminder/calendar gaps; the report contains no utterance text, payload data, or exception text. Do not claim the behavior gate is green here.
+
+- [ ] **Step 10: Commit Task 1 (2–5 minutes)**
+
+```bash
+git add core/eval_fixtures.py tests/nlu_harness.py \
+  tests/fixtures/nlu_contract_v1.jsonl tests/test_nlu_contract.py \
+  scripts/evaluate_nlu.py tests/README_TESTING.md .gitignore
+git commit -m "test: add production NLU contract harness"
+```
+
+### Task 2: Extract typed routing contracts, exhaustive risk policy, and bounded metrics
+
+**Files:**
+
+- Create: `core/intent_models.py`
+- Create: `core/intent_policy.py`
+- Create: `core/message_context.py`
+- Create: `core/nlu_metrics.py`
+- Create: `tests/test_intent_models.py`
+- Create: `tests/test_nlu_metrics.py`
+- Modify: `core/intent_router.py:5-6,41-97`
+- Modify: `core/intent_thresholds.py:4`
+
+**Interfaces:**
+
+- Produces every type Task 5 consumes: `BotIntent`, `IntentSource`, `IntentRisk`, `RejectionCode`, `IntentResult`, `IntentCandidate`, `CandidateRejection`, `ArbitrationDecision`, `RouteDiagnostics`, and `RoutedIntent`.
+- `core.intent_router` re-exports the exact objects from `core.intent_models`; old imports and four-position `IntentResult(...)` construction continue to work.
+- `classify_intent_risk(intent, payload)` is exhaustive and payload-aware. `NLUMetrics` accepts only enums/allowlisted dimensions and never raw text.
+
+- [ ] **Step 1: Write failing model, policy, and metric tests (2–5 minutes)**
+
+Create `tests/test_intent_models.py` covering all of these assertions:
+
+```python
+from core.intent_models import (
+    ArbitrationDecision, BotIntent, CandidateRejection, IntentCandidate,
+    IntentResult, IntentRisk, IntentSource, RejectionCode, RouteDiagnostics,
+    RoutedIntent,
+)
+from core.intent_policy import BASE_INTENT_RISK, classify_intent_risk
+from core.intent_router import BotIntent as RouterBotIntent
+
+
+def test_router_reexports_exact_public_type():
+    assert RouterBotIntent is BotIntent
+
+
+def test_four_position_result_remains_compatible():
+    result = IntentResult(BotIntent.HELP, 0.96, {}, "help_keyword")
+    assert result.source is IntentSource.DETERMINISTIC
+    assert result.risk is IntentRisk.READ_ONLY
+    assert result.requires_confirmation is False
+
+
+def test_all_added_control_intents_exist():
+    assert {intent.value for intent in BotIntent} >= {
+        "clarify", "birthday_create", "birthday_list", "action_confirm",
+        "action_cancel", "action_select", "action_correct",
+    }
+
+
+def test_candidate_to_result_copies_shared_fields_only():
+    candidate = IntentCandidate(
+        BotIntent.CALENDAR_DELETE, 0.98, 20, order=112,
+        payload={"target": "Møte"}, reason="calendar_delete_keyword",
+        risk=IntentRisk.DESTRUCTIVE, specificity=3,
+        requires_confirmation=True,
+    )
+    assert candidate.to_result() == IntentResult(
+        BotIntent.CALENDAR_DELETE, 0.98, {"target": "Møte"},
+        "calendar_delete_keyword", IntentSource.DETERMINISTIC,
+        IntentRisk.DESTRUCTIVE, True,
+    )
+
+
+def test_every_intent_has_exactly_one_base_risk():
+    assert set(BASE_INTENT_RISK) == set(BotIntent)
+
+
+def test_diagnostics_defaults_are_not_shared():
+    first = RouteDiagnostics()
+    second = RouteDiagnostics()
+    assert first.rejection_counts is not second.rejection_counts
+```
+
+Parametrize every action override: WATCHLIST `status/list/suggest -> READ_ONLY`, `add -> ADDITIVE`, `edit -> MUTATING`, `remove -> DESTRUCTIVE`; QUOTE `get -> READ_ONLY`, `save -> ADDITIVE`. Parametrize missing, non-mapping, and unknown envelopes for both umbrella intents and assert `DESTRUCTIVE`.
+
+Create `tests/test_nlu_metrics.py` proving a decision increment, snapshot-copy isolation, all unknown/sensitive dimensions become only `other`, JSON contains none of the rejected values, and `raw_text=` raises `TypeError`.
+
+- [ ] **Step 2: Run the Task 2 red tests (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_intent_models.py tests/test_nlu_metrics.py -q`
+
+Expected: collection errors include `ModuleNotFoundError: No module named 'core.intent_models'` and `No module named 'core.nlu_metrics'`.
+
+- [ ] **Step 3: Create all public model contracts (2–5 minutes)**
+
+Create `core/intent_models.py` with the current 48 intent values in their existing source order, then append the seven new values. Keep `IntentResult` frozen without `slots` for compatibility:
+
+```python
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+
+class BotIntent(Enum):
+    HELP = "help"
+    STATUS = "status"
+    PROFILE = "profile"
+    CALENDAR_HELP = "calendar_help"
+    CALENDAR_LIST = "calendar_list"
+    CALENDAR_SYNC = "calendar_sync"
+    CALENDAR_DELETE = "calendar_delete"
+    CALENDAR_COMPLETE = "calendar_complete"
+    CALENDAR_EDIT = "calendar_edit"
+    CALENDAR_SEARCH = "calendar_search"
+    CALENDAR_CLEAR = "calendar_clear"
+    CALENDAR_ITEM = "calendar_item"
+    POLL_CREATE = "poll_create"
+    POLL_VOTE = "poll_vote"
+    POLL_EDIT = "poll_edit"
+    POLL_DELETE = "poll_delete"
+    POLL_CLOSE = "poll_close"
+    POLL_LIST = "poll_list"
+    COUNTDOWN = "countdown"
+    WATCHLIST = "watchlist"
+    WORD_OF_DAY = "word_of_day"
+    QUOTE = "quote"
+    QUOTE_LIST = "quote_list"
+    QUOTE_EDIT = "quote_edit"
+    QUOTE_DELETE = "quote_delete"
+    AURORA = "aurora"
+    SCHOOL_HOLIDAYS = "school_holidays"
+    PRICE = "price"
+    HOROSCOPE = "horoscope"
+    COMPLIMENT = "compliment"
+    CALCULATOR = "calculator"
+    SHORTEN_URL = "shorten_url"
+    DAILY_DIGEST = "daily_digest"
+    SEARCH = "search"
+    DASHBOARD = "dashboard"
+    SET_LOCATION = "set_location"
+    MEMORY_VIEW = "memory_view"
+    MEMORY_EXPORT = "memory_export"
+    MEMORY_DELETE = "memory_delete"
+    BIRTHDAY_EDIT = "birthday_edit"
+    REMINDER_EDIT = "reminder_edit"
+    REMINDER_DELETE = "reminder_delete"
+    REMINDER_SEARCH = "reminder_search"
+    REMINDER_CREATE = "reminder_create"
+    REMINDER_LIST = "reminder_list"
+    REMINDER_COMPLETE = "reminder_complete"
+    CALENDAR_AUTH = "calendar_auth"
+    AI_CHAT = "ai_chat"
+    CLARIFY = "clarify"
+    BIRTHDAY_CREATE = "birthday_create"
+    BIRTHDAY_LIST = "birthday_list"
+    ACTION_CONFIRM = "action_confirm"
+    ACTION_CANCEL = "action_cancel"
+    ACTION_SELECT = "action_select"
+    ACTION_CORRECT = "action_correct"
+
+
+class IntentSource(str, Enum):
+    DETERMINISTIC = "deterministic"
+    SEMANTIC = "semantic"
+
+
+class IntentRisk(str, Enum):
+    READ_ONLY = "read_only"
+    ADDITIVE = "additive"
+    MUTATING = "mutating"
+    DESTRUCTIVE = "destructive"
+
+
+class RejectionCode(str, Enum):
+    NEGATED_ACTION = "negated_action"
+    QUOTED_ONLY = "quoted_only"
+    META = "meta"
+    HYPOTHETICAL = "hypothetical"
+    INFORMATION_QUESTION_MUTATION = "information_question_mutation"
+    MISSING_ACTION_EVIDENCE = "missing_action_evidence"
+    MISSING_DOMAIN_EVIDENCE = "missing_domain_evidence"
+    MISSING_LIVE_EVIDENCE = "missing_live_evidence"
+    INVALID_TEMPORAL = "invalid_temporal"
+    PARSER_ERROR = "parser_error"
+    UNSAFE_SEMANTIC = "unsafe_semantic"
+    INVALID_CONTEXT = "invalid_context"
+    CONFLICT = "conflict"
+    OTHER = "other"
+
+
+@dataclass(frozen=True)
+class IntentResult:
+    intent: BotIntent
+    confidence: float
+    payload: dict[str, Any] = field(default_factory=dict)
+    reason: str = ""
+    source: IntentSource = IntentSource.DETERMINISTIC
+    risk: IntentRisk = IntentRisk.READ_ONLY
+    requires_confirmation: bool = False
+
+
+@dataclass(frozen=True)
+class IntentCandidate:
+    intent: BotIntent
+    confidence: float
+    priority: int
+    order: int = 0
+    payload: dict[str, Any] = field(default_factory=dict)
+    reason: str = ""
+    source: IntentSource = IntentSource.DETERMINISTIC
+    risk: IntentRisk = IntentRisk.READ_ONLY
+    action_terms: tuple[str, ...] = ()
+    domain_terms: tuple[str, ...] = ()
+    specificity: int = 0
+    requires_confirmation: bool = False
+
+    def to_result(self) -> IntentResult:
+        return IntentResult(
+            self.intent, self.confidence, dict(self.payload), self.reason,
+            self.source, self.risk, self.requires_confirmation,
+        )
+
+
+@dataclass(frozen=True)
+class CandidateRejection:
+    candidate: IntentCandidate
+    code: RejectionCode
+
+
+@dataclass(frozen=True)
+class ArbitrationDecision:
+    selected: IntentCandidate | None
+    alternatives: tuple[IntentCandidate, ...] = ()
+    rejected: tuple[CandidateRejection, ...] = ()
+    blocked: bool = False
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class RouteDiagnostics:
+    parser_errors: tuple[str, ...] = ()
+    rejection_counts: Mapping[RejectionCode, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RoutedIntent:
+    result: IntentResult
+    diagnostics: RouteDiagnostics = field(default_factory=RouteDiagnostics)
+```
+
+- [ ] **Step 4: Create resolved routing-context contracts (2–5 minutes)**
+
+Create `core/message_context.py`:
+
+```python
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationKey:
+    guild_id: int | None
+    channel_id: int
+    user_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedMention:
+    user_id: int
+    display_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingContext:
+    key: ConversationKey
+    author: ResolvedMention
+    mentions: tuple[ResolvedMention, ...] = ()
+```
+
+These objects contain already-authorized/resolved identities. No parser may query Discord or reparse `message.mentions`.
+
+- [ ] **Step 5: Add the complete intent risk table (2–5 minutes)**
+
+Create `core/intent_policy.py` with `BASE_INTENT_RISK` exactly matching this table:
+
+| Risk | Intents |
+|---|---|
+| `READ_ONLY` | `HELP`, `STATUS`, `CALENDAR_HELP`, `CALENDAR_LIST`, `CALENDAR_SEARCH`, `POLL_LIST`, `COUNTDOWN`, `WORD_OF_DAY`, `QUOTE_LIST`, `AURORA`, `SCHOOL_HOLIDAYS`, `PRICE`, `HOROSCOPE`, `COMPLIMENT`, `CALCULATOR`, `SHORTEN_URL`, `DAILY_DIGEST`, `SEARCH`, `DASHBOARD`, `MEMORY_VIEW`, `MEMORY_EXPORT`, `REMINDER_SEARCH`, `REMINDER_LIST`, `BIRTHDAY_LIST`, `CLARIFY`, `ACTION_CONFIRM`, `ACTION_CANCEL`, `ACTION_SELECT`, `ACTION_CORRECT`, `AI_CHAT` |
+| `ADDITIVE` | `CALENDAR_ITEM`, `POLL_CREATE`, `REMINDER_CREATE`, `BIRTHDAY_CREATE` |
+| `MUTATING` | `PROFILE`, `CALENDAR_SYNC`, `CALENDAR_COMPLETE`, `CALENDAR_EDIT`, `POLL_VOTE`, `POLL_EDIT`, `POLL_CLOSE`, `QUOTE_EDIT`, `SET_LOCATION`, `BIRTHDAY_EDIT`, `REMINDER_EDIT`, `REMINDER_COMPLETE`, `CALENDAR_AUTH` |
+| `DESTRUCTIVE` | `CALENDAR_DELETE`, `CALENDAR_CLEAR`, `POLL_DELETE`, `QUOTE_DELETE`, `MEMORY_DELETE`, `REMINDER_DELETE` |
+| Umbrella `WATCHLIST` | `status/list/suggest -> READ_ONLY`; `add -> ADDITIVE`; `edit -> MUTATING`; `remove -> DESTRUCTIVE`; missing/malformed/unknown -> `DESTRUCTIVE` |
+| Umbrella `QUOTE` | `get -> READ_ONLY`; `save -> ADDITIVE`; missing/malformed/unknown -> `DESTRUCTIVE` |
+
+Include both umbrella enums in `BASE_INTENT_RISK` as `DESTRUCTIVE`; their recognized action maps override that fail-closed base. This makes `set(BASE_INTENT_RISK) == set(BotIntent)` exact.
+
+```python
+BASE_INTENT_RISK: dict[BotIntent, IntentRisk] = {
+    BotIntent.HELP: IntentRisk.READ_ONLY,
+    BotIntent.STATUS: IntentRisk.READ_ONLY,
+    BotIntent.PROFILE: IntentRisk.MUTATING,
+    BotIntent.CALENDAR_HELP: IntentRisk.READ_ONLY,
+    BotIntent.CALENDAR_LIST: IntentRisk.READ_ONLY,
+    BotIntent.CALENDAR_SYNC: IntentRisk.MUTATING,
+    BotIntent.CALENDAR_DELETE: IntentRisk.DESTRUCTIVE,
+    BotIntent.CALENDAR_COMPLETE: IntentRisk.MUTATING,
+    BotIntent.CALENDAR_EDIT: IntentRisk.MUTATING,
+    BotIntent.CALENDAR_SEARCH: IntentRisk.READ_ONLY,
+    BotIntent.CALENDAR_CLEAR: IntentRisk.DESTRUCTIVE,
+    BotIntent.CALENDAR_ITEM: IntentRisk.ADDITIVE,
+    BotIntent.POLL_CREATE: IntentRisk.ADDITIVE,
+    BotIntent.POLL_VOTE: IntentRisk.MUTATING,
+    BotIntent.POLL_EDIT: IntentRisk.MUTATING,
+    BotIntent.POLL_DELETE: IntentRisk.DESTRUCTIVE,
+    BotIntent.POLL_CLOSE: IntentRisk.MUTATING,
+    BotIntent.POLL_LIST: IntentRisk.READ_ONLY,
+    BotIntent.COUNTDOWN: IntentRisk.READ_ONLY,
+    BotIntent.WATCHLIST: IntentRisk.DESTRUCTIVE,
+    BotIntent.WORD_OF_DAY: IntentRisk.READ_ONLY,
+    BotIntent.QUOTE: IntentRisk.DESTRUCTIVE,
+    BotIntent.QUOTE_LIST: IntentRisk.READ_ONLY,
+    BotIntent.QUOTE_EDIT: IntentRisk.MUTATING,
+    BotIntent.QUOTE_DELETE: IntentRisk.DESTRUCTIVE,
+    BotIntent.AURORA: IntentRisk.READ_ONLY,
+    BotIntent.SCHOOL_HOLIDAYS: IntentRisk.READ_ONLY,
+    BotIntent.PRICE: IntentRisk.READ_ONLY,
+    BotIntent.HOROSCOPE: IntentRisk.READ_ONLY,
+    BotIntent.COMPLIMENT: IntentRisk.READ_ONLY,
+    BotIntent.CALCULATOR: IntentRisk.READ_ONLY,
+    BotIntent.SHORTEN_URL: IntentRisk.READ_ONLY,
+    BotIntent.DAILY_DIGEST: IntentRisk.READ_ONLY,
+    BotIntent.SEARCH: IntentRisk.READ_ONLY,
+    BotIntent.DASHBOARD: IntentRisk.READ_ONLY,
+    BotIntent.SET_LOCATION: IntentRisk.MUTATING,
+    BotIntent.MEMORY_VIEW: IntentRisk.READ_ONLY,
+    BotIntent.MEMORY_EXPORT: IntentRisk.READ_ONLY,
+    BotIntent.MEMORY_DELETE: IntentRisk.DESTRUCTIVE,
+    BotIntent.BIRTHDAY_EDIT: IntentRisk.MUTATING,
+    BotIntent.REMINDER_EDIT: IntentRisk.MUTATING,
+    BotIntent.REMINDER_DELETE: IntentRisk.DESTRUCTIVE,
+    BotIntent.REMINDER_SEARCH: IntentRisk.READ_ONLY,
+    BotIntent.REMINDER_CREATE: IntentRisk.ADDITIVE,
+    BotIntent.REMINDER_LIST: IntentRisk.READ_ONLY,
+    BotIntent.REMINDER_COMPLETE: IntentRisk.MUTATING,
+    BotIntent.CALENDAR_AUTH: IntentRisk.MUTATING,
+    BotIntent.AI_CHAT: IntentRisk.READ_ONLY,
+    BotIntent.CLARIFY: IntentRisk.READ_ONLY,
+    BotIntent.BIRTHDAY_CREATE: IntentRisk.ADDITIVE,
+    BotIntent.BIRTHDAY_LIST: IntentRisk.READ_ONLY,
+    BotIntent.ACTION_CONFIRM: IntentRisk.READ_ONLY,
+    BotIntent.ACTION_CANCEL: IntentRisk.READ_ONLY,
+    BotIntent.ACTION_SELECT: IntentRisk.READ_ONLY,
+    BotIntent.ACTION_CORRECT: IntentRisk.READ_ONLY,
+}
+```
+
+Implement the action extraction without assuming the envelope is a mapping:
+
+```python
+from collections.abc import Mapping
+from typing import Any
+
+from core.intent_models import BotIntent, IntentRisk
+
+
+def _action(payload: Mapping[str, Any], envelope: str) -> str:
+    value = payload.get(envelope)
+    if not isinstance(value, Mapping):
+        return ""
+    action = value.get("action")
+    return action.casefold().strip() if isinstance(action, str) else ""
+
+
+WATCHLIST_ACTION_RISK = {
+    "status": IntentRisk.READ_ONLY,
+    "list": IntentRisk.READ_ONLY,
+    "suggest": IntentRisk.READ_ONLY,
+    "add": IntentRisk.ADDITIVE,
+    "edit": IntentRisk.MUTATING,
+    "remove": IntentRisk.DESTRUCTIVE,
+}
+QUOTE_ACTION_RISK = {
+    "get": IntentRisk.READ_ONLY,
+    "save": IntentRisk.ADDITIVE,
+}
+
+
+def classify_intent_risk(
+    intent: BotIntent, payload: Mapping[str, Any]
+) -> IntentRisk:
+    if intent is BotIntent.WATCHLIST:
+        return WATCHLIST_ACTION_RISK.get(
+            _action(payload, "watchlist"), IntentRisk.DESTRUCTIVE
+        )
+    if intent is BotIntent.QUOTE:
+        return QUOTE_ACTION_RISK.get(
+            _action(payload, "quote"), IntentRisk.DESTRUCTIVE
+        )
+    return BASE_INTENT_RISK[intent]
+```
+
+- [ ] **Step 6: Add the final bounded in-memory metrics API (2–5 minutes)**
+
+Create `core/nlu_metrics.py` with the same nested, bounded schema the observability lane will persist; later work must not redesign this class:
+
+```python
+from collections import Counter
+from collections.abc import Mapping
+
+from core.intent_models import BotIntent, IntentSource, RejectionCode
+
+INTENT_VALUES = frozenset(intent.value for intent in BotIntent)
+SOURCE_VALUES = frozenset({"deterministic", "semantic"})
+DECISION_OUTCOMES = frozenset({
+    "routed", "clarified", "blocked", "low_confidence", "staged",
+    "executed", "failed", "canceled", "other",
+})
+REJECTION_VALUES = frozenset(code.value for code in RejectionCode)
+PENDING_EVENTS = frozenset({
+    "staged", "confirmed", "canceled", "selected", "corrected", "expired",
+    "claim_failed", "dispatch_failed", "presentation_failed", "other",
+})
+ACTION_RESULTS = frozenset({
+    "accepted", "invalid_json", "unknown_action", "unknown_key",
+    "invalid_slot", "missing_slot", "multiple_proposals", "legacy", "other",
+})
+PARSER_NAMES = frozenset({
+    "calendar", "reminder", "poll", "watchlist", "quote", "birthday", "profile",
+    "countdown", "price", "horoscope", "compliment", "calculator",
+    "shorten", "search", "action_schema", "other",
+})
+PARSER_ERROR_CODES = frozenset({
+    "invalid_temporal", "invalid_payload", "exception", "other",
+})
+REMINDER_EVENTS = frozenset({
+    "attempted", "sent", "send_failed", "catchup_sent", "deduplicated",
+    "digest_sent", "digest_failed", "other",
+})
+REMINDER_ERROR_CODES = frozenset({
+    "channel_missing", "send_forbidden", "send_http", "manager_error",
+    "invalid_due_at", "none", "other",
+})
+LEGACY_FAMILIES = frozenset({
+    "calendar", "reminder", "poll", "watchlist", "quote", "birthday", "other",
+})
+METRIC_SECTIONS = frozenset({
+    "decisions", "rejections", "pending", "actions", "parser_errors",
+    "legacy_payload_fallbacks", "reminder_delivery",
+})
+
+
+def _raw_value(value: object) -> str:
+    enum_value = getattr(value, "value", value)
+    return enum_value if isinstance(enum_value, str) else "other"
+
+
+def _bounded(value: object, allowed: frozenset[str]) -> str:
+    raw = _raw_value(value)
+    return raw if raw in allowed else "other"
+
+
+def _allowed_metric_keys() -> dict[str, frozenset[str]]:
+    decision_keys = frozenset(
+        f"intent={intent}|source={source}|outcome={outcome}"
+        for intent in INTENT_VALUES | {"other"}
+        for source in SOURCE_VALUES | {"other"}
+        for outcome in DECISION_OUTCOMES
+    )
+    parser_keys = frozenset(
+        f"parser={parser}|code={code}"
+        for parser in PARSER_NAMES
+        for code in PARSER_ERROR_CODES
+    )
+    reminder_keys = frozenset(
+        f"event={event}|error={code}"
+        for event in REMINDER_EVENTS
+        for code in REMINDER_ERROR_CODES
+    )
+    return {
+        "decisions": decision_keys,
+        "rejections": REJECTION_VALUES | {"other"},
+        "pending": PENDING_EVENTS,
+        "actions": ACTION_RESULTS,
+        "parser_errors": parser_keys,
+        "legacy_payload_fallbacks": LEGACY_FAMILIES,
+        "reminder_delivery": reminder_keys,
+    }
+
+
+ALLOWED_METRIC_KEYS = _allowed_metric_keys()
+
+
+class NLUMetrics:
+    def __init__(self) -> None:
+        self._counts: dict[str, Counter[str]] = {
+            section: Counter() for section in METRIC_SECTIONS
+        }
+
+    def _increment(self, section: str, key: str, count: int = 1) -> None:
+        if key in ALLOWED_METRIC_KEYS[section] and count > 0:
+            self._counts[section][key] += count
+
+    def record_decision(
+        self, *, intent: BotIntent | str, source: IntentSource | str, outcome: str
+    ) -> None:
+        key = (
+            f"intent={_bounded(intent, INTENT_VALUES)}|"
+            f"source={_bounded(source, SOURCE_VALUES)}|"
+            f"outcome={_bounded(outcome, DECISION_OUTCOMES)}"
+        )
+        self._increment("decisions", key)
+
+    def record_rejection(self, code: RejectionCode | str) -> None:
+        self._increment("rejections", _bounded(code, REJECTION_VALUES))
+
+    def record_pending(self, event: str) -> None:
+        self._increment("pending", _bounded(event, PENDING_EVENTS))
+
+    def record_action_result(self, result: str) -> None:
+        self._increment("actions", _bounded(result, ACTION_RESULTS))
+
+    def record_parser_error(self, parser: str, code: str) -> None:
+        key = (
+            f"parser={_bounded(parser, PARSER_NAMES)}|"
+            f"code={_bounded(code, PARSER_ERROR_CODES)}"
+        )
+        self._increment("parser_errors", key)
+
+    def record_legacy_payload_fallback(self, family: str) -> None:
+        self._increment("legacy_payload_fallbacks", _bounded(family, LEGACY_FAMILIES))
+
+    def record_reminder_delivery(
+        self, event: str, *, error_code: str | None = None
+    ) -> None:
+        key = (
+            f"event={_bounded(event, REMINDER_EVENTS)}|"
+            f"error={_bounded(error_code or 'none', REMINDER_ERROR_CODES)}"
+        )
+        self._increment("reminder_delivery", key)
+
+    def merge_snapshot(self, delta: Mapping[str, Mapping[str, int]]) -> None:
+        for section, values in delta.items():
+            if section not in METRIC_SECTIONS or not isinstance(values, Mapping):
+                continue
+            for key, value in values.items():
+                if (
+                    isinstance(key, str) and isinstance(value, int)
+                    and not isinstance(value, bool) and 0 < value <= 2**63 - 1
+                ):
+                    self._increment(section, key, value)
+
+    def snapshot(self) -> dict[str, dict[str, int]]:
+        return {
+            section: dict(sorted(self._counts[section].items()))
+            for section in sorted(METRIC_SECTIONS)
+            if self._counts[section]
+        }
+```
+
+- [ ] **Step 7: Replace declarations with exact re-exports and break the import cycle (2–5 minutes)**
+
+In `core/intent_router.py`, delete the local `BotIntent` and `IntentResult` declarations plus now-unused `dataclass`, `field`, and `Enum` imports. Import and re-export:
+
+```python
+from core.intent_models import (
+    BotIntent, IntentCandidate, IntentResult, IntentRisk, IntentSource,
+    RouteDiagnostics, RoutedIntent,
+)
+```
+
+Do not wrap or subclass these types. In `core/intent_thresholds.py`, replace `from core.intent_router import BotIntent` with `from core.intent_models import BotIntent`.
+
+- [ ] **Step 8: Run model and compatibility tests (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_intent_models.py tests/test_nlu_metrics.py \
+  tests/test_intent_router.py tests/test_confidence_thresholds.py -q
+```
+
+Expected: all tests pass; existing router payloads/reasons remain unchanged.
+
+- [ ] **Step 9: Commit Task 2 (2–5 minutes)**
+
+```bash
+git add core/intent_models.py core/intent_policy.py core/message_context.py \
+  core/nlu_metrics.py core/intent_router.py core/intent_thresholds.py \
+  tests/test_intent_models.py tests/test_nlu_metrics.py
+git commit -m "refactor: centralize intent and risk models"
+```
+
+### Task 3: Normalize utterances and classify speech acts safely
+
+**Files:**
+
+- Create: `core/utterance.py`
+- Create: `core/utterance_semantics.py`
+- Create: `tests/test_utterance.py`
+- Create: `tests/test_utterance_semantics.py`
+- Modify: `core/intent_utils.py:1-70`
+
+**Interfaces:**
+
+- Consumes cleaned, already-authorized message content.
+- Produces `NormalizedUtterance`, `normalize_utterance(text)`, `SpeechAct`, `UtteranceSemantics`, `analyze_utterance(utterance)`, `is_negated_action(utterance, action_terms)`, and `evidence_is_quoted_only(utterance, terms)`.
+- `text` remains case-preserving for payload parsers; `control_text` is casefolded and masks Discord mentions, quoted spans, Markdown inline code, and fenced code for control/evidence checks. `tokens` are derived from `control_text`, never from inert examples.
+
+- [ ] **Step 1: Write the normalization red tests (2–5 minutes)**
+
+Create `tests/test_utterance.py`:
+
+```python
+from core.utterance import normalize_utterance
+
+
+def test_normalization_is_lossless_for_payload_text_and_masks_control_spans():
+    utterance = normalize_utterance(
+        '  Kan   <@!42> forklare “Slett Påminnelse 1” i morgen?  '
+    )
+    assert utterance.text == 'Kan <@!42> forklare “Slett Påminnelse 1” i morgen?'
+    assert utterance.folded == 'kan <@!42> forklare “slett påminnelse 1” i morgen?'
+    assert utterance.quoted_segments == ("Slett Påminnelse 1",)
+    assert "42" not in utterance.control_text
+    assert "slett" not in utterance.control_text
+    assert "i morgen" in utterance.control_text
+
+
+def test_blank_normalization_is_deterministic():
+    utterance = normalize_utterance(" \n\t ")
+    assert (utterance.text, utterance.folded, utterance.control_text) == ("", "", "")
+    assert utterance.tokens == ()
+    assert utterance.quoted_segments == ()
+
+
+def test_markdown_code_is_inert_but_surrounding_prose_remains_live():
+    utterance = normalize_utterance(
+        "forklar `slett kalenderen` uten å gjøre det\n"
+        "~~~text\nslett påminnelse 1\n~~~\n"
+        "og vis hjelp"
+    )
+    assert "slett" not in utterance.control_text
+    assert "kalenderen" not in utterance.tokens
+    assert "påminnelse" not in utterance.tokens
+    assert "forklar" in utterance.control_text
+    assert "vis hjelp" in utterance.control_text
+
+
+def test_unclosed_fence_is_inert_to_eof():
+    utterance = normalize_utterance("eksempel:\n```\nslett kalenderen")
+    assert "slett" not in utterance.control_text
+    assert "kalenderen" not in utterance.tokens
+
+
+def test_unclosed_inline_code_is_inert_to_line_end():
+    utterance = normalize_utterance("eksempel: `slett kalenderen")
+    assert "slett" not in utterance.control_text
+    assert "kalenderen" not in utterance.tokens
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "«slett kalenderen» hva betyr det?",
+        "'delete reminder 1' is an example",
+        "> slett kalenderen\nHva betyr dette?",
+    ],
+)
+def test_discord_quote_forms_are_inert_for_control_evidence(text):
+    utterance = normalize_utterance(text)
+    assert "slett" not in utterance.control_text
+    assert "delete" not in utterance.control_text
+
+
+def test_apostrophe_in_contraction_is_not_treated_as_a_quote():
+    utterance = normalize_utterance("don't forget the meeting")
+    assert "don't forget" in utterance.control_text
+```
+
+- [ ] **Step 2: Run the normalization red tests (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_utterance.py -q`
+
+Expected: collection fails with `ModuleNotFoundError: No module named 'core.utterance'`.
+
+- [ ] **Step 3: Implement lossless normalization (2–5 minutes)**
+
+Create `core/utterance.py` exactly around this contract and algorithm:
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+import unicodedata
+
+_QUOTED = re.compile(
+    r'"([^"\n]*)"|“([^”\n]*)”|‘([^’\n]*)’|'
+    r'«([^»\n]*)»|(?<!\w)\'([^\'\n]+)\'(?!\w)'
+)
+_BLOCKQUOTE = re.compile(r"(?m)^ {0,3}>[^\n]*(?:\n|$)")
+_MENTION = re.compile(r"<@!?\d+>")
+_FENCE_OPEN = re.compile(
+    r"(?m)^(?P<indent> {0,3})(?P<marker>`{3,}|~{3,})[^\n]*$"
+)
+_TOKEN = re.compile(
+    r"\d{1,2}(?::\d{2})|\d{1,2}(?:[./]\d{1,2})(?:[./]\d{2,4})?"
+    r"|[^\W\d_]+(?:['’][^\W\d_]+)?|\d+",
+    re.UNICODE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedUtterance:
+    raw: str
+    text: str
+    folded: str
+    control_text: str
+    quoted_segments: tuple[str, ...]
+    tokens: tuple[str, ...]
+
+
+def _collapse(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _mask_span(chars: list[str], start: int, end: int) -> None:
+    for index in range(start, end):
+        if not chars[index].isspace():
+            chars[index] = " "
+
+
+def _fenced_spans(value: str) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while opener := _FENCE_OPEN.search(value, cursor):
+        marker = opener.group("marker")
+        close = re.compile(
+            rf"(?m)^ {{0,3}}{re.escape(marker[0])}"
+            rf"{{{len(marker)},}}[ \t]*(?:\n|$)"
+        ).search(value, opener.end())
+        end = close.end() if close is not None else len(value)
+        spans.append((opener.start(), end))
+        cursor = end
+        if close is None:
+            break
+    return tuple(spans)
+
+
+def _overlaps(spans: tuple[tuple[int, int], ...], start: int, end: int) -> bool:
+    return any(start < span_end and end > span_start for span_start, span_end in spans)
+
+
+def _inline_code_spans(
+    value: str,
+    fenced: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "`" or _overlaps(fenced, index, index + 1):
+            index += 1
+            continue
+        end_run = index
+        while end_run < len(value) and value[end_run] == "`":
+            end_run += 1
+        marker = value[index:end_run]
+        close = value.find(marker, end_run)
+        while close >= 0 and _overlaps(fenced, close, close + len(marker)):
+            close = value.find(marker, close + len(marker))
+        if close < 0:
+            newline = value.find("\n", end_run)
+            end = len(value) if newline < 0 else newline
+            spans.append((index, end))
+            index = end
+            continue
+        spans.append((index, close + len(marker)))
+        index = close + len(marker)
+    return tuple(spans)
+
+
+def normalize_utterance(raw: str) -> NormalizedUtterance:
+    if not isinstance(raw, str):
+        raise TypeError("utterance must be str")
+    normalized = unicodedata.normalize("NFKC", raw)
+    text = _collapse(normalized)
+    folded = text.casefold()
+    control_chars = list(normalized)
+    fenced = _fenced_spans(normalized)
+    inline = _inline_code_spans(normalized, fenced)
+    inert_code = fenced + inline
+    for start, end in inert_code:
+        _mask_span(control_chars, start, end)
+    quoted: list[str] = []
+    blockquotes = tuple(
+        (match.start(), match.end()) for match in _BLOCKQUOTE.finditer(normalized)
+        if not _overlaps(inert_code, match.start(), match.end())
+    )
+    for start, end in blockquotes:
+        quoted.append(_collapse(normalized[start:end].lstrip(" >")))
+        _mask_span(control_chars, start, end)
+    for match in _QUOTED.finditer(normalized):
+        if _overlaps(inert_code + blockquotes, match.start(), match.end()):
+            continue
+        body = next(group for group in match.groups() if group is not None)
+        quoted.append(_collapse(body))
+        _mask_span(control_chars, match.start(), match.end())
+    for match in _MENTION.finditer(normalized):
+        _mask_span(control_chars, match.start(), match.end())
+    control_text = _collapse("".join(control_chars)).casefold()
+    return NormalizedUtterance(
+        raw=raw,
+        text=text,
+        folded=folded,
+        control_text=control_text,
+        tokens=tuple(match.group(0) for match in _TOKEN.finditer(control_text)),
+        quoted_segments=tuple(quoted),
+    )
+```
+
+- [ ] **Step 4: Adapt all keyword helpers to masked control text (2–5 minutes)**
+
+In `core/intent_utils.py`, define `TextInput = str | NormalizedUtterance` and this one conversion helper:
+
+```python
+from core.utterance import NormalizedUtterance
+
+TextInput = str | NormalizedUtterance
+
+
+def _control(content: TextInput) -> str:
+    return content.control_text if isinstance(content, NormalizedUtterance) else content
+```
+
+Change the first parameter annotation of `has_keyword`, `has_any_keyword`, `has_all_keywords`, and `extract_keywords` to `TextInput`. In `has_keyword`, apply the existing boundary regex to `_control(content)`. The other three functions continue delegating to `has_keyword`; do not duplicate normalization or change return types.
+
+- [ ] **Step 5: Run normalization and keyword tests green (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_utterance.py tests/test_intent_utils.py -q`
+
+Expected: all tests pass.
+
+- [ ] **Step 6: Write speech-act and negation red tests (2–5 minutes)**
+
+Create `tests/test_utterance_semantics.py`:
+
+```python
+import pytest
+
+from core.utterance import normalize_utterance
+from core.utterance_semantics import (
+    SpeechAct, analyze_utterance, evidence_is_quoted_only, is_negated_action,
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ikke slett kalenderen", "slett ikke kalenderen",
+        "ikkje slett kalenderen", "do not delete the calendar",
+        "never delete the calendar",
+        "jeg vil ikke at du skal slette kalenderen",
+        "I do not want you to delete the calendar",
+    ],
+)
+def test_negated_delete_disallows_mutation(text):
+    utterance = normalize_utterance(text)
+    assert is_negated_action(
+        utterance,
+        ("slett", "slette", "sletter", "slettar", "delete"),
+    ) is True
+    assert analyze_utterance(utterance).allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ikke glem møte i morgen kl 14",
+        "ikkje gløym møte i morgon klokka 14",
+        "don't forget the meeting tomorrow at 2pm",
+    ],
+)
+def test_do_not_forget_idiom_is_positive(text):
+    assert analyze_utterance(normalize_utterance(text)).allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ikke glem å ikke opprette møtet",
+        "ikkje gløym å ikkje opprette møtet",
+        "don't forget not to create the meeting",
+    ],
+)
+def test_second_negation_is_not_erased_by_positive_forget(text):
+    utterance = normalize_utterance(text)
+    assert is_negated_action(
+        utterance,
+        ("opprette", "create"),
+        allow_positive_forget=True,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hvorfor slettet du kalenderen?",
+        "Kan man slette kalenderen?",
+        "Er det mulig å slette kalenderen?",
+        "Why did you delete the calendar?",
+        "Is it possible to delete the calendar?",
+    ],
+)
+def test_questions_about_mutation_are_information_requests(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.INFORMATION_REQUEST
+    assert semantics.allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hvis du sletter kalenderen, mister jeg alt",
+        "Om du slettar kalenderen, mistar eg alt",
+        "If you delete the calendar, I lose everything",
+    ],
+)
+def test_subject_general_conditionals_are_hypothetical(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.HYPOTHETICAL
+    assert semantics.allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "det var et godt forslag",
+        "kalenderen ble slettet i går",
+        "the reminder was deleted yesterday",
+    ],
+)
+def test_substrings_and_past_descriptions_are_not_directives(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.STATEMENT
+
+
+def test_quoted_action_is_not_control_evidence():
+    utterance = normalize_utterance('hva skjer hvis jeg skriver "slett kalenderen"?')
+    assert evidence_is_quoted_only(utterance, ("slett", "kalender")) is True
+    assert analyze_utterance(utterance).speech_act is SpeechAct.HYPOTHETICAL
+
+
+@pytest.mark.parametrize("text", ["kan du slette kalenderen?", "could you delete reminder 1?"])
+def test_polite_question_form_is_a_directive(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is True
+
+
+def test_information_question_does_not_allow_mutation():
+    semantics = analyze_utterance(normalize_utterance("Når går toget i morgen kl 8?"))
+    assert semantics.speech_act is SpeechAct.INFORMATION_REQUEST
+    assert semantics.allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "jeg vurderer kanskje å slette møte",
+        "eg vurderer å slette møte",
+        "jeg tenker på å slette møte",
+        "I am considering deleting the meeting",
+        "maybe I should delete the meeting",
+    ],
+)
+def test_hedged_action_is_hypothetical_not_a_directive(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.HYPOTHETICAL
+    assert semantics.allows_mutation is False
+```
+
+- [ ] **Step 7: Run the speech-act red tests (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_utterance_semantics.py -q`
+
+Expected: collection fails with `ModuleNotFoundError: No module named 'core.utterance_semantics'`.
+
+- [ ] **Step 8: Implement explicit speech-act precedence and negation windows (2–5 minutes)**
+
+Create `core/utterance_semantics.py` with these exact types, phrase sets, and precedence:
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+import re
+from collections.abc import Iterable
+
+from core.utterance import NormalizedUtterance
+
+
+class SpeechAct(str, Enum):
+    DIRECTIVE = "directive"
+    INFORMATION_REQUEST = "information_request"
+    STATEMENT = "statement"
+    HYPOTHETICAL = "hypothetical"
+    META = "meta"
+    CONFIRMATION = "confirmation"
+    REJECTION = "rejection"
+
+
+@dataclass(frozen=True, slots=True)
+class UtteranceSemantics:
+    speech_act: SpeechAct
+    reasons: tuple[str, ...]
+    allows_mutation: bool
+
+
+CONFIRMATIONS = frozenset({"ja", "yes", "jepp", "bekreft", "confirm", "ok", "okay"})
+REJECTIONS = frozenset({
+    "nei", "no", "avbryt", "cancel", "stopp", "dropp det",
+    "ikke gjør det", "ikkje gjer det",
+})
+HYPOTHETICAL_FRAMES = (
+    "hva skjer hvis", "kva skjer om", "ka skjer hvis", "what happens if",
+    "hvis jeg", "om jeg", "if i ", "hvis du", "om du", "if you ",
+)
+HYPOTHETICAL_PATTERNS = (
+    re.compile(r"\b(?:jeg|eg)\s+vurderer\s+(?:kanskje\s+)?å\b"),
+    re.compile(r"\b(?:jeg|eg)\s+tenker\s+på\s+å\b"),
+    re.compile(r"\bi\s+am\s+considering\b"),
+    re.compile(r"\bmaybe\s+i\s+should\b"),
+)
+META_FRAMES = (
+    "jeg skrev", "eg skreiv", "i wrote", "eksempel", "example",
+    "hva betyr", "kva tyder", "what does", "hvordan skriver",
+)
+POLITE_DIRECTIVES = (
+    "kan du", "kunne du", "vil du", "vennligst", "vær så snill",
+    "could you", "would you", "please",
+)
+QUESTION_STARTS = (
+    "hva ", "kva ", "ka ", "hvordan ", "korleis ", "når ", "where ",
+    "when ", "what ", "how ", "why ", "hvor ", "kor ",
+)
+INFORMATION_MUTATION_PATTERNS = (
+    re.compile(r"^(?:hvorfor|kvifor|why)\b"),
+    re.compile(
+        r"^(?:kan\s+man|er\s+det\s+mulig\s+å|can\s+one|"
+        r"is\s+it\s+possible\s+to)\b"
+    ),
+)
+ACTION_TERMS = frozenset({
+    "slett", "slette", "sletter", "slettar", "delete", "deleting",
+    "fjern", "fjerne", "remove", "tøm", "tømme", "clear", "endre", "edit",
+    "rediger", "flytt", "move", "opprett", "opprette", "create",
+    "lag", "lage", "add", "legg",
+    "husk", "glem", "gløym", "forget", "påminn", "minn", "stem", "vote",
+    "lukk", "close", "fullfør", "complete", "synk", "sync", "forkort",
+})
+NEGATIONS = frozenset({"ikke", "ikkje", "aldri", "not", "never", "don't", "don’t"})
+POSITIVE_FORGET = ("ikke glem", "ikkje gløym", "don't forget", "don’t forget")
+
+
+def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
+    tokens = tuple(re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", text.casefold()))
+    return any(
+        needle and any(True for _ in _token_starts(tokens, needle))
+        for needle in (_term_tokens(phrase) for phrase in phrases)
+    )
+
+
+def _term_tokens(term: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", term.casefold()))
+
+
+def _token_starts(tokens: tuple[str, ...], needle: tuple[str, ...]):
+    width = len(needle)
+    for index in range(0, len(tokens) - width + 1):
+        if tokens[index:index + width] == needle:
+            yield index
+
+
+def is_negated_action(
+    utterance: NormalizedUtterance,
+    action_terms: Iterable[str],
+    *,
+    allow_positive_forget: bool = False,
+) -> bool:
+    tokens = utterance.tokens
+    ignored_negations: set[int] = set()
+    if allow_positive_forget:
+        for phrase in POSITIVE_FORGET:
+            needle = _term_tokens(phrase)
+            for start in _token_starts(tokens, needle):
+                ignored_negations.add(start)
+    for term in action_terms:
+        needle = _term_tokens(term)
+        if not needle:
+            continue
+        for index in _token_starts(tokens, needle):
+            left = max(0, index - 8)
+            right = min(len(tokens), index + len(needle) + 4)
+            negated_indices = {
+                offset
+                for offset in range(left, right)
+                if tokens[offset] in NEGATIONS
+            }
+            if negated_indices - ignored_negations:
+                return True
+    return False
+
+
+def evidence_is_quoted_only(
+    utterance: NormalizedUtterance, terms: Iterable[str]
+) -> bool:
+    normalized = tuple(term.casefold().strip() for term in terms if term.strip())
+    present = tuple(
+        term for term in normalized
+        if _contains_phrase(utterance.folded, (term,))
+    )
+    if not present:
+        return False
+    return not _contains_phrase(utterance.control_text, present)
+
+
+def analyze_utterance(utterance: NormalizedUtterance) -> UtteranceSemantics:
+    text = utterance.control_text.strip()
+    if text in CONFIRMATIONS:
+        return UtteranceSemantics(SpeechAct.CONFIRMATION, ("exact_confirmation",), False)
+    if text in REJECTIONS:
+        return UtteranceSemantics(SpeechAct.REJECTION, ("exact_rejection",), False)
+    if _contains_phrase(text, HYPOTHETICAL_FRAMES) or any(
+        pattern.search(text) for pattern in HYPOTHETICAL_PATTERNS
+    ):
+        return UtteranceSemantics(SpeechAct.HYPOTHETICAL, ("hypothetical_frame",), False)
+    if _contains_phrase(text, META_FRAMES):
+        return UtteranceSemantics(SpeechAct.META, ("meta_frame",), False)
+    if any(pattern.search(text) for pattern in INFORMATION_MUTATION_PATTERNS):
+        return UtteranceSemantics(
+            SpeechAct.INFORMATION_REQUEST,
+            ("information_question",),
+            False,
+        )
+    if _contains_phrase(text, POLITE_DIRECTIVES):
+        negated = is_negated_action(utterance, ACTION_TERMS)
+        return UtteranceSemantics(
+            SpeechAct.DIRECTIVE,
+            ("polite_directive",) + (("negated_action",) if negated else ()),
+            not negated,
+        )
+    if text.startswith(QUESTION_STARTS) or (
+        text.endswith("?") and not _contains_phrase(text, ACTION_TERMS)
+    ):
+        return UtteranceSemantics(SpeechAct.INFORMATION_REQUEST, ("information_question",), False)
+    if _contains_phrase(text, ACTION_TERMS):
+        negated = is_negated_action(
+            utterance,
+            ACTION_TERMS,
+            allow_positive_forget=True,
+        )
+        return UtteranceSemantics(
+            SpeechAct.DIRECTIVE,
+            ("imperative_action",) + (("negated_action",) if negated else ()),
+            not negated,
+        )
+    return UtteranceSemantics(SpeechAct.STATEMENT, ("statement_fallback",), True)
+```
+
+- [ ] **Step 9: Run all Task 3 tests (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_utterance.py tests/test_utterance_semantics.py \
+  tests/test_intent_utils.py -q
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 10: Commit Task 3 (2–5 minutes)**
+
+```bash
+git add core/utterance.py core/utterance_semantics.py core/intent_utils.py \
+  tests/test_utterance.py tests/test_utterance_semantics.py
+git commit -m "feat: classify natural-language speech acts"
+```
+
+### Task 4: Resolve and validate Norwegian temporal expressions
+
+**Files:**
+
+- Create: `cal_system/temporal_resolver.py`
+- Create: `tests/test_temporal_resolver.py`
+- Create: `tests/test_natural_language_parser_safety.py`
+- Modify: `cal_system/natural_language_parser.py:13-18,156-445,478-717`
+- Modify: `features/calendar_handler.py:225-310,614-705`
+- Modify: `tests/test_calendar_edit.py`
+
+**Interfaces:**
+
+- Produces canonical `DD.MM.YYYY`, `HH:MM`, and an offset-bearing ISO `due_at` using `Europe/Oslo`.
+- `TemporalResolver.resolve(text, reference=None)` parses bounded natural expressions. `validate_fields(date_value, time_value, due_at=None, reference=None)` validates typed values and DST folds.
+- `NaturalLanguageParser.parse_event()` and `.parse_task_with_recurrence()` retain dictionary-or-`None` compatibility; new `*_result()` methods expose bounded temporal errors.
+
+- [ ] **Step 1: Write fixed-clock resolver tests (2–5 minutes)**
+
+Create `tests/test_temporal_resolver.py`:
+
+```python
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from cal_system.temporal_resolver import TemporalResolver
+
+OSLO = ZoneInfo("Europe/Oslo")
+NOW = datetime(2026, 7, 14, 12, 0, tzinfo=OSLO)
+
+
+@pytest.mark.parametrize(
+    ("text", "date", "time"),
+    [
+        ("i morgen kl 8", "15.07.2026", "08:00"),
+        ("i morgon klokka fjorten", "15.07.2026", "14:00"),
+        ("om to timer", "14.07.2026", "14:00"),
+        ("fredag kl 10", "17.07.2026", "10:00"),
+        ("førstkommende fredag kl 10", "17.07.2026", "10:00"),
+        ("neste fredag kl 10", "24.07.2026", "10:00"),
+        ("15. august rundt tre på ettermiddagen", "15.08.2026", "15:00"),
+        ("tomorrow at 3pm", "15.07.2026", "15:00"),
+    ],
+)
+def test_resolve_supported_natural_time(text, date, time):
+    result = TemporalResolver().resolve(text, reference=NOW)
+    assert result.valid is True
+    assert result.date == date
+    assert result.time == time
+
+
+def test_ambiguous_colloquial_hour_requires_daypart():
+    result = TemporalResolver().resolve("15. august rundt tre", reference=NOW)
+    assert result.valid is False
+    assert result.errors == ("ambiguous_time",)
+
+
+@pytest.mark.parametrize(
+    ("date_value", "time_value", "error"),
+    [
+        ("32.13.2026", "14:00", "invalid_date"),
+        ("29.02.2025", "14:00", "invalid_date"),
+        ("15.07.2026", "25:61", "invalid_time"),
+        ("15.07.2026", "-1:00", "invalid_time"),
+    ],
+)
+def test_impossible_fields_are_rejected(date_value, time_value, error):
+    result = TemporalResolver().validate_fields(date_value, time_value, reference=NOW)
+    assert result.valid is False
+    assert result.errors == (error,)
+
+
+def test_nonexistent_oslo_wall_time_is_rejected():
+    result = TemporalResolver().validate_fields("29.03.2026", "02:30", reference=NOW)
+    assert result.errors == ("invalid_time",)
+
+
+def test_ambiguous_oslo_wall_time_requires_explicit_offset():
+    result = TemporalResolver().validate_fields("25.10.2026", "02:30", reference=NOW)
+    assert result.errors == ("ambiguous_time",)
+    resolved = TemporalResolver().validate_fields(
+        "25.10.2026", "02:30", due_at="2026-10-25T02:30:00+01:00", reference=NOW
+    )
+    assert resolved.valid is True
+    assert resolved.due_at == "2026-10-25T02:30:00+01:00"
+
+
+def test_yearless_date_uses_first_nonpast_occurrence():
+    assert TemporalResolver().validate_fields("13.07", "10", reference=NOW).date == "13.07.2027"
+
+
+@pytest.mark.parametrize("value", ["14.07", "14/07"])
+def test_yearless_same_day_uses_the_first_future_instant(value):
+    resolver = TemporalResolver()
+    assert resolver.validate_fields(value, "14:00", reference=NOW).date == "14.07.2026"
+    assert resolver.validate_fields(value, "10:00", reference=NOW).date == "14.07.2027"
+
+
+@pytest.mark.parametrize("phrase", ["14. juli kl 14", "14 july at 14"])
+def test_yearless_month_name_future_time_stays_in_current_year(phrase):
+    result = TemporalResolver().resolve(phrase, reference=NOW)
+    assert result.date == "14.07.2026"
+
+
+@pytest.mark.parametrize("phrase", ["14. juli kl 10", "14 july at 10"])
+def test_yearless_month_name_past_time_rolls_to_next_year(phrase):
+    result = TemporalResolver().resolve(phrase, reference=NOW)
+    assert result.date == "14.07.2027"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "i morgen 15. august kl 10",
+        "fredag 20. juli kl 10",
+        "møte kl 10 kl 11",
+        "om to timer kl 10",
+        "om to dager 15. august",
+        "om to timer i kveld",
+    ],
+)
+def test_conflicting_temporal_evidence_is_rejected(phrase):
+    result = TemporalResolver().resolve(phrase, reference=NOW)
+    assert result.valid is False
+    assert result.errors == ("conflicting_temporal",)
+```
+
+- [ ] **Step 2: Run the resolver red tests (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_temporal_resolver.py -q`
+
+Expected: collection fails with `ModuleNotFoundError: No module named 'cal_system.temporal_resolver'`.
+
+- [ ] **Step 3: Implement canonical field validation and DST round-tripping (2–5 minutes)**
+
+Create `cal_system/temporal_resolver.py` with this public shape and validation core:
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+import calendar
+import re
+from zoneinfo import ZoneInfo
+
+OSLO = ZoneInfo("Europe/Oslo")
+DATE_RE = re.compile(r"(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?!\d)")
+TIME_RE = re.compile(r"(?<!\d)(-?\d{1,2})(?::(\d{2}))(?!(?:\d|[./]))")
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalResolution:
+    date: str | None = None
+    time: str | None = None
+    due_at: str | None = None
+    matched_text: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    @property
+    def valid(self) -> bool:
+        return not self.errors
+
+
+class TemporalResolver:
+    def __init__(self, zone: ZoneInfo = OSLO) -> None:
+        self.zone = zone
+
+    def _reference(self, reference: datetime | None) -> datetime:
+        value = reference or datetime.now(self.zone)
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("reference must be timezone-aware")
+        return value.astimezone(self.zone)
+
+    @staticmethod
+    def _canonical_date(value: date) -> str:
+        return value.strftime("%d.%m.%Y")
+
+    @staticmethod
+    def _canonical_time(value: time) -> str:
+        return value.strftime("%H:%M")
+
+    def _parse_date(self, value: str, reference: datetime) -> date | None:
+        match = re.fullmatch(r"\s*(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s*", value)
+        if not match:
+            return None
+        day, month = int(match.group(1)), int(match.group(2))
+        raw_year = match.group(3)
+        if raw_year is None:
+            for year in range(reference.year, reference.year + 9):
+                try:
+                    parsed = date(year, month, day)
+                except ValueError:
+                    continue
+                if parsed >= reference.date():
+                    return parsed
+            return None
+        year = int(raw_year)
+        if len(raw_year) == 2:
+            year += 2000
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_time(value: str) -> time | None:
+        match = re.fullmatch(r"\s*(\d{1,2})(?::(\d{2}))?\s*", value)
+        if not match:
+            return None
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        if hour > 23 or minute > 59:
+            return None
+        return time(hour, minute)
+
+    @staticmethod
+    def _numeric_date_is_yearless(value: str) -> bool:
+        match = re.fullmatch(
+            r"\s*\d{1,2}[./]\d{1,2}(?:[./](\d{2,4}))?\s*",
+            value,
+        )
+        return match is not None and match.group(1) is None
+
+    def _roll_yearless_same_day(
+        self,
+        parsed_date: date,
+        parsed_time: time,
+        now: datetime,
+    ) -> date:
+        if parsed_date != now.date():
+            return parsed_date
+        current_candidates = self._valid_wall_times(
+            datetime.combine(parsed_date, parsed_time)
+        )
+        if any(
+            candidate.astimezone(timezone.utc) > now.astimezone(timezone.utc)
+            for candidate in current_candidates
+        ):
+            return parsed_date
+        for year in range(now.year + 1, now.year + 9):
+            try:
+                return date(year, parsed_date.month, parsed_date.day)
+            except ValueError:
+                continue
+        raise ValueError("invalid_date")
+
+    def _valid_wall_times(self, local: datetime) -> tuple[datetime, ...]:
+        valid: list[datetime] = []
+        seen_offsets: set[timedelta | None] = set()
+        for fold in (0, 1):
+            candidate = local.replace(tzinfo=self.zone, fold=fold)
+            round_trip = candidate.astimezone(timezone.utc).astimezone(self.zone)
+            if round_trip.replace(tzinfo=None) != local or round_trip.fold != fold:
+                continue
+            if candidate.utcoffset() in seen_offsets:
+                continue
+            seen_offsets.add(candidate.utcoffset())
+            valid.append(candidate)
+        return tuple(valid)
+
+    def validate_fields(
+        self,
+        date_value: str | None,
+        time_value: str | None,
+        *,
+        due_at: str | None = None,
+        reference: datetime | None = None,
+    ) -> TemporalResolution:
+        now = self._reference(reference)
+        if not date_value:
+            return TemporalResolution(errors=("missing_date",))
+        parsed_date = self._parse_date(date_value, now)
+        if parsed_date is None:
+            return TemporalResolution(matched_text=("date",), errors=("invalid_date",))
+        canonical_date = self._canonical_date(parsed_date)
+        if time_value in (None, ""):
+            return TemporalResolution(date=canonical_date, matched_text=("date",))
+        parsed_time = self._parse_time(time_value)
+        if parsed_time is None:
+            return TemporalResolution(
+                date=canonical_date,
+                matched_text=("date", "time"),
+                errors=("invalid_time",),
+            )
+        if due_at is None and self._numeric_date_is_yearless(date_value):
+            try:
+                parsed_date = self._roll_yearless_same_day(
+                    parsed_date, parsed_time, now
+                )
+            except ValueError:
+                return TemporalResolution(
+                    matched_text=("date", "time"), errors=("invalid_date",)
+                )
+            canonical_date = self._canonical_date(parsed_date)
+        canonical_time = self._canonical_time(parsed_time)
+        local = datetime.combine(parsed_date, parsed_time)
+        valid = self._valid_wall_times(local)
+        if due_at:
+            try:
+                explicit = datetime.fromisoformat(due_at)
+            except ValueError:
+                explicit = None
+            if explicit is None or explicit.tzinfo is None or explicit.utcoffset() is None:
+                return TemporalResolution(
+                    date=canonical_date, time=canonical_time,
+                    matched_text=("date", "time"), errors=("invalid_time",),
+                )
+            local_explicit = explicit.astimezone(self.zone)
+            if local_explicit.replace(tzinfo=None) != local or not any(
+                explicit.utcoffset() == candidate.utcoffset() for candidate in valid
+            ):
+                return TemporalResolution(
+                    date=canonical_date, time=canonical_time,
+                    matched_text=("date", "time"), errors=("invalid_time",),
+                )
+            return TemporalResolution(
+                date=canonical_date, time=canonical_time,
+                due_at=explicit.isoformat(timespec="seconds"),
+                matched_text=("date", "time"),
+            )
+        if not valid:
+            return TemporalResolution(
+                date=canonical_date, time=canonical_time,
+                matched_text=("date", "time"), errors=("invalid_time",),
+            )
+        if len(valid) > 1:
+            return TemporalResolution(
+                date=canonical_date, time=canonical_time,
+                matched_text=("date", "time"), errors=("ambiguous_time",),
+            )
+        return TemporalResolution(
+            date=canonical_date, time=canonical_time,
+            due_at=valid[0].isoformat(timespec="seconds"),
+            matched_text=("date", "time"),
+        )
+```
+
+- [ ] **Step 4: Add bounded natural date and time dictionaries (2–5 minutes)**
+
+In the same module define these complete dictionaries. Aliases that map to the same weekday/month are intentionally explicit:
+
+```python
+NUMBER_WORDS = {
+    "null": 0, "zero": 0, "en": 1, "ett": 1, "ein": 1, "one": 1,
+    "to": 2, "two": 2, "tre": 3, "three": 3, "fire": 4, "four": 4,
+    "fem": 5, "five": 5, "seks": 6, "six": 6, "sju": 7, "syv": 7,
+    "seven": 7, "åtte": 8, "eight": 8, "ni": 9, "nine": 9, "ti": 10,
+    "ten": 10, "elleve": 11, "eleven": 11, "tolv": 12, "twelve": 12,
+    "tretten": 13, "thirteen": 13, "fjorten": 14, "fourteen": 14,
+    "femten": 15, "fifteen": 15, "seksten": 16, "sixteen": 16,
+    "sytten": 17, "seventeen": 17, "atten": 18, "eighteen": 18,
+    "nitten": 19, "nineteen": 19, "tjue": 20, "twenty": 20,
+    "tjueen": 21, "twentyone": 21, "tjueto": 22, "twentytwo": 22,
+    "tjuetre": 23, "twentythree": 23, "tjuefire": 24, "twentyfour": 24,
+    "tjuefem": 25, "twentyfive": 25, "tjueseks": 26, "twentysix": 26,
+    "tjuesju": 27, "twentyseven": 27, "tjueåtte": 28, "twentyeight": 28,
+    "tjueni": 29, "twentynine": 29, "tretti": 30, "thirty": 30,
+    "trettien": 31, "thirtyone": 31,
+}
+WEEKDAYS = {
+    "mandag": 0, "måndag": 0, "monday": 0,
+    "tirsdag": 1, "tysdag": 1, "tuesday": 1,
+    "onsdag": 2, "wednesday": 2,
+    "torsdag": 3, "thursday": 3,
+    "fredag": 4, "friday": 4,
+    "lørdag": 5, "laurdag": 5, "lørdag'n": 5, "saturday": 5,
+    "søndag": 6, "sundag": 6, "sunday": 6,
+}
+MONTHS = {
+    "januar": 1, "january": 1, "jan": 1,
+    "februar": 2, "february": 2, "feb": 2,
+    "mars": 3, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "mai": 5, "may": 5,
+    "juni": 6, "june": 6, "jun": 6, "juli": 7, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+    "oktober": 10, "october": 10, "okt": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "desember": 12, "december": 12, "des": 12, "dec": 12,
+}
+```
+
+Weekday semantics are exact: bare weekday and `førstkommende` select the closest strictly future occurrence; `neste`/`next` selects the occurrence seven days after that closest occurrence.
+
+- [ ] **Step 5: Implement `resolve()` with explicit evidence behavior (2–5 minutes)**
+
+Add these helpers and methods to `TemporalResolver`; they are the complete resolution order and never assign action intent:
+
+```python
+class TemporalResolver:
+    @staticmethod
+    def _number(raw: str) -> int | None:
+        normalized = raw.casefold().replace("-", "").replace(" ", "")
+        if normalized.isdigit():
+            return int(normalized)
+        return NUMBER_WORDS.get(normalized)
+
+    def validate_time(self, value: str) -> str | None:
+        parsed = self._parse_time(value)
+        return self._canonical_time(parsed) if parsed is not None else None
+
+    def _natural_time(
+        self,
+        text: str,
+    ) -> tuple[str | None, str | None, bool]:
+        cue = re.search(
+            r"\b(?P<cue>kl(?:okka|okken)?\.?|at|rundt|about)\s+"
+            r"([a-zæøå]+(?:[- ]+[a-zæøå]+)?|-?\d{1,2})"
+            r"(?::(\d{2}))?\s*(am|pm)?"
+            r"(?:\s+på\s+(morgenen|morgonen|ettermiddagen|kvelden))?\b",
+            text,
+        )
+        if cue:
+            raw_hour = cue.group(2)
+            if raw_hour.startswith("-"):
+                return None, "invalid_time", True
+            hour = self._number(raw_hour)
+            minute = int(cue.group(3) or 0)
+            suffix = cue.group(4)
+            daypart = cue.group(5)
+            if hour is None or hour > 23 or minute > 59:
+                return None, "invalid_time", True
+            if suffix == "am":
+                if hour > 12:
+                    return None, "invalid_time", True
+                hour = 0 if hour == 12 else hour
+            elif suffix == "pm":
+                if hour > 12:
+                    return None, "invalid_time", True
+                hour = hour if hour == 12 else hour + 12
+            elif daypart in {"ettermiddagen", "kvelden"}:
+                if not 1 <= hour <= 12:
+                    return None, "invalid_time", True
+                hour = hour if hour == 12 else hour + 12
+            elif daypart in {"morgenen", "morgonen"}:
+                if not 1 <= hour <= 12:
+                    return None, "invalid_time", True
+                hour = 0 if hour == 12 else hour
+            elif cue.group("cue") in {"rundt", "about"} and 1 <= hour <= 12:
+                return None, "ambiguous_time", True
+            return f"{hour:02d}:{minute:02d}", None, True
+        if re.search(r"\b(?:i\s+)?kveld\b", text):
+            return "19:00", None, True
+        return None, None, False
+
+    def _month_date(self, text: str, now: datetime) -> tuple[date, bool] | None:
+        names = "|".join(sorted((re.escape(name) for name in MONTHS), key=len, reverse=True))
+        match = re.search(
+            rf"(?<!\d)(\d{{1,2}})\.?\s+({names})(?:\s+(\d{{4}}))?\b",
+            text,
+        )
+        if not match:
+            return None
+        day = int(match.group(1))
+        month = MONTHS[match.group(2)]
+        if match.group(3):
+            try:
+                return date(int(match.group(3)), month, day), False
+            except ValueError:
+                return None
+        for year in range(now.year, now.year + 9):
+            try:
+                candidate = date(year, month, day)
+            except ValueError:
+                continue
+            if candidate >= now.date():
+                return candidate, True
+        return None
+
+    def _weekday_date(self, text: str, now: datetime) -> date | None:
+        for name in sorted(WEEKDAYS, key=len, reverse=True):
+            if not re.search(rf"\b{re.escape(name)}\b", text):
+                continue
+            delta = (WEEKDAYS[name] - now.weekday()) % 7
+            if delta == 0:
+                delta = 7
+            prefix = text[: text.find(name)].rstrip()
+            if re.search(r"\b(?:neste|next)\s*$", prefix):
+                delta += 7
+            return now.date() + timedelta(days=delta)
+        return None
+
+    def _has_conflicting_evidence(self, text: str, now: datetime) -> bool:
+        dates: set[date] = set()
+        times: set[str] = set()
+
+        relative_pattern = re.compile(
+            r"\b(?:om|in)\s+"
+            r"(\d{1,3}|[a-zæøå]+(?:[- ]+[a-zæøå]+)?)\s+"
+            r"(minutt(?:er)?|minutes?|time(?:r)?|hours?|"
+            r"dag(?:er)?|days?|uke(?:r)?|weeks?)\b"
+        )
+        for match in relative_pattern.finditer(text):
+            amount = self._number(match.group(1))
+            if amount is None or amount < 0 or amount > 365:
+                continue
+            unit = match.group(2)
+            if unit.startswith(("minutt", "minute")):
+                target = (
+                    now.astimezone(timezone.utc) + timedelta(minutes=amount)
+                ).astimezone(self.zone)
+                dates.add(target.date())
+                times.add(self._canonical_time(target.time()))
+            elif unit.startswith(("time", "hour")):
+                target = (
+                    now.astimezone(timezone.utc) + timedelta(hours=amount)
+                ).astimezone(self.zone)
+                dates.add(target.date())
+                times.add(self._canonical_time(target.time()))
+            else:
+                days = amount * (7 if unit.startswith(("uke", "week")) else 1)
+                dates.add(now.date() + timedelta(days=days))
+
+        for match in DATE_RE.finditer(text):
+            parsed = self._parse_date(match.group(0), now)
+            if parsed is not None:
+                dates.add(parsed)
+
+        month_names = "|".join(
+            sorted((re.escape(name) for name in MONTHS), key=len, reverse=True)
+        )
+        month_pattern = re.compile(
+            rf"(?<!\d)\d{{1,2}}\.?\s+(?:{month_names})(?:\s+\d{{4}})?\b"
+        )
+        for match in month_pattern.finditer(text):
+            parsed = self._month_date(match.group(0), now)
+            if parsed is not None:
+                dates.add(parsed[0])
+
+        if re.search(r"\b(?:i dag|today)\b", text):
+            dates.add(now.date())
+        if re.search(r"\b(?:i morgen|i morgon|imårra|tomorrow)\b", text):
+            dates.add(now.date() + timedelta(days=1))
+
+        weekday_names = "|".join(
+            sorted((re.escape(name) for name in WEEKDAYS), key=len, reverse=True)
+        )
+        weekday_pattern = re.compile(
+            rf"\b(?:(?:neste|next|førstkommende)\s+)?(?:{weekday_names})\b"
+        )
+        for match in weekday_pattern.finditer(text):
+            parsed = self._weekday_date(match.group(0), now)
+            if parsed is not None:
+                dates.add(parsed)
+
+        time_pattern = re.compile(
+            r"\b(?:kl(?:okka|okken)?\.?|at|rundt|about)\s+"
+            r"(?:[a-zæøå]+(?:[- ]+[a-zæøå]+)?|-?\d{1,2})"
+            r"(?::\d{2})?\s*(?:am|pm)?"
+            r"(?:\s+på\s+(?:morgenen|morgonen|ettermiddagen|kvelden))?\b"
+        )
+        for match in time_pattern.finditer(text):
+            parsed, error, matched = self._natural_time(match.group(0))
+            if matched and error is None and parsed is not None:
+                times.add(parsed)
+        if re.search(r"\b(?:i\s+)?kveld\b", text):
+            times.add("19:00")
+
+        return len(dates) > 1 or len(times) > 1
+
+    def resolve(
+        self, text: str, *, reference: datetime | None = None
+    ) -> TemporalResolution:
+        if not isinstance(text, str):
+            raise TypeError("temporal text must be str")
+        now = self._reference(reference)
+        normalized = " ".join(text.casefold().split())
+        evidence: list[str] = []
+        if self._has_conflicting_evidence(normalized, now):
+            return TemporalResolution(
+                matched_text=("conflict",),
+                errors=("conflicting_temporal",),
+            )
+
+        relative = re.search(
+            r"\b(?:om|in)\s+"
+            r"(\d{1,3}|[a-zæøå]+(?:[- ]+[a-zæøå]+)?)\s+"
+            r"(minutt(?:er)?|minutes?|time(?:r)?|hours?|dag(?:er)?|days?|uke(?:r)?|weeks?)\b",
+            normalized,
+        )
+        yearless_date = False
+        if relative:
+            amount = self._number(relative.group(1))
+            if amount is None or amount < 0 or amount > 365:
+                return TemporalResolution(
+                    matched_text=("relative",), errors=("invalid_time",)
+                )
+            unit = relative.group(2)
+            if unit.startswith(("minutt", "minute")):
+                delta = timedelta(minutes=amount)
+                target = (now.astimezone(timezone.utc) + delta).astimezone(self.zone)
+                return self.validate_fields(
+                    self._canonical_date(target.date()),
+                    self._canonical_time(target.time()),
+                    due_at=target.isoformat(timespec="seconds"),
+                    reference=now,
+                )
+            if unit.startswith(("time", "hour")):
+                delta = timedelta(hours=amount)
+                target = (now.astimezone(timezone.utc) + delta).astimezone(self.zone)
+                return self.validate_fields(
+                    self._canonical_date(target.date()),
+                    self._canonical_time(target.time()),
+                    due_at=target.isoformat(timespec="seconds"),
+                    reference=now,
+                )
+            days = amount * (7 if unit.startswith(("uke", "week")) else 1)
+            parsed_date = now.date() + timedelta(days=days)
+            evidence.append("relative")
+        else:
+            parsed_date = None
+
+        numeric = DATE_RE.search(normalized)
+        month_token = re.search(
+            rf"(?<!\d)\d{{1,2}}\.?\s+(?:{'|'.join(sorted((re.escape(name) for name in MONTHS), key=len, reverse=True))})\b",
+            normalized,
+        )
+        if numeric:
+            evidence.append("date")
+            parsed_date = self._parse_date(numeric.group(0), now)
+            yearless_date = self._numeric_date_is_yearless(numeric.group(0))
+            if parsed_date is None:
+                return TemporalResolution(
+                    matched_text=tuple(evidence), errors=("invalid_date",)
+                )
+        elif month_token:
+            evidence.append("date")
+            month_result = self._month_date(normalized, now)
+            if month_result is None:
+                return TemporalResolution(
+                    matched_text=tuple(evidence), errors=("invalid_date",)
+                )
+            parsed_date, yearless_date = month_result
+        elif re.search(r"\b(?:i dag|today)\b", normalized):
+            evidence.append("date")
+            parsed_date = now.date()
+        elif re.search(r"\b(?:i morgen|i morgon|imårra|tomorrow)\b", normalized):
+            evidence.append("date")
+            parsed_date = now.date() + timedelta(days=1)
+        elif any(re.search(rf"\b{re.escape(name)}\b", normalized) for name in WEEKDAYS):
+            evidence.append("date")
+            parsed_date = self._weekday_date(normalized, now)
+
+        parsed_time, time_error, time_evidence = self._natural_time(normalized)
+        if time_evidence:
+            evidence.append("time")
+            if time_error is not None:
+                return TemporalResolution(
+                    matched_text=tuple(evidence), errors=(time_error,)
+                )
+        else:
+            raw_time = TIME_RE.search(normalized)
+            if raw_time and re.search(r"\b(?:kl|klokka|klokken|at|rundt|about)\b", normalized):
+                return TemporalResolution(
+                    matched_text=tuple(evidence) + ("time",),
+                    errors=("invalid_time",),
+                )
+
+        if parsed_date is None and parsed_time is not None:
+            wall = self._parse_time(parsed_time)
+            assert wall is not None
+            parsed_date = now.date()
+            if datetime.combine(parsed_date, wall, tzinfo=self.zone) <= now:
+                parsed_date += timedelta(days=1)
+        elif parsed_date is not None and parsed_time is not None and yearless_date:
+            wall = self._parse_time(parsed_time)
+            assert wall is not None
+            try:
+                parsed_date = self._roll_yearless_same_day(
+                    parsed_date, wall, now
+                )
+            except ValueError:
+                return TemporalResolution(
+                    matched_text=tuple(evidence), errors=("invalid_date",)
+                )
+        if parsed_date is None:
+            return TemporalResolution(matched_text=tuple(evidence))
+        return self.validate_fields(
+            self._canonical_date(parsed_date), parsed_time, reference=now
+        )
+```
+
+- [ ] **Step 6: Run resolver tests green (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_temporal_resolver.py -q`
+
+Expected: all resolver tests pass, including DST tests on the host timezone-independent fixed clock.
+
+- [ ] **Step 7: Write parser compatibility and invalid-evidence tests (2–5 minutes)**
+
+Create `tests/test_natural_language_parser_safety.py`:
+
+```python
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from cal_system.natural_language_parser import NaturalLanguageParser
+from core.utterance import normalize_utterance
+
+NOW = datetime(2026, 7, 14, 12, 0, tzinfo=ZoneInfo("Europe/Oslo"))
+
+
+def parser():
+    return NaturalLanguageParser(now_provider=lambda: NOW)
+
+
+def test_legacy_wrapper_preserves_dictionary_contract():
+    item = parser().parse_event("møte med Ola i morgen kl 14")
+    assert item is not None
+    assert item["date"] == "15.07.2026"
+    assert item["time"] == "14:00"
+    assert parser().parse_event_result("møte med Ola i morgen kl 14").item == item
+
+
+def test_parser_rejects_invalid_temporal_evidence_with_bounded_code():
+    invalid_date = parser().parse_event_result("møte 32.13.2026 kl 14:00")
+    invalid_time = parser().parse_event_result("møte i morgen kl 25:61")
+    assert (invalid_date.item, invalid_date.errors) == (None, ("invalid_date",))
+    assert (invalid_time.item, invalid_time.errors) == (None, ("invalid_time",))
+
+
+def test_parser_surfaces_ambiguous_oslo_time():
+    result = parser().parse_event_result("møte 25.10.2026 kl 02:30")
+    assert result.item is None
+    assert result.errors == ("ambiguous_time",)
+
+
+def test_quoted_title_temporal_word_is_not_a_date():
+    utterance = normalize_utterance(
+        'møte med tittelen "fredag" i morgen kl 14'
+    )
+    result = parser().parse_event_result(
+        utterance.text,
+        temporal_text=utterance.control_text,
+        reference_time=NOW,
+    )
+    assert result.errors == ()
+    assert result.item is not None
+    assert result.item["date"] == "15.07.2026"
+    assert "fredag" in result.item["title"].casefold()
+```
+
+- [ ] **Step 8: Run parser safety red tests (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_natural_language_parser_safety.py -q`
+
+Expected: failures report that `NaturalLanguageParser.__init__` does not accept `now_provider` and result methods do not exist.
+
+- [ ] **Step 9: Integrate the resolver without breaking legacy callers (2–5 minutes)**
+
+In `cal_system/natural_language_parser.py`, add:
+
+```python
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+from cal_system.temporal_resolver import OSLO, TemporalResolution, TemporalResolver
+
+
+@dataclass(frozen=True, slots=True)
+class NaturalParseResult:
+    item: dict[str, Any] | None
+    errors: tuple[str, ...] = ()
+```
+
+Change construction and add one fixed-clock helper:
+
+```python
+def __init__(
+    self,
+    now_provider: Callable[[], datetime] | None = None,
+    *,
+    temporal_resolver: TemporalResolver | None = None,
+):
+    self._now_provider = now_provider or (lambda: datetime.now(OSLO))
+    self.temporal_resolver = temporal_resolver or TemporalResolver()
+    self.setup_patterns()
+
+def _now(self) -> datetime:
+    value = self._now_provider()
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=OSLO)
+    return value.astimezone(OSLO)
+```
+
+Mechanically rename the current bodies, without changing their title/type/recurrence behavior, to `_parse_event_legacy()` and `_parse_task_with_recurrence_legacy()`. Add these exact public wrappers:
+
+```python
+def _finalize_temporal_parse(
+    self,
+    message_content,
+    legacy_parser,
+    *,
+    temporal_text: str | None = None,
+    reference_time: datetime | None = None,
+) -> NaturalParseResult:
+    reference = reference_time if reference_time is not None else self._now()
+    if reference.tzinfo is None or reference.utcoffset() is None:
+        raise ValueError("parser_reference_must_be_aware")
+    reference = reference.astimezone(OSLO)
+    temporal_input = message_content if temporal_text is None else temporal_text
+    temporal = self.temporal_resolver.resolve(temporal_input, reference=reference)
+    if temporal.matched_text and not temporal.valid:
+        return NaturalParseResult(None, temporal.errors)
+    item = legacy_parser(message_content, reference_time=reference)
+    if item is None:
+        return NaturalParseResult(None)
+    result = dict(item)
+    # The raw parser owns title/type/recurrence only. Temporal slots inside
+    # quoted/code spans cannot survive into the result.
+    result.pop("date", None)
+    result.pop("time", None)
+    result.pop("days_offset", None)
+    if temporal.date:
+        result["date"] = temporal.date
+    if temporal.time:
+        result["time"] = temporal.time
+    if result.get("date"):
+        checked = self.temporal_resolver.validate_fields(
+            str(result["date"]),
+            str(result["time"]) if result.get("time") else None,
+            reference=reference,
+        )
+        if not checked.valid:
+            return NaturalParseResult(None, checked.errors)
+        result["date"] = checked.date
+        if checked.time:
+            result["time"] = checked.time
+    return NaturalParseResult(result)
+
+def parse_event_result(
+    self,
+    message_content: str,
+    *,
+    temporal_text: str | None = None,
+    reference_time: datetime | None = None,
+) -> NaturalParseResult:
+    return self._finalize_temporal_parse(
+        message_content,
+        self._parse_event_legacy,
+        temporal_text=temporal_text,
+        reference_time=reference_time,
+    )
+
+def parse_event(
+    self,
+    message_content: str,
+    *,
+    temporal_text: str | None = None,
+    reference_time: datetime | None = None,
+) -> dict[str, Any] | None:
+    return self.parse_event_result(
+        message_content,
+        temporal_text=temporal_text,
+        reference_time=reference_time,
+    ).item
+
+def parse_task_with_recurrence_result(
+    self,
+    message_content: str,
+    *,
+    temporal_text: str | None = None,
+    reference_time: datetime | None = None,
+) -> NaturalParseResult:
+    return self._finalize_temporal_parse(
+        message_content,
+        self._parse_task_with_recurrence_legacy,
+        temporal_text=temporal_text,
+        reference_time=reference_time,
+    )
+
+def parse_task_with_recurrence(
+    self,
+    message_content: str,
+    *,
+    temporal_text: str | None = None,
+    reference_time: datetime | None = None,
+) -> dict[str, Any] | None:
+    return self.parse_task_with_recurrence_result(
+        message_content,
+        temporal_text=temporal_text,
+        reference_time=reference_time,
+    ).item
+```
+
+Add keyword-only `reference_time: datetime` to both legacy bodies and to
+`_extract_date` / `_extract_time`; pass the same captured value through every
+nested call. Replace every resolution-time `datetime.now()` with that argument.
+Resolve `_extract_date(content, *, reference_time)` through
+`self.temporal_resolver.resolve(content, reference=reference_time)` for offline
+legacy compatibility only while retaining its existing `(date_str, days_offset)`
+return shape, and compute
+`days_offset` against `reference_time.astimezone(OSLO).date()`. Production
+collectors pass `temporal_text=context.utterance.control_text`; the result wrapper
+discards the legacy raw-derived date/time/offset and overlays only that masked
+resolution. Resolve `_extract_time(content, *, reference_time)` with the same
+reference. Leave title, recurrence, and item-type extraction intact. Add a
+provider that raises on a second read; each public parse-result call succeeds
+after exactly one clock read.
+
+- [ ] **Step 10: Run parser compatibility suites (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_temporal_resolver.py tests/test_natural_language_parser_safety.py \
+  tests/test_intent_router.py -q
+```
+
+Expected: all tests pass and the three seed calendar examples retain their payloads.
+
+- [ ] **Step 11: Add calendar handler defense-in-depth tests (2–5 minutes)**
+
+In `tests/test_calendar_edit.py`, add tests with an async manager spy proving (a) create with `32.13.2026` sends one response and calls neither `_sync_to_gcal` nor `add_item`; (b) edit time `25:61` calls neither `edit_item` nor `edit_item_by_id`; and (c) valid `15.07.2026`/`14:00` still calls the manager once. Assert the fixed invalid response: `❌ Datoen eller tiden er ugyldig. Sjekk formatet og prøv igjen.`
+
+- [ ] **Step 12: Revalidate immediately before calendar writes (2–5 minutes)**
+
+In `features/calendar_handler.py`, add keyword-only `temporal_resolver: TemporalResolver | None = None` to `__init__` and set `self.temporal_resolver = temporal_resolver or TemporalResolver()`. That default is offline/test compatibility only; production `MessageMonitor` injects its exact monitor-owned resolver. Add keyword-only `reference_time: datetime` to `handle_calendar_item()` and every edit/date validation path. At the start of `handle_calendar_item`, before GCal inspection or manager mutation, run:
+
+```python
+validation = self.temporal_resolver.validate_fields(
+    str(item_data.get("date", "")),
+    str(item_data["time"]) if item_data.get("time") else None,
+    reference=reference_time,
+)
+if not validation.valid:
+    await self.send_response(
+        message,
+        "❌ Datoen eller tiden er ugyldig. Sjekk formatet og prøv igjen.",
+    )
+    return False
+item_data = dict(item_data)
+item_data["date"] = validation.date
+if validation.time:
+    item_data["time"] = validation.time
+```
+
+Return `True` only after a non-`None` calendar item was added and the response sent; return `False` for invalid input, `add_item` failure, or exception. Update the annotation to `-> bool`.
+
+Replace `_parse_date_value` with resolver-based canonicalization:
+
+```python
+def _parse_date_value(
+    self,
+    value: str,
+    *,
+    reference_time: datetime,
+) -> Optional[str]:
+    natural = self.temporal_resolver.resolve(value, reference=reference_time)
+    if natural.valid and natural.date:
+        return natural.date
+    checked = self.temporal_resolver.validate_fields(
+        value.strip(),
+        None,
+        reference=reference_time,
+    )
+    return checked.date if checked.valid else None
+```
+
+In `handle_edit`, if the mapped field is `date`, call `_parse_date_value(value, reference_time=reference_time)` and reject `None`. If it is `time`, call `TemporalResolver._parse_time(value)` through the public `validate_time(value) -> str | None` method and reject `None`. Perform this before search/index lookup and before either edit manager call. Return `True` after the success response and `False` for every existing early-return/error path; do not change localized success/not-found copy. Add an identity test that `monitor.handlers["calendar"].temporal_resolver is monitor.temporal_resolver`; a bare handler default is never used by production construction.
+
+- [ ] **Step 13: Run Task 4 complete suites (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_temporal_resolver.py tests/test_natural_language_parser_safety.py \
+  tests/test_calendar_edit.py tests/test_selfbot_comprehensive.py -q
+```
+
+Expected: all tests pass; invalid input makes zero manager/GCal calls.
+
+- [ ] **Step 14: Commit Task 4 (2–5 minutes)**
+
+```bash
+git add cal_system/temporal_resolver.py cal_system/natural_language_parser.py \
+  features/calendar_handler.py tests/test_temporal_resolver.py \
+  tests/test_natural_language_parser_safety.py tests/test_calendar_edit.py
+git commit -m "feat: resolve and validate natural temporal expressions"
+```
+
+### Task 5: Replace first-match routing with risk-aware candidate arbitration
+
+**Files:**
+
+- Create: `core/intent_arbitration.py`
+- Create: `tests/test_intent_arbitration.py`
+- Modify: `core/intent_router.py:101-729`
+- Modify: `cal_system/reminder_manager.py` — pure reminder parser vocabulary and injected-time contract only
+- Modify: `tests/nlu_harness.py`
+- Modify: `tests/test_intent_router.py`
+- Modify: `tests/test_reminder_crud.py`
+- Modify: `tests/test_false_positives.py`
+- Modify: `tests/fixtures/nlu_contract_v1.jsonl`
+
+**Interfaces:**
+
+- Consumes `NormalizedUtterance`, `UtteranceSemantics`, `IntentCandidate`, `RoutingContext`, `TemporalResolver`, and the Task 2 policy/metrics sink.
+- Produces `arbitrate_candidates(utterance, semantics, candidates)`, `IntentRouter.evaluate_utterance(utterance, guild_id=None, *, channel_id=None, user_id=None, routing_context=None, reference_time=None) -> RoutedIntent`, the identically parameterized `route_utterance` wrapper returning `IntentResult` defined in Step 10, and the stable pure parser signature `parse_reminder_command(message_content, *, now=None, temporal_resolver=None)` consumed unchanged by the typed runtime lane.
+- Keeps `route(content, guild_id=None)` compatible. No handler is invoked and no pending action is consulted in this plan.
+
+- [ ] **Step 1: Write pure arbitration red tests (2–5 minutes)**
+
+Create `tests/test_intent_arbitration.py`:
+
+```python
+import pytest
+
+from core.intent_arbitration import arbitrate_candidates
+from core.intent_models import BotIntent, IntentCandidate, IntentRisk, IntentSource
+from core.utterance import normalize_utterance
+from core.utterance_semantics import analyze_utterance
+
+
+def candidate(
+    intent=BotIntent.CALENDAR_DELETE,
+    risk=IntentRisk.DESTRUCTIVE,
+    *,
+    priority=20,
+    order=10,
+    confidence=0.95,
+    specificity=2,
+    action_terms=("slett", "delete"),
+    domain_terms=("kalender", "calendar"),
+    source=IntentSource.DETERMINISTIC,
+):
+    return IntentCandidate(
+        intent, confidence, priority, order=order,
+        reason="test_candidate", risk=risk, source=source,
+        action_terms=action_terms, domain_terms=domain_terms,
+        specificity=specificity,
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ikke slett kalenderen",
+        "slett ikke kalenderen",
+        'hva skjer hvis jeg skriver "slett kalenderen"?',
+    ],
+)
+def test_unsafe_destructive_candidate_is_hard_blocked(text):
+    utterance = normalize_utterance(text)
+    decision = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), [candidate()]
+    )
+    assert decision.selected is None
+    assert decision.blocked is True
+
+
+def test_information_question_can_fall_through_to_read_candidate():
+    utterance = normalize_utterance("Når går toget i morgen kl 8?")
+    candidates = [
+        candidate(BotIntent.CALENDAR_ITEM, IntentRisk.ADDITIVE),
+        candidate(
+            BotIntent.SEARCH, IntentRisk.READ_ONLY, priority=80, order=361,
+            confidence=0.92, action_terms=(), domain_terms=("toget",),
+        ),
+    ]
+    decision = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), candidates
+    )
+    assert decision.selected is not None
+    assert decision.selected.intent is BotIntent.SEARCH
+
+
+def test_specific_explicit_url_candidate_beats_generic_poll_parser():
+    utterance = normalize_utterance("forkort https://example.com/a/b")
+    candidates = [
+        candidate(
+            BotIntent.POLL_CREATE, IntentRisk.ADDITIVE, priority=50, order=150,
+            confidence=0.95, specificity=0, action_terms=(), domain_terms=(),
+        ),
+        candidate(
+            BotIntent.SHORTEN_URL, IntentRisk.READ_ONLY, priority=60, order=330,
+            confidence=0.90, specificity=3, action_terms=("forkort",),
+            domain_terms=("https://example.com/a/b",),
+        ),
+    ]
+    decision = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), candidates
+    )
+    assert decision.selected is not None
+    assert decision.selected.intent is BotIntent.SHORTEN_URL
+
+
+def test_equal_explicit_cross_domain_candidates_clarify():
+    utterance = normalize_utterance("lag møte og påminnelse i morgen")
+    candidates = [
+        candidate(
+            BotIntent.CALENDAR_ITEM, IntentRisk.ADDITIVE, priority=35, order=123,
+            confidence=0.95, specificity=3, domain_terms=("møte",),
+        ),
+        candidate(
+            BotIntent.REMINDER_CREATE, IntentRisk.ADDITIVE, priority=35, order=122,
+            confidence=0.93, specificity=3, domain_terms=("påminnelse",),
+        ),
+    ]
+    decision = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), candidates
+    )
+    assert decision.selected is not None
+    assert decision.selected.intent is BotIntent.CLARIFY
+    assert tuple(item.intent for item in decision.alternatives) == (
+        BotIntent.REMINDER_CREATE, BotIntent.CALENDAR_ITEM,
+    )
+
+
+def test_confirmation_policy_is_applied_after_selection():
+    utterance = normalize_utterance("slett kalenderen")
+    selected = arbitrate_candidates(
+        utterance, analyze_utterance(utterance), [candidate()]
+    ).selected
+    assert selected is not None
+    assert selected.requires_confirmation is True
+
+
+def test_semantic_write_requires_confirmation_but_deterministic_add_does_not():
+    utterance = normalize_utterance("lag møte i morgen")
+    semantic = candidate(
+        BotIntent.CALENDAR_ITEM, IntentRisk.ADDITIVE, priority=35,
+        source=IntentSource.SEMANTIC,
+    )
+    deterministic = candidate(
+        BotIntent.CALENDAR_ITEM, IntentRisk.ADDITIVE, priority=35,
+        source=IntentSource.DETERMINISTIC,
+    )
+    assert arbitrate_candidates(utterance, analyze_utterance(utterance), [semantic]).selected.requires_confirmation
+    assert not arbitrate_candidates(utterance, analyze_utterance(utterance), [deterministic]).selected.requires_confirmation
+```
+
+- [ ] **Step 2: Run the arbitration red tests (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_intent_arbitration.py -q`
+
+Expected: collection fails with `ModuleNotFoundError: No module named 'core.intent_arbitration'`.
+
+- [ ] **Step 3: Implement pure risk filtering, ordering, ambiguity, and confirmation (2–5 minutes)**
+
+Create `core/intent_arbitration.py`:
+
+```python
+from __future__ import annotations
+
+from dataclasses import replace
+from collections.abc import Iterable
+import re
+
+from core.intent_models import (
+    ArbitrationDecision, BotIntent, CandidateRejection, IntentCandidate,
+    IntentResult, IntentRisk, IntentSource, RejectionCode,
+)
+from core.utterance import NormalizedUtterance
+from core.utterance_semantics import (
+    SpeechAct, UtteranceSemantics, evidence_is_quoted_only, is_negated_action,
+)
+
+_WRITE_RISKS = {IntentRisk.ADDITIVE, IntentRisk.MUTATING, IntentRisk.DESTRUCTIVE}
+_HARD_BLOCK_CODES = {
+    RejectionCode.NEGATED_ACTION, RejectionCode.QUOTED_ONLY,
+    RejectionCode.META, RejectionCode.HYPOTHETICAL,
+}
+
+
+def _present(control_text: str, terms: tuple[str, ...]) -> bool:
+    tokens = tuple(
+        re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", control_text.casefold())
+    )
+    return any(
+        needle and any(
+            tokens[index:index + len(needle)] == needle
+            for index in range(0, len(tokens) - len(needle) + 1)
+        )
+        for needle in (
+            tuple(re.findall(r"[^\W\d_]+(?:['’][^\W\d_]+)?", term.casefold()))
+            for term in terms
+        )
+    )
+
+
+def _rejection(candidate: IntentCandidate, code: RejectionCode) -> CandidateRejection:
+    return CandidateRejection(candidate, code)
+
+
+def _unsafe_code(
+    utterance: NormalizedUtterance,
+    semantics: UtteranceSemantics,
+    candidate: IntentCandidate,
+) -> RejectionCode | None:
+    if candidate.risk not in _WRITE_RISKS:
+        return None
+    evidence = candidate.action_terms + candidate.domain_terms
+    if evidence_is_quoted_only(utterance, evidence):
+        return RejectionCode.QUOTED_ONLY
+    live_evidence = tuple(
+        term for term in evidence
+        if _present(utterance.control_text, (term,))
+    )
+    if not live_evidence:
+        return RejectionCode.MISSING_LIVE_EVIDENCE
+    if semantics.speech_act is SpeechAct.META:
+        return RejectionCode.META
+    if semantics.speech_act is SpeechAct.HYPOTHETICAL:
+        return RejectionCode.HYPOTHETICAL
+    allow_positive_forget = (
+        candidate.risk is IntentRisk.ADDITIVE
+        and candidate.intent in {BotIntent.CALENDAR_ITEM, BotIntent.REMINDER_CREATE}
+    )
+    if is_negated_action(
+        utterance,
+        evidence,
+        allow_positive_forget=allow_positive_forget,
+    ):
+        return RejectionCode.NEGATED_ACTION
+    if semantics.speech_act is SpeechAct.INFORMATION_REQUEST:
+        return RejectionCode.INFORMATION_QUESTION_MUTATION
+    if candidate.risk is IntentRisk.DESTRUCTIVE:
+        if not candidate.action_terms or not _present(utterance.control_text, candidate.action_terms):
+            return RejectionCode.MISSING_ACTION_EVIDENCE
+        if not candidate.domain_terms or not _present(utterance.control_text, candidate.domain_terms):
+            return RejectionCode.MISSING_DOMAIN_EVIDENCE
+    return None
+
+
+def _sort_key(candidate: IntentCandidate):
+    return (
+        -candidate.specificity,
+        candidate.priority,
+        candidate.order,
+        -candidate.confidence,
+        candidate.intent.value,
+    )
+
+
+def _is_conflict(first: IntentCandidate, second: IntentCandidate) -> bool:
+    return (
+        first.intent is not second.intent
+        and first.specificity == second.specificity
+        and first.priority == second.priority
+        and abs(first.confidence - second.confidence) <= 0.05
+        and frozenset(first.domain_terms) != frozenset(second.domain_terms)
+    )
+
+
+def arbitrate_candidates(
+    utterance: NormalizedUtterance,
+    semantics: UtteranceSemantics,
+    candidates: Iterable[IntentCandidate],
+) -> ArbitrationDecision:
+    accepted: list[IntentCandidate] = []
+    rejected: list[CandidateRejection] = []
+    hard_blocked = False
+    for candidate in candidates:
+        code = _unsafe_code(utterance, semantics, candidate)
+        if code is None:
+            accepted.append(candidate)
+            continue
+        rejected.append(_rejection(candidate, code))
+        hard_blocked = hard_blocked or code in _HARD_BLOCK_CODES
+    if hard_blocked:
+        return ArbitrationDecision(None, rejected=tuple(rejected), blocked=True, reason="unsafe_write")
+    ordered = sorted(accepted, key=_sort_key)
+    if not ordered:
+        return ArbitrationDecision(None, rejected=tuple(rejected), reason="no_candidate")
+    if len(ordered) > 1 and _is_conflict(ordered[0], ordered[1]):
+        choices = [ordered[0].intent.value, ordered[1].intent.value]
+        clarification = IntentCandidate(
+            BotIntent.CLARIFY,
+            min(ordered[0].confidence, ordered[1].confidence),
+            ordered[0].priority,
+            order=min(ordered[0].order, ordered[1].order),
+            payload={"choices": choices},
+            reason="candidate_conflict",
+            source=IntentSource.DETERMINISTIC,
+            risk=IntentRisk.READ_ONLY,
+            specificity=ordered[0].specificity,
+        )
+        rejected.extend(
+            _rejection(candidate, RejectionCode.CONFLICT)
+            for candidate in ordered[:2]
+        )
+        return ArbitrationDecision(
+            clarification,
+            alternatives=tuple(ordered[:2]),
+            rejected=tuple(rejected),
+            reason="candidate_conflict",
+        )
+    selected = ordered[0]
+    confirmation = (
+        selected.risk is IntentRisk.DESTRUCTIVE
+        or (
+            selected.source is IntentSource.SEMANTIC
+            and selected.risk in _WRITE_RISKS
+        )
+    )
+    return ArbitrationDecision(
+        replace(selected, requires_confirmation=confirmation),
+        rejected=tuple(rejected),
+        reason="selected",
+    )
+```
+
+- [ ] **Step 4: Run the pure arbitration tests green (2–5 minutes)**
+
+Run: `.venv312/bin/python -m pytest tests/test_intent_arbitration.py -q`
+
+Expected: all tests pass.
+
+- [ ] **Step 5: Add router collector and parser-isolation contracts (2–5 minutes)**
+
+In `core/intent_router.py`, add imports for `Counter`, `classify_intent_risk`, `NLUMetrics`, normalization/semantics, arbitration, routing context, and temporal resolution. Add these exact local contracts:
+
+```python
+@dataclass(frozen=True, slots=True)
+class CollectorContext:
+    utterance: NormalizedUtterance
+    semantics: UtteranceSemantics
+    routing: RoutingContext | None
+    guild_id: int | None
+    reference_time: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CollectorOutput:
+    candidates: tuple[IntentCandidate, ...] = ()
+    parser_errors: tuple[str, ...] = ()
+    rejections: tuple[CandidateRejection, ...] = ()
+
+
+COLLECTOR_ORDER = (
+    "_collect_control_candidates",
+    "_collect_calendar_reminder_candidates",
+    "_collect_poll_watchlist_quote_candidates",
+    "_collect_utility_candidates",
+    "_collect_fallback_candidates",
+)
+```
+
+Keep `IntentRouter(monitor)` compatible for offline callers and allow production ownership injection:
+
+```python
+def __init__(
+    self,
+    monitor,
+    metrics: NLUMetrics | None = None,
+    *,
+    temporal_resolver: TemporalResolver | None = None,
+    now_provider: Callable[[], datetime] | None = None,
+):
+    self.monitor = monitor
+    self.metrics = metrics or NLUMetrics()
+    self.temporal_resolver = temporal_resolver or TemporalResolver()
+    self._now_provider = now_provider or (lambda: datetime.now(OSLO))
+```
+
+The default resolver/clock are offline compatibility only. The model-actions lane makes MessageMonitor the sole production owner and injects the exact same resolver and reminder clock into the router, action correction flow, and typed calendar/reminder parsers. Every temporal collector passes `context.reference_time` through `_safe_parse(..., reference_time=context.reference_time)` (or the callee's exact `reference=` keyword) rather than calling its provider again mid-route. Add a provider spy that advances across Oslo midnight on its second call; one `route()` call reads it once and every calendar/reminder candidate uses the first instant.
+
+Add helpers; every parser exception is caught here and never copied:
+
+```python
+def _safe_parse(self, errors, parser_name, metric_family, fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        errors.append(parser_name)
+        self.metrics.record_parser_error(metric_family, "exception")
+        return None
+
+def _candidate_from_result(
+    self, result, *, tier, order, specificity,
+    action_terms=(), domain_terms=(), source=IntentSource.DETERMINISTIC,
+):
+    risk = classify_intent_risk(result.intent, result.payload)
+    return IntentCandidate(
+        result.intent, result.confidence, tier, order=order,
+        payload=dict(result.payload), reason=result.reason, source=source,
+        risk=risk, action_terms=tuple(action_terms),
+        domain_terms=tuple(domain_terms), specificity=specificity,
+    )
+```
+
+The only allowed `parser_name` values in route diagnostics are the Task 1 `ParserName` literals. Map them to metric families: both natural-language parser calls -> `calendar`; reminder -> `reminder`; poll/vote -> `poll`; watchlist -> `watchlist`; quote -> `quote`; birthday -> `birthday`; profile -> `profile`; countdown -> `countdown`; and each utility to its same short family (`price`, `horoscope`, `compliment`, `calculator`, `shorten`, `search`). Every later feature collector must call its parser through this same `_safe_parse` boundary; direct parser calls in collectors are forbidden.
+
+Every additive, mutating, or destructive conversion through `_candidate_from_result()` must pass the finite action/domain terms it actually matched in `utterance.control_text`; a parser result alone is never evidence. Add `_present_terms(control_text, finite_terms)` and use it for generic calendar NLP (`møte`, `avtale`, `arrangement`, `meeting`, `event` plus any live create verb), reminder NLP, poll/watchlist/quote/birthday/profile, and location (`bor`, `bosted`, `sted`, `location`, `flytt`, `sett`). `_unsafe_code()` requires at least one such live unmasked term for every write, checks negation against the complete live evidence tuple, and then applies the stricter destructive action-plus-domain rule. Thus an otherwise parseable write found only in inline/fenced code, a quote, or `jeg vil ikke møte i morgen kl 14` is hard-blocked even when its parser emitted empty action terms. Keep `ikke glem`/`ikkje gløym` as the existing narrow positive idiom.
+
+- [ ] **Step 6: Freeze the complete collector tier/order/specificity contract (2–5 minutes)**
+
+Lower tier is earlier. Specificity is independent: `0` implicit parser shape, `1` domain evidence, `2` action plus domain, `3` action plus domain plus target/value, `4` exact operational/context form. `order` is the old `route()` branch position inside its tier. `2/3`, `0/3`, and `1/3` use the larger value only when a nonblank typed target/value is present. The implementation must use these exact reason strings and numbers:
+
+| Reason | Tier | Order | Specificity |
+|---|---:|---:|---:|
+| `calendar_help_keyword` | 10 | 10 | 4 |
+| `status_keyword` | 10 | 20 | 4 |
+| `help_keyword` | 10 | 30 | 4 |
+| `capability_help_natural` | 10 | 31 | 2 |
+| `profile_keyword` | 10 | 40 | 4 |
+| `memory_delete_keyword` | 10 | 50 | 4 |
+| `memory_export_keyword` | 10 | 51 | 4 |
+| `memory_view_keyword` | 10 | 52 | 4 |
+| `reminder_edit_keyword` | 20 | 60 | 2/3 |
+| `reminder_delete_keyword` | 20 | 70 | 2/3 |
+| `reminder_complete_keyword` | 20 | 90 | 2/3 |
+| `active_reminder_numeric_complete` | 20 | 91 | 4 |
+| `active_reminder_complete_number` | 20 | 92 | 4 |
+| `calendar_auth_keyword` | 20 | 100 | 4 |
+| `calendar_sync_keyword` | 20 | 110 | 2 |
+| `calendar_clear_keyword` | 20 | 111 | 2/3 |
+| `calendar_delete_keyword` | 20 | 112 | 2/3 |
+| `calendar_delete_title_match` | 20 | 113 | 3 |
+| `calendar_complete_keyword` | 20 | 114 | 2/3 |
+| `calendar_complete_title_match` | 20 | 115 | 3 |
+| `calendar_edit_keyword` | 20 | 116 | 2/3 |
+| `calendar_edit_natural` | 20 | 117 | 3 |
+| `reminder_search_keyword` | 30 | 80 | 3 |
+| `calendar_search_keyword` | 30 | 81 | 3 |
+| `explicit_web_search_keyword` | 30 | 82 | 3 |
+| `bare_web_search_keyword` | 30 | 83 | 3 |
+| `reminder_list_keyword` | 30 | 93 | 2 |
+| `reminder_list_parser` | 30 | 94 | 2 |
+| `calendar_list_keyword` | 30 | 118 | 2 |
+| `calendar_keyword_default` | 30 | 119 | 1 |
+| `birthday_edit_keyword` | 30 | 120 | 2/3 |
+| `birthday_create_natural` | 35 | 121 | 3 |
+| `reminder_create_natural` | 35 | 122 | 3 |
+| `calendar_create_natural` | 35 | 123 | 3 |
+| `poll_create_natural` | 35 | 124 | 3 |
+| `watchlist_add_natural` | 35 | 125 | 3 |
+| `calendar_nlp_high` | 40 | 130 | 0/3 |
+| `poll_list_keyword` | 50 | 140 | 2 |
+| `poll_parser` | 50 | 150 | 0/3 |
+| `active_poll_vote` | 50 | 160 | 4 |
+| `poll_edit_keyword` | 50 | 170 | 2/3 |
+| `poll_delete_keyword` | 50 | 180 | 2/3 |
+| `poll_close_keyword` | 50 | 190 | 2/3 |
+| `countdown_parser` | 50 | 200 | 2/3 |
+| `watchlist_parser` | 50 | 210 | 1/3 |
+| `word_of_day_keyword` | 50 | 220 | 2 |
+| `quote_list_keyword` | 50 | 230 | 2 |
+| `quote_edit_keyword` | 50 | 240 | 2/3 |
+| `quote_delete_keyword` | 50 | 250 | 2/3 |
+| `quote_parser` | 50 | 260 | 1/3 |
+| `aurora_keyword` | 50 | 270 | 1 |
+| `school_holidays_keyword` | 50 | 280 | 1 |
+| `price_parser` | 60 | 290 | 3 |
+| `horoscope_parser` | 60 | 300 | 2/3 |
+| `compliment_parser` | 60 | 310 | 2/3 |
+| `calculator_parser` | 60 | 320 | 3 |
+| `shorten_parser` | 60 | 330 | 3 |
+| `daily_digest_keyword` | 60 | 340 | 2 |
+| `calendar_nlp` | 70 | 350 | 0/3 |
+| `search_intent` | 80 | 360 | 1 |
+| `information_search_natural` | 80 | 361 | 2 |
+| `dashboard_intent` | 80 | 370 | 1 |
+| `location_pattern` | 80 | 380 | 3 |
+| `fallback` | 90 | 390 | 0 |
+
+Exact variable-specificity tests are:
+
+- reminder edit/delete/complete: `3` only with a positive `number`, nonblank `id`, or nonblank `target` in the reminder envelope;
+- calendar clear/delete/complete/edit and birthday edit: `3` only with nonblank `target`, positive `number/index`, or typed changes;
+- calendar NLP: `3` only with nonblank title and date/recurrence; otherwise `0`;
+- poll parser: `3` only with an explicit `poll|avstemning` term plus parsed nonblank question and at least two nonblank options; otherwise `0`;
+- poll edit/delete/close and countdown: `3` only with a parsed positive index/id/event target; otherwise `2`;
+- watchlist: `3` for add/edit/remove with typed nonblank title or positive index; `1` for status/list/suggest;
+- quote parser: `3` for save with nonblank text; `1` for get. Quote edit/delete branches use `3` with a positive index, otherwise `2`;
+- horoscope/compliment: `3` only with parsed sign/person target, otherwise `2`.
+
+The two `*_title_match` candidates are not trusted bypasses. They carry the exact matched delete/complete surface verb in `action_terms`. For an unquoted target, `domain_terms` contains the resolved live title span. A quoted span may be consumed as **target data only** when an unquoted finite family noun (`møte|avtale|kalender|påminnelse|reminder|event`) and unquoted action verb are both live, the quoted value resolves to exactly one stable target, and the whole utterance is not meta/hypothetical; in that case `domain_terms` contains the live family noun, never the masked target text. Thus `slett møte "Møte med Ola"` may produce a confirmation, while `jeg skrev "slett møte Møte med Ola"` and `hva betyr "slett møte Møte med Ola"?` remain inert. Add router/corpus cases for these pairs, `ikke slett <live title>`, `ikkje fullfør <live title>`, and quoted/meta versions. Every unsafe form is blocked or falls back with zero mutation candidate; each equivalent direct form selects the uniquely bound route and still follows normal destructive confirmation.
+
+`birthday_create_natural` is a reserved tier consumed by the separate birthday identity/parser lane; this plan must not emit it from unvalidated name/date guessing. All other rows are emitted in this task.
+
+- [ ] **Step 7: Add compatibility wrapper tests before moving branches (2–5 minutes)**
+
+In `tests/test_intent_router.py`, assert `route("hjelp", 123)` equals `route_utterance(normalize_utterance("hjelp"), guild_id=123)`, and a supplied `RoutingContext` whose `key.guild_id` differs from scalar `guild_id` returns `AI_CHAT`, reason `invalid_context`, and diagnostics count `{RejectionCode.INVALID_CONTEXT: 1}`. Assert the result/payload contains no scalar identity.
+
+- [ ] **Step 8: Implement route wrappers and one arbitration point (2–5 minutes)**
+
+Replace only the top-level early-return body with these public signatures and flow; keep helper methods below it while collectors are migrated:
+
+```python
+def route(
+    self, content: str, guild_id: Optional[int] = None, *,
+    channel_id: int | None = None, user_id: int | None = None,
+    routing_context: RoutingContext | None = None,
+    reference_time: datetime | None = None,
+) -> IntentResult:
+    return self.route_utterance(
+        normalize_utterance(content), guild_id=guild_id,
+        channel_id=channel_id, user_id=user_id,
+        routing_context=routing_context,
+        reference_time=reference_time,
+    )
+
+def route_utterance(
+    self, utterance: NormalizedUtterance, guild_id: int | None = None, *,
+    channel_id: int | None = None, user_id: int | None = None,
+    routing_context: RoutingContext | None = None,
+    reference_time: datetime | None = None,
+) -> IntentResult:
+    return self.evaluate_utterance(
+        utterance, guild_id=guild_id, channel_id=channel_id,
+        user_id=user_id, routing_context=routing_context,
+        reference_time=reference_time,
+    ).result
+
+def evaluate_utterance(
+    self, utterance: NormalizedUtterance, guild_id: int | None = None, *,
+    channel_id: int | None = None, user_id: int | None = None,
+    routing_context: RoutingContext | None = None,
+    reference_time: datetime | None = None,
+) -> RoutedIntent:
+    captured = reference_time if reference_time is not None else self._now_provider()
+    if captured.tzinfo is None or captured.utcoffset() is None:
+        raise ValueError("routing_reference_must_be_aware")
+    captured = captured.astimezone(OSLO)
+    if routing_context is not None:
+        key = routing_context.key
+        mismatch = (
+            (guild_id is not None and guild_id != key.guild_id)
+            or (channel_id is not None and channel_id != key.channel_id)
+            or (user_id is not None and user_id != key.user_id)
+        )
+        if mismatch:
+            self.metrics.record_rejection(RejectionCode.INVALID_CONTEXT)
+            return RoutedIntent(
+                IntentResult(BotIntent.AI_CHAT, 0.2, {}, "invalid_context"),
+                RouteDiagnostics(
+                    rejection_counts={RejectionCode.INVALID_CONTEXT: 1}
+                ),
+            )
+        guild_id, channel_id, user_id = key.guild_id, key.channel_id, key.user_id
+    semantics = analyze_utterance(utterance)
+    context = CollectorContext(
+        utterance=utterance,
+        semantics=semantics,
+        routing=routing_context,
+        guild_id=guild_id,
+        reference_time=captured,
+    )
+    candidates = []
+    parser_errors = []
+    collector_rejections = []
+    for method_name in COLLECTOR_ORDER:
+        output = getattr(self, method_name)(context)
+        candidates.extend(output.candidates)
+        parser_errors.extend(output.parser_errors)
+        collector_rejections.extend(output.rejections)
+    decision = arbitrate_candidates(utterance, semantics, candidates)
+    all_rejections = tuple(collector_rejections) + decision.rejected
+    counts = Counter(rejection.code for rejection in all_rejections)
+    for rejection in all_rejections:
+        self.metrics.record_rejection(rejection.code)
+    if decision.selected is not None:
+        result = decision.selected.to_result()
+    else:
+        result = IntentResult(
+            BotIntent.AI_CHAT,
+            0.2 if decision.blocked else 0.5,
+            {},
+            "unsafe_mutation_blocked" if decision.blocked else "fallback",
+        )
+    return RoutedIntent(
+        result,
+        RouteDiagnostics(
+            parser_errors=tuple(dict.fromkeys(parser_errors)),
+            rejection_counts=dict(sorted(counts.items(), key=lambda item: item[0].value)),
+        ),
+    )
+```
+
+`IntentRouter` records parser and rejection diagnostics only. It must not call `record_decision()`: an `AI_CHAT` fallback is an intermediate result that can still become a semantic model action. The model-actions lane makes `MessageMonitor.handle_message()` the sole final-turn decision recorder after the complete deterministic/model/pending flow resolves, preventing a false deterministic `AI_CHAT/routed` increment before a semantic route.
+
+Run: `.venv312/bin/python -m pytest tests/test_intent_router.py -q`
+
+Expected during this intermediate step: wrapper-only tests pass after real collectors are added in the next steps; do not commit an empty collector stub. Implement Step 8 and Step 9 in the same working change before running.
+
+- [ ] **Step 9: Migrate control and memory branches into the first collector (2–5 minutes)**
+
+`_collect_control_candidates(context)` evaluates, without early return: calendar help, status, help, the new capability help, profile, and all three memory routes. Use `context.utterance.control_text` for predicates and `context.utterance.text` for payload extraction. Capability help matches only these anchored forms:
+
+```python
+CAPABILITY_HELP = re.compile(
+    r"^(?:hva|kva|ka|what)\s+(?:kan|can)\s+(?:du|you)\s+"
+    r"(?:gjøre|gjere|gjør|do)\s*\??$",
+    re.IGNORECASE,
+)
+```
+
+Use `CAPABILITY_HELP.fullmatch(context.utterance.control_text.strip())`. Emit `HELP`, confidence `0.96`, reason `capability_help_natural`, tier/order/spec `10/31/2`, action terms `("kan", "can")`, domain terms `("gjøre", "gjere", "gjør", "do")`. Add negative tests `ka kan du lage avstemning`, `hva kan du slette`, and `what can you create tomorrow`; none may route HELP. For memory delete, set action terms to the exact matched surface form from `("slett", "slette", "delete", "glem")` and domain terms `("minne", "memory", "brukerminne")`; export/view carry domain terms but no write action. Convert existing helper results with `_candidate_from_result` and the table numbers; preserve their exact payloads and confidence.
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_intent_router.py tests/test_user_memory_controls.py -q
+```
+
+Expected: control/memory tests pass.
+
+- [ ] **Step 10: Migrate calendar and reminder branches into the second collector (2–5 minutes)**
+
+`_collect_calendar_reminder_candidates(context)` independently evaluates reminder edit/delete, local search, reminder helper, calendar auth, calendar helper, birthday edit, and calendar NLP. It may read active reminder/calendar state but may not write.
+
+- [ ] **Step 10a: Isolate temporal parser diagnostics (2–5 minutes)**
+
+Use `_safe_parse` for the two `NaturalLanguageParser` result calls. If a result has errors, create a non-executable diagnostic candidate `IntentCandidate(BotIntent.CALENDAR_ITEM, 0.0, 40, order=130, reason="calendar_temporal_invalid", risk=IntentRisk.ADDITIVE)` and add `CandidateRejection(diagnostic_candidate, RejectionCode.INVALID_TEMPORAL)`; call `metrics.record_parser_error("calendar", "invalid_temporal")`; emit no calendar candidate and no raw error payload. Rename high explicit reminder add reason to `reminder_create_natural` and its parsed `complete` reason to `reminder_complete_keyword`. Calendar NLP at confidence `>= 0.94` uses reason `calendar_nlp_high`, tier/order `40/130`; lower confidence uses `calendar_nlp`, `70/350`.
+
+- [ ] **Step 10b: Add the narrow natural calendar-edit candidate (2–5 minutes)**
+
+Add the narrow polite calendar edit parser before generic calendar NLP:
+
+```python
+match = re.match(
+    r"^(?:(?:kan|kunne|could)\s+(?:du|you)\s+)?"
+    r"(?:endre|rediger|flytt|edit|change|move)\s+(.+?)\s+(?:til|to)\s+(.+)$",
+    context.utterance.text,
+    re.IGNORECASE,
+)
+```
+
+Require a nonblank target and valid temporal evidence in the change phrase. Emit `CALENDAR_EDIT`, confidence `0.98`, payload `{"calendar_edit": {"target": target, "changes": changes}}`, where `changes` contains only non-`None` canonical `date` and `time`; reason `calendar_edit_natural`; tier/order/spec `20/117/3`; action terms from the matched verb; domain terms `("møte", "avtale", "arrangement", "meeting", "event")`. If temporal evidence is invalid, add the bounded invalid-temporal rejection instead.
+
+- [ ] **Step 10c: Add explicit reminder and calendar-create evidence (2–5 minutes)**
+
+This routing task owns the pure prerequisite expansion of `cal_system.reminder_manager.parse_reminder_command`; the later typed-runtime plan consumes it without changing its signature or vocabulary. Preserve compatibility calls with no keywords, but production routing always passes both `now=context.reference_time` and `temporal_resolver=self.temporal_resolver` through `_safe_parse`. The parser reads neither wall time nor a manager clock when either is supplied. It returns the complete typed `{"action":"add", "text":..., optional due_at/due_date/time/timezone/recurrence}` object; relative/yearless inputs resolve from `now`, date-only uses the documented 09:00 policy before year selection, and matched temporal text is removed from the title. Add fixed-clock parser tests for relative hours, `i morgen|i morgon|imårra`, weekdays, date-only before/after 09:00, and checklist-only input.
+
+The same function, not a second edit parser, owns the bounded edit/target frames. `endre|rediger|edit` plus `påminnelse|påminning|reminder` and one positive visible number accepts one or more labeled `tekst|text:`, `dato|date:`, `tid|time|kl:`, and `gjentakelse|gjentaking|recurrence:` clauses, rejects duplicate/unknown/empty clauses, and returns exactly `{"action":"edit","number":N,"changes":{...canonical fields...}}`. Pin `endre påminnelse 1 tekst: Ring tannlegen` to `{"action":"edit","number":1,"changes":{"text":"Ring tannlegen"}}`. Complete/delete/list/search frames return their corresponding canonical Task-6 action discriminators and target/query fields. Add tests for every shape, parser exceptions through `_safe_parse("parse_reminder_command", "reminder", ...)`, and contradictory temporal clauses; no handler-private `_parse_edit_command` is part of production routing.
+
+Treat `påminn meg`, `minn meg`, Trøndelag-adjacent `minn mæ`, `husk å`, Nynorsk-adjacent `hugs å`, and `remind me` as explicit reminder-domain evidence. Reuse the production `parse_reminder_command` result; retain its whole dict under `payload["reminder"]`. Do not invent a result when the production parser returns `None`. The parser itself must return `None` for the finite media frames `husk å se <title>`, `hugs å sjå <title>`, and `remember to watch <title>` so the watchlist collector owns them; every other valid `husk/hugs` create such as `husk å kjøpe melk på mandag` is a reminder, not a generic calendar task. Use tier/order/spec `35/122/3`, confidence `0.96`, reason `reminder_create_natural`, action terms containing only the exact matched surface from `("påminn", "minn", "husk", "hugs", "remind")`, and domain terms containing the matched frame. Add focused route tests for `minn mæ om å ringe legen i morra`, `husk å kjøpe melk på mandag`, all three media exclusions, and a provider spy proving one route call reads the injected clock only once. Calendar natural create at tier 35 is emitted only when explicit `møte|avtale|arrangement|meeting|event` evidence and a validated title/date exist; otherwise it remains the high/low NLP row.
+
+Reminder list recognition owns the finite forms `vis|list|show` plus `påminnelser|påminningar|reminders|gjøremål|todos|huskeliste`. Add `vis påminningar -> REMINDER_LIST` and the nearby statement `påminningar kan vere nyttige -> AI_CHAT`; the feature-parity lane only evaluates these forms and does not add recognizers.
+
+Whole-collection phrases such as `slett kalenderen`, `tøm kalenderen`,
+`delete the calendar`, and their polite directive forms emit
+`CALENDAR_CLEAR` with `{"calendar_target": {"all": True}}`; they never emit
+targetless `CALENDAR_DELETE`. `CALENDAR_DELETE` requires one concrete title,
+stable ID, or positive displayed number.
+
+- [ ] **Step 10d: Run calendar/reminder collector tests (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_intent_router.py tests/test_calendar_edit.py \
+  tests/test_reminder_crud.py tests/test_natural_language_parser_safety.py -q
+```
+
+Expected: all listed suites pass.
+
+- [ ] **Step 11: Migrate poll, countdown, watchlist, quote, and content features (2–5 minutes)**
+
+`_collect_poll_watchlist_quote_candidates(context)` calls each production parser through `_safe_parse` and emits every table row from `poll_list_keyword` through `school_holidays_keyword` without returning early.
+
+- [ ] **Step 11a: Migrate poll and countdown candidates (2–5 minutes)**
+
+- poll create/list/edit/delete/close use domain terms `("poll", "avstemning")`; vote uses the numeric vote token plus an active poll as specificity `4`; delete action terms are `("slett", "delete", "fjern", "remove")`;
+- an explicit poll parser result with nonblank question and two options is emitted twice only if needed: `poll_create_natural` at `35/124/3` and the compatibility `poll_parser` at `50/150/3`; implicit legacy parser shapes emit only `poll_parser` at specificity `0`;
+- countdown uses action/domain terms from `("hvor lenge", "countdown", "dager til", "days until")` and the parsed event target;
+
+- [ ] **Step 11b: Migrate watchlist and quote candidates (2–5 minutes)**
+
+- this routing task owns the complete prerequisite expansion of `features.watchlist_manager.parse_watchlist_command()`; do it before emitting watchlist candidates so this plan never depends on the later feature-parity lane. Accept add only for `husk å se <title>`, `hugs å sjå <title>`, `remember to watch <title>`, `legg til film|serie <title>`, an explicit `<title> på|i watchlist`, or `<title> to (the) watchlist`. Accept remove/edit only when `watchlist|film|serie|movie|show` is live alongside the action. Return the complete Task-6 typed fields, reject blank titles and generic `legg til|fjern|endre`, and preserve title/value case;
+- watchlist add with a typed title uses `watchlist_add_natural` at `35/125/3`; the compatibility row stays `50/210`. Read actions use specificity `1`, add/edit/remove with title/index use `3`. The explicit media frames `husk å se`, `hugs å sjå`, and `remember to watch` outrank/exclude generic reminder parsing. Remove uses the exact matched surface action from `("fjern", "fjerne", "slett", "slette", "remove", "delete")` and live domain terms from `("watchlist", "film", "serie", "movie", "show")`; add end-to-end positives `hugs å sjå Arrival`, `remember to watch The Bear`, `fjern film 2`, and `remove show 2`, plus generic-action, substring, quoted-only, negated, and past-description negatives;
+- quote edit/delete preserve their existing envelopes/reasons; delete action terms are `("slett", "delete", "fjern", "remove")`, domain `("sitat", "quote")`; quote parser save/get uses its parsed action to choose specificity `3/1`;
+
+- [ ] **Step 11c: Migrate read-only content candidates and deduplicate parser calls (2–5 minutes)**
+
+- word-of-day, aurora, and school-holidays have read-only domain evidence and no action mutation evidence.
+
+Never call `_route_watchlist_command()` from this collector because that helper hides parser exceptions. Call `monitor.parse_watchlist_command` once and construct `IntentResult(BotIntent.WATCHLIST, 0.93, {"watchlist": parsed}, "watchlist_parser")`. Likewise call poll, vote, countdown, and quote parsers once each and reuse their value for all candidate rows.
+
+- [ ] **Step 11d: Add the bounded parser-exception regression (2–5 minutes)**
+
+Add a test monitor whose `parse_quote_command` raises `RuntimeError("SECRET_TOKEN")`; assert `diagnostics.parser_errors == ("parse_quote_command",)`, `metrics.snapshot()["parser_errors"] == {"parser=quote|code=exception": 1}`, and serialized result/diagnostics contain neither `SECRET_TOKEN` nor `RuntimeError`.
+
+- [ ] **Step 11e: Run poll/watchlist/quote collector tests (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_intent_arbitration.py tests/test_poll_target.py \
+  tests/test_poll_manager_edit_delete.py tests/test_watchlist_scope.py \
+  tests/test_quote_crud.py tests/test_intent_router.py -q
+```
+
+Expected: all listed suites pass.
+
+- [ ] **Step 12: Migrate utilities, search, dashboard, location, and fallback (2–5 minutes)**
+
+`_collect_utility_candidates(context)` emits price, horoscope, compliment, calculator, URL shortening, daily digest, contextual search, information search, dashboard, and location candidates. Use each production parser once through `_safe_parse`, preserve its existing confidence/payload/reason, and apply the table numbers.
+
+- [ ] **Step 12a: Add the three bounded natural utility patterns (2–5 minutes)**
+
+Add these narrow rules:
+
+```python
+EXPLICIT_SHORTEN = re.compile(
+    r"\b(?:forkort|shorten)\b.*\bhttps?://[^\s]+", re.IGNORECASE
+)
+INFORMATION_TRANSIT = re.compile(
+    r"^(?:når|when|hva tid|kva tid|ka tid)\b.*\b"
+    r"(?:tog|toget|buss|bussen|train|bus)\b",
+    re.IGNORECASE,
+)
+VAGUE_WHAT_HAPPENS = re.compile(r"^(?:hva|kva|ka)\s+skjer\??$", re.IGNORECASE)
+```
+
+- [ ] **Step 12b: Emit the explicit URL-shortening candidate (2–5 minutes)**
+
+- When `EXPLICIT_SHORTEN` matches and the production shortener returns a valid URL payload, emit `SHORTEN_URL` at `60/330/3` with action terms from the matched verb and the URL as domain evidence; this beats any specificity-0 poll shape.
+
+- [ ] **Step 12c: Emit information search and suppress vague dashboard claims (2–5 minutes)**
+
+- When `INFORMATION_TRANSIT` matches, emit `SEARCH`, confidence `0.92`, payload `{"search": {"query": context.utterance.text.rstrip("?"), "type": "web"}}`, reason `information_search_natural`, `80/361/2`. The information-question safety rule rejects a competing write candidate but not this read candidate.
+- When `VAGUE_WHAT_HAPPENS` matches, suppress both `search_intent` and `dashboard_intent`; do not suppress contextual searches such as `hva skjer i Oslo` or `hva skjer i morgen`.
+
+- [ ] **Step 12d: Emit location and fallback candidates (2–5 minutes)**
+
+- `_route_location_command()` remains a pure parser, but call it only with case-preserving text and convert its result at `80/380/3`.
+- Pass its actually matched live action/location terms into `_candidate_from_result()`; a city parsed only from Markdown code, quotation, or negated prose is rejected with zero memory calls.
+
+`_collect_fallback_candidates(context)` always returns exactly one `AI_CHAT` candidate with confidence `0.5`, empty payload, reason `fallback`, `90/390/0`, deterministic source, and read-only risk. It carries no evidence terms. The arbiter ignores this fallback when a hard-blocked write is present and the wrapper returns bounded `unsafe_mutation_blocked` instead.
+
+- [ ] **Step 12e: Run utility/search collector tests (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_search_intent.py tests/test_search_manager.py \
+  tests/test_url_shortener_security.py tests/test_intent_router.py -q
+```
+
+Expected: all listed suites pass.
+
+Add end-to-end negatives for inline code `` `møte i morgen kl 14` ``, fenced `slett kalenderen`, quoted `"sett bosted Oslo"`, and `jeg vil ikke møte i morgen kl 14`. Run them through both deterministic collection and `ActionBridge`; each returns the bounded unsafe fallback, stages nothing, and leaves calendar/memory spies untouched. Add equivalent unmasked positive rows to prove masking did not disable ordinary natural directives.
+
+- [ ] **Step 13: Delete the old top-level cascade and prove collectors are read-only (2–5 minutes)**
+
+Once Steps 9–12 are green, delete the old statements in `IntentRouter.route()` that directly return branches. Keep reusable pure helpers (`_route_calendar_command`, title matching, local search parsing, reminder parsing, state-read helpers, location parsing, and contextual-search check). Remove `_route_watchlist_command` only after its caller count is zero.
+
+Add spies whose mutation-like methods (`add_item`, `edit_item`, `delete_item`, `add_reminder`, `create_poll`) raise `AssertionError`. Call `evaluate_utterance()` across one input per collector and assert no mutation-like method was called. State-read methods `get_upcoming`, `get_active_reminders`, and `get_active_polls` remain allowed.
+
+Run: `.venv312/bin/python -m pytest tests/test_intent_router.py tests/test_intent_arbitration.py -q`
+
+Expected: all tests pass and `rg -n "return IntentResult" core/intent_router.py` shows returns only inside pure helpers/wrappers, not a first-match top-level cascade.
+
+- [ ] **Step 14: Pin the natural-language regressions at router level (2–5 minutes)**
+
+Add this exact parametrized test to `tests/test_intent_router.py`:
+
+```python
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("ikke slett kalenderen", BotIntent.AI_CHAT),
+        ("slett ikke kalenderen", BotIntent.AI_CHAT),
+        ('hva skjer hvis jeg skriver "slett påminnelse 1"?', BotIntent.AI_CHAT),
+        ("ikke slett poll 2", BotIntent.AI_CHAT),
+        ("hva skjer?", BotIntent.AI_CHAT),
+        ("kan du slette kalenderen?", BotIntent.CALENDAR_CLEAR),
+        ("ikke glem møte i morgen kl 14", BotIntent.CALENDAR_ITEM),
+        ("Når går toget i morgen kl 8?", BotIntent.SEARCH),
+        ("Kan du endre møte med Ola til fredag kl 10?", BotIntent.CALENDAR_EDIT),
+        ("Påminn meg om å ringe legen i morgen", BotIntent.REMINDER_CREATE),
+        ("Kva kan du gjere?", BotIntent.HELP),
+        ("forkort https://example.com/a/b", BotIntent.SHORTEN_URL),
+    ],
+)
+def test_natural_language_routing_regressions(router, text, expected):
+    assert router.route(text, guild_id=123).intent is expected
+```
+
+For the calendar edit case also assert payload equals:
+
+```python
+{
+    "calendar_edit": {
+        "target": "møte med Ola",
+        "changes": {"date": "17.07.2026", "time": "10:00"},
+    }
+}
+```
+
+Use the fixed Task 4 clock for this assertion. For reminder create assert the production parser's nonblank title remains under `payload["reminder"]`; full canonical reminder timing belongs to the reminder-runtime plan. Assert destructive positive result has `risk is IntentRisk.DESTRUCTIVE` and `requires_confirmation is True`. Assert all five negative/hypothetical cases have empty payload and no handler spy calls.
+
+- [ ] **Step 15: Add adjacent false-positive cases (2–5 minutes)**
+
+In `tests/test_false_positives.py`, add:
+
+```python
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Kva meiner du om RBK i morgon?",
+        "Ka trur du skjer i morra?",
+        "Æ ska bare høre ka du tænke om kampen i morra",
+        "Do not delete reminder 1",
+        'Explain the command "delete poll 2"',
+    ],
+)
+def test_conversation_and_quoted_actions_never_route_to_write(router, text):
+    result = router.route(text, guild_id=123)
+    assert result.risk is IntentRisk.READ_ONLY
+    assert result.intent not in {
+        BotIntent.CALENDAR_ITEM, BotIntent.CALENDAR_DELETE,
+        BotIntent.REMINDER_CREATE, BotIntent.REMINDER_DELETE,
+        BotIntent.POLL_CREATE, BotIntent.POLL_DELETE,
+    }
+```
+
+Add the English positive `Could you delete reminder 1? -> REMINDER_DELETE` next to the English negative so politeness and negation are independently proven.
+
+- [ ] **Step 16: Reconnect the evaluation adapter to per-call route diagnostics (2–5 minutes)**
+
+In `tests/nlu_harness.py`, stop binding `ParserProbe.wrap(...)` proxies in `build_production_router`; bind raw production callables because collectors now own exception isolation. Replace `ProductionRouterAdapter.evaluate()` with:
+
+```python
+def evaluate(self, text: str, *, guild_id: int | None):
+    routed = self._router.evaluate_utterance(
+        normalize_utterance(text), guild_id=guild_id
+    )
+    parser_names = tuple(
+        name for name in routed.diagnostics.parser_errors
+        if name in PARSER_NAME_VALUES
+    )
+    return routed.result, parser_names
+```
+
+Add `get_args` to the existing `typing` import and define `PARSER_NAME_VALUES = frozenset(get_args(ParserName))`. Delete the now-unused `ParserProbe` member from the adapter after its tests are migrated. This is per-call state from the returned `RoutedIntent`, never a shared `last_route` attribute.
+
+- [ ] **Step 17: Extend the JSONL contract with exact safety and arbitration cases (2–5 minutes)**
+
+Append these objects to `tests/fixtures/nlu_contract_v1.jsonl` (one line each, with the same exact nine keys as Task 1):
+
+```jsonl
+{"id":"nb-negated-calendar-delete","locale":"nb","family":"negative","text":"ikke slett kalenderen","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["calendar_delete","calendar_clear"],"fixture":"empty","critical":true}
+{"id":"nn-negated-reminder-delete","locale":"nn","family":"negative","text":"ikkje slett påminnelse 1","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["reminder_delete"],"fixture":"active_reminder","critical":true}
+{"id":"nb-negated-poll-delete","locale":"nb","family":"negative","text":"ikke slett poll 2","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["poll_delete"],"fixture":"active_poll","critical":true}
+{"id":"nb-quoted-delete","locale":"nb","family":"negative","text":"hva skjer hvis jeg skriver \"slett påminnelse 1\"?","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["reminder_delete"],"fixture":"active_reminder","critical":true}
+{"id":"nb-hedged-delete","locale":"nb","family":"negative","text":"jeg vurderer kanskje å slette møte","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["calendar_delete"],"fixture":"calendar_title_meeting","critical":true}
+{"id":"nb-vague-hva-skjer","locale":"nb","family":"negative","text":"hva skjer?","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["dashboard","search","calendar_item"],"fixture":"empty","critical":true}
+{"id":"nb-polite-calendar-clear","locale":"nb","family":"calendar_clear","text":"kan du slette kalenderen?","expected_intent":"calendar_clear","expected_payload":{"calendar_target.all":true},"forbidden_intents":["ai_chat","calendar_delete"],"fixture":"empty","critical":true}
+{"id":"nb-positive-ikke-glem","locale":"nb","family":"calendar_create","text":"ikke glem møte i morgen kl 14","expected_intent":"calendar_item","expected_payload":{"calendar_item.time":"14:00"},"forbidden_intents":["ai_chat"],"fixture":"empty","critical":true}
+{"id":"nb-information-train","locale":"nb","family":"search","text":"Når går toget i morgen kl 8?","expected_intent":"search","expected_payload":{"search.type":"web"},"forbidden_intents":["calendar_item"],"fixture":"empty","critical":true}
+{"id":"nb-natural-calendar-edit","locale":"nb","family":"calendar_edit","text":"Kan du endre møte med Ola til fredag kl 10?","expected_intent":"calendar_edit","expected_payload":{"calendar_edit.target":"møte med Ola","calendar_edit.changes.time":"10:00"},"forbidden_intents":["calendar_item"],"fixture":"calendar_title_meeting","critical":true}
+{"id":"nb-natural-reminder-create","locale":"nb","family":"reminder_create","text":"Påminn meg om å ringe legen i morgen","expected_intent":"reminder_create","expected_payload":{},"forbidden_intents":["calendar_item"],"fixture":"empty","critical":true}
+{"id":"nn-capability-help","locale":"nn","family":"help","text":"Kva kan du gjere?","expected_intent":"help","expected_payload":{},"forbidden_intents":["ai_chat"],"fixture":"empty","critical":true}
+{"id":"nb-explicit-shorten","locale":"nb","family":"utility","text":"forkort https://example.com","expected_intent":"shorten_url","expected_payload":{},"forbidden_intents":["poll_create"],"fixture":"empty","critical":true}
+{"id":"trondelag-conversation-future","locale":"nb","family":"negative","text":"Æ ska bare høre ka du tænke om kampen i morra","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["calendar_item","reminder_create"],"fixture":"empty","critical":true}
+{"id":"en-polite-reminder-delete","locale":"en","family":"reminder_delete","text":"Could you delete reminder 1?","expected_intent":"reminder_delete","expected_payload":{},"forbidden_intents":["ai_chat"],"fixture":"active_reminder","critical":true}
+{"id":"en-negated-reminder-delete","locale":"en","family":"negative","text":"Do not delete reminder 1","expected_intent":"ai_chat","expected_payload":{},"forbidden_intents":["reminder_delete"],"fixture":"active_reminder","critical":true}
+```
+
+- [ ] **Step 18: Run focused routing and corpus gates (2–5 minutes)**
+
+Run:
+
+```bash
+.venv312/bin/python -m pytest \
+  tests/test_intent_arbitration.py tests/test_intent_router.py \
+  tests/test_false_positives.py tests/test_confidence_thresholds.py \
+  tests/test_nlu_contract.py -q
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json
+```
+
+Expected: all tests pass; CLI exits `0`; negative mutation false-positive rate and parser error rate are `0`; destructive precision, critical recall, and labeled payload accuracy are `1.0`.
+
+- [ ] **Step 19: Run the full local non-browser regression gate (2–5 minutes)**
+
+First run `df -h /System/Volumes/Data` and stop below `30Gi`. Otherwise run:
+
+```bash
+.venv312/bin/python -m pytest -q --ignore=tests/test_console_frontend.py
+```
+
+Expected: all non-browser repository tests pass. `tests/test_console_frontend.py` is intentionally excluded because Chromium/browser proof belongs to the observability/release-gates lane. If an unrelated pre-existing failure appears, capture its exact test id and prove the five focused Task 5 suites still pass; do not weaken the NLU corpus or safety assertions.
+
+- [ ] **Step 20: Commit Task 5 (2–5 minutes)**
+
+```bash
+git add core/intent_arbitration.py core/intent_router.py \
+  cal_system/reminder_manager.py tests/nlu_harness.py \
+  tests/test_intent_arbitration.py tests/test_intent_router.py \
+  tests/test_reminder_crud.py tests/test_false_positives.py \
+  tests/fixtures/nlu_contract_v1.jsonl
+git commit -m "feat: arbitrate natural-language intent candidates"
+```
+
+---
+
+## Completion evidence
+
+The implementation is complete only when all five commits exist in order, the full test suite is green, and `.artifacts/nlu-contract.json` passes the exact gate without containing utterance text, payload values, identities, URLs, or exception strings. Record the final commit SHAs and exact commands/output in the project log; do not claim handler dispatch, pending-action confirmation, AI action proposals, birthday identity routing, runtime reminder delivery, persisted observability, deployment, or live Discord verification from this foundation plan.
