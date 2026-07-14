@@ -652,7 +652,7 @@ class TemporalResolver:
                     "daypart",
                     match.span(),
                     DAYPART_HOURS[phrase],
-                    anchor_today=phrase in {"i kveld", "i natt"},
+                    anchor_today=phrase.startswith("i "),
                     daypart=_DAYPART_KINDS[phrase],
                 )
             )

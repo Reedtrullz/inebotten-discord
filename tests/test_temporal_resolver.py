@@ -86,10 +86,22 @@ def test_daypart_and_special_hour_defaults(phrase, canonical):
     assert result.time == canonical
 
 
-def test_legacy_i_kveld_and_i_natt_remain_today_after_default_passed():
+@pytest.mark.parametrize(
+    "phrase",
+    ["i morges", "i formiddag", "i ettermiddag", "i kveld", "i natt"],
+)
+def test_explicit_same_day_dayparts_remain_today_after_default_passed(phrase):
     late = datetime(2026, 7, 14, 23, 30, tzinfo=OSLO)
-    assert RESOLVER.resolve("i kveld", reference=late).date == "14.07.2026"
-    assert RESOLVER.resolve("i natt", reference=late).date == "14.07.2026"
+    assert RESOLVER.resolve(phrase, reference=late).date == "14.07.2026"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["på formiddagen", "på ettermiddagen", "på kvelden", "på natten"],
+)
+def test_generic_dayparts_without_date_keep_first_future_behavior(phrase):
+    late = datetime(2026, 7, 14, 23, 30, tzinfo=OSLO)
+    assert RESOLVER.resolve(phrase, reference=late).date == "15.07.2026"
 
 
 def test_hour_word_does_not_consume_pa_before_daypart():
