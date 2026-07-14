@@ -8,8 +8,18 @@ not substrings. That prevents false positives like matching ``tale`` inside
 import re
 from collections.abc import Iterable
 
+from core.utterance import NormalizedUtterance
 
-def has_keyword(content: str, keyword: str) -> bool:
+TextInput = str | NormalizedUtterance
+
+
+def _control(content: TextInput) -> str:
+    if isinstance(content, NormalizedUtterance):
+        return content.control_text
+    return content
+
+
+def has_keyword(content: TextInput, keyword: str) -> bool:
     """Check whether ``content`` contains ``keyword`` as a whole word.
 
     Uses regex word boundaries to avoid substring matches.
@@ -25,10 +35,16 @@ def has_keyword(content: str, keyword: str) -> bool:
         False
     """
 
-    return bool(re.search(rf"\b{re.escape(keyword)}\b", content, re.IGNORECASE))
+    return bool(
+        re.search(
+            rf"\b{re.escape(keyword)}\b",
+            _control(content),
+            re.IGNORECASE,
+        )
+    )
 
 
-def has_any_keyword(content: str, keywords: Iterable[str]) -> bool:
+def has_any_keyword(content: TextInput, keywords: Iterable[str]) -> bool:
     """Check whether ``content`` contains any keyword as a whole word.
 
     Examples:
@@ -42,7 +58,7 @@ def has_any_keyword(content: str, keywords: Iterable[str]) -> bool:
     return False
 
 
-def has_all_keywords(content: str, keywords: Iterable[str]) -> bool:
+def has_all_keywords(content: TextInput, keywords: Iterable[str]) -> bool:
     """Check whether ``content`` contains all keywords as whole words.
 
     Examples:
@@ -56,7 +72,7 @@ def has_all_keywords(content: str, keywords: Iterable[str]) -> bool:
     return True
 
 
-def extract_keywords(content: str, keywords: Iterable[str]) -> list[str]:
+def extract_keywords(content: TextInput, keywords: Iterable[str]) -> list[str]:
     """Return the keywords found in ``content`` as whole words.
 
     Examples:
