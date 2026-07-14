@@ -5,9 +5,27 @@ Understands flexible Norwegian and English event descriptions
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, Callable
 
+from cal_system.temporal_resolver import OSLO, TemporalResolution, TemporalResolver
 from core.intent_utils import has_keyword
+
+
+@dataclass(frozen=True, slots=True)
+class NaturalParseResult:
+    item: dict[str, Any] | None
+    errors: tuple[str, ...] = ()
+
+
+_QUOTED_TITLE_RE = re.compile(
+    r'"(?P<double>[^"\n]*)"|'
+    r'“(?P<curly_double>[^”\n]*)”|'
+    r'‘(?P<curly_single>[^’\n]*)’|'
+    r'«(?P<guillemet>[^»\n]*)»|'
+    r"(?<!\w)'(?P<single>[^'\n]+)'(?!\w)"
+)
 
 
 class NaturalLanguageParser:
@@ -15,7 +33,14 @@ class NaturalLanguageParser:
     Parses natural language event descriptions into structured data
     """
     
-    def __init__(self):
+    def __init__(
+        self,
+        now_provider: Callable[[], datetime] | None = None,
+        *,
+        temporal_resolver: TemporalResolver | None = None,
+    ):
+        self._now_provider = now_provider or (lambda: datetime.now(OSLO))
+        self.temporal_resolver = temporal_resolver or TemporalResolver()
         self.setup_patterns()
     
     def setup_patterns(self):
@@ -153,7 +178,222 @@ class NaturalLanguageParser:
             'sunday': 'SU',
         }
     
-    def parse_event(self, message_content):
+    def _capture_reference(self, reference_time: datetime | None) -> datetime:
+        captured = self._now_provider() if reference_time is None else reference_time
+        if captured.tzinfo is None or captured.utcoffset() is None:
+            raise ValueError("temporal_reference_must_be_aware")
+        return captured.astimezone(OSLO)
+
+    @staticmethod
+    def _quoted_title(match: re.Match[str] | None) -> str | None:
+        if match is None:
+            return None
+        return next(
+            (value.strip() for value in match.groupdict().values() if value is not None),
+            None,
+        )
+
+    def _fallback_payload(
+        self,
+        message_content: str,
+        *,
+        recurrence_data: dict[str, Any] | None,
+        force_task: bool,
+    ) -> dict[str, Any] | None:
+        content = re.sub(r'<@!?\d+>', '', message_content)
+        content = re.sub(r'@inebotten\s*', '', content, flags=re.IGNORECASE).strip()
+        quoted_match = _QUOTED_TITLE_RE.search(content)
+        title = self._quoted_title(quoted_match)
+        if title is None:
+            title = self._extract_title(content, None, None, recurrence_data)
+            title = re.sub(
+                r'^(?:jeg|eg|i)\s+(?:må|skal|trenger å|treng å|need to|have to)\s+',
+                '',
+                title or '',
+                flags=re.IGNORECASE,
+            ).strip()
+        if not title or len(title) < 2:
+            return None
+        payload: dict[str, Any] = {
+            'type': 'task' if force_task else self._determine_item_type(content),
+            'title': title,
+        }
+        if recurrence_data:
+            payload['recurrence'] = recurrence_data['type']
+            if 'day' in recurrence_data:
+                payload['recurrence_day'] = recurrence_data['day']
+                payload['rrule_day'] = recurrence_data['rrule_day']
+        return payload
+
+    def _fallback_is_allowed(self, message_content: str) -> bool:
+        content = re.sub(r'<@!?\d+>', '', message_content)
+        content = re.sub(r'@inebotten\s*', '', content, flags=re.IGNORECASE).strip()
+        if self._is_conversational_false_positive(content):
+            return False
+        strong_task_markers = (
+            'jeg må',
+            'eg må',
+            'husk',
+            'ikkje gløym',
+            'ikke glem',
+            'minn meg',
+            'påminn meg',
+            'remember',
+            'remind me',
+            "don't forget",
+        )
+        return bool(
+            self._extract_recurrence(content)
+            or any(has_keyword(content, value) for value in self.event_indicators)
+            or any(has_keyword(content, value) for value in strong_task_markers)
+        )
+
+    def _has_task_request(self, message_content: str) -> bool:
+        content = re.sub(r'<@!?\d+>', '', message_content)
+        content = re.sub(r'@inebotten\s*', '', content, flags=re.IGNORECASE).strip()
+        return any(has_keyword(content, value) for value in self.task_indicators)
+
+    def _compose_result(
+        self,
+        raw: dict[str, Any] | None,
+        resolution: TemporalResolution,
+        *,
+        reference_time: datetime,
+        event_shape: bool,
+        recurrence_data: dict[str, Any] | None,
+    ) -> NaturalParseResult:
+        if raw is None:
+            return NaturalParseResult(None)
+        item = {
+            key: value
+            for key, value in raw.items()
+            if key not in {'date', 'time', 'due_at', 'days_offset'}
+        }
+        canonical_date = resolution.date
+        if canonical_date is None and (item.get('recurrence') or recurrence_data):
+            canonical_date = reference_time.strftime('%d.%m.%Y')
+        validation = self.temporal_resolver.validate_fields(
+            canonical_date,
+            resolution.time,
+            due_at=resolution.due_at,
+            reference=reference_time,
+        )
+        if validation.errors:
+            return NaturalParseResult(None, validation.errors)
+        if validation.date is None:
+            return NaturalParseResult(None)
+
+        item['date'] = validation.date
+        if event_shape or validation.time is not None:
+            item['time'] = validation.time
+        if validation.due_at is not None:
+            item['due_at'] = validation.due_at
+        if event_shape:
+            canonical = datetime.strptime(validation.date, '%d.%m.%Y').date()
+            item['days_offset'] = (canonical - reference_time.date()).days
+        return NaturalParseResult(item)
+
+    def parse_event_result(
+        self,
+        message_content: str,
+        *,
+        temporal_text: str | None = None,
+        reference_time: datetime | None = None,
+    ) -> NaturalParseResult:
+        captured = self._capture_reference(reference_time)
+        resolution = self.temporal_resolver.resolve(
+            temporal_text if temporal_text is not None else message_content,
+            reference=captured,
+        )
+        if resolution.errors:
+            return NaturalParseResult(None, resolution.errors)
+        raw = self._parse_event_legacy(message_content, captured)
+        recurrence_data = self._extract_recurrence(message_content)
+        if (
+            raw is None
+            and (resolution.date is not None or recurrence_data)
+            and self._fallback_is_allowed(message_content)
+        ):
+            raw = self._fallback_payload(
+                message_content,
+                recurrence_data=recurrence_data,
+                force_task=False,
+            )
+        return self._compose_result(
+            raw,
+            resolution,
+            reference_time=captured,
+            event_shape=True,
+            recurrence_data=recurrence_data,
+        )
+
+    def parse_event(
+        self,
+        message_content: str,
+        *,
+        temporal_text: str | None = None,
+        reference_time: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        return self.parse_event_result(
+            message_content,
+            temporal_text=temporal_text,
+            reference_time=reference_time,
+        ).item
+
+    def parse_task_with_recurrence_result(
+        self,
+        message_content: str,
+        *,
+        temporal_text: str | None = None,
+        reference_time: datetime | None = None,
+    ) -> NaturalParseResult:
+        captured = self._capture_reference(reference_time)
+        resolution = self.temporal_resolver.resolve(
+            temporal_text if temporal_text is not None else message_content,
+            reference=captured,
+        )
+        if resolution.errors:
+            return NaturalParseResult(None, resolution.errors)
+        task_request = self._has_task_request(message_content)
+        raw = self._parse_task_with_recurrence_legacy(message_content, captured)
+        if raw is None and task_request:
+            raw = self._parse_event_legacy(message_content, captured)
+            if raw is not None:
+                raw['type'] = 'task'
+        recurrence_data = self._extract_recurrence(message_content)
+        if (
+            raw is None
+            and (resolution.date is not None or recurrence_data)
+            and task_request
+            and self._fallback_is_allowed(message_content)
+        ):
+            raw = self._fallback_payload(
+                message_content,
+                recurrence_data=recurrence_data,
+                force_task=True,
+            )
+        return self._compose_result(
+            raw,
+            resolution,
+            reference_time=captured,
+            event_shape=False,
+            recurrence_data=recurrence_data,
+        )
+
+    def parse_task_with_recurrence(
+        self,
+        message_content: str,
+        *,
+        temporal_text: str | None = None,
+        reference_time: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        return self.parse_task_with_recurrence_result(
+            message_content,
+            temporal_text=temporal_text,
+            reference_time=reference_time,
+        ).item
+
+    def _parse_event_legacy(self, message_content, reference_time):
         """
         Parse natural language event description
         
@@ -169,10 +409,9 @@ class NaturalLanguageParser:
             return None
         
         # 1. Check for quoted title (prioritize exact match)
-        quoted_match = re.search(r'["\'](.*?)["\']', content)
-        quoted_title = None
+        quoted_match = _QUOTED_TITLE_RE.search(content)
+        quoted_title = self._quoted_title(quoted_match)
         if quoted_match:
-            quoted_title = quoted_match.group(1).strip()
             # Remove quoted part from content for further parsing of date/time
             content_for_parsing = content.replace(quoted_match.group(0), ' ').strip()
             # Clean up separators like dashes and extra whitespace
@@ -186,16 +425,14 @@ class NaturalLanguageParser:
             return None
         
         # Extract date
-        date_str, days_offset = self._extract_date(content_for_parsing)
+        date_str, days_offset = self._extract_date(content_for_parsing, reference_time)
         
         # If no date found but recurrence is present, default to today
         recurrence_data = self._extract_recurrence(content_for_parsing)
         if not date_str and days_offset is None:
             if recurrence_data:
                 # Default to today for recurrence-only patterns like "regninger hver måned"
-                from datetime import datetime
-                today = datetime.now()
-                date_str = today.strftime('%d.%m.%Y')
+                date_str = reference_time.strftime('%d.%m.%Y')
                 days_offset = 0
             else:
                 return None
@@ -254,7 +491,7 @@ class NaturalLanguageParser:
         # Default to event for most time-based items (backwards compatible)
         return 'event'
     
-    def parse_task_with_recurrence(self, message_content):
+    def _parse_task_with_recurrence_legacy(self, message_content, reference_time):
         """
         Parse natural language task descriptions with specific dates and recurrence
         
@@ -298,10 +535,9 @@ class NaturalLanguageParser:
         remaining = content[idx + len(matched_indicator):].strip()
         
         # NEW: Check for quoted title (prioritize exact match)
-        quoted_match = re.search(r'["\'](.*?)["\']', remaining)
-        quoted_title = None
+        quoted_match = _QUOTED_TITLE_RE.search(remaining)
+        quoted_title = self._quoted_title(quoted_match)
         if quoted_match:
-            quoted_title = quoted_match.group(1).strip()
             # Remove quoted part from remaining for further parsing of date/time
             remaining_for_parsing = remaining.replace(quoted_match.group(0), ' ').strip()
             # Clean up separators like dashes and extra whitespace
@@ -333,7 +569,7 @@ class NaturalLanguageParser:
             if date_match:
                 day_num = date_match.group(1)
                 month_num = date_match.group(2)
-                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(datetime.now().year)
+                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(reference_time.year)
                 if len(year) == 2:
                     year = '20' + year
                 start_date = f"{int(day_num):02d}.{int(month_num):02d}.{year}"
@@ -349,7 +585,7 @@ class NaturalLanguageParser:
             if date_match:
                 day_num = date_match.group(1)
                 month_name = date_match.group(2).lower()
-                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(datetime.now().year)
+                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(reference_time.year)
                 day_name = None
         else:
             # If we matched Pattern 1, extract components
@@ -357,7 +593,7 @@ class NaturalLanguageParser:
                 day_name = date_match.group(1).lower()
                 day_num = date_match.group(2)
                 month_name = date_match.group(3).lower()
-                year = date_match.group(4) if date_match.lastindex >= 4 and date_match.group(4) else str(datetime.now().year)
+                year = date_match.group(4) if date_match.lastindex >= 4 and date_match.group(4) else str(reference_time.year)
         
         if not date_match:
             return None
@@ -587,13 +823,13 @@ class NaturalLanguageParser:
         """Format as DD.MM.YYYY with leading zeros"""
         return f"{day:02d}.{month:02d}.{year}"
     
-    def _extract_date(self, content):
+    def _extract_date(self, content, reference_time):
         """
         Extract date from content
         Returns: (date_string, days_offset) or (None, None)
         """
         content_lower = content.lower()
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = reference_time.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # 1. Check for explicit DD.MM.YYYY or DD.MM
         date_match = re.search(r'(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?', content)

@@ -11,8 +11,10 @@ Commands:
 """
 
 import re
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, Callable
 
+from cal_system.temporal_resolver import OSLO, TemporalResolver
 from features.base_handler import BaseHandler
 
 
@@ -23,11 +25,37 @@ class CalendarHandler(BaseHandler):
     DELETE_COMMANDS = r"(?:slett|slette|delete|fjern|fjerne)"
     COMPLETE_COMMANDS = r"(?:ferdig|done|complete|fullfør|fullføre|fullført)"
     MUTATION_PREFIX = r"(?:(?:kan du|kunne du|vennligst|please)\s+)?"
+    TEMPORAL_CLARIFICATION = (
+        "⚠️ Jeg trenger en gyldig og entydig dato og tid før jeg kan "
+        "endre kalenderen."
+    )
 
-    def __init__(self, monitor):
+    def __init__(
+        self,
+        monitor,
+        *,
+        temporal_resolver: TemporalResolver | None = None,
+        now_provider: Callable[[], datetime] | None = None,
+    ):
         super().__init__(monitor)
         self.calendar = monitor.calendar
         self.nlp_parser = monitor.nlp_parser
+        inherited = getattr(
+            getattr(monitor, "nlp_parser", None),
+            "temporal_resolver",
+            None,
+        )
+        self.temporal_resolver = temporal_resolver or inherited or TemporalResolver()
+        self._now_provider = now_provider or (lambda: datetime.now(OSLO))
+
+    def _capture_reference(self, reference_time: datetime | None) -> datetime:
+        captured = self._now_provider() if reference_time is None else reference_time
+        if captured.tzinfo is None or captured.utcoffset() is None:
+            raise ValueError("calendar_reference_must_be_aware")
+        return captured.astimezone(OSLO)
+
+    async def _send_temporal_clarification(self, message) -> None:
+        await self.send_response(message, self.TEMPORAL_CLARIFICATION)
 
     def _extract_search_text(self, content: str) -> Optional[str]:
         """Extract the item title/query from calendar mutation commands."""
@@ -202,7 +230,15 @@ class CalendarHandler(BaseHandler):
             self.log(f"Error searching calendar: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under søk i kalenderen.")
 
-    async def handle_save_request(self, message, title, date, time):
+    async def handle_save_request(
+        self,
+        message,
+        title,
+        date,
+        time,
+        *,
+        reference_time: datetime | None = None,
+    ) -> bool:
         """
         Special entry point for AI-generated save requests.
         Ensures the title is clean and the event is created correctly.
@@ -220,9 +256,19 @@ class CalendarHandler(BaseHandler):
             "time": time if time and ":" in str(time) else "09:00"
         }
         
-        await self.handle_calendar_item(message, item_data)
+        return await self.handle_calendar_item(
+            message,
+            item_data,
+            reference_time=reference_time,
+        )
 
-    async def handle_calendar_item(self, message, item_data: Dict[str, Any]) -> None:
+    async def handle_calendar_item(
+        self,
+        message,
+        item_data: Dict[str, Any],
+        *,
+        reference_time: datetime | None = None,
+    ) -> bool:
         """
         Handle natural language calendar item creation (unified events + tasks).
 
@@ -230,17 +276,35 @@ class CalendarHandler(BaseHandler):
             message: The Discord message
             item_data: Parsed calendar item data from NLP parser
         """
+        captured = self._capture_reference(reference_time)
         try:
+            validation = self.temporal_resolver.validate_fields(
+                item_data.get("date"),
+                item_data.get("time"),
+                due_at=item_data.get("due_at"),
+                reference=captured,
+            )
+            if validation.errors or validation.date is None:
+                await self._send_temporal_clarification(message)
+                return False
+
+            canonical_item = dict(item_data)
+            canonical_item["date"] = validation.date
+            canonical_item["time"] = validation.time
+            if validation.due_at is not None:
+                canonical_item["due_at"] = validation.due_at
+            else:
+                canonical_item.pop("due_at", None)
             guild_id = self.get_guild_id(message)
 
             # Sync to Google Calendar if available
             gcal_event_id = None
             gcal_link = None
 
-            if self.calendar.gcal_enabled:
+            if getattr(self.calendar, "gcal_enabled", False):
                 try:
-                    self.log(f"Syncing to Google Calendar: {item_data['title']}")
-                    gcal_result = self._sync_to_gcal(item_data, message)
+                    self.log(f"Syncing to Google Calendar: {canonical_item['title']}")
+                    gcal_result = self._sync_to_gcal(canonical_item, message)
                     if gcal_result:
                         gcal_event_id = gcal_result.get("id")
                         gcal_link = gcal_result.get("htmlLink")
@@ -253,11 +317,11 @@ class CalendarHandler(BaseHandler):
                 guild_id=guild_id,
                 user_id=message.author.id,
                 username=message.author.name,
-                title=item_data["title"],
-                date_str=item_data["date"],
-                time_str=item_data.get("time"),
-                recurrence=item_data.get("recurrence"),
-                recurrence_day=item_data.get("recurrence_day"),
+                title=canonical_item["title"],
+                date_str=canonical_item["date"],
+                time_str=canonical_item.get("time"),
+                recurrence=canonical_item.get("recurrence"),
+                recurrence_day=canonical_item.get("recurrence_day"),
                 gcal_event_id=gcal_event_id,
                 gcal_link=gcal_link,
                 channel_id=message.channel.id,
@@ -271,29 +335,33 @@ class CalendarHandler(BaseHandler):
                 )
 
             await self.send_response(message, response_text)
+            return bool(item)
 
         except Exception as e:
             self.log(f"Error handling calendar item: {e}")
+            return False
 
     def _sync_to_gcal(self, item_data: Dict[str, Any], message) -> Optional[Dict]:
         """
         Sync a calendar item to Google Calendar with proper timezone support.
         """
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
-        
         try:
-            day, month, year = map(int, item_data["date"].split("."))
-            time_parts = (item_data.get("time") or "09:00").split(":")
-            hour = int(time_parts[0])
-            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+            if item_data.get("due_at"):
+                start_dt = datetime.fromisoformat(
+                    str(item_data["due_at"]).replace("Z", "+00:00")
+                )
+                if start_dt.tzinfo is None or start_dt.utcoffset() is None:
+                    raise ValueError("calendar_due_at_must_be_aware")
+                start_dt = start_dt.astimezone(OSLO)
+            else:
+                day, month, year = map(int, item_data["date"].split("."))
+                time_parts = (item_data.get("time") or "09:00").split(":")
+                hour = int(time_parts[0])
+                minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                start_dt = datetime(year, month, day, hour, minute, tzinfo=OSLO)
 
-            # Create start datetime in local timezone
-            local_tz = ZoneInfo("Europe/Oslo")
-            start_dt = datetime(year, month, day, hour, minute, tzinfo=local_tz)
-            
-            # End time is 1 hour later
-            end_dt = start_dt + timedelta(hours=1)
+            start_utc = start_dt.astimezone(timezone.utc)
+            end_dt = (start_utc + timedelta(hours=1)).astimezone(OSLO)
 
             return self.calendar.gcal.create_event(
                 title=item_data["title"],
@@ -611,28 +679,42 @@ class CalendarHandler(BaseHandler):
 
         return index, search_text, field, value
 
-    def _parse_date_value(self, value: str) -> Optional[str]:
-        value = value.strip()
+    def _parse_date_value(
+        self,
+        value: str,
+        *,
+        reference_time: datetime,
+    ) -> str | None:
+        resolved = self.temporal_resolver.resolve(
+            value.strip(),
+            reference=reference_time,
+        )
+        date_labels = {
+            "date_alias",
+            "numeric_date",
+            "month_date",
+            "day_of_month",
+            "weekday",
+            "relative",
+        }
+        if resolved.errors or not date_labels.intersection(resolved.matched_text):
+            return None
+        return resolved.date
 
-        if re.match(r"^\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?$", value):
-            return self.calendar._normalize_date_format(value)
-
-        try:
-            parsed = self.nlp_parser.parse_event(f"x på {value} kl 12")
-            if parsed and parsed.get("date"):
-                return parsed["date"]
-        except Exception:
-            pass
-
-        return value
-
-    async def handle_edit(self, message, payload=None) -> None:
+    async def handle_edit(
+        self,
+        message,
+        payload=None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> bool:
         """
         Handle editing calendar items in-place.
         Supports:
           - endre 2 tittel: Ny tittel
           - rediger møte dato: i morgen
         """
+        captured = self._capture_reference(reference_time)
         try:
             guild_id = self.get_guild_id(message)
             index, search_text, field, value = self._parse_edit_command(
@@ -643,34 +725,48 @@ class CalendarHandler(BaseHandler):
                 await self.send_response(
                     message, self.loc.t("calendar_edit_invalid")
                 )
-                return
+                return False
 
             kwarg_field = self._EDIT_FIELD_MAP.get(field.lower())
             if not kwarg_field:
                 await self.send_response(
                     message, self.loc.t("calendar_edit_invalid")
                 )
-                return
+                return False
 
             if kwarg_field == "date":
-                parsed = self._parse_date_value(value)
-                if parsed:
-                    value = parsed
+                parsed = self._parse_date_value(value, reference_time=captured)
+                if parsed is None:
+                    await self._send_temporal_clarification(message)
+                    return False
+                value = parsed
+            elif kwarg_field == "time":
+                parsed_time = self.temporal_resolver.validate_time(value)
+                if parsed_time is None:
+                    await self._send_temporal_clarification(message)
+                    return False
+                value = parsed_time
 
-            if index is None and search_text:
-                matches = self.calendar.search_items(search_text)
-                if not matches:
+            target_item = None
+            if index is not None:
+                try:
+                    snapshot = self.calendar.get_upcoming(guild_id, days=365)
+                except TypeError:
+                    snapshot = self.calendar.get_upcoming(guild_id)
+                if not 1 <= index <= len(snapshot):
                     await self.send_response(
-                        message, self.loc.t("calendar_edit_not_found", num=search_text)
+                        message, self.loc.t("calendar_edit_not_found", num=index)
                     )
-                    return
+                    return False
+                target_item = snapshot[index - 1]
+            elif search_text:
                 upcoming_matches = self._matching_upcoming_items(guild_id, search_text)
                 if len(upcoming_matches) > 1:
                     await self.send_response(
                         message,
                         self._format_match_prompt(search_text, upcoming_matches, action="rediger"),
                     )
-                    return
+                    return False
 
                 if not upcoming_matches:
                     await self.send_response(
@@ -680,9 +776,31 @@ class CalendarHandler(BaseHandler):
                             "Bruk `@inebotten kalender` for å se hva som kan redigeres."
                         ),
                     )
-                    return
-
+                    return False
                 target_item = upcoming_matches[0][1]
+            else:
+                await self.send_response(
+                    message, self.loc.t("calendar_edit_invalid")
+                )
+                return False
+
+            if kwarg_field in {"date", "time"}:
+                effective_date = value if kwarg_field == "date" else target_item.get("date")
+                effective_time = value if kwarg_field == "time" else target_item.get("time")
+                validation = self.temporal_resolver.validate_fields(
+                    effective_date,
+                    effective_time,
+                    reference=captured,
+                )
+                if validation.errors:
+                    await self._send_temporal_clarification(message)
+                    return False
+                value = validation.date if kwarg_field == "date" else validation.time
+                if value is None:
+                    await self._send_temporal_clarification(message)
+                    return False
+
+            try:
                 updated_item = await self.calendar.edit_item_by_id(
                     target_item.get("id"), **{kwarg_field: value}
                 )
@@ -690,28 +808,16 @@ class CalendarHandler(BaseHandler):
                     message,
                     self.loc.t("calendar_edit_success", title=updated_item["title"]),
                 )
-                return
-            elif index is None:
-                await self.send_response(
-                    message, self.loc.t("calendar_edit_invalid")
-                )
-                return
-
-            try:
-                updated_item = await self.calendar.edit_item(
-                    index, **{kwarg_field: value}
-                )
-                await self.send_response(
-                    message,
-                    self.loc.t("calendar_edit_success", title=updated_item["title"]),
-                )
+                return True
             except ValueError:
                 await self.send_response(
                     message, self.loc.t("calendar_edit_not_found", num=index)
                 )
+                return False
 
         except Exception as e:
             self.log(f"Error editing item: {e}")
+            return False
 
     async def handle_sync(self, message) -> None:
         """Handle manual sync from Google Calendar."""

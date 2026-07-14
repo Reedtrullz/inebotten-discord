@@ -32,6 +32,11 @@ def _future_date(days_ahead: int = 14) -> str:
     return (datetime.now() + timedelta(days=days_ahead)).strftime("%d.%m.%Y")
 
 
+def _first_non_past_year(month: int, day: int) -> int:
+    today = datetime.now().date()
+    return today.year + (today > date(today.year, month, day))
+
+
 # Import discord BEFORE adding project root (project's discord/ shadows discord.py)
 import discord
 from discord import DMChannel, GroupChannel, TextChannel
@@ -963,7 +968,8 @@ class TestCalendarNLP(unittest.TestCase):
         # Test "15. mai" format
         result = parser.parse_event("møte 15. mai kl 14")
         self.assertIsNotNone(result)
-        self.assertEqual(result["date"], "15.5.2026")
+        expected_year = _first_non_past_year(5, 15)
+        self.assertEqual(result["date"], f"15.05.{expected_year}")
         self.assertEqual(result["time"], "14:00")
 
         # Test "20 desember" format (without dot)
@@ -974,7 +980,7 @@ class TestCalendarNLP(unittest.TestCase):
         # Test with short month name
         result = parser.parse_event("frist 15. mar")
         self.assertIsNotNone(result)
-        self.assertEqual(result["date"], "15.3.2026")
+        self.assertEqual(result["date"], f"15.03.{_first_non_past_year(3, 15)}")
 
     def test_65b_month_name_parsing_english(self):
         """Test 65b: Date parsing with English month names"""
@@ -985,7 +991,8 @@ class TestCalendarNLP(unittest.TestCase):
         # Test English month names
         result = parser.parse_event("meeting 15. may")
         self.assertIsNotNone(result)
-        self.assertEqual(result["date"], "15.5.2026")
+        expected_year = _first_non_past_year(5, 15)
+        self.assertEqual(result["date"], f"15.05.{expected_year}")
 
         result = parser.parse_event("deadline 20 december")
         self.assertIsNotNone(result)
@@ -1005,7 +1012,8 @@ class TestCalendarNLP(unittest.TestCase):
         # Test "den 15. mai"
         result = parser.parse_event("møte den 15. mai")
         self.assertIsNotNone(result)
-        self.assertEqual(result["date"], "15.5.2026")
+        expected_year = _first_non_past_year(5, 15)
+        self.assertEqual(result["date"], f"15.05.{expected_year}")
 
         # Test "den 20 desember" (without dot)
         result = parser.parse_event("julebord den 20 desember")
