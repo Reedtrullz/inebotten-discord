@@ -1049,6 +1049,7 @@ The resolver suite must cover:
 - aliases i dag/idag/today, i morgen/imorgen/imorra/imårra/i morgon/tomorrow, and i overmorgen/overmorgen/i overmorgon/overmorgon/day after tomorrow;
 - numeric and month-name dates, den N., weekdays, next/førstkommende, and relative minutes/hours/days/weeks;
 - raw HH:MM without a cue, cue hours, am/pm, noon, midnatt/midnight, and dayparts;
+- contextual bare daypart nouns only beside separate date evidence (imorgen kveld -> 19:00), with ordinary ha en fin kveld remaining inert; one explicit time may refine the default only inside bounded ranges (morges 00:00..<12:00, formiddag 06:00..<12:00, ettermiddag 12:00..<18:00, kveld 18:00..<24:00, natt 22:00..<24:00 or 00:00..<06:00), so i kveld kl 20 remains valid while kl 14 i kveld conflicts;
 - the exact regression "15. august rundt tre på ettermiddagen" -> 15.08.2026 15:00;
 - raw 25:61 as invalid_time rather than absent evidence;
 - duplicate-consistent versus conflicting date/time evidence;
@@ -1084,6 +1085,12 @@ DAYPART_HOURS = {
     "i natt": "22:00",
     "på natten": "22:00",
 }
+_CONTEXT_DAYPART_HOURS = {
+    "formiddag": "10:00",
+    "ettermiddag": "14:00",
+    "kveld": "19:00",
+    "natt": "22:00",
+}
 SPECIAL_HOURS = {
     "noon": "12:00",
     "midnatt": "00:00",
@@ -1099,7 +1106,7 @@ NATURAL_TIME_RE = re.compile(
 )
 ~~~
 
-Match aliases longest-first with word boundaries. Recognized malformed raw times remain evidence and fail. A bare/cue time uses the first future local occurrence; the explicit legacy phrases i kveld and i natt stay anchored today. Relative minutes/hours use UTC elapsed arithmetic before projecting to Oslo; local day/week offsets use calendar arithmetic.
+Match aliases longest-first with word boundaries. Collect bare entries from _CONTEXT_DAYPART_HOURS only beside a disjoint date-evidence span. Overlapping time grammars deduplicate longest-first. Exactly one valid disjoint explicit time inside the bounded semantic range above refines the daypart default for conflict comparison while preserving its label and anchor; an out-of-range pairing or multiple distinct explicit times remains conflicting evidence. Recognized malformed raw times remain evidence and fail. A bare/cue time uses the first future local occurrence; the explicit legacy phrases i kveld and i natt stay anchored today. Relative minutes/hours use UTC elapsed arithmetic before projecting to Oslo; local day/week offsets use calendar arithmetic.
 
 resolve() and strip_temporal_evidence() share one internal evidence collector. Internal source offsets may be used only to mask matched spans and are never present in public TemporalResolution fields. Cleanup collapses whitespace/orphaned separators and adds no second recognition grammar.
 

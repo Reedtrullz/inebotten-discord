@@ -1989,7 +1989,7 @@ def advance_due_at(
         raise ValueError("naive_recurrence_datetime")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
         raise ValueError("invalid_recurrence_sequence")
-    temporal = resolver or TemporalResolver(OSLO)
+    temporal = resolver or TemporalResolver(zone=OSLO)
     current = due_at.astimezone(OSLO)
     reference = reference_time.astimezone(OSLO)
     anchor = anchor_local or current.replace(tzinfo=None)

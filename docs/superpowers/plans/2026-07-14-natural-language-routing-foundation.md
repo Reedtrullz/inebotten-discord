@@ -1809,6 +1809,8 @@ Pin the finite daypart behavior:
 - i natt and på natten -> 22:00
 - noon -> 12:00
 - midnatt and midnight -> 00:00
+- The bare nouns formiddag, ettermiddag, kveld, and natt are time evidence only when the same utterance contains separate live date evidence, so imorgen kveld resolves to 19:00 while ordinary text such as ha en fin kveld remains non-temporal.
+- A disjoint explicit time may refine a daypart default only inside this finite semantic range: morges 00:00..<12:00, formiddag 06:00..<12:00, ettermiddag 12:00..<18:00, kveld 18:00..<24:00, and natt 22:00..<24:00 or 00:00..<06:00. Thus i kveld kl 20 remains valid and anchored today, while kl 14 i kveld and kl 14 imorgen kveld return conflicting_temporal. Multiple distinct explicit times still conflict. Longest-first overlap lets one phrase such as rundt tre på ettermiddagen resolve as a single natural-time span.
 - A cue/bare time without date uses the first future local occurrence.
 - The explicit legacy phrases i kveld and i natt remain anchored to today's date even after their default wall time has passed.
 
@@ -1911,6 +1913,12 @@ DAYPART_HOURS = {
     "i natt": "22:00",
     "på natten": "22:00",
 }
+_CONTEXT_DAYPART_HOURS = {
+    "formiddag": "10:00",
+    "ettermiddag": "14:00",
+    "kveld": "19:00",
+    "natt": "22:00",
+}
 SPECIAL_HOURS = {
     "noon": "12:00",
     "midnatt": "00:00",
@@ -1927,7 +1935,7 @@ NATURAL_TIME_RE = re.compile(
 RAW_TIME_RE = re.compile(r"(?<![\d.:])(?P<hour>-?\d{1,2}):(?P<minute>\d{2})(?![\d:])")
 ~~~
 
-Alias and finite phrase matching is longest-first and bounded with (?<!\w)...(?!\w); substrings inside words are not evidence. First mask or otherwise deduplicate spans so one surface span cannot be interpreted by multiple time grammars. Every recognized-but-invalid span remains evidence and produces a stable error.
+Alias and finite phrase matching is longest-first and bounded with (?<!\w)...(?!\w); substrings inside words are not evidence. Bare entries from _CONTEXT_DAYPART_HOURS are collected only when the utterance also has a disjoint date-evidence span. First mask or otherwise deduplicate spans so one surface span cannot be interpreted by multiple time grammars. For exactly one valid disjoint explicit time inside the finite daypart range above, compare the daypart at that explicit canonical time while retaining its daypart label and date-anchor semantics; an out-of-range pairing retains independent canonical values and therefore conflicts. Multiple distinct explicit times always conflict. Every recognized-but-invalid span remains evidence and produces a stable error.
 
 Use immutable result types:
 
