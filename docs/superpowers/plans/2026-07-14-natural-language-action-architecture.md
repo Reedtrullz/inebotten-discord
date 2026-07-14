@@ -1024,6 +1024,7 @@ Expected: PASS.
 
 - Consumes case-preserving message text, masked control text when available, and an optional aware reference_time.
 - Produces canonical DD.MM.YYYY, HH:MM, optional offset-bearing due_at, and stable bounded diagnostics.
+- Exposes validate_time(value) for date-independent H/H:MM edit-slot canonicalization; combined date/time DST safety remains in validate_fields().
 - Preserves NaturalLanguageParser dictionary-or-None wrappers and CalendarHandler boolean returns.
 - Captures one reference per public parser/handler operation; an explicit aware reference causes zero provider reads.
 - Reuses monitor.nlp_parser.temporal_resolver when available, but defers sole monitor resolver/clock ownership and DispatchOutcome conversion to the later typed/model-action lanes.
@@ -1102,6 +1103,8 @@ Match aliases longest-first with word boundaries. Recognized malformed raw times
 
 validate_fields() accepts finite D.M/DD.MM slash variants, two/four-digit years, H, and H:MM, then constructs date/time values. Canonical strings use explicit zero-padded f-strings. A yearless current-day DST gap must return invalid_time and must not roll to a future year.
 
+validate_time(value) shares the scalar time parser, accepts only H or H:MM, returns canonical HH:MM or None, and never selects a date. It is the only pre-lookup validator for an isolated time edit.
+
 Build valid fold candidates by UTC round-trip. Zero is invalid_time; two distinct offsets is ambiguous_time unless due_at names exactly one candidate instant. Reject naive or mismatching due_at. Compare UTC instants:
 
 ~~~python
@@ -1128,9 +1131,11 @@ Original case-preserving text remains the title source, including straight/curly
 
 CalendarHandler accepts optional temporal_resolver, now_provider, and reference_time seams. Constructor preference is explicit resolver, then monitor.nlp_parser.temporal_resolver, then an offline/test default. Every operation captures once when no reference is supplied.
 
+Preserve the existing handle_save_request(message, title, date, time) positional API and append only keyword-only reference_time=None; it returns the boolean from handle_calendar_item after forwarding the reference.
+
 For create, validate the complete pair before any manager/GCal call. For edit:
 
-1. scalar-validate proposed values before a target read;
+1. scalar-validate a proposed date with the resolver date path or a proposed time with validate_time(value) before a target read;
 2. read only the target needed for the existing title or bounded 365-day index path;
 3. combine proposed and unchanged counterpart fields;
 4. validate the effective pair;

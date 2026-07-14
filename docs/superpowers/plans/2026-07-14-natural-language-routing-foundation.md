@@ -1739,6 +1739,7 @@ The following suites are verification-only in this task and are not staged unles
 
 - TemporalResolver.resolve(text, reference=None) returns a TemporalResolution with canonical DD.MM.YYYY, HH:MM, optional offset-bearing due_at, bounded matched_text labels, stable error codes, and a valid property.
 - TemporalResolver.validate_fields(date_value, time_value, due_at=None, reference=None) validates scalar fields and the combined Oslo wall time. It never accepts a value through regex shape alone.
+- TemporalResolver.validate_time(value) validates and canonicalizes an isolated H or H:MM field without inventing a date; it returns HH:MM or None. Cross-field DST validation still happens through validate_fields after the target date is known.
 - NaturalLanguageParser.parse_event() and parse_task_with_recurrence() remain dictionary-or-None wrappers. New parse_event_result() and parse_task_with_recurrence_result() methods expose bounded errors.
 - Parser and handler reference_time keywords are optional compatibility seams. Each public operation either uses the supplied aware instant without reading a provider or captures its provider exactly once.
 - CalendarHandler methods continue returning bool in Task 4. DispatchOutcome and delivery-certainty conversion belong to the later typed-dispatch task.
@@ -1968,6 +1969,9 @@ class TemporalResolver:
         reference: datetime | None = None,
     ) -> TemporalResolution:
         ...
+
+    def validate_time(self, value: str) -> str | None:
+        ...
 ~~~
 
 The reference boundary is strict: a supplied reference is used without reading now_provider; an omitted reference reads now_provider exactly once; naive values raise ValueError("temporal_reference_must_be_aware"); the captured value is converted to Europe/Oslo.
@@ -1981,6 +1985,7 @@ Field validation must construct real date/time objects:
 - Accept D.M, DD.MM, slash variants, D.M.YY/DD.MM.YYYY, H, and H:MM.
 - Canonical dates use an explicit f-string: f"{value.day:02d}.{value.month:02d}.{value.year:04d}".
 - Canonical times use f"{value.hour:02d}:{value.minute:02d}".
+- validate_time(value) uses the same scalar parser and year-independent canonical-time formatter; it accepts only H or H:MM and returns None for malformed or out-of-range input.
 - Reject years outside 1900..2100 after two-digit expansion.
 - A missing date or time is permitted only while resolving partial evidence; validate_fields reports missing_date when a time/due_at cannot be paired with a date.
 - Date selection must consider the time when deciding whether a yearless same-day occurrence is past.
@@ -2173,6 +2178,7 @@ Extend tests/test_calendar_edit.py with spies for the manager, GCal provider, no
 - an explicit aware reference reads it zero times
 - a naive explicit reference raises before reads or writes
 - edit scalar validation happens before target lookup
+- time edit scalar validation uses TemporalResolver.validate_time(value); it does not call resolve() and does not invent a date
 - index and title target forms both read only the target needed for pair validation
 - changing date while retaining the target's time detects a spring gap/autumn fold
 - changing time while retaining the target's date detects a spring gap/autumn fold
@@ -2204,6 +2210,9 @@ def __init__(
 async def handle_save_request(
     self,
     message,
+    title,
+    date,
+    time,
     *,
     reference_time: datetime | None = None,
 ) -> bool:
@@ -2236,7 +2245,7 @@ def _parse_date_value(
     ...
 ~~~
 
-Add one _capture_reference(reference_time) helper. A supplied aware value is converted to Oslo without a provider read; an omitted value reads _now_provider exactly once; a naive value raises ValueError("calendar_reference_must_be_aware"). handle_save_request forwards its optional reference to handle_calendar_item so only the actual operation boundary captures.
+Add one _capture_reference(reference_time) helper. A supplied aware value is converted to Oslo without a provider read; an omitted value reads _now_provider exactly once; a naive value raises ValueError("calendar_reference_must_be_aware"). handle_save_request retains the existing positional message, title, date, and time API, builds the same compatibility item, and returns handle_calendar_item's boolean while forwarding its optional reference so only the actual operation boundary captures.
 
 Create path:
 
@@ -2249,7 +2258,7 @@ Create path:
 Edit path must validate in two phases, all before any write:
 
 1. capture once;
-2. scalar-canonicalize each proposed date/time value before reading a target; an invalid scalar returns False with zero target/provider/write calls;
+2. scalar-canonicalize a proposed date with _parse_date_value(..., reference_time=captured) or a proposed time with temporal_resolver.validate_time(value) before reading a target; an invalid scalar returns False with zero target/provider/write calls;
 3. resolve/read only the target item: preserve the existing title lookup, and for an index use the existing bounded 365-day snapshot;
 4. combine the proposed field with the unchanged counterpart from that target;
 5. call validate_fields on the effective pair;
