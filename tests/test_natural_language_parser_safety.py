@@ -75,6 +75,26 @@ def test_invalid_and_conflicting_temporal_evidence_fails_closed(text, error, met
     assert result.errors == (error,)
 
 
+def test_relative_parse_accepts_a_real_clock_with_nonzero_seconds():
+    reference = datetime(2026, 7, 14, 12, 0, 37, 123456, tzinfo=OSLO)
+    parser = NaturalLanguageParser(now_provider=lambda: reference)
+    result = parser.parse_event_result("møte om to timer")
+    assert result.errors == ()
+    assert result.item is not None
+    assert result.item["date"] == "14.07.2026"
+    assert result.item["time"] == "14:00"
+    assert result.item["due_at"] == "2026-07-14T14:00:37+02:00"
+    assert result.item["title"] == "Møte"
+
+
+def test_unquoted_title_uses_the_shared_temporal_cleanup():
+    parser = NaturalLanguageParser(now_provider=lambda: NOW)
+    result = parser.parse_event_result("møte med Ola om to timer")
+    assert result.errors == ()
+    assert result.item is not None
+    assert result.item["title"] == "Møte med Ola"
+
+
 @pytest.mark.parametrize(
     "text",
     [

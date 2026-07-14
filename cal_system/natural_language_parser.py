@@ -248,6 +248,33 @@ class NaturalLanguageParser:
             or any(has_keyword(content, value) for value in strong_task_markers)
         )
 
+    def _clean_temporal_title(
+        self,
+        raw: dict[str, Any] | None,
+        message_content: str,
+        *,
+        reference_time: datetime,
+    ) -> dict[str, Any] | None:
+        if raw is None:
+            return None
+        title = raw.get("title")
+        if not isinstance(title, str):
+            return raw
+        quoted_title = self._quoted_title(_QUOTED_TITLE_RE.search(message_content))
+        if quoted_title is not None and title == quoted_title:
+            return raw
+        cleaned = self.temporal_resolver.strip_temporal_evidence(
+            title,
+            reference=reference_time,
+        ).strip()
+        if len(cleaned) < 2:
+            return None
+        if cleaned == title:
+            return raw
+        normalized = dict(raw)
+        normalized["title"] = cleaned
+        return normalized
+
     def _has_task_request(self, message_content: str) -> bool:
         content = re.sub(r'<@!?\d+>', '', message_content)
         content = re.sub(r'@inebotten\s*', '', content, flags=re.IGNORECASE).strip()
@@ -319,6 +346,11 @@ class NaturalLanguageParser:
                 recurrence_data=recurrence_data,
                 force_task=False,
             )
+        raw = self._clean_temporal_title(
+            raw,
+            message_content,
+            reference_time=captured,
+        )
         return self._compose_result(
             raw,
             resolution,
@@ -372,6 +404,11 @@ class NaturalLanguageParser:
                 recurrence_data=recurrence_data,
                 force_task=True,
             )
+        raw = self._clean_temporal_title(
+            raw,
+            message_content,
+            reference_time=captured,
+        )
         return self._compose_result(
             raw,
             resolution,

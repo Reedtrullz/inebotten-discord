@@ -78,7 +78,8 @@ NATURAL_TIME_RE = re.compile(
     rf"(?P<hour>-?\d{{1,2}}|{_HOUR_WORD})"
     r"(?::(?P<minute>\d{2}))?"
     r"(?:\s*(?P<suffix>am|pm)\b"
-    r"|\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden)\b)?",
+    r"|\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden)\b)?"
+    r"(?![\w:])",
     re.IGNORECASE,
 )
 RAW_TIME_RE = re.compile(
@@ -524,16 +525,23 @@ class TemporalResolver:
                     errors=("invalid_time",),
                 )
             projected = explicit.astimezone(self.zone)
-            if projected.date() != parsed_date or projected.timetz().replace(tzinfo=None) != wall_time:
+            projected_wall = projected.timetz().replace(tzinfo=None)
+            if (
+                projected.date() != parsed_date
+                or projected.microsecond != 0
+                or (projected_wall.hour, projected_wall.minute)
+                != (wall_time.hour, wall_time.minute)
+            ):
                 return TemporalResolution(
                     date=canonical_date,
                     time=canonical_time,
                     errors=("invalid_time",),
                 )
             explicit_utc = explicit.astimezone(timezone.utc)
+            precise_candidates = self._valid_candidates(parsed_date, projected_wall)
             matching = [
                 candidate
-                for candidate in valid_candidates
+                for candidate in precise_candidates
                 if explicit_utc == candidate.astimezone(timezone.utc)
             ]
             if len(matching) != 1:
@@ -568,11 +576,22 @@ class TemporalResolver:
             if match.group("minute") or match.group("suffix") or match.group("daypart"):
                 return None, "invalid_time"
             return special, None
-        hour = int(hour_text) if numeric else self._parse_number(hour_text)
+        if numeric:
+            hour = int(hour_text)
+        else:
+            words = hour_text.split()
+            hour = None
+            for end in range(len(words), 0, -1):
+                parsed = self._parse_number(" ".join(words[:end]))
+                if parsed is not None:
+                    hour = parsed
+                    break
         minute = int(match.group("minute") or 0)
         suffix = (match.group("suffix") or "").casefold()
         daypart = (match.group("daypart") or "").casefold()
-        if hour is None or minute > 59:
+        if hour is None:
+            return None, None
+        if minute > 59:
             return None, "invalid_time"
 
         if suffix:
@@ -605,6 +624,8 @@ class TemporalResolver:
 
         for match in NATURAL_TIME_RE.finditer(text):
             canonical, error = self._natural_time(match)
+            if canonical is None and error is None:
+                continue
             evidence.append(_TimeEvidence("natural_time", match.span(), canonical, error))
             occupied.append(match.span())
 
@@ -800,6 +821,8 @@ class TemporalResolver:
             for value in (*evidence.dates, *evidence.times)
         ]
         spans.extend(match.span() for match in evidence.relatives)
+        if not spans:
+            return text
         chars = list(text)
         for start, end in spans:
             for index in range(start, end):
@@ -880,6 +903,7 @@ class TemporalResolver:
         match: re.Match[str],
         reference: datetime,
     ) -> datetime | None:
+        reference = reference.replace(microsecond=0)
         number = self._parse_number(match.group("number"))
         if number is None or not 0 <= number <= 100_000:
             return None

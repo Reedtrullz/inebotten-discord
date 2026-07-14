@@ -176,6 +176,41 @@ def test_multiple_distinct_explicit_times_still_conflict_with_daypart():
     assert result.errors == ("conflicting_temporal",)
 
 
+def test_relative_time_preserves_nonzero_clock_seconds_and_revalidates():
+    reference = datetime(2026, 7, 14, 12, 0, 37, 123456, tzinfo=OSLO)
+    result = RESOLVER.resolve("om to timer", reference=reference)
+    assert (result.date, result.time) == ("14.07.2026", "14:00")
+    assert result.due_at == "2026-07-14T14:00:37+02:00"
+    validated = RESOLVER.validate_fields(
+        result.date,
+        result.time,
+        due_at=result.due_at,
+        reference=reference,
+    )
+    assert validated.errors == ()
+    assert validated.due_at == result.due_at
+
+
+def test_natural_time_match_requires_a_bounded_complete_hour():
+    result = RESOLVER.resolve("kl 123", reference=NOW)
+    assert (result.date, result.time, result.due_at) == (None, None, None)
+    assert result.matched_text == ()
+
+
+def test_unknown_cue_words_are_not_invalid_temporal_evidence():
+    result = RESOLVER.resolve("at home tomorrow", reference=NOW)
+    assert result.errors == ()
+    assert (result.date, result.time) == ("15.07.2026", None)
+    assert result.matched_text == ("date_alias",)
+
+
+def test_number_word_stops_before_following_date_phrase():
+    result = RESOLVER.resolve("kl fjorten i morgen", reference=NOW)
+    assert result.errors == ()
+    assert (result.date, result.time) == ("15.07.2026", "14:00")
+    assert result.matched_text == ("date_alias", "natural_time")
+
+
 def test_ordinary_bare_kveld_is_not_temporal_evidence():
     result = RESOLVER.resolve("ha en fin kveld", reference=NOW)
     assert result.valid is True
@@ -484,6 +519,7 @@ def test_explicit_instant_disambiguates_fold(due_at, canonical):
         "2026-10-25T02:30:00",
         "2026-10-25T03:30:00+01:00",
         "2026-10-25T02:30:00+00:00",
+        "2026-10-25T02:30:00.123456+02:00",
         "not-a-date",
     ],
 )
@@ -581,6 +617,10 @@ def test_public_constant_vocabularies_are_exactly_finite():
 )
 def test_strip_temporal_evidence_uses_shared_finite_collector(text, cleaned):
     assert RESOLVER.strip_temporal_evidence(text, reference=NOW) == cleaned
+
+
+def test_strip_temporal_evidence_does_not_remove_unrelated_trailing_connector():
+    assert RESOLVER.strip_temporal_evidence("stol på", reference=NOW) == "stol på"
 
 
 def test_strip_temporal_evidence_explicit_reference_skips_provider():
