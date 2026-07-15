@@ -2,8 +2,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from core.intent_router import BotIntent, IntentRouter
+from core.send_receipt import DiscordSendCoordinator
 from features.quote_handler import QuoteHandler
 from features.quote_manager import QuoteManager, parse_quote_command
 
@@ -144,10 +146,14 @@ class DummyQuoteMonitor:
             can_send=lambda: (True, None),
             wait_if_needed=lambda: True,
         )
+        self.discord_sender = DiscordSendCoordinator(self.rate_limiter)
         self.loc = SimpleNamespace(
             t=lambda key, **kwargs: key if not kwargs else f"{key}:{kwargs}"
         )
         self.client = None
+        self.nlu_metrics = SimpleNamespace(
+            record_legacy_payload_fallback=Mock()
+        )
         self.countdown = SimpleNamespace(parse_countdown_query=lambda content: None)
         self.poll = SimpleNamespace(
             get_active_polls=lambda guild_id, reference_time=None: []
@@ -211,13 +217,13 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handler_list_quotes_outputs_numbered_quotes(self):
         manager = self.make_manager()
-        manager.add_quote("123", "Første", "Ola")
-        manager.add_quote("123", "Andre", "Kari")
+        await manager.add_quote_result("123", "Første", "Ola")
+        await manager.add_quote_result("123", "Andre", "Kari")
         handler = QuoteHandler(DummyQuoteMonitor(manager))
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -236,12 +242,12 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handler_edit_quotes_parses_text_and_author_from_content(self):
         manager = self.make_manager()
-        manager.add_quote("123", "Gammel", "Ola")
+        await manager.add_quote_result("123", "Gammel", "Ola")
         handler = QuoteHandler(DummyQuoteMonitor(manager))
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -252,7 +258,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
-        await handler.handle_quote_edit(message, {})
+        await handler.handle_quote_edit(message, None)
 
         updated = manager.list_quotes("123")[0]
         self.assertEqual(updated["text"], "Ny tekst")
@@ -261,12 +267,12 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handler_edit_quotes_rejects_missing_fields(self):
         manager = self.make_manager()
-        manager.add_quote("123", "Gammel", "Ola")
+        await manager.add_quote_result("123", "Gammel", "Ola")
         handler = QuoteHandler(DummyQuoteMonitor(manager))
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -277,19 +283,19 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
-        await handler.handle_quote_edit(message, {})
+        await handler.handle_quote_edit(message, None)
 
         self.assertEqual(captured["content"], "calendar_edit_invalid")
         self.assertEqual(manager.list_quotes("123")[0]["text"], "Gammel")
 
     async def test_handler_edit_quotes_parses_author_when_text_is_empty(self):
         manager = self.make_manager()
-        manager.add_quote("123", "Gammel", "Ola")
+        await manager.add_quote_result("123", "Gammel", "Ola")
         handler = QuoteHandler(DummyQuoteMonitor(manager))
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -300,7 +306,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
-        await handler.handle_quote_edit(message, {})
+        await handler.handle_quote_edit(message, None)
 
         updated = manager.list_quotes("123")[0]
         self.assertEqual(updated["text"], "Gammel")
@@ -309,12 +315,12 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handler_edit_quotes_parses_text_when_author_is_empty(self):
         manager = self.make_manager()
-        manager.add_quote("123", "Gammel", "Ola")
+        await manager.add_quote_result("123", "Gammel", "Ola")
         handler = QuoteHandler(DummyQuoteMonitor(manager))
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -325,7 +331,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
-        await handler.handle_quote_edit(message, {})
+        await handler.handle_quote_edit(message, None)
 
         updated = manager.list_quotes("123")[0]
         self.assertEqual(updated["text"], "Ny tekst")

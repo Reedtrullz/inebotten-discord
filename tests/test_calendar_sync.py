@@ -13,6 +13,12 @@ from zoneinfo import ZoneInfo
 
 from cal_system.calendar_manager import CalendarManager
 from cal_system.google_calendar_manager import GoogleCalendarManager
+from core.dispatch_result import (
+    DeliveryState,
+    ExternalCommitState,
+    ExternalMutationResult,
+    MessageSendResult,
+)
 from features.calendar_handler import CalendarHandler
 
 
@@ -50,6 +56,36 @@ class FakeGCal:
     def update_event(self, event_id, **kwargs):
         self.update_calls.append((event_id, kwargs))
         return {"id": event_id, "htmlLink": f"https://calendar.example/{event_id}"}
+
+    async def update_event_result(
+        self,
+        event_id,
+        title=None,
+        description=None,
+        completed=False,
+        date_str=None,
+        time_str=None,
+        recurrence=None,
+        rrule_day=None,
+    ):
+        kwargs = {
+            "title": title,
+            "description": description,
+            "completed": completed,
+            "date_str": date_str,
+            "time_str": time_str,
+            "recurrence": recurrence,
+            "rrule_day": rrule_day,
+        }
+        self.update_calls.append((event_id, kwargs))
+        return ExternalMutationResult(
+            True,
+            ExternalCommitState.CHANGED,
+            value={
+                "id": event_id,
+                "htmlLink": f"https://calendar.example/{event_id}",
+            },
+        )
 
 
 class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
@@ -118,11 +154,7 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synced[0]["date"], first.strftime("%d.%m.%Y"))
         self.assertEqual(synced[0]["gcal_event_id"], "series-master")
 
-    async def test_manual_sync_rechecks_gcal_configuration(self):
-        class ConfiguredGCal(FakeGCal):
-            def __init__(self):
-                super().__init__(events=[], configured=True)
-
+    async def test_manual_sync_never_constructs_a_replacement_gcal_manager(self):
         manager = CalendarManager(storage_path=self.storage_path, gcal_manager=None)
         manager.items = {}
         monitor = SimpleNamespace(
@@ -136,9 +168,18 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
             ),
             loc=SimpleNamespace(current_lang="no"),
             client=None,
+            nlu_metrics=SimpleNamespace(
+                record_legacy_payload_fallback=lambda family: None
+            ),
         )
         handler = CalendarHandler(monitor)
         handler.send_response = AsyncMock()
+
+        async def capture_send(original, text):
+            await handler.send_response(original, text)
+            return MessageSendResult(DeliveryState.DELIVERED)
+
+        handler.send_response_result = AsyncMock(side_effect=capture_send)
         message = SimpleNamespace(
             content="@inebotten synk",
             guild=SimpleNamespace(id=123),
@@ -146,13 +187,18 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        with patch("cal_system.google_calendar_manager.GoogleCalendarManager", ConfiguredGCal):
-            await handler.handle_sync(message)
+        with patch(
+            "cal_system.google_calendar_manager.GoogleCalendarManager"
+        ) as replacement:
+            outcome = await handler.handle_sync(message)
 
         responses = [call.args[1] for call in handler.send_response.await_args_list]
-        self.assertTrue(manager.gcal_enabled)
-        self.assertIn("🔄 Synkroniserer med Google Calendar...", responses)
-        self.assertNotIn("❌ Google Calendar er ikke konfigurert eller koblet til ennå.", responses)
+        self.assertFalse(manager.gcal_enabled)
+        self.assertFalse(outcome.ok)
+        self.assertEqual(outcome.error_code, "integration_disabled")
+        self.assertEqual(replacement.call_count, 0)
+        self.assertEqual(len(responses), 1)
+        self.assertIn("ikke konfigurert", responses[0])
 
     def test_local_edit_pushes_full_update_to_gcal(self):
         gcal = FakeGCal()

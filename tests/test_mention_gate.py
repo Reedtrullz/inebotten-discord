@@ -31,6 +31,8 @@ except ModuleNotFoundError:
 
 from core.message_monitor import MessageMonitor
 from core.intent_router import IntentRouter
+from cal_system.reminder_clock import SystemReminderClock
+from core.send_receipt import DiscordSendCoordinator
 
 
 class FakeRateLimiter:
@@ -96,6 +98,8 @@ class MentionGateTests(unittest.IsolatedAsyncioTestCase):
         from collections import defaultdict
         monitor.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
         monitor.rate_limiter = FakeRateLimiter()
+        monitor.discord_sender = DiscordSendCoordinator(monitor.rate_limiter)
+        monitor.reminder_clock = SystemReminderClock()
         monitor.loc = FakeLocalization()
         monitor.nlp_parser = FakeParser()
         monitor.handlers = {"help": RecordingHelpHandler()}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import unittest
@@ -15,6 +16,7 @@ from cal_system.google_calendar_manager import (
     get_gcal_setup_url,
     save_google_client_credentials,
 )
+from core.dispatch_result import ExternalCommitState
 from scripts import auth_gcal
 
 
@@ -32,7 +34,15 @@ class RefreshableCreds:
         self.expired = False
 
     def to_json(self):
-        return json.dumps({"refreshed": self.refreshed, "valid": self.valid})
+        return json.dumps(
+            {
+                "refreshed": self.refreshed,
+                "valid": self.valid,
+                "refresh_token": self.refresh_token,
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            }
+        )
 
 
 class ValidCreds:
@@ -121,9 +131,14 @@ class GoogleCalendarAuthPersistenceTests(unittest.TestCase):
                     return_value=creds,
                 ):
                     manager = GoogleCalendarManager()
+                    self.assertFalse(manager.enabled)
+                    self.assertFalse(creds.refreshed)
+                    initialized = asyncio.run(manager.initialize_result())
 
             self.assertTrue(manager.enabled)
             self.assertTrue(creds.refreshed)
+            self.assertTrue(initialized.ok)
+            self.assertIs(initialized.state, ExternalCommitState.CHANGED)
             self.assertEqual(json.loads(token_path.read_text())["refreshed"], True)
             self.assertEqual(token_path.stat().st_mode & 0o777, 0o600)
 

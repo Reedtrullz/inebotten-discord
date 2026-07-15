@@ -4,15 +4,24 @@ Google Calendar Manager for Inebotten
 Integrates with Google Calendar API to sync events
 """
 
+import asyncio
+import inspect
 import json
 import os
 import sys
 import subprocess
+import tempfile
+import threading
 import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core.dispatch_result import (
+    ExternalCommitState,
+    ExternalMutationResult,
+)
+from core.mutation_coordinator import MutationCoordinator
 from utils.json_storage import write_json_atomic
 
 try:
@@ -39,6 +48,51 @@ if str(SKILL_PATH) not in sys.path:
     sys.path.insert(0, str(SKILL_PATH))
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+_MISSING = object()
+
+# OAuth material is shared process state.  Provider event calls deliberately do
+# not take this lock once credentials have been materialized.
+_CREDENTIAL_LOCK = threading.RLock()
+_THREAD_STATE = threading.local()
+
+
+def _reset_mutation_state() -> None:
+    _THREAD_STATE.mutation_state = ExternalCommitState.UNCHANGED
+    _THREAD_STATE.mutation_error_code = None
+
+
+def _exception_status(exc: BaseException) -> int | None:
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    status = status or getattr(response, "status_code", None)
+    response = getattr(exc, "resp", None)
+    status = status or getattr(response, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_mutation_exception(exc: BaseException) -> None:
+    status = _exception_status(exc)
+    if status in {400, 401, 403, 404, 409, 410, 422}:
+        _THREAD_STATE.mutation_state = ExternalCommitState.UNCHANGED
+        _THREAD_STATE.mutation_error_code = (
+            "external_not_found" if status in {404, 410} else "external_rejected"
+        )
+    elif getattr(_THREAD_STATE, "mutation_state", None) is ExternalCommitState.UNKNOWN:
+        _THREAD_STATE.mutation_error_code = "external_commit_unknown"
+    else:
+        _THREAD_STATE.mutation_state = ExternalCommitState.UNCHANGED
+        _THREAD_STATE.mutation_error_code = "external_preflight_failed"
+
+
+class ExternalOperationCancelled(asyncio.CancelledError):
+    """Outer cancellation observed after a blocking external call settled."""
+
+    def __init__(self, result: ExternalMutationResult):
+        self.result = result
+        super().__init__(result.error_code or "external_operation_cancelled")
 
 
 def get_hermes_home() -> Path:
@@ -161,8 +215,8 @@ def save_google_client_credentials(raw_credentials: str | dict[str, Any]) -> tup
         credentials_path.parent.chmod(0o700)
         write_json_atomic(credentials_path, normalized_or_error)
         credentials_path.chmod(0o600)
-    except Exception as exc:
-        return False, f"Klarte ikke lagre OAuth-klienten: {exc}"
+    except Exception:
+        return False, "Klarte ikke lagre OAuth-klienten. Prøv igjen."
 
     return True, (
         "OAuth-klienten er lagret. Kjør `@inebotten kalender auth` på nytt "
@@ -182,12 +236,50 @@ class GoogleCalendarManager:
     Manages Google Calendar integration for the Discord bot
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        mutation_coordinator: MutationCoordinator | None = None,
+        token_path: str | Path | None = None,
+        credentials_path: str | Path | None = None,
+        calendar_id: str | None = None,
+    ):
+        """Create an offline manager without touching OAuth or the network.
+
+        ``initialize_result`` is the sole startup boundary that reads,
+        refreshes, or persists token material.  Keeping construction inert is
+        important because the monitor wires one shared instance into multiple
+        domain managers before startup I/O begins.
+        """
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        if calendar_id is not None:
+            self.calendar_id = calendar_id
         self.hermes_home = get_hermes_home()
-        self.token_path = get_google_token_path()
-        self.credentials_path = get_google_credentials_path()
-        self.enabled = self._check_auth()
+        self.token_path = Path(token_path) if token_path is not None else get_google_token_path()
+        self.credentials_path = (
+            Path(credentials_path)
+            if credentials_path is not None
+            else get_google_credentials_path()
+        )
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
+        self._enabled = False
+        self._initialized = False
+        self._auth_flow = None
+        self._auth_flow_state = None
+
+    @property
+    def enabled(self) -> bool:
+        """Current validated configuration state; never cached by consumers."""
+        return bool(getattr(self, "_enabled", False))
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        # Old tests and third-party callers sometimes create the object via
+        # ``__new__`` and seed it manually.  Real constructed instances expose
+        # a read-only property so runtime code cannot fabricate auth state.
+        if getattr(self, "_initialized", None) is not None:
+            raise AttributeError("enabled_is_read_only")
+        self._enabled = bool(value)
 
     def _token_path(self) -> Path:
         if hasattr(self, "token_path"):
@@ -200,118 +292,431 @@ class GoogleCalendarManager:
         return get_google_credentials_path()
 
     def _check_auth(self):
-        """Check if Google authentication is set up and actually works"""
+        """Materialize credentials under the process-wide credential lock.
+
+        This synchronous helper is invoked only through an owned worker task.
+        It intentionally returns structured truth and never logs credential or
+        exception details.
+        """
         token_path = self._token_path()
         if not token_path.exists():
-            return False
+            self._enabled = False
+            self._initialized = True
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="not_configured",
+            )
         try:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(token_path), SCOPES
-            )
-            # If token is valid right now, we're good
-            if creds.valid:
-                return True
-            # If expired but we have a refresh token, try to refresh now
-            # to catch revoked tokens early
-            if creds.expired and creds.refresh_token:
+            with _CREDENTIAL_LOCK:
                 try:
-                    creds.refresh(Request())
-                    self._save_credentials(creds)
-                    return True
-                except Exception as e:
-                    print(f"[GCAL] Refresh failed (token revoked): {e}")
-                    return False
-            return False
-        except Exception as e:
-            print(f"[GCAL] Auth check failed: {e}")
-            return False
+                    creds = Credentials.from_authorized_user_file(
+                        str(token_path), SCOPES
+                    )
+                except Exception:
+                    self._enabled = False
+                    self._initialized = True
+                    return ExternalMutationResult(
+                        False,
+                        ExternalCommitState.UNCHANGED,
+                        error_code="invalid_credentials",
+                    )
+                if creds.valid:
+                    self._enabled = True
+                    self._initialized = True
+                    return ExternalMutationResult(
+                        True,
+                        ExternalCommitState.UNCHANGED,
+                        value=True,
+                    )
+                if creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(Request())
+                    except Exception:
+                        self._enabled = False
+                        self._initialized = True
+                        return ExternalMutationResult(
+                            False,
+                            ExternalCommitState.UNKNOWN,
+                            error_code="external_commit_unknown",
+                        )
+                    try:
+                        self._save_credentials(creds)
+                    except Exception:
+                        self._enabled = False
+                        self._initialized = True
+                        return ExternalMutationResult(
+                            False,
+                            ExternalCommitState.CHANGED,
+                            error_code="token_storage_failed",
+                        )
+                    self._enabled = True
+                    self._initialized = True
+                    return ExternalMutationResult(
+                        True,
+                        ExternalCommitState.CHANGED,
+                        value=True,
+                    )
+                self._enabled = False
+                self._initialized = True
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="invalid_credentials",
+                )
+        except Exception:
+            self._enabled = False
+            self._initialized = True
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="credential_dependency_unavailable",
+            )
 
     def _save_credentials(self, creds):
-        """Persist credentials back to disk (e.g. after token refresh)"""
-        try:
+        """Atomically persist a complete, private OAuth token document."""
+        with _CREDENTIAL_LOCK:
             token_path = self._token_path()
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.parent.chmod(0o700)
-            fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as token:
-                token.write(creds.to_json())
-            token_path.chmod(0o600)
-        except Exception as e:
-            print(f"[GCAL] Failed to save token: {e}")
+            serialized = creds.to_json()
+            # Match the minimum document accepted by
+            # ``Credentials.from_authorized_user_info`` before replacing a
+            # previously valid token.  Merely parseable JSON (``null``, ``[]``
+            # or ``{}``) is not a usable authorized-user document.
+            document = json.loads(serialized)
+            required = ("refresh_token", "client_id", "client_secret")
+            if not isinstance(document, dict) or any(
+                not isinstance(document.get(field), str)
+                or not document[field].strip()
+                for field in required
+            ):
+                raise ValueError("invalid_authorized_user_document")
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{token_path.name}.",
+                suffix=".tmp",
+                dir=str(token_path.parent),
+                text=True,
+            )
+            temp_path = Path(temp_name)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as token:
+                    token.write(serialized)
+                    token.flush()
+                    os.fsync(token.fileno())
+                os.replace(temp_path, token_path)
+                token_path.chmod(0o600)
+                directory_fd = os.open(token_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            finally:
+                if temp_path.exists():
+                    temp_path.unlink(missing_ok=True)
 
     def is_configured(self):
         """Return True if Google Calendar is configured and ready"""
         return self.enabled
 
-    def get_auth_url(self, requester_id=None, channel_id=None, ttl_seconds=900):
-        """Generate an OAuth authorization URL for the user to visit"""
+    async def initialize_result(self) -> ExternalMutationResult:
+        return await self._await_worker(self._check_auth)
+
+    async def refresh_configuration_result(self) -> ExternalMutationResult:
+        return await self._await_worker(self._check_auth)
+
+    @staticmethod
+    async def _await_worker(callable_, /, *args, **kwargs):
+        """Shield one blocking operation and settle it before propagating cancel."""
+        worker = asyncio.create_task(asyncio.to_thread(callable_, *args, **kwargs))
+        outer_cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(worker)
+                break
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is None or current.cancelling() == 0:
+                    # The owned worker cancelled independently.  This is an
+                    # UNKNOWN external result, not caller cancellation.
+                    result = ExternalMutationResult(
+                        False,
+                        ExternalCommitState.UNKNOWN,
+                        error_code="external_commit_unknown",
+                    )
+                    break
+                outer_cancelled = True
+                current.uncancel()
+                if worker.done():
+                    # Cancellation was observed even if the worker completed in
+                    # the same loop turn; settle its exact result below.
+                    try:
+                        result = worker.result()
+                    except asyncio.CancelledError:
+                        result = ExternalMutationResult(
+                            False,
+                            ExternalCommitState.UNKNOWN,
+                            error_code="external_commit_unknown",
+                        )
+                    except Exception:
+                        result = ExternalMutationResult(
+                            False,
+                            ExternalCommitState.UNKNOWN,
+                            error_code="external_commit_unknown",
+                        )
+                    break
+                continue
+            except Exception:
+                if not outer_cancelled:
+                    raise
+                result = ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNKNOWN,
+                    error_code="external_commit_unknown",
+                )
+                break
+        if outer_cancelled:
+            if not isinstance(result, ExternalMutationResult):
+                if (
+                    isinstance(result, tuple)
+                    and len(result) == 2
+                    and isinstance(result[1], ExternalCommitState)
+                ):
+                    value, state = result
+                    result = ExternalMutationResult(
+                        value is not None,
+                        state,
+                        value=value,
+                        error_code=(None if value is not None else "external_read_failed"),
+                    )
+                elif result is True or (
+                    isinstance(result, dict) and result.get("id")
+                ):
+                    result = ExternalMutationResult(
+                        True,
+                        ExternalCommitState.CHANGED,
+                        value=result,
+                    )
+                else:
+                    result = ExternalMutationResult(
+                        False,
+                        ExternalCommitState.UNKNOWN,
+                        error_code="external_commit_unknown",
+                    )
+            raise ExternalOperationCancelled(result)
+        return result
+
+    def _get_auth_url_result_sync(
+        self,
+        requester_id=None,
+        channel_id=None,
+        ttl_seconds=900,
+    ) -> ExternalMutationResult:
+        """Generate one requester/channel-bound OAuth flow."""
         from google_auth_oauthlib.flow import InstalledAppFlow
         client_secrets_file = self._credentials_path()
-        
+
         if not client_secrets_file.exists():
-            return False, missing_google_credentials_message(client_secrets_file)
-            
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                value=missing_google_credentials_message(client_secrets_file),
+                error_code="missing_credentials",
+            )
+
         try:
-            self._auth_flow = InstalledAppFlow.from_client_secrets_file(
-                str(client_secrets_file),
-                SCOPES,
+            with _CREDENTIAL_LOCK:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    str(client_secrets_file),
+                    SCOPES,
+                )
+                flow.redirect_uri = "http://localhost:8080"
+                auth_url, _ = flow.authorization_url(
+                    prompt="consent", access_type="offline"
+                )
+                expires_at = datetime.now(timezone.utc) + timedelta(
+                    seconds=max(60, ttl_seconds)
+                )
+                self._auth_flow = flow
+                self._auth_flow_state = {
+                    "requester_id": (
+                        str(requester_id) if requester_id is not None else None
+                    ),
+                    "channel_id": str(channel_id) if channel_id is not None else None,
+                    "expires_at": expires_at.isoformat(),
+                }
+            return ExternalMutationResult(
+                True,
+                ExternalCommitState.CHANGED,
+                value=auth_url,
             )
-            # Use localhost as redirect URI (OOB is deprecated)
-            self._auth_flow.redirect_uri = "http://localhost:8080"
-            auth_url, _ = self._auth_flow.authorization_url(
-                prompt="consent", access_type="offline"
+        except Exception:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="auth_flow_failed",
             )
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(60, ttl_seconds))
-            self._auth_flow_state = {
-                "requester_id": str(requester_id) if requester_id is not None else None,
-                "channel_id": str(channel_id) if channel_id is not None else None,
-                "expires_at": expires_at.isoformat(),
-            }
-            return True, auth_url
-        except Exception as e:
-            return False, f"Klarte ikke generere auth URL: {e}"
 
-    def exchange_code(self, code, requester_id=None, channel_id=None):
-        """Exchange the authorization code for a token"""
-        if not getattr(self, '_auth_flow', None):
-            return False, "Ingen aktiv påloggingsøkt funnet. Vennligst kjør `@inebotten kalender auth` først for å få en ny lenke, og prøv igjen med den nye koden."
+    async def get_auth_url_result(
+        self,
+        requester_id=None,
+        channel_id=None,
+        ttl_seconds=900,
+    ) -> ExternalMutationResult:
+        return await self._await_worker(
+            self._get_auth_url_result_sync,
+            requester_id,
+            channel_id,
+            ttl_seconds,
+        )
 
-        state = getattr(self, "_auth_flow_state", {}) or {}
-        expires_at = state.get("expires_at")
-        if expires_at:
-            try:
-                if datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+    def get_auth_url(self, requester_id=None, channel_id=None, ttl_seconds=900):
+        """Legacy ``(ok, message_or_url)`` projection."""
+        result = self._get_auth_url_result_sync(
+            requester_id,
+            channel_id,
+            ttl_seconds,
+        )
+        value = result.value if isinstance(result.value, str) else "Kunne ikke starte pålogging."
+        return result.ok, value
+
+    @staticmethod
+    def _auth_error_message(error_code: str | None) -> str:
+        messages = {
+            "missing_auth_flow": "Ingen aktiv påloggingsøkt funnet. Vennligst kjør `@inebotten kalender auth` først for å få en ny lenke, og prøv igjen med den nye koden.",
+            "auth_flow_expired": "Påloggingsøkten er utløpt. Kjør `@inebotten kalender auth` på nytt.",
+            "invalid_auth_flow": "Påloggingsøkten var ugyldig. Kjør `@inebotten kalender auth` på nytt.",
+            "requester_mismatch": "Denne kalenderkoden hører til en annen påloggingsøkt.",
+            "channel_mismatch": "Denne kalenderkoden må sendes i samme kanal som startet påloggingen.",
+            "token_storage_failed": "Google godkjente koden, men tokenet kunne ikke lagres. Start en ny påloggingsøkt.",
+            "external_commit_unknown": "Det er uklart om Google godkjente koden. Start en ny påloggingsøkt før du prøver igjen.",
+        }
+        return messages.get(error_code, "Autentisering feilet. Start en ny påloggingsøkt.")
+
+    def _exchange_code_result_sync(
+        self,
+        code,
+        requester_id=None,
+        channel_id=None,
+    ) -> ExternalMutationResult:
+        """Exchange one code, clearing the flow after dispatch regardless of truth."""
+        prior_enabled = self.enabled
+        with _CREDENTIAL_LOCK:
+            flow = getattr(self, "_auth_flow", None)
+            if flow is None:
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="missing_auth_flow",
+                )
+
+            state = getattr(self, "_auth_flow_state", {}) or {}
+            expires_at = state.get("expires_at")
+            if expires_at:
+                try:
+                    if datetime.fromisoformat(expires_at) <= datetime.now(timezone.utc):
+                        self._auth_flow = None
+                        self._auth_flow_state = None
+                        return ExternalMutationResult(
+                            False,
+                            ExternalCommitState.UNCHANGED,
+                            error_code="auth_flow_expired",
+                        )
+                except Exception:
                     self._auth_flow = None
                     self._auth_flow_state = None
-                    return False, "Påloggingsøkten er utløpt. Kjør `@inebotten kalender auth` på nytt."
-            except Exception:
-                self._auth_flow = None
-                self._auth_flow_state = None
-                return False, "Påloggingsøkten var ugyldig. Kjør `@inebotten kalender auth` på nytt."
+                    return ExternalMutationResult(
+                        False,
+                        ExternalCommitState.UNCHANGED,
+                        error_code="invalid_auth_flow",
+                    )
 
-        expected_requester = state.get("requester_id")
-        expected_channel = state.get("channel_id")
-        if expected_requester and str(requester_id) != expected_requester:
-            return False, "Denne kalenderkoden hører til en annen påloggingsøkt."
-        if expected_channel and str(channel_id) != expected_channel:
-            return False, "Denne kalenderkoden må sendes i samme kanal som startet påloggingen."
-            
-        try:
-            flow = self._auth_flow
-            flow.fetch_token(code=code)
-            
-            creds = flow.credentials
-            self._save_credentials(creds)
-            self.enabled = True
-            self._auth_flow = None # Clear flow after success
+            expected_requester = state.get("requester_id")
+            expected_channel = state.get("channel_id")
+            if expected_requester and str(requester_id) != expected_requester:
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="requester_mismatch",
+                )
+            if expected_channel and str(channel_id) != expected_channel:
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="channel_mismatch",
+                )
+
+            # Claim before network I/O. A concurrent exchange can no longer
+            # consume the same flow, and a new auth URL installed afterwards
+            # cannot be cleared by this exchange's settlement.
+            self._auth_flow = None
             self._auth_flow_state = None
-            return True, "Autentisering vellykket! Google Calendar er nå synkronisert og klar til bruk."
-        except Exception as e:
-            return False, f"Autentisering feilet: Sjekk at koden er riktig. ({e})"
+
+        try:
+            with _CREDENTIAL_LOCK:
+                flow.fetch_token(code=code)
+                creds = flow.credentials
+                try:
+                    self._save_credentials(creds)
+                except Exception:
+                    # Atomic token persistence leaves any previously validated
+                    # token untouched.  A failed re-auth must not disable that
+                    # still-working integration.
+                    self._enabled = prior_enabled
+                    self._initialized = True
+                    return ExternalMutationResult(
+                        False,
+                        ExternalCommitState.CHANGED,
+                        error_code="token_storage_failed",
+                    )
+            self._enabled = True
+            self._initialized = True
+            return ExternalMutationResult(
+                True,
+                ExternalCommitState.CHANGED,
+                value="Autentisering vellykket! Google Calendar er nå synkronisert og klar til bruk.",
+            )
+        except Exception as exc:
+            # Invalid/failed re-auth consumes this one-time flow, but it does
+            # not revoke or overwrite an already validated persisted token.
+            self._enabled = prior_enabled
+            self._initialized = True
+            oauth_error = getattr(exc, "error", None)
+            if _exception_status(exc) in {400, 401, 403, 404} or oauth_error == "invalid_grant":
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="invalid_auth_code",
+                )
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNKNOWN,
+                error_code="external_commit_unknown",
+            )
+
+    async def exchange_code_result(
+        self,
+        code,
+        requester_id=None,
+        channel_id=None,
+    ) -> ExternalMutationResult:
+        return await self._await_worker(
+            self._exchange_code_result_sync,
+            code,
+            requester_id,
+            channel_id,
+        )
+
+    def exchange_code(self, code, requester_id=None, channel_id=None):
+        """Legacy ``(ok, message)`` projection."""
+        result = self._exchange_code_result_sync(code, requester_id, channel_id)
+        if result.ok and isinstance(result.value, str):
+            return True, result.value
+        return False, self._auth_error_message(result.error_code)
 
     def _run_calendar_command(self, *args):
         """Run a calendar command via the google_api.py script"""
@@ -321,14 +726,14 @@ class GoogleCalendarManager:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
-                print(f"[GCAL] Command failed: {result.stderr}")
+                print("[GCAL] Calendar command failed")
                 return None
             return json.loads(result.stdout) if result.stdout.strip() else None
-        except Exception as e:
-            print(f"[GCAL] Error running command: {e}")
+        except Exception:
+            print("[GCAL] Calendar command failed")
             return None
 
-    def list_upcoming_events(self, days=30):
+    def list_upcoming_events(self, days=30, *, reference_time=None):
         """
         List upcoming events from Google Calendar using direct API.
 
@@ -341,21 +746,37 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
+        _THREAD_STATE.read_credential_state = ExternalCommitState.UNCHANGED
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                self._save_credentials(creds)
+            with _CREDENTIAL_LOCK:
+                creds = Credentials.from_authorized_user_file(
+                    str(self._token_path()), SCOPES
+                )
+                if creds.expired and creds.refresh_token:
+                    try:
+                        _THREAD_STATE.read_credential_state = ExternalCommitState.UNKNOWN
+                        creds.refresh(Request())
+                        self._save_credentials(creds)
+                        _THREAD_STATE.read_credential_state = ExternalCommitState.CHANGED
+                    except Exception:
+                        _THREAD_STATE.read_credential_state = ExternalCommitState.UNKNOWN
+                        raise
 
             service = build("calendar", "v3", credentials=creds)
 
-            now = datetime.now(timezone.utc)
+            if reference_time is None:
+                now = datetime.now(timezone.utc)
+            else:
+                if (
+                    reference_time.tzinfo is None
+                    or reference_time.utcoffset() is None
+                ):
+                    raise ValueError("reference_time_must_be_aware")
+                now = reference_time.astimezone(timezone.utc)
             end = now + timedelta(days=days)
 
             items = []
@@ -376,8 +797,8 @@ class GoogleCalendarManager:
                     break
             return items
 
-        except Exception as e:
-            print(f"[GCAL] Error listing events: {e}")
+        except Exception:
+            print("[GCAL] Event listing failed")
             return None
 
     def get_event(self, event_id):
@@ -385,17 +806,25 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
+        _THREAD_STATE.read_credential_state = ExternalCommitState.UNCHANGED
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                self._save_credentials(creds)
+            with _CREDENTIAL_LOCK:
+                creds = Credentials.from_authorized_user_file(
+                    str(self._token_path()), SCOPES
+                )
+                if creds.expired and creds.refresh_token:
+                    try:
+                        _THREAD_STATE.read_credential_state = ExternalCommitState.UNKNOWN
+                        creds.refresh(Request())
+                        self._save_credentials(creds)
+                        _THREAD_STATE.read_credential_state = ExternalCommitState.CHANGED
+                    except Exception:
+                        _THREAD_STATE.read_credential_state = ExternalCommitState.UNKNOWN
+                        raise
 
             service = build("calendar", "v3", credentials=creds)
             return (
@@ -403,8 +832,8 @@ class GoogleCalendarManager:
                 .get(calendarId=self.calendar_id, eventId=event_id)
                 .execute()
             )
-        except Exception as e:
-            print(f"[GCAL] Error fetching event {event_id}: {e}")
+        except Exception:
+            print("[GCAL] Event lookup failed")
             return None
 
     def create_event(
@@ -436,7 +865,9 @@ class GoogleCalendarManager:
         Returns:
             Event dict with id and htmlLink, or None if error
         """
+        _reset_mutation_state()
         if not self.enabled:
+            _THREAD_STATE.mutation_error_code = "integration_disabled"
             return None
 
         # Calculate end time if not provided (default 1 hour duration)
@@ -445,8 +876,8 @@ class GoogleCalendarManager:
                 start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
                 end_dt = start_dt + timedelta(hours=1)
                 end_time = end_dt.isoformat()
-            except Exception as e:
-                print(f"[CALENDAR] GCal datetime parse error: {e}")
+            except Exception:
+                print("[CALENDAR] GCal datetime parse error")
                 return None
 
         # Build recurrence rule if specified
@@ -473,31 +904,30 @@ class GoogleCalendarManager:
         """
         Create an event using direct Google Calendar API (handles both recurring and non-recurring)
         """
+        _reset_mutation_state()
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            # Load credentials
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
-            # Refresh if expired
-            if creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except Exception as e:
-                    print(f"[GCAL] Token refresh failed during event creation: {e}")
-                    # Mark as disabled so we don't keep trying
-                    self.enabled = False
+            with _CREDENTIAL_LOCK:
+                creds = Credentials.from_authorized_user_file(
+                    str(self._token_path()), SCOPES
+                )
+                if creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(Request())
+                    except Exception:
+                        print("[GCAL] Token refresh failed during event creation")
+                        self._enabled = False
+                        return None
+                    self._save_credentials(creds)
+                elif not creds.valid:
+                    print("[GCAL] Credentials invalid (no refresh token)")
+                    self._enabled = False
+                    _THREAD_STATE.mutation_state = ExternalCommitState.UNCHANGED
+                    _THREAD_STATE.mutation_error_code = "invalid_credentials"
                     return None
-            elif not creds.valid:
-                print("[GCAL] Credentials invalid (no refresh token)")
-                self.enabled = False
-                return None
-
-            # Save back refreshed token
-            self._save_credentials(creds)
 
             service = build("calendar", "v3", credentials=creds)
 
@@ -524,21 +954,29 @@ class GoogleCalendarManager:
                     }
                 }
 
+            _THREAD_STATE.mutation_state = ExternalCommitState.UNKNOWN
             result = (
                 service.events()
                 .insert(calendarId=self.calendar_id, body=event_body)
                 .execute()
             )
-
-            return {
+            if not isinstance(result, dict) or not result.get("id"):
+                _THREAD_STATE.mutation_state = ExternalCommitState.UNKNOWN
+                _THREAD_STATE.mutation_error_code = "external_commit_unknown"
+                return None
+            normalized = {
                 "status": "created",
                 "id": result["id"],
                 "summary": result.get("summary", ""),
                 "htmlLink": result.get("htmlLink", ""),
             }
+            _THREAD_STATE.mutation_state = ExternalCommitState.CHANGED
+            _THREAD_STATE.mutation_error_code = None
+            return normalized
 
-        except Exception as e:
-            print(f"[GCAL] Error creating event: {e}")
+        except Exception as exc:
+            _record_mutation_exception(exc)
+            print("[GCAL] Event creation failed")
             return None
 
     def delete_event(self, event_id):
@@ -551,7 +989,9 @@ class GoogleCalendarManager:
         Returns:
             True if successful, False otherwise
         """
+        _reset_mutation_state()
         if not self.enabled:
+            _THREAD_STATE.mutation_error_code = "integration_disabled"
             return False
 
         try:
@@ -559,26 +999,33 @@ class GoogleCalendarManager:
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                self._save_credentials(creds)
+            with _CREDENTIAL_LOCK:
+                creds = Credentials.from_authorized_user_file(
+                    str(self._token_path()), SCOPES
+                )
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    self._save_credentials(creds)
 
             service = build("calendar", "v3", credentials=creds)
+            _THREAD_STATE.mutation_state = ExternalCommitState.UNKNOWN
             service.events().delete(
                 calendarId=self.calendar_id, eventId=event_id
             ).execute()
+            _THREAD_STATE.mutation_state = ExternalCommitState.CHANGED
+            _THREAD_STATE.mutation_error_code = None
             return True
-        except Exception as e:
-            print(f"[GCAL] Error deleting event {event_id}: {e}")
+        except Exception as exc:
+            _record_mutation_exception(exc)
+            print("[GCAL] Event deletion failed")
             return False
 
     def _build_rrule(self, recurrence, rrule_day=None):
         if not recurrence:
             return None
         recurrence = recurrence.lower()
+        if recurrence == "daily":
+            return "RRULE:FREQ=DAILY"
         if recurrence == "weekly":
             return f"RRULE:FREQ=WEEKLY;BYDAY={rrule_day}" if rrule_day else "RRULE:FREQ=WEEKLY"
         if recurrence == "biweekly":
@@ -607,13 +1054,15 @@ class GoogleCalendarManager:
         completed=False,
         date_str=None,
         time_str=None,
-        recurrence=None,
+        recurrence=_MISSING,
         rrule_day=None,
     ):
         """
         Update an event in Google Calendar
         """
+        _reset_mutation_state()
         if not self.enabled:
+            _THREAD_STATE.mutation_error_code = "integration_disabled"
             return None
 
         try:
@@ -621,12 +1070,13 @@ class GoogleCalendarManager:
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
-            if creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                self._save_credentials(creds)
+            with _CREDENTIAL_LOCK:
+                creds = Credentials.from_authorized_user_file(
+                    str(self._token_path()), SCOPES
+                )
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                    self._save_credentials(creds)
 
             service = build("calendar", "v3", credentials=creds)
 
@@ -652,23 +1102,275 @@ class GoogleCalendarManager:
                 event["start"] = {"dateTime": start_iso, "timeZone": "Europe/Oslo"}
                 event["end"] = {"dateTime": end_iso, "timeZone": "Europe/Oslo"}
 
-            if recurrence is not None:
+            if recurrence is not _MISSING:
                 rrule = self._build_rrule(recurrence, rrule_day)
                 if rrule:
                     event["recurrence"] = [rrule]
                 else:
                     event.pop("recurrence", None)
 
+            _THREAD_STATE.mutation_state = ExternalCommitState.UNKNOWN
             result = (
                 service.events()
                 .update(calendarId=self.calendar_id, eventId=event_id, body=event)
                 .execute()
             )
+            if not isinstance(result, dict) or not result.get("id"):
+                _THREAD_STATE.mutation_state = ExternalCommitState.UNKNOWN
+                _THREAD_STATE.mutation_error_code = "external_commit_unknown"
+                return None
+            _THREAD_STATE.mutation_state = ExternalCommitState.CHANGED
+            _THREAD_STATE.mutation_error_code = None
 
             return result
-        except Exception as e:
-            print(f"[GCAL] Error updating event {event_id}: {e}")
+        except Exception as exc:
+            _record_mutation_exception(exc)
+            print("[GCAL] Event update failed")
             return None
+
+    async def list_upcoming_events_result(
+        self,
+        days=30,
+        *,
+        reference_time=None,
+    ) -> ExternalMutationResult:
+        if not self.enabled:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            )
+        if reference_time is not None and (
+            reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="invalid_reference_time",
+            )
+        def _read():
+            _THREAD_STATE.read_credential_state = ExternalCommitState.UNCHANGED
+            legacy_read = self.list_upcoming_events
+            try:
+                parameters = inspect.signature(legacy_read).parameters.values()
+            except (TypeError, ValueError):
+                parameters = ()
+            supports_reference = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                or parameter.name == "reference_time"
+                for parameter in parameters
+            )
+            if supports_reference:
+                value = legacy_read(
+                    days,
+                    reference_time=reference_time,
+                )
+            else:
+                value = legacy_read(days)
+            return value, getattr(
+                _THREAD_STATE,
+                "read_credential_state",
+                ExternalCommitState.UNCHANGED,
+            )
+
+        settled = await self._await_worker(_read)
+        if isinstance(settled, ExternalMutationResult):
+            return settled
+        value, credential_state = settled
+        if not isinstance(value, list):
+            return ExternalMutationResult(
+                False,
+                credential_state,
+                error_code="external_read_failed",
+            )
+        return ExternalMutationResult(
+            True,
+            credential_state,
+            value=value,
+        )
+
+    async def get_event_result(self, event_id) -> ExternalMutationResult:
+        if not self.enabled or not isinstance(event_id, str) or not event_id.strip():
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code=(
+                    "integration_disabled" if not self.enabled else "invalid_event_id"
+                ),
+            )
+        def _read():
+            _THREAD_STATE.read_credential_state = ExternalCommitState.UNCHANGED
+            value = self.get_event(event_id)
+            return value, getattr(
+                _THREAD_STATE,
+                "read_credential_state",
+                ExternalCommitState.UNCHANGED,
+            )
+
+        settled = await self._await_worker(_read)
+        if isinstance(settled, ExternalMutationResult):
+            return settled
+        value, credential_state = settled
+        if not isinstance(value, dict):
+            return ExternalMutationResult(
+                False,
+                credential_state,
+                error_code="external_read_failed",
+            )
+        return ExternalMutationResult(
+            True,
+            credential_state,
+            value=value,
+        )
+
+    async def _legacy_mutation_result(
+        self,
+        method,
+        *args,
+        expected: str,
+    ) -> ExternalMutationResult:
+        def _call():
+            _reset_mutation_state()
+            try:
+                value = method(*args)
+            except Exception as exc:
+                _record_mutation_exception(exc)
+                value = None
+            state = getattr(
+                _THREAD_STATE,
+                "mutation_state",
+                ExternalCommitState.UNCHANGED,
+            )
+            error_code = getattr(
+                _THREAD_STATE,
+                "mutation_error_code",
+                None,
+            )
+            valid = (
+                value is True
+                if expected == "bool"
+                else isinstance(value, dict) and bool(value.get("id"))
+            )
+            if valid:
+                return ExternalMutationResult(
+                    True,
+                    ExternalCommitState.CHANGED,
+                    value=value,
+                )
+            if error_code is None:
+                state = ExternalCommitState.UNKNOWN
+                error_code = "external_commit_unknown"
+            return ExternalMutationResult(
+                False,
+                state,
+                error_code=error_code,
+            )
+
+        return await self._await_worker(_call)
+
+    async def create_event_result(
+        self,
+        title,
+        start_time,
+        end_time=None,
+        description=None,
+        location=None,
+        attendees=None,
+        recurrence=None,
+        rrule_day=None,
+        discord_user_id=None,
+        discord_username=None,
+    ) -> ExternalMutationResult:
+        if not self.enabled:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            )
+        if not isinstance(title, str) or not title.strip():
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="invalid_event",
+            )
+        try:
+            datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="invalid_event",
+            )
+        return await self._legacy_mutation_result(
+            self.create_event,
+            title,
+            start_time,
+            end_time,
+            description,
+            location,
+            attendees,
+            recurrence,
+            rrule_day,
+            discord_user_id,
+            discord_username,
+            expected="dict",
+        )
+
+    async def update_event_result(
+        self,
+        event_id,
+        title=None,
+        description=None,
+        completed=False,
+        date_str=None,
+        time_str=None,
+        recurrence=_MISSING,
+        rrule_day=None,
+    ) -> ExternalMutationResult:
+        if not self.enabled:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            )
+        if not isinstance(event_id, str) or not event_id.strip():
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="invalid_event_id",
+            )
+        return await self._legacy_mutation_result(
+            self.update_event,
+            event_id,
+            title,
+            description,
+            completed,
+            date_str,
+            time_str,
+            recurrence,
+            rrule_day,
+            expected="dict",
+        )
+
+    async def delete_event_result(self, event_id) -> ExternalMutationResult:
+        if not self.enabled:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            )
+        if not isinstance(event_id, str) or not event_id.strip():
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="invalid_event_id",
+            )
+        return await self._legacy_mutation_result(
+            self.delete_event,
+            event_id,
+            expected="bool",
+        )
 
     def sync_local_event(self, event_data):
         """
@@ -717,8 +1419,8 @@ class GoogleCalendarManager:
                 discord_username=event_data.get("username"),
             )
 
-        except Exception as e:
-            print(f"[GCAL] Error syncing event: {e}")
+        except Exception:
+            print("[GCAL] Event sync failed")
             return None
 
     def format_event_list(self, events, title="Google Calendar - Kommende"):
@@ -760,8 +1462,8 @@ class GoogleCalendarManager:
                     # date-only format
                     date_str = start
                     time_display = ""
-            except Exception as e:
-                print(f"[CALENDAR] GCal parse error: {e}")
+            except Exception:
+                print("[CALENDAR] GCal parse error")
                 date_str = start
                 time_display = ""
 

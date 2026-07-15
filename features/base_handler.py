@@ -112,7 +112,10 @@ to ensure consistent access to shared state like rate limiting and
         self._record_delivered_response(result)
         return result
 
-    def _record_delivered_response(self, result: MessageSendResult) -> None:
+    def _record_delivered_response(
+        self,
+        result: MessageSendResult,
+    ) -> None:
         if result.state is not DeliveryState.DELIVERED:
             return
         response_count = getattr(self.monitor, "response_count", None)

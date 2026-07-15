@@ -1,274 +1,468 @@
 #!/usr/bin/env python3
-"""
-ReminderHandler - Handles reminder edit and delete commands.
+"""Typed reminder dispatch with rollback-safe manager adapters."""
 
-Commands:
-- Editing reminder text, date, or recurrence by index
-- Deleting reminders by index
-"""
+from __future__ import annotations
 
-import re
-from typing import Dict, Optional, Tuple
+from datetime import datetime
+from typing import Any
 
 from cal_system.reminder_manager import parse_reminder_command
+from core.dispatch_result import (
+    DispatchCancelled,
+    DispatchOutcome,
+    ManagerMutationCancelled,
+    ManagerMutationError,
+    MessageSendCancelled,
+)
+from core.intent_payloads import typed_or_legacy_payload
 from features.base_handler import BaseHandler
 
 
-class ReminderHandler(BaseHandler):
-    """Handler for reminder edit and delete commands."""
-
-    _EDIT_FIELD_MAP = {
-        "tittel": "title",
-        "title": "title",
-        "tekst": "title",
-        "text": "title",
-        "dato": "date",
-        "date": "date",
-        "gjentakelse": "recurrence",
-        "recurrence": "recurrence",
-        "gjenta": "recurrence",
+_MANAGER_ERROR_CODES = frozenset(
+    {
+        "cancelled",
+        "commit_state_unknown",
+        "external_commit_unknown",
+        "external_state_changed_storage_failed",
+        "storage_write_failed",
     }
+)
+
+
+class ReminderHandler(BaseHandler):
+    """Handle one canonical reminder action without reparsing typed input."""
 
     def __init__(self, monitor):
         super().__init__(monitor)
         self.reminders = monitor.reminders
 
-    def _parse_edit_command(self, content: str) -> Tuple[Optional[int], Dict[str, str]]:
-        """
-        Extract index and field updates from an edit command.
+    def _turn_time(self, reference_time: datetime | None) -> datetime:
+        if reference_time is None:
+            reference_time = self.reminders.clock.now()
+        return self.reminders._require_aware(reference_time)
 
-        Supports formats like:
-          - endre påminnelse 2 tittel: ny tekst
-          - rediger påminnelse 1 dato: 15.05.2026
-          - oppdater påminnelse 3 gjentakelse: ukentlig
-
-        Returns:
-            (index, kwargs) where index is 1-based or None,
-            and kwargs maps to ReminderManager.edit_reminder fields.
-        """
-        cleaned = re.sub(r"<@!?\d+>", "", content)
-        cleaned = cleaned.replace("@inebotten", "").strip()
-
-        for kw in (
-            "endre påminnelse",
-            "rediger påminnelse",
-            "oppdater påminnelse",
-            "endre",
-            "rediger",
-            "oppdater",
-            "påminnelse",
-        ):
-            if cleaned.lower().startswith(kw):
-                cleaned = cleaned[len(kw) :].strip()
-
-        num_match = re.search(r"\b(\d+)\b", cleaned)
-        if not num_match:
-            return None, {}
-        index = int(num_match.group(1))
-
-        remaining = re.sub(r"\b\d+\b", "", cleaned, count=1).strip(" -–—:")
-
-        if ":" in remaining:
-            prefix, value = remaining.split(":", 1)
-            prefix = prefix.strip().lower()
-            value = value.strip()
-
-            field = None
-            for nor_field, eng_field in self._EDIT_FIELD_MAP.items():
-                if nor_field in prefix:
-                    field = eng_field
-                    break
-
-            if field:
-                return index, {field: value}
-
-        if remaining:
-            return index, {"title": remaining}
-
-        return index, {}
-
-    def _parse_search_query(self, content: str) -> Optional[str]:
-        cleaned = re.sub(r"<@!?\d+>", "", content)
-        cleaned = cleaned.replace("@inebotten", "").strip()
-        match = re.match(
-            r"^(?:søk|search)\s+(?:påminnelse|påminnelser|reminder|reminders)\s+(.+)$",
-            cleaned,
-            flags=re.IGNORECASE,
+    def _payload(
+        self,
+        message,
+        typed_value,
+        *,
+        reference_time: datetime,
+    ):
+        # ``typed_value`` is authoritative even when it is an empty mapping.
+        # Only the explicit compatibility path may inspect the raw message.
+        return typed_or_legacy_payload(
+            monitor=self.monitor,
+            family="reminder",
+            typed_value=typed_value,
+            legacy_factory=lambda: parse_reminder_command(
+                message.content,
+                now=reference_time,
+            ),
         )
-        if not match:
-            return None
-        query = match.group(1).strip()
-        return query or None
 
-    async def handle_reminder_search(self, message, payload=None) -> None:
-        """Handle reminder text search commands."""
+    async def _finish(
+        self,
+        message,
+        response_text: str,
+        base: DispatchOutcome,
+    ) -> DispatchOutcome:
         try:
-            guild_id = self.get_guild_id(message)
-            query = (payload or {}).get("query") or self._parse_search_query(message.content)
-            if not query:
-                await self.send_response(message, "🔎 Skriv hva du vil søke etter i påminnelser.")
-                return
-            await self.send_response(
-                message,
-                self.reminders.format_search_results(
-                    guild_id,
-                    query,
-                    getattr(self.loc, "current_lang", "no"),
-                ),
+            delivery = await self.send_response_result(message, response_text)
+        except MessageSendCancelled as exc:
+            raise DispatchCancelled(base.with_delivery(exc.result)) from None
+        return base.with_delivery(delivery)
+
+    @staticmethod
+    def _manager_failure(exc: ManagerMutationError) -> DispatchOutcome:
+        if exc.code not in _MANAGER_ERROR_CODES:
+            return DispatchOutcome.failure(
+                "commit_state_unknown",
+                mutated=exc.mutated,
+                commit_unknown=True,
             )
-        except Exception as e:
-            self.log(f"Error searching reminders: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
+        return DispatchOutcome.failure(
+            exc.code,
+            mutated=exc.mutated,
+            retryable=(
+                exc.code == "storage_write_failed"
+                and not exc.mutated
+                and not exc.commit_unknown
+            ),
+            commit_unknown=exc.commit_unknown,
+        )
 
-    async def handle_reminder_create(self, message, payload=None) -> None:
-        """Handle creating reminders from routed natural language."""
-        try:
-            guild_id = self.get_guild_id(message)
-            data = (payload or {}).get("reminder") or parse_reminder_command(message.content)
-            if not data or data.get("action") != "add" or not data.get("text"):
-                await self.send_response(
-                    message,
-                    "🔔 Skriv hva jeg skal minne deg på, f.eks. `@inebotten påminnelse ring legen 20.06`.",
+    @staticmethod
+    def _raise_manager_cancel(exc: ManagerMutationCancelled) -> None:
+        if exc.code not in _MANAGER_ERROR_CODES:
+            raise DispatchCancelled(
+                DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    mutated=exc.mutated,
+                    commit_unknown=True,
                 )
-                return
+            ) from None
+        raise DispatchCancelled(
+            DispatchOutcome.failure(
+                exc.code,
+                mutated=exc.mutated,
+                retryable=exc.retryable,
+                commit_unknown=exc.commit_unknown,
+            )
+        ) from None
 
-            reminder_id = self.reminders.add_reminder(
-                guild_id=guild_id,
-                user_id=message.author.id,
-                username=message.author.name,
-                text=data["text"],
-                due_date=data.get("due_date"),
+    async def _mutation_exception(self, message, exc) -> DispatchOutcome:
+        if isinstance(exc, ManagerMutationCancelled):
+            self._raise_manager_cancel(exc)
+        if isinstance(exc, ManagerMutationError):
+            base = self._manager_failure(exc)
+        else:
+            base = DispatchOutcome.failure(
+                "commit_state_unknown",
+                commit_unknown=True,
+            )
+        return await self._finish(message, self.loc.t("error_generic"), base)
+
+    @staticmethod
+    def _valid_positive_number(value: object) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+    @staticmethod
+    def _valid_stable_id(value: object) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    @classmethod
+    def _valid_selector(cls, payload: dict[str, Any]) -> bool:
+        has_number = cls._valid_positive_number(payload.get("number"))
+        has_id = cls._valid_stable_id(payload.get("reminder_id"))
+        return has_number is not has_id
+
+    async def handle_reminder_search(
+        self,
+        message,
+        payload: dict[str, Any] | None = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> DispatchOutcome:
+        """Search reminder text from one canonical query."""
+        now = self._turn_time(reference_time)
+        canonical = self._payload(message, payload, reference_time=now)
+        query = canonical.get("query") if isinstance(canonical, dict) else None
+        if (
+            not isinstance(canonical, dict)
+            or canonical.get("action") != "search"
+            or not isinstance(query, str)
+            or not query.strip()
+        ):
+            return await self._finish(
+                message,
+                "🔎 Skriv hva du vil søke etter i påminnelser.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
+
+        try:
+            response_text = self.reminders.format_search_results(
+                self.get_guild_id(message),
+                query.strip(),
+                getattr(self.loc, "current_lang", "no"),
+            )
+            base = DispatchOutcome.success(mutated=False)
+        except Exception:
+            response_text = self.loc.t("error_generic")
+            base = DispatchOutcome.failure("manager_rejected", retryable=True)
+        return await self._finish(message, response_text, base)
+
+    async def handle_reminder_create(
+        self,
+        message,
+        payload: dict[str, Any] | None = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> DispatchOutcome:
+        """Create a reminder through the current Task 3 temporal boundary."""
+        now = self._turn_time(reference_time)
+        canonical = self._payload(message, payload, reference_time=now)
+        text = canonical.get("text") if isinstance(canonical, dict) else None
+        if (
+            not isinstance(canonical, dict)
+            or canonical.get("action") != "add"
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
+            return await self._finish(
+                message,
+                "🔔 Skriv hva jeg skal minne deg på, f.eks. "
+                "`@inebotten påminnelse ring legen 20.06`.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
+        if "due_at" in canonical or "timezone" in canonical:
+            return await self._finish(
+                message,
+                "🔔 Tidspunktet kan ikke lagres trygt ennå. Ingenting ble endret.",
+                DispatchOutcome.failure("unsupported_temporal_field"),
+            )
+
+        guild_id = self.get_guild_id(message)
+        try:
+            reminder_id = await self.reminders.add_reminder_result(
+                guild_id,
+                message.author.id,
+                message.author.name,
+                text.strip(),
+                canonical.get("due_date"),
+                canonical.get("recurrence"),
                 channel_id=getattr(getattr(message, "channel", None), "id", None),
+                reference_time=now,
             )
-            due = f"\n📅 Frist: {data['due_date']}" if data.get("due_date") else ""
-            await self.send_response(
+        except (ManagerMutationCancelled, ManagerMutationError) as exc:
+            return await self._mutation_exception(message, exc)
+        except Exception as exc:
+            return await self._mutation_exception(message, exc)
+
+        if reminder_id:
+            due = (
+                f"\n📅 Frist: {canonical['due_date']}"
+                if canonical.get("due_date")
+                else ""
+            )
+            response_text = f"✅ **Påminnelse lagt til!**\n{text.strip()}{due}"
+            base = DispatchOutcome.success(mutated=True)
+        else:
+            response_text = self.loc.t("error_generic")
+            base = DispatchOutcome.failure("manager_rejected")
+        return await self._finish(message, response_text, base)
+
+    async def handle_reminder_list(
+        self,
+        message,
+        payload: dict[str, Any] | None = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> DispatchOutcome:
+        """List active and recently completed reminders."""
+        now = self._turn_time(reference_time)
+        canonical = self._payload(message, payload, reference_time=now)
+        if not isinstance(canonical, dict) or canonical.get("action") != "list":
+            return await self._finish(
                 message,
-                f"✅ **Påminnelse lagt til!**\n{data['text']}{due}",
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure("invalid_payload"),
             )
-        except Exception as e:
-            self.log(f"Error creating reminder: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
-
-    async def handle_reminder_list(self, message, payload=None) -> None:
-        """Handle listing active reminders."""
         try:
-            guild_id = self.get_guild_id(message)
-            reminders_text = self.reminders.format_reminders_list(guild_id, show_completed=True)
-            if reminders_text:
-                await self.send_response(message, f"🔔 **Påminnelser:**\n{reminders_text}")
-            else:
-                await self.send_response(message, "📭 Ingen aktive påminnelser.")
-        except Exception as e:
-            self.log(f"Error listing reminders: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
+            reminders_text = self.reminders.format_reminders_list(
+                self.get_guild_id(message),
+                show_completed=True,
+                reference_time=now,
+            )
+            response_text = (
+                f"🔔 **Påminnelser:**\n{reminders_text}"
+                if reminders_text
+                else "📭 Ingen aktive påminnelser."
+            )
+            base = DispatchOutcome.success(mutated=False)
+        except Exception:
+            response_text = self.loc.t("error_generic")
+            base = DispatchOutcome.failure("manager_rejected", retryable=True)
+        return await self._finish(message, response_text, base)
 
-    async def handle_reminder_complete(self, message, payload=None) -> None:
-        """Handle completing a reminder by active-list index."""
+    async def handle_reminder_complete(
+        self,
+        message,
+        payload: dict[str, Any] | None = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> DispatchOutcome:
+        """Complete by one numbered or exact stable-ID selector."""
+        now = self._turn_time(reference_time)
+        canonical = self._payload(message, payload, reference_time=now)
+        if (
+            not isinstance(canonical, dict)
+            or canonical.get("action") != "complete"
+            or not self._valid_selector(canonical)
+        ):
+            return await self._finish(
+                message,
+                "📝 Hvilken påminnelse er ferdig? Bruk et nummer eller en ID.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
+
+        guild_id = self.get_guild_id(message)
+        number = canonical.get("number")
+        reminder_id = canonical.get("reminder_id")
+        if isinstance(reminder_id, str):
+            reminder_id = reminder_id.strip()
         try:
-            guild_id = self.get_guild_id(message)
-            data = (payload or {}).get("reminder")
-            if not data:
-                parsed = parse_reminder_command(message.content)
-                data = parsed if parsed and parsed.get("action") == "complete" else {}
-            index = data.get("number") if isinstance(data, dict) else None
-            if index is None:
-                cleaned = re.sub(r"<@!?\d+>", "", message.content)
-                cleaned = cleaned.replace("@inebotten", "").strip().lower()
-                match = re.fullmatch(
-                    r"(?:ferdig|fullført|fullfør|done|complete|gjort)\s+(\d+)",
-                    cleaned,
-                    flags=re.IGNORECASE,
+            success, reminder_text, next_date = (
+                await self.reminders.complete_reminder_result(
+                    guild_id,
+                    reminder_num=number,
+                    reminder_id=reminder_id,
+                    reference_time=now,
                 )
-                if match:
-                    index = int(match.group(1))
+            )
+        except (ManagerMutationCancelled, ManagerMutationError) as exc:
+            return await self._mutation_exception(message, exc)
+        except Exception as exc:
+            return await self._mutation_exception(message, exc)
 
-            if index is None:
-                reminders_text = self.reminders.format_reminders_list(guild_id)
-                if reminders_text:
-                    await self.send_response(
-                        message,
-                        f"📝 Hvilken påminnelse er ferdig?\n\n{reminders_text}\n\n"
-                        "Bruk `@inebotten ferdig påminnelse [nummer]`.",
-                    )
-                else:
-                    await self.send_response(message, "📭 Ingen aktive påminnelser.")
-                return
+        selector = reminder_id if reminder_id is not None else number
+        if not success:
+            return await self._finish(
+                message,
+                f"❌ Fant ikke påminnelse {selector}.",
+                DispatchOutcome.failure("not_found", retryable=True),
+            )
+        response_text = f"✅ **Fullført! {reminder_text}**"
+        if next_date:
+            response_text += f"\n📅 Neste gang: {next_date}"
+        return await self._finish(
+            message,
+            response_text,
+            DispatchOutcome.success(mutated=True),
+        )
 
-            success, text, next_date = self.reminders.complete_reminder(guild_id, reminder_num=index)
-            if not success:
-                await self.send_response(
+    async def handle_reminder_edit(
+        self,
+        message,
+        payload: dict[str, Any] | None = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> DispatchOutcome:
+        """Edit one reminder without deriving a second target from raw text."""
+        now = self._turn_time(reference_time)
+        canonical = self._payload(message, payload, reference_time=now)
+        changes = canonical.get("changes") if isinstance(canonical, dict) else None
+        if (
+            not isinstance(canonical, dict)
+            or canonical.get("action") != "edit"
+            or not self._valid_selector(canonical)
+            or not isinstance(changes, dict)
+            or not changes
+        ):
+            return await self._finish(
+                message,
+                self.loc.t("calendar_edit_invalid"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
+        if "due_at" in changes or "timezone" in changes:
+            return await self._finish(
+                message,
+                "🔔 Tidspunktet kan ikke lagres trygt ennå. Ingenting ble endret.",
+                DispatchOutcome.failure("unsupported_temporal_field"),
+            )
+
+        guild_id = self.get_guild_id(message)
+        reminder_id = canonical.get("reminder_id")
+        if isinstance(reminder_id, str):
+            reminder_id = reminder_id.strip()
+        try:
+            updated = await self.reminders.edit_reminder_result(
+                guild_id,
+                index=canonical.get("number"),
+                title=changes.get("text"),
+                date=changes.get("due_date"),
+                time=changes.get("time"),
+                recurrence=changes.get("recurrence"),
+                reminder_id=reminder_id,
+                reference_time=now,
+            )
+        except ValueError as exc:
+            if exc.args == ("invalid_recurrence",):
+                return await self._finish(
                     message,
-                    f"❌ Fant ikke påminnelse nummer {index}. Bruk `@inebotten påminnelser` for listen.",
+                    self.loc.t("calendar_edit_invalid"),
+                    DispatchOutcome.failure("invalid_payload"),
                 )
-                return
+            selector = reminder_id or canonical.get("number", "?")
+            return await self._finish(
+                message,
+                self.loc.t("reminder_edit_not_found", num=selector),
+                DispatchOutcome.failure("not_found", retryable=True),
+            )
+        except (ManagerMutationCancelled, ManagerMutationError) as exc:
+            return await self._mutation_exception(message, exc)
+        except Exception as exc:
+            return await self._mutation_exception(message, exc)
 
-            if next_date:
-                await self.send_response(
+        if not updated:
+            return await self._finish(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure("manager_rejected"),
+            )
+        return await self._finish(
+            message,
+            self.loc.t("reminder_edit_success", title=updated.get("text", "")),
+            DispatchOutcome.success(mutated=True),
+        )
+
+    async def handle_reminder_delete(
+        self,
+        message,
+        payload: dict[str, Any] | None = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> DispatchOutcome:
+        """Resolve a number once, then delete only by the stable record ID."""
+        now = self._turn_time(reference_time)
+        canonical = self._payload(message, payload, reference_time=now)
+        if (
+            not isinstance(canonical, dict)
+            or canonical.get("action") != "delete"
+            or not self._valid_selector(canonical)
+        ):
+            return await self._finish(
+                message,
+                self.loc.t("reminder_delete_not_found", num="?"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
+
+        guild_id = self.get_guild_id(message)
+        reminder_id = canonical.get("reminder_id")
+        if isinstance(reminder_id, str):
+            reminder_id = reminder_id.strip()
+        if reminder_id is None:
+            number = canonical["number"]
+            try:
+                pending = self.reminders.snapshot_pending_items(guild_id)
+            except Exception:
+                return await self._finish(
                     message,
-                    f"✅ **Fullført! {text}**\n📅 Neste gang: {next_date}",
+                    self.loc.t("error_generic"),
+                    DispatchOutcome.failure("manager_rejected", retryable=True),
                 )
-            else:
-                await self.send_response(message, f"✅ **Fullført! {text}**")
-        except Exception as e:
-            self.log(f"Error completing reminder: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
-
-    async def handle_reminder_edit(self, message, payload=None) -> None:
-        """Handle editing a reminder by its list index."""
-        try:
-            guild_id = self.get_guild_id(message)
-            index, kwargs = self._parse_edit_command(message.content)
-
-            if index is None:
-                await self.send_response(
-                    message, self.loc.t("calendar_edit_invalid")
-                )
-                return
-
-            if not kwargs:
-                await self.send_response(
-                    message, self.loc.t("calendar_edit_invalid")
-                )
-                return
-
-            updated = self.reminders.edit_reminder(guild_id, index, **kwargs)
-            await self.send_response(
-                message, self.loc.t("reminder_edit_success", title=updated["text"])
-            )
-
-        except ValueError:
-            index = self.extract_number(message.content)
-            await self.send_response(
-                message, self.loc.t("reminder_edit_not_found", num=index or "?")
-            )
-        except Exception as e:
-            self.log(f"Error editing reminder: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
-
-    async def handle_reminder_delete(self, message, payload=None) -> None:
-        """Handle deleting a reminder by its list index."""
-        try:
-            guild_id = self.get_guild_id(message)
-            index = self.extract_number(message.content)
-
-            if index is None:
-                await self.send_response(
+            if number > len(pending):
+                return await self._finish(
                     message,
-                    self.loc.t(
-                        "reminder_delete_not_found",
-                        num="?",
-                    ),
+                    self.loc.t("reminder_delete_not_found", num=number),
+                    DispatchOutcome.failure("not_found", retryable=True),
                 )
-                return
+            reminder_id = pending[number - 1].get("id")
+            if not self._valid_stable_id(reminder_id):
+                return await self._finish(
+                    message,
+                    self.loc.t("error_generic"),
+                    DispatchOutcome.failure("manager_rejected"),
+                )
 
-            self.reminders.delete_reminder_by_id(guild_id, index)
-            await self.send_response(message, self.loc.t("reminder_delete_success"))
-
-        except ValueError:
-            index = self.extract_number(message.content)
-            await self.send_response(
-                message, self.loc.t("reminder_delete_not_found", num=index or "?")
+        try:
+            deleted = await self.reminders.delete_reminder_result(
+                guild_id,
+                reminder_id=reminder_id,
+                reference_time=now,
             )
-        except Exception as e:
-            self.log(f"Error deleting reminder: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
+        except (ManagerMutationCancelled, ManagerMutationError) as exc:
+            return await self._mutation_exception(message, exc)
+        except Exception as exc:
+            return await self._mutation_exception(message, exc)
+
+        if not deleted:
+            return await self._finish(
+                message,
+                self.loc.t("reminder_delete_not_found", num=reminder_id),
+                DispatchOutcome.failure("not_found", retryable=True),
+            )
+        return await self._finish(
+            message,
+            self.loc.t("reminder_delete_success"),
+            DispatchOutcome.success(mutated=True),
+        )

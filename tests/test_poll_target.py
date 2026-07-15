@@ -3,12 +3,15 @@
 """Regression tests for poll target resolution."""
 
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
+from core.dispatch_result import DeliveryState, MessageSendResult
 from core.intent_router import IntentRouter
 from features.poll_manager import PollManager
 from features.polls_handler import PollsHandler
@@ -16,6 +19,9 @@ from features.polls_handler import PollsHandler
 
 class DummyMonitor:
     pass
+
+
+NOW = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Oslo"))
 
 
 class PollTargetTests(unittest.TestCase):
@@ -53,8 +59,12 @@ class PollVoteAmbiguityTests(unittest.IsolatedAsyncioTestCase):
     async def test_vote_with_multiple_active_polls_requires_disambiguation(self):
         with TemporaryDirectory() as tmp:
             manager = PollManager(storage_path=Path(tmp) / "polls.json")
-            manager.create_poll("123", "Første?", ["Ja", "Nei"], "Tester")
-            manager.create_poll("123", "Andre?", ["Ja", "Nei"], "Tester")
+            await manager.create_poll_result(
+                "123", "Første?", ["Ja", "Nei"], "Tester", reference_time=NOW
+            )
+            await manager.create_poll_result(
+                "123", "Andre?", ["Ja", "Nei"], "Tester", reference_time=NOW
+            )
             monitor = SimpleNamespace(
                 poll=manager,
                 loc=SimpleNamespace(
@@ -69,23 +79,43 @@ class PollVoteAmbiguityTests(unittest.IsolatedAsyncioTestCase):
                 client=None,
             )
             handler = PollsHandler(monitor)
-            handler.send_response = AsyncMock()
+            handler.send_response_result = AsyncMock(
+                return_value=MessageSendResult(DeliveryState.DELIVERED)
+            )
             message = SimpleNamespace(
                 guild=SimpleNamespace(id=123),
                 channel=SimpleNamespace(id=456),
                 author=SimpleNamespace(id=7, name="Tester"),
             )
 
-            await handler.handle_vote(message, {"option_index": 1})
+            await handler.handle_vote(
+                message,
+                {"option_index": 1},
+                reference_time=NOW,
+            )
 
-            response = handler.send_response.await_args.args[1]
+            response = handler.send_response_result.await_args.args[1]
             self.assertIn("flere aktive avstemninger", response)
 
     async def test_delete_with_multiple_active_polls_requires_disambiguation(self):
         with TemporaryDirectory() as tmp:
             manager = PollManager(storage_path=Path(tmp) / "polls.json")
-            manager.create_poll("123", "Første?", ["Ja", "Nei"], "Tester", created_by_id=7)
-            manager.create_poll("123", "Andre?", ["Ja", "Nei"], "Tester", created_by_id=7)
+            await manager.create_poll_result(
+                "123",
+                "Første?",
+                ["Ja", "Nei"],
+                "Tester",
+                created_by_id=7,
+                reference_time=NOW,
+            )
+            await manager.create_poll_result(
+                "123",
+                "Andre?",
+                ["Ja", "Nei"],
+                "Tester",
+                created_by_id=7,
+                reference_time=NOW,
+            )
             monitor = SimpleNamespace(
                 poll=manager,
                 loc=SimpleNamespace(
@@ -100,18 +130,27 @@ class PollVoteAmbiguityTests(unittest.IsolatedAsyncioTestCase):
                 client=None,
             )
             handler = PollsHandler(monitor)
-            handler.send_response = AsyncMock()
+            handler.send_response_result = AsyncMock(
+                return_value=MessageSendResult(DeliveryState.DELIVERED)
+            )
             message = SimpleNamespace(
                 guild=SimpleNamespace(id=123),
                 channel=SimpleNamespace(id=456),
                 author=SimpleNamespace(id=7, name="Tester"),
             )
 
-            await handler.handle_poll_delete(message, {"target": None})
+            await handler.handle_poll_delete(
+                message,
+                {"target": None},
+                reference_time=NOW,
+            )
 
-            response = handler.send_response.await_args.args[1]
+            response = handler.send_response_result.await_args.args[1]
             self.assertIn("flere aktive avstemninger", response)
-            self.assertEqual(len(manager.get_active_polls("123")), 2)
+            self.assertEqual(
+                len(manager.get_active_polls("123", reference_time=NOW)),
+                2,
+            )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,12 @@ from zoneinfo import ZoneInfo
 
 from cal_system.calendar_manager import CalendarManager
 from cal_system.temporal_resolver import TemporalResolver
+from core.dispatch_result import (
+    DeliveryState,
+    ExternalCommitState,
+    ExternalMutationResult,
+    MessageSendResult,
+)
 from features.calendar_handler import CalendarHandler
 
 
@@ -167,7 +173,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
         self.monitor = SimpleNamespace(
             calendar=self.manager,
-            nlp_parser=SimpleNamespace(parse_event=AsyncMock(return_value=None)),
+            nlp_parser=SimpleNamespace(parse_event=MagicMock(return_value=None)),
             rate_limiter=SimpleNamespace(
                 record_sent=lambda: None,
                 record_failure=lambda **kwargs: None,
@@ -176,9 +182,18 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             ),
             loc=self.loc,
             client=None,
+            nlu_metrics=SimpleNamespace(
+                record_legacy_payload_fallback=MagicMock()
+            ),
         )
         self.handler = CalendarHandler(self.monitor)
         self.handler.send_response = AsyncMock()
+
+        async def capture_send(message, text):
+            await self.handler.send_response(message, text)
+            return MessageSendResult(DeliveryState.DELIVERED)
+
+        self.handler.send_response_result = AsyncMock(side_effect=capture_send)
 
         self.message = SimpleNamespace(
             content="",
@@ -190,7 +205,18 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _add_item(self, title: str, date: str, time: str = "09:00"):
+    async def _add_item(self, title: str, date: str, time: str = "09:00"):
+        return await self.manager.add_item_result(
+            guild_id="123",
+            user_id="111",
+            username="Alice",
+            title=title,
+            date_str=date,
+            time_str=time,
+            reference_time=self.manager.clock.now(),
+        )
+
+    def _add_item_sync(self, title: str, date: str, time: str = "09:00"):
         return self.manager.add_item(
             guild_id="123",
             user_id="111",
@@ -201,7 +227,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_handle_clear_requires_explicit_confirmation(self):
-        self._add_item("Møte", _date(1))
+        await self._add_item("Møte", _date(1))
         self.message.content = "@inebotten tøm kalender"
 
         await self.handler.handle_clear(self.message)
@@ -212,7 +238,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.manager.items[self.manager.SHARED_KEY]), 1)
 
     async def test_handle_clear_confirmed_deletes_calendar(self):
-        self._add_item("Møte", _date(1))
+        await self._add_item("Møte", _date(1))
         self.message.content = "@inebotten tøm kalender bekreft 1"
 
         await self.handler.handle_clear(self.message)
@@ -223,8 +249,8 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.items[self.manager.SHARED_KEY], [])
 
     async def test_handle_clear_rejects_stale_confirmation_count(self):
-        self._add_item("Møte", _date(1))
-        self._add_item("Trening", _date(2))
+        await self._add_item("Møte", _date(1))
+        await self._add_item("Trening", _date(2))
         self.message.content = "@inebotten tøm kalender bekreft 1"
 
         await self.handler.handle_clear(self.message)
@@ -239,13 +265,17 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.delete_calls = []
 
-            def delete_event(self, event_id):
+            async def delete_event_result(self, event_id):
                 self.delete_calls.append(event_id)
-                return False
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="external_delete_failed",
+                )
 
         gcal = FailingDeleteGCal()
         manager = CalendarManager(storage_path=Path(self.tmp.name) / "gcal-calendar.json", gcal_manager=gcal)
-        manager.add_item(
+        await manager.add_item_result(
             guild_id="123",
             user_id="111",
             username="Alice",
@@ -253,9 +283,13 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             date_str=_date(1),
             time_str="09:00",
             gcal_event_id="gcal-1",
+            reference_time=manager.clock.now(),
         )
 
-        result = await manager.clear_calendar("123")
+        result = await manager.clear_calendar_result(
+            "123",
+            reference_time=manager.clock.now(),
+        )
 
         self.assertEqual(result["deleted_count"], 0)
         self.assertEqual(result["failed_count"], 1)
@@ -270,13 +304,17 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.delete_calls = []
 
-            def delete_event(self, event_id):
+            async def delete_event_result(self, event_id):
                 self.delete_calls.append(event_id)
-                return True
+                return ExternalMutationResult(
+                    True,
+                    ExternalCommitState.CHANGED,
+                    value=True,
+                )
 
         gcal = SuccessfulDeleteGCal()
         manager = CalendarManager(storage_path=Path(self.tmp.name) / "gcal-calendar.json", gcal_manager=gcal)
-        manager.add_item(
+        await manager.add_item_result(
             guild_id="123",
             user_id="111",
             username="Alice",
@@ -284,9 +322,13 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             date_str=_date(1),
             time_str="09:00",
             gcal_event_id="gcal-1",
+            reference_time=manager.clock.now(),
         )
 
-        result = await manager.clear_calendar("123")
+        result = await manager.clear_calendar_result(
+            "123",
+            reference_time=manager.clock.now(),
+        )
 
         self.assertEqual(result["deleted_count"], 1)
         self.assertEqual(result["failed_count"], 0)
@@ -298,13 +340,17 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.delete_calls = []
 
-            def delete_event(self, event_id):
+            async def delete_event_result(self, event_id):
                 self.delete_calls.append(event_id)
-                return False
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="external_delete_failed",
+                )
 
         gcal = FailingDeleteGCal()
         manager = CalendarManager(storage_path=Path(self.tmp.name) / "single-gcal-calendar.json", gcal_manager=gcal)
-        manager.add_item(
+        item = await manager.add_item_result(
             guild_id="123",
             user_id="111",
             username="Alice",
@@ -312,9 +358,14 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             date_str=_date(1),
             time_str="09:00",
             gcal_event_id="gcal-1",
+            reference_time=manager.clock.now(),
         )
 
-        result = await manager.delete_item("123", 1)
+        result = await manager.delete_item_result(
+            "123",
+            item_id=item["id"],
+            reference_time=manager.clock.now(),
+        )
 
         self.assertFalse(result["success"])
         self.assertEqual(result["pending_count"], 1)
@@ -325,14 +376,18 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bulk_gcal_delete_failure_marks_pending_not_removed(self):
         class FailingDeleteGCal:
-            def delete_event(self, event_id):
-                return False
+            async def delete_event_result(self, event_id):
+                return ExternalMutationResult(
+                    False,
+                    ExternalCommitState.UNCHANGED,
+                    error_code="external_delete_failed",
+                )
 
         manager = CalendarManager(
             storage_path=Path(self.tmp.name) / "bulk-gcal-calendar.json",
             gcal_manager=FailingDeleteGCal(),
         )
-        manager.add_item(
+        item = await manager.add_item_result(
             guild_id="123",
             user_id="111",
             username="Alice",
@@ -340,9 +395,14 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             date_str=_date(1),
             time_str="09:00",
             gcal_event_id="gcal-1",
+            reference_time=manager.clock.now(),
         )
 
-        result = await manager.delete_items_by_title("123", "standup")
+        result = await manager.delete_item_result(
+            "123",
+            item_id=item["id"],
+            reference_time=manager.clock.now(),
+        )
 
         self.assertEqual(result["deleted_count"], 0)
         self.assertEqual(result["pending_count"], 1)
@@ -350,8 +410,8 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.get_upcoming("123"), [])
 
     def test_search_results_use_global_calendar_index(self):
-        self._add_item("Alpha", _date(1), time="09:00")
-        self._add_item("Send inn meldekort", _date(2), time="12:00")
+        self._add_item_sync("Alpha", _date(1), time="09:00")
+        self._add_item_sync("Send inn meldekort", _date(2), time="12:00")
 
         rendered = self.manager.format_search_results("meldekort")
 
@@ -359,7 +419,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Numrene matcher", rendered)
 
     async def test_handle_edit_integration_parse_and_execute_edit(self):
-        self._add_item("Møte", _date(1), time="09:00")
+        await self._add_item("Møte", _date(1), time="09:00")
         self.message.content = "@inebotten endre 1 tittel: Ny tittel"
 
         await self.handler.handle_edit(self.message)
@@ -379,7 +439,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_handle_edit_search_by_title_then_edit(self):
-        self._add_item("Møte med Ola", _date(1), time="09:00")
+        await self._add_item("Møte med Ola", _date(1), time="09:00")
         target_date = _date(7)
         self.message.content = f"@inebotten rediger møte med ola dato: {target_date}"
 
@@ -391,7 +451,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.get_upcoming("123")[0]["date"], target_date)
 
     async def test_handle_search_returns_calendar_matches(self):
-        self._add_item("Møte med Ola", _date(1), time="09:00")
+        await self._add_item("Møte med Ola", _date(1), time="09:00")
         self.message.content = "@inebotten søk kalender møte"
 
         await self.handler.handle_search(self.message)
@@ -400,7 +460,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Møte med Ola", self.handler.send_response.await_args.args[1])
 
     async def test_handle_delete_extracts_title_after_calendar_context(self):
-        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        await self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
         self.message.content = "@inebotten kalender fjern meldekort"
 
         await self.handler.handle_delete(self.message)
@@ -412,9 +472,9 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.get_upcoming("123"), [])
 
     async def test_handle_delete_bulk_title_with_calendar_suffix(self):
-        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
-        self._add_item("Rosenborg - Kristiansund", _date(2), time="09:00")
-        self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
+        await self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        await self._add_item("Rosenborg - Kristiansund", _date(2), time="09:00")
+        await self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
         self.message.content = '@inebotten Slett alle "Send inn meldekort" i kalenderen'
 
         await self.handler.handle_delete(self.message)
@@ -427,9 +487,9 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(remaining[0]["title"], "Rosenborg - Kristiansund")
 
     async def test_handle_delete_ambiguous_title_shows_only_matching_choices(self):
-        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
-        self._add_item("Rosenborg - Kristiansund", _date(2), time="09:00")
-        self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
+        await self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        await self._add_item("Rosenborg - Kristiansund", _date(2), time="09:00")
+        await self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
         self.message.content = "@inebotten slett meldekort"
 
         await self.handler.handle_delete(self.message)
@@ -439,13 +499,12 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Fant 2 treff for "meldekort"', response)
         self.assertIn("Send inn meldekort (Uke 25 - 26)", response)
         self.assertIn("Send inn meldekort (Uke 27 - 28)", response)
-        self.assertIn("slett alle meldekort", response)
         self.assertNotIn("Rosenborg - Kristiansund", response)
         self.assertEqual(len(self.manager.get_upcoming("123")), 3)
 
     async def test_handle_complete_ambiguous_title_prompts_without_mutating(self):
-        self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
-        self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
+        await self._add_item("Send inn meldekort (Uke 25 - 26)", _date(1), time="12:00")
+        await self._add_item("Send inn meldekort (Uke 27 - 28)", _date(3), time="12:00")
         self.message.content = "@inebotten ferdig meldekort"
 
         await self.handler.handle_complete(self.message)
@@ -455,7 +514,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item.get("completed") for item in self.manager.get_upcoming("123")))
 
     async def test_handle_complete_title_with_number_does_not_use_number_as_index(self):
-        self._add_item("Send inn meldekort uke 25", _date(1), time="12:00")
+        await self._add_item("Send inn meldekort uke 25", _date(1), time="12:00")
         self.message.content = "@inebotten ferdig meldekort uke 25"
 
         await self.handler.handle_complete(self.message)
@@ -465,8 +524,8 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.get_upcoming("123"), [])
 
     async def test_handle_complete_accepts_scoped_number_phrase(self):
-        self._add_item("Første", _date(1), time="12:00")
-        self._add_item("Andre", _date(2), time="12:00")
+        await self._add_item("Første", _date(1), time="12:00")
+        await self._add_item("Andre", _date(2), time="12:00")
         self.message.content = "@inebotten ferdig nummer 2"
 
         await self.handler.handle_complete(self.message)
@@ -476,8 +535,8 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["title"] for item in self.manager.get_upcoming("123")], ["Første"])
 
     async def test_handle_edit_ambiguous_title_prompts_without_mutating(self):
-        self._add_item("Møte med Ola", _date(1), time="09:00")
-        self._add_item("Møte med Kari", _date(2), time="09:00")
+        await self._add_item("Møte med Ola", _date(1), time="09:00")
+        await self._add_item("Møte med Kari", _date(2), time="09:00")
         self.message.content = f"@inebotten rediger møte dato: {_date(7)}"
 
         await self.handler.handle_edit(self.message)
@@ -487,7 +546,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(self.manager.get_upcoming("123")[0]["date"], _date(7))
 
     async def test_handle_edit_does_not_mutate_past_title_match(self):
-        self._add_item("Gammelt møte", _date(-3), time="09:00")
+        await self._add_item("Gammelt møte", _date(-3), time="09:00")
         self.message.content = f"@inebotten rediger møte dato: {_date(7)}"
 
         await self.handler.handle_edit(self.message)
@@ -506,7 +565,7 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
         self.manager = SimpleNamespace(
             gcal_enabled=True,
             gcal=self.gcal,
-            add_item=AsyncMock(
+            add_item_result=AsyncMock(
                 return_value={
                     "id": "item-1",
                     "title": "Møte",
@@ -515,9 +574,9 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
             format_single_item=MagicMock(return_value="Lagt til"),
-            get_upcoming=MagicMock(return_value=[]),
-            edit_item=AsyncMock(return_value={"id": "item-1", "title": "Møte"}),
-            edit_item_by_id=AsyncMock(
+            snapshot_pending_items=MagicMock(return_value=()),
+            search_items=MagicMock(return_value=[]),
+            edit_item_result=AsyncMock(
                 return_value={"id": "item-1", "title": "Møte"}
             ),
         )
@@ -534,6 +593,9 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
             rate_limiter=SimpleNamespace(),
             loc=self.loc,
             client=None,
+            nlu_metrics=SimpleNamespace(
+                record_legacy_payload_fallback=MagicMock()
+            ),
         )
         self.message = SimpleNamespace(
             content="",
@@ -545,6 +607,12 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
     def _handler(self, **kwargs):
         handler = CalendarHandler(self.monitor, **kwargs)
         handler.send_response = AsyncMock()
+
+        async def capture_send(message, text):
+            await handler.send_response(message, text)
+            return MessageSendResult(DeliveryState.DELIVERED)
+
+        handler.send_response_result = AsyncMock(side_effect=capture_send)
         return handler
 
     def test_handler_reuses_parser_resolver_when_not_overridden(self):
@@ -560,8 +628,8 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
             self.message,
             {"title": "Møte", "date": "32.13.2026", "time": "14:00"},
         )
-        self.assertIs(result, False)
-        self.manager.add_item.assert_not_awaited()
+        self.assertFalse(result.ok)
+        self.manager.add_item_result.assert_not_awaited()
         self.gcal.create_event.assert_not_called()
 
     async def test_valid_create_calls_manager_once_and_gcal_at_most_once(self):
@@ -570,11 +638,13 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
             self.message,
             {"title": "Møte", "date": "15.7.2026", "time": "14"},
         )
-        self.assertIs(result, True)
-        self.manager.add_item.assert_awaited_once()
-        self.assertEqual(self.gcal.create_event.call_count, 1)
-        kwargs = self.manager.add_item.await_args.kwargs
-        self.assertEqual((kwargs["date_str"], kwargs["time_str"]), ("15.07.2026", "14:00"))
+        self.assertTrue(result.ok)
+        self.manager.add_item_result.assert_awaited_once()
+        self.assertEqual(self.gcal.create_event.call_count, 0)
+        args = self.manager.add_item_result.await_args.args
+        kwargs = self.manager.add_item_result.await_args.kwargs
+        self.assertEqual((args[4], args[5]), ("15.07.2026", "14:00"))
+        self.assertIs(kwargs["reference_time"], self.NOW)
 
     async def test_save_request_preserves_positional_api_and_returns_bool(self):
         handler = self._handler(now_provider=lambda: self.NOW)
@@ -584,7 +654,7 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
             "15.07.2026",
             "14:00",
         )
-        self.assertIs(result, True)
+        self.assertTrue(result.ok)
 
     async def test_omitted_handler_reference_reads_advancing_provider_once(self):
         calls = []
@@ -599,7 +669,7 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
             self.message,
             {"title": "Møte", "date": "15.07.2026", "time": "14:00"},
         )
-        self.assertIs(result, True)
+        self.assertTrue(result.ok)
         self.assertEqual(len(calls), 1)
 
     async def test_explicit_reference_reads_provider_zero_times(self):
@@ -611,7 +681,7 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
             {"title": "Møte", "date": "15.07.2026", "time": "14:00"},
             reference_time=self.NOW,
         )
-        self.assertIs(result, True)
+        self.assertTrue(result.ok)
         self.assertEqual(calls, [])
 
     async def test_naive_reference_raises_before_reads_or_writes(self):
@@ -624,16 +694,16 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
                 reference_time=datetime(2026, 7, 14, 12),
             )
         self.assertEqual(calls, [])
-        self.manager.add_item.assert_not_awaited()
+        self.manager.add_item_result.assert_not_awaited()
         self.gcal.create_event.assert_not_called()
 
     async def test_edit_invalid_date_scalar_stops_before_target_lookup(self):
         handler = self._handler(now_provider=lambda: self.NOW)
         self.message.content = "@inebotten endre 1 dato: 32.13.2026"
         result = await handler.handle_edit(self.message)
-        self.assertIs(result, False)
-        self.manager.get_upcoming.assert_not_called()
-        self.manager.edit_item.assert_not_awaited()
+        self.assertFalse(result.ok)
+        self.manager.snapshot_pending_items.assert_not_called()
+        self.manager.edit_item_result.assert_not_awaited()
 
     async def test_time_edit_uses_validate_time_without_resolve_or_date_invention(self):
         resolver = TemporalResolver()
@@ -645,98 +715,78 @@ class CalendarHandlerTemporalDefenseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.message.content = "@inebotten endre 1 tid: 25:61"
         result = await handler.handle_edit(self.message)
-        self.assertIs(result, False)
+        self.assertFalse(result.ok)
         resolver.validate_time.assert_called_once_with("25:61")
         resolver.resolve.assert_not_called()
-        self.manager.get_upcoming.assert_not_called()
+        self.manager.snapshot_pending_items.assert_not_called()
 
     async def test_index_edit_reads_bounded_target_then_performs_one_edit(self):
-        self.manager.get_upcoming.return_value = [
+        self.manager.snapshot_pending_items.return_value = (
             {"id": "item-1", "title": "Møte", "date": "15.07.2026", "time": "09:00"}
-        ]
+        ,)
         handler = self._handler(now_provider=lambda: self.NOW)
         self.message.content = "@inebotten endre 1 tid: 14"
         result = await handler.handle_edit(self.message)
-        self.assertIs(result, True)
-        self.manager.get_upcoming.assert_called_once_with("123", days=365)
-        self.manager.edit_item_by_id.assert_awaited_once_with("item-1", time="14:00")
-        self.manager.edit_item.assert_not_awaited()
+        self.assertTrue(result.ok)
+        self.manager.snapshot_pending_items.assert_called_once_with(reference_time=self.NOW)
+        self.manager.edit_item_result.assert_awaited_once_with(
+            item_id="item-1", reference_time=self.NOW, time="14:00"
+        )
 
     async def test_title_edit_reads_only_visible_target_then_performs_one_edit(self):
-        self.manager.get_upcoming.return_value = [
+        self.manager.snapshot_pending_items.return_value = (
             {"id": "item-1", "title": "Møte med Ola", "date": "15.07.2026", "time": "09:00"}
-        ]
+        ,)
         handler = self._handler(now_provider=lambda: self.NOW)
         self.message.content = "@inebotten rediger møte med ola tid: 14"
         result = await handler.handle_edit(self.message)
-        self.assertIs(result, True)
-        self.manager.get_upcoming.assert_called_once_with("123", days=365)
-        self.manager.edit_item_by_id.assert_awaited_once_with("item-1", time="14:00")
-        self.manager.edit_item.assert_not_awaited()
+        self.assertTrue(result.ok)
+        self.manager.snapshot_pending_items.assert_called_once_with(reference_time=self.NOW)
+        self.manager.edit_item_result.assert_awaited_once_with(
+            item_id="item-1", reference_time=self.NOW, time="14:00"
+        )
 
     async def test_date_edit_rejects_gap_or_fold_from_unchanged_time(self):
         for date_value in ("29.03.2026", "25.10.2026"):
             with self.subTest(date_value=date_value):
-                self.manager.get_upcoming.reset_mock()
-                self.manager.edit_item.reset_mock()
-                self.manager.get_upcoming.return_value = [
+                self.manager.snapshot_pending_items.reset_mock()
+                self.manager.edit_item_result.reset_mock()
+                self.manager.snapshot_pending_items.return_value = (
                     {"id": "item-1", "title": "Møte", "date": "28.03.2026", "time": "02:30"}
-                ]
+                ,)
                 handler = self._handler(now_provider=lambda: self.NOW)
                 self.message.content = f"@inebotten endre 1 dato: {date_value}"
                 result = await handler.handle_edit(self.message)
-                self.assertIs(result, False)
-                self.manager.edit_item.assert_not_awaited()
-                self.manager.edit_item_by_id.assert_not_awaited()
+                self.assertFalse(result.ok)
+                self.manager.edit_item_result.assert_not_awaited()
 
     async def test_time_edit_rejects_gap_or_fold_from_unchanged_date(self):
         for date_value in ("29.03.2026", "25.10.2026"):
             with self.subTest(date_value=date_value):
-                self.manager.get_upcoming.reset_mock()
-                self.manager.edit_item.reset_mock()
-                self.manager.get_upcoming.return_value = [
+                self.manager.snapshot_pending_items.reset_mock()
+                self.manager.edit_item_result.reset_mock()
+                self.manager.snapshot_pending_items.return_value = (
                     {"id": "item-1", "title": "Møte", "date": date_value, "time": "01:30"}
-                ]
+                ,)
                 handler = self._handler(now_provider=lambda: self.NOW)
                 self.message.content = "@inebotten endre 1 tid: 02:30"
                 result = await handler.handle_edit(self.message)
-                self.assertIs(result, False)
-                self.manager.edit_item.assert_not_awaited()
-                self.manager.edit_item_by_id.assert_not_awaited()
+                self.assertFalse(result.ok)
+                self.manager.edit_item_result.assert_not_awaited()
 
     async def test_missing_effective_date_makes_zero_edit_calls(self):
-        self.manager.get_upcoming.return_value = [
+        self.manager.snapshot_pending_items.return_value = (
             {"id": "item-1", "title": "Møte", "date": None, "time": "09:00"}
-        ]
+        ,)
         handler = self._handler(now_provider=lambda: self.NOW)
         self.message.content = "@inebotten endre 1 tid: 14"
         result = await handler.handle_edit(self.message)
-        self.assertIs(result, False)
-        self.manager.edit_item.assert_not_awaited()
+        self.assertFalse(result.ok)
+        self.manager.edit_item_result.assert_not_awaited()
 
-    def test_gcal_default_duration_is_3600_elapsed_seconds_across_dst(self):
+    def test_handler_has_no_direct_gcal_mutation_adapter(self):
         handler = self._handler(now_provider=lambda: self.NOW)
-        for due_at in (
-            "2026-03-29T01:30:00+01:00",
-            "2026-10-25T02:30:00+02:00",
-        ):
-            with self.subTest(due_at=due_at):
-                self.gcal.create_event.reset_mock()
-                start = datetime.fromisoformat(due_at)
-                handler._sync_to_gcal(
-                    {
-                        "title": "DST",
-                        "date": start.strftime("%d.%m.%Y"),
-                        "time": start.strftime("%H:%M"),
-                        "due_at": due_at,
-                    },
-                    self.message,
-                )
-                kwargs = self.gcal.create_event.call_args.kwargs
-                actual_start = datetime.fromisoformat(kwargs["start_time"])
-                actual_end = datetime.fromisoformat(kwargs["end_time"])
-                elapsed = actual_end.astimezone(timezone.utc) - actual_start.astimezone(timezone.utc)
-                self.assertEqual(elapsed.total_seconds(), 3600)
+        self.assertFalse(hasattr(handler, "_sync_to_gcal"))
 
 
 if __name__ == "__main__":

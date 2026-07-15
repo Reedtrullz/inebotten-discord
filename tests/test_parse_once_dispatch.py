@@ -444,6 +444,7 @@ def test_invalid_payloads_raise_only_bounded_codes(intent, raw, source, code):
         (BotIntent.BIRTHDAY_EDIT, {"action": "edit", "user_id": 1, "day": True, "month": 1}, "invalid_number"),
         (BotIntent.WATCHLIST, {"action": "edit", "index": 1}, "missing_change"),
         (BotIntent.WATCHLIST, {"action": "edit", "index": 1, "lang": "no"}, "missing_change"),
+        (BotIntent.WATCHLIST, {"action": "edit", "index": 1, "type": None}, "missing_change"),
         (BotIntent.WATCHLIST, {"action": "remove", "index": False}, "invalid_number"),
         (BotIntent.QUOTE_EDIT, {"action": "edit", "index": 1, "author": " "}, "blank_value"),
         (BotIntent.QUOTE_EDIT, {"action": "edit", "index": 1, "lang": "no"}, "missing_change"),

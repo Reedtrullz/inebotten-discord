@@ -5,23 +5,72 @@
 import unittest
 import asyncio
 from collections import defaultdict
+from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+from zoneinfo import ZoneInfo
 
+from core.dispatch_result import (
+    DeliveryState,
+    DispatchOutcome,
+    ExternalCommitState,
+    ExternalMutationResult,
+    ManagerMutationError,
+    MessageSendResult,
+)
+from core.intent_models import IntentResult, IntentSource
+from core.intent_payloads import PayloadValidationError
 from core.intent_router import BotIntent, IntentRouter
 from core.message_monitor import MessageMonitor
+from core.mutation_coordinator import MutationCoordinator
+from core.send_receipt import DiscordSendCoordinator
 from features.quote_manager import parse_quote_command
 from features.watchlist_manager import parse_watchlist_command
 from memory.conversation_context import ConversationContext
 
 
+NOW = datetime(2026, 7, 15, 9, 30, tzinfo=ZoneInfo("Europe/Oslo"))
+
+ACTION_HANDLER_CASES = (
+    (BotIntent.CALENDAR_ITEM, "calendar_item", "calendar", "handle_calendar_item", True),
+    (BotIntent.CALENDAR_EDIT, "calendar_edit", "calendar", "handle_edit", True),
+    (BotIntent.CALENDAR_DELETE, "calendar_target", "calendar", "handle_delete", True),
+    (BotIntent.CALENDAR_COMPLETE, "calendar_target", "calendar", "handle_complete", True),
+    (BotIntent.CALENDAR_CLEAR, "calendar_target", "calendar", "handle_clear", True),
+    (BotIntent.REMINDER_CREATE, "reminder", "reminders", "handle_reminder_create", True),
+    (BotIntent.REMINDER_LIST, "reminder", "reminders", "handle_reminder_list", True),
+    (BotIntent.REMINDER_SEARCH, "reminder", "reminders", "handle_reminder_search", True),
+    (BotIntent.REMINDER_COMPLETE, "reminder", "reminders", "handle_reminder_complete", True),
+    (BotIntent.REMINDER_EDIT, "reminder", "reminders", "handle_reminder_edit", True),
+    (BotIntent.REMINDER_DELETE, "reminder", "reminders", "handle_reminder_delete", True),
+    (BotIntent.POLL_CREATE, "poll", "polls", "handle_poll", True),
+    (BotIntent.POLL_VOTE, "vote", "polls", "handle_vote", True),
+    (BotIntent.POLL_EDIT, "poll_edit", "polls", "handle_poll_edit", True),
+    (BotIntent.POLL_DELETE, "poll_delete", "polls", "handle_poll_delete", True),
+    (BotIntent.POLL_CLOSE, "poll_close", "polls", "handle_poll_close", True),
+    (BotIntent.BIRTHDAY_CREATE, "birthday", "birthdays", "handle_birthday_create", True),
+    (BotIntent.BIRTHDAY_LIST, "birthday", "birthdays", "handle_birthday_list", True),
+    (BotIntent.BIRTHDAY_EDIT, "birthday", "birthdays", "handle_birthday_edit", True),
+    (BotIntent.WATCHLIST, "watchlist", "watchlist", "handle_watchlist", True),
+    (BotIntent.QUOTE, "quote", "fun", "handle_quote_command", False),
+    (BotIntent.QUOTE_LIST, "quote", "quotes", "handle_quote_list", False),
+    (BotIntent.QUOTE_EDIT, "quote", "quotes", "handle_quote_edit", False),
+    (BotIntent.QUOTE_DELETE, "quote", "quotes", "handle_quote_delete", False),
+)
+
+
 class FakeRateLimiter:
     def __init__(self):
         self.sent = 0
+        self.can_send_calls = 0
+        self.wait_calls = 0
 
     def can_send(self):
+        self.can_send_calls += 1
         return True, "ok"
 
     async def wait_if_needed(self):
+        self.wait_calls += 1
         return True
 
     def record_sent(self):
@@ -66,11 +115,17 @@ class FakeUserMemory:
     async def update_last_interaction(self, *args, **kwargs):
         pass
 
+    async def update_last_interaction_result(self, *args, **kwargs):
+        return True
+
     async def format_context_for_prompt(self, *args, **kwargs):
         return ""
 
     async def get_memory(self, *args, **kwargs):
         return {}
+
+    def snapshot_user(self, *args, **kwargs):
+        return None
 
 
 class RecordingMessage:
@@ -86,7 +141,7 @@ class RecordingMessage:
         self.author = SimpleNamespace(id=7, name="Tester")
         self.replies = []
 
-    async def reply(self, content, mention_author=False):
+    async def reply(self, content, mention_author=False, **_kwargs):
         self.replies.append(content)
 
 
@@ -94,8 +149,9 @@ class RecordingPollsHandler:
     def __init__(self):
         self.votes = []
 
-    async def handle_vote(self, message, vote):
-        self.votes.append((message, vote))
+    async def handle_vote(self, message, vote, *, reference_time=None):
+        self.votes.append((message, vote, reference_time))
+        return DispatchOutcome.success(mutated=True)
 
 
 class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
@@ -117,6 +173,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor._last_persisted_intent_stats = {}
         monitor._last_persisted_rate_stats = {}
         monitor.rate_limiter = FakeRateLimiter()
+        monitor.mutation_coordinator = MutationCoordinator()
+        monitor.discord_sender = DiscordSendCoordinator(monitor.rate_limiter)
+        monitor.reminder_clock = SimpleNamespace(now=Mock(return_value=NOW))
         monitor.loc = SimpleNamespace(detect_language=lambda content: "no", set_language=lambda lang: None)
         monitor.nlp_parser = SimpleNamespace(
             parse_task_with_recurrence=lambda content: None,
@@ -174,6 +233,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                 handle_quote_edit=noop,
                 handle_quote_delete=noop,
             ),
+            "fun": SimpleNamespace(handle_quote_command=noop),
             "watchlist": SimpleNamespace(
                 handle_watchlist=noop,
                 handle_watchlist_edit=noop,
@@ -183,6 +243,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             "calendar": SimpleNamespace(handle_search=noop, handle_delete=noop),
         }
         monitor.intent_router = IntentRouter(monitor)
+        monitor.nlu_metrics = monitor.intent_router.metrics
         monitor.recording_polls = polls
         return monitor
 
@@ -211,6 +272,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                 *,
                 channel_id=None,
                 user_id=None,
+                routing_context=None,
+                reference_time=None,
             ):
                 routed.append(
                     {
@@ -218,6 +281,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                         "guild_id": guild_id,
                         "channel_id": channel_id,
                         "user_id": user_id,
+                        "routing_context": routing_context,
+                        "reference_time": reference_time,
                     }
                 )
                 return SimpleNamespace(
@@ -227,7 +292,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                     reason="recording_router",
                 )
 
-        async def noop_handle_intent(message, route):
+        handled = []
+
+        async def noop_handle_intent(message, route, *, reference_time):
+            handled.append(reference_time)
             return None
 
         monitor.intent_router = RecordingRouter()
@@ -247,9 +315,17 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                     "guild_id": 321,
                     "channel_id": 654,
                     "user_id": 987,
+                    "routing_context": routed[0]["routing_context"],
+                    "reference_time": NOW,
                 }
             ],
         )
+        routing = routed[0]["routing_context"]
+        self.assertEqual(routing.key.guild_id, 321)
+        self.assertEqual(routing.key.channel_id, 654)
+        self.assertEqual(routing.key.user_id, 987)
+        self.assertEqual(routing.author.display_name, "Scoped user")
+        self.assertEqual(handled, [NOW])
 
     async def test_ai_conversation_uses_channel_scope_and_recipient_identity(self):
         monitor = self.make_monitor()
@@ -287,7 +363,12 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         generated = []
 
         async def fake_dashboard(
-            guild_id, city_name=None, show_navnedag=False, user_id=None
+            guild_id,
+            city_name=None,
+            show_navnedag=False,
+            user_id=None,
+            *,
+            reference_time=None,
         ):
             generated.append((guild_id, user_id))
             return "dashboard"
@@ -313,8 +394,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.intent_router = IntentRouter(monitor)
         created = []
 
-        async def capture_reminder(message, payload):
-            created.append(payload["reminder"])
+        async def capture_reminder(message, payload, *, reference_time):
+            created.append((payload, reference_time))
+            return DispatchOutcome.success(mutated=True)
 
         monitor.handlers["reminders"].handle_reminder_create = capture_reminder
         own_offer = RecordingMessage("ignored")
@@ -352,9 +434,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(followup)
 
         self.assertEqual(len(created), 1)
-        self.assertEqual(created[0]["text"], "Kjøpe melk")
-        self.assertNotIn("helsejournal", created[0]["text"].casefold())
-        self.assertNotIn("lønnsslipp", created[0]["text"].casefold())
+        self.assertEqual(created[0][0]["text"], "Kjøpe melk")
+        self.assertNotIn("helsejournal", created[0][0]["text"].casefold())
+        self.assertNotIn("lønnsslipp", created[0][0]["text"].casefold())
+        self.assertIs(created[0][1], NOW)
         self.assertEqual(set(monitor.conversation.threads), {100, 200})
         self.assertNotIn(999, monitor.conversation.threads)
 
@@ -364,8 +447,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.intent_router = IntentRouter(monitor)
         created = []
 
-        async def capture_reminder(message, payload):
-            created.append(payload["reminder"])
+        async def capture_reminder(message, payload, *, reference_time):
+            created.append((payload, reference_time))
+            return DispatchOutcome.success(mutated=True)
 
         monitor.handlers["reminders"].handle_reminder_create = capture_reminder
         own_offer = RecordingMessage("ignored")
@@ -393,8 +477,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(followup)
 
         self.assertEqual(len(created), 1)
-        self.assertEqual(created[0]["text"], "Kjøpe melk")
-        self.assertNotIn("helsejournal", created[0]["text"].casefold())
+        self.assertEqual(created[0][0]["text"], "Kjøpe melk")
+        self.assertNotIn("helsejournal", created[0][0]["text"].casefold())
+        self.assertIs(created[0][1], NOW)
         self.assertEqual(set(monitor.conversation.threads), {300, 301})
 
     async def test_untagged_contextual_followup_keeps_mention_gate(self):
@@ -403,8 +488,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.intent_router = IntentRouter(monitor)
         created = []
 
-        async def capture_reminder(message, payload):
-            created.append(payload["reminder"])
+        async def capture_reminder(message, payload, *, reference_time):
+            created.append((payload, reference_time))
+            return DispatchOutcome.success(mutated=True)
 
         monitor.handlers["reminders"].handle_reminder_create = capture_reminder
         offer = RecordingMessage("ignored")
@@ -428,17 +514,638 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_low_confidence_rejection_is_tracked(self):
         monitor = self.make_monitor()
 
-        async def fake_ai_response(message):
+        async def fake_ai_response(message, *, reference_time):
             return None
 
         monitor._send_ai_response = fake_ai_response
         route = SimpleNamespace(intent=BotIntent.SEARCH, confidence=0.0, payload=None)
 
-        await monitor._handle_intent(RecordingMessage("@inebotten hjelp"), route)
+        outcome = await monitor._handle_intent(
+            RecordingMessage("@inebotten hjelp"),
+            route,
+            reference_time=NOW,
+        )
 
         self.assertEqual(monitor.intent_stats[BotIntent.SEARCH.value]["low_confidence"], 1)
+        self.assertFalse(outcome.ok)
+        self.assertFalse(outcome.mutated)
+        self.assertEqual(outcome.error_code, "low_confidence")
 
-    async def test_exception_handler_tracks_intent_errors(self):
+    async def test_confirmation_required_fails_closed_before_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def destructive_handler(message):
+            calls.append(message)
+
+        monitor.handlers["calendar"].handle_delete = destructive_handler
+        route = SimpleNamespace(
+            intent=BotIntent.CALENDAR_DELETE,
+            confidence=1.0,
+            payload={"calendar_target": {"target": "1"}},
+            requires_confirmation=True,
+        )
+
+        outcome = await monitor._handle_intent(
+            RecordingMessage("@inebotten slett kalender 1"),
+            route,
+            reference_time=NOW,
+        )
+
+        self.assertEqual(calls, [])
+        self.assertFalse(outcome.ok)
+        self.assertFalse(outcome.mutated)
+        self.assertEqual(outcome.error_code, "confirmation_unavailable")
+        self.assertIs(outcome.delivery_result.state, DeliveryState.DELIVERED)
+
+    async def test_malformed_action_envelope_precedes_confidence_and_confirmation(self):
+        for requires_confirmation in (False, True):
+            with self.subTest(requires_confirmation=requires_confirmation):
+                monitor = self.make_monitor()
+                monitor._send_ai_response = AsyncMock()
+                handler = AsyncMock(
+                    return_value=DispatchOutcome.success(mutated=True)
+                )
+                monitor.handlers["reminders"].handle_reminder_create = handler
+                route = IntentResult(
+                    BotIntent.REMINDER_CREATE,
+                    0.1,
+                    {"reminder": {"action": "add", "text": ""}},
+                    source=IntentSource.DETERMINISTIC,
+                    requires_confirmation=requires_confirmation,
+                )
+
+                outcome = await monitor._handle_intent(
+                    RecordingMessage("must not enter fallback"),
+                    route,
+                    reference_time=NOW,
+                )
+
+                self.assertEqual(outcome.error_code, "invalid_payload")
+                self.assertFalse(outcome.mutated)
+                monitor._send_ai_response.assert_not_awaited()
+                handler.assert_not_awaited()
+
+    async def test_valid_low_confidence_action_still_uses_ai_fallback_only(self):
+        monitor = self.make_monitor()
+        monitor._send_ai_response = AsyncMock()
+        handler = AsyncMock(return_value=DispatchOutcome.success(mutated=True))
+        monitor.handlers["reminders"].handle_reminder_create = handler
+        route = IntentResult(
+            BotIntent.REMINDER_CREATE,
+            0.1,
+            {"reminder": {"action": "add", "text": "Ring legen"}},
+            source=IntentSource.DETERMINISTIC,
+        )
+
+        outcome = await monitor._handle_intent(
+            RecordingMessage("valid but uncertain"),
+            route,
+            reference_time=NOW,
+        )
+
+        self.assertEqual(outcome.error_code, "low_confidence")
+        monitor._send_ai_response.assert_awaited_once()
+        handler.assert_not_awaited()
+
+    def test_typed_inner_payload_validates_present_and_distinguishes_absence(self):
+        monitor = self.make_monitor()
+        valid = IntentResult(
+            BotIntent.POLL_VOTE,
+            1.0,
+            {"vote": {"option": 2, "poll_id": "poll-1"}},
+            source=IntentSource.DETERMINISTIC,
+        )
+        missing = IntentResult(
+            BotIntent.POLL_VOTE,
+            1.0,
+            {},
+            source=IntentSource.DETERMINISTIC,
+        )
+        invalid = IntentResult(
+            BotIntent.POLL_VOTE,
+            1.0,
+            {"vote": {"option": 0}},
+            source=IntentSource.DETERMINISTIC,
+        )
+
+        self.assertEqual(
+            monitor._typed_inner_payload(valid),
+            {"option": 2, "poll_id": "poll-1"},
+        )
+        self.assertIsNone(monitor._typed_inner_payload(missing))
+        with self.assertRaises(PayloadValidationError):
+            monitor._typed_inner_payload(invalid)
+
+    async def test_migrated_families_receive_validated_inner_payload_and_return_outcome(self):
+        delivered = MessageSendResult(DeliveryState.DELIVERED)
+        cases = (
+            (
+                "reminder",
+                BotIntent.REMINDER_CREATE,
+                {"reminder": {"action": "add", "text": "  Ring legen  "}},
+                {"action": "add", "text": "Ring legen"},
+                "reminders",
+                "handle_reminder_create",
+                True,
+            ),
+            (
+                "poll",
+                BotIntent.POLL_VOTE,
+                {"vote": {"option": 2, "poll_id": " poll-1 "}},
+                {"option": 2, "poll_id": "poll-1"},
+                "polls",
+                "handle_vote",
+                True,
+            ),
+            (
+                "watchlist",
+                BotIntent.WATCHLIST,
+                {"watchlist": {"action": "add", "title": "  The Bear  ", "lang": "no"}},
+                {"action": "add", "title": "The Bear", "lang": "no"},
+                "watchlist",
+                "handle_watchlist",
+                True,
+            ),
+            (
+                "quote",
+                BotIntent.QUOTE_EDIT,
+                {"quote": {"action": "edit", "index": 1, "author": "  Kari  "}},
+                {"action": "edit", "index": 1, "author": "Kari"},
+                "quotes",
+                "handle_quote_edit",
+                False,
+            ),
+        )
+
+        for (
+            label,
+            intent,
+            outer,
+            expected_inner,
+            handler_family,
+            handler_name,
+            receives_reference,
+        ) in cases:
+            with self.subTest(family=label):
+                monitor = self.make_monitor()
+                outcome = DispatchOutcome.success(mutated=True).with_delivery(delivered)
+                handler = AsyncMock(return_value=outcome)
+                setattr(monitor.handlers[handler_family], handler_name, handler)
+                message = RecordingMessage("CONTRADICTORY RAW CONTENT")
+                route = IntentResult(
+                    intent,
+                    1.0,
+                    outer,
+                    source=IntentSource.DETERMINISTIC,
+                )
+
+                actual = await monitor._handle_intent(
+                    message,
+                    route,
+                    reference_time=NOW,
+                )
+
+                self.assertIs(actual, outcome)
+                if receives_reference:
+                    handler.assert_awaited_once_with(
+                        message,
+                        expected_inner,
+                        reference_time=NOW,
+                    )
+                else:
+                    handler.assert_awaited_once_with(message, expected_inner)
+
+    async def test_every_action_envelope_dispatches_only_its_validated_inner_value(self):
+        cases = (
+            (BotIntent.CALENDAR_ITEM, "calendar_item", {"title": "Møte", "date": "16.07.2026"}, "calendar", "handle_calendar_item", True),
+            (BotIntent.CALENDAR_EDIT, "calendar_edit", {"target": "Møte", "changes": {"title": "Nytt møte"}}, "calendar", "handle_edit", True),
+            (BotIntent.CALENDAR_DELETE, "calendar_target", {"number": 1}, "calendar", "handle_delete", True),
+            (BotIntent.CALENDAR_COMPLETE, "calendar_target", {"number": 1}, "calendar", "handle_complete", True),
+            (BotIntent.CALENDAR_CLEAR, "calendar_target", {"all": True}, "calendar", "handle_clear", True),
+            (BotIntent.REMINDER_CREATE, "reminder", {"action": "add", "text": "Ring legen"}, "reminders", "handle_reminder_create", True),
+            (BotIntent.REMINDER_LIST, "reminder", {"action": "list"}, "reminders", "handle_reminder_list", True),
+            (BotIntent.REMINDER_SEARCH, "reminder", {"action": "search", "query": "legen"}, "reminders", "handle_reminder_search", True),
+            (BotIntent.REMINDER_COMPLETE, "reminder", {"action": "complete", "number": 1}, "reminders", "handle_reminder_complete", True),
+            (BotIntent.REMINDER_EDIT, "reminder", {"action": "edit", "number": 1, "changes": {"text": "Ring tannlegen"}}, "reminders", "handle_reminder_edit", True),
+            (BotIntent.REMINDER_DELETE, "reminder", {"action": "delete", "number": 1}, "reminders", "handle_reminder_delete", True),
+            (BotIntent.POLL_CREATE, "poll", {"question": "Velg?", "options": ["A", "B"]}, "polls", "handle_poll", True),
+            (BotIntent.POLL_VOTE, "vote", {"option": 1, "poll_id": "poll-1"}, "polls", "handle_vote", True),
+            (BotIntent.POLL_EDIT, "poll_edit", {"target": 1, "question": "Nytt?"}, "polls", "handle_poll_edit", True),
+            (BotIntent.POLL_DELETE, "poll_delete", {"target": 1}, "polls", "handle_poll_delete", True),
+            (BotIntent.POLL_CLOSE, "poll_close", {"target": "siste"}, "polls", "handle_poll_close", True),
+            (BotIntent.BIRTHDAY_CREATE, "birthday", {"action": "add", "user_id": 7, "display_name": "Kari", "day": 15, "month": 7}, "birthdays", "handle_birthday_create", True),
+            (BotIntent.BIRTHDAY_LIST, "birthday", {"action": "list", "scope": "upcoming"}, "birthdays", "handle_birthday_list", True),
+            (BotIntent.BIRTHDAY_EDIT, "birthday", {"action": "edit", "user_id": 7, "day": 16, "month": 7}, "birthdays", "handle_birthday_edit", True),
+            (BotIntent.WATCHLIST, "watchlist", {"action": "add", "title": "Arrival", "lang": "no"}, "watchlist", "handle_watchlist", True),
+            (BotIntent.QUOTE, "quote", {"action": "save", "text": "Hei", "lang": "no"}, "fun", "handle_quote_command", False),
+            (BotIntent.QUOTE_LIST, "quote", {"action": "list", "lang": "no"}, "quotes", "handle_quote_list", False),
+            (BotIntent.QUOTE_EDIT, "quote", {"action": "edit", "index": 1, "text": "Ny"}, "quotes", "handle_quote_edit", False),
+            (BotIntent.QUOTE_DELETE, "quote", {"action": "delete", "index": 1}, "quotes", "handle_quote_delete", False),
+        )
+
+        self.assertEqual(len(cases), 24)
+        for intent, envelope, inner, family, method, receives_reference in cases:
+            with self.subTest(intent=intent.value):
+                monitor = self.make_monitor()
+                expected = DispatchOutcome.success(mutated=True)
+                handler = AsyncMock(return_value=expected)
+                setattr(monitor.handlers[family], method, handler)
+                message = RecordingMessage("CONTRADICTORY RAW CONTENT")
+                route = IntentResult(
+                    intent,
+                    1.0,
+                    {envelope: inner},
+                    source=IntentSource.DETERMINISTIC,
+                )
+
+                actual = await monitor._handle_intent(
+                    message,
+                    route,
+                    reference_time=NOW,
+                )
+
+                self.assertIs(actual, expected)
+                normalized = monitor._typed_inner_payload(route)
+                if receives_reference:
+                    handler.assert_awaited_once_with(
+                        message,
+                        normalized,
+                        reference_time=NOW,
+                    )
+                else:
+                    handler.assert_awaited_once_with(message, normalized)
+
+    async def test_absent_family_envelopes_pass_none_to_one_release_handler(self):
+        self.assertEqual(len(ACTION_HANDLER_CASES), 24)
+        for intent, _envelope, family, method, receives_reference in ACTION_HANDLER_CASES:
+            with self.subTest(intent=intent.value):
+                monitor = self.make_monitor()
+                outcome = DispatchOutcome.success(mutated=False)
+                handler = AsyncMock(return_value=outcome)
+                setattr(monitor.handlers[family], method, handler)
+                message = RecordingMessage("legacy-compatible raw content")
+                route = IntentResult(
+                    intent,
+                    1.0,
+                    {},
+                    source=IntentSource.DETERMINISTIC,
+                )
+
+                actual = await monitor._handle_intent(
+                    message,
+                    route,
+                    reference_time=NOW,
+                )
+
+                self.assertIs(actual, outcome)
+                if receives_reference:
+                    handler.assert_awaited_once_with(
+                        message,
+                        None,
+                        reference_time=NOW,
+                    )
+                else:
+                    handler.assert_awaited_once_with(message, None)
+
+    async def test_malformed_present_family_envelopes_fail_before_any_handler(self):
+        self.assertEqual(len(ACTION_HANDLER_CASES), 24)
+        for intent, envelope, family, method, _receives_reference in ACTION_HANDLER_CASES:
+            with self.subTest(intent=intent.value):
+                monitor = self.make_monitor()
+                handler = AsyncMock(
+                    return_value=DispatchOutcome.success(mutated=True)
+                )
+                setattr(monitor.handlers[family], method, handler)
+                route = IntentResult(
+                    intent,
+                    1.0,
+                    {envelope: {}},
+                    source=IntentSource.DETERMINISTIC,
+                )
+
+                outcome = await monitor._handle_intent(
+                    RecordingMessage("must not reach a handler"),
+                    route,
+                    reference_time=NOW,
+                )
+
+                self.assertFalse(outcome.ok)
+                self.assertFalse(outcome.mutated)
+                self.assertFalse(outcome.retryable)
+                self.assertEqual(outcome.error_code, "invalid_payload")
+                handler.assert_not_awaited()
+
+    async def test_typed_watchlist_handler_delivery_is_not_sent_twice(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def typed_handler(message, payload, *, reference_time):
+            calls.append((payload, reference_time))
+            delivery = await monitor._send_response_result(message, "ett svar")
+            return DispatchOutcome.success(mutated=True).with_delivery(delivery)
+
+        monitor.handlers["watchlist"].handle_watchlist = typed_handler
+        monitor.handlers["watchlist"].handle_watchlist_remove = typed_handler
+        message = RecordingMessage("contradictory raw content")
+        route = IntentResult(
+            BotIntent.WATCHLIST,
+            1.0,
+            {"watchlist": {"action": "remove", "index": 1, "lang": "no"}},
+            source=IntentSource.DETERMINISTIC,
+        )
+
+        outcome = await monitor._handle_intent(
+            message,
+            route,
+            reference_time=NOW,
+        )
+
+        self.assertTrue(outcome.ok)
+        self.assertTrue(outcome.mutated)
+        self.assertTrue(outcome.response_sent)
+        self.assertEqual(calls, [({"action": "remove", "index": 1, "lang": "no"}, NOW)])
+        self.assertEqual(message.replies, ["ett svar"])
+        self.assertEqual(monitor.response_count, 1)
+
+    async def test_set_location_unknown_city_fails_without_memory_calls(self):
+        monitor = self.make_monitor()
+        monitor.user_memory = SimpleNamespace(
+            snapshot_user=AsyncMock(side_effect=AssertionError("memory read")),
+            get_or_create_user_result=AsyncMock(
+                side_effect=AssertionError("memory create")
+            ),
+            set_location_result=AsyncMock(
+                side_effect=AssertionError("memory mutation")
+            ),
+        )
+        message = RecordingMessage("contradictory raw content")
+
+        outcome = await monitor._handle_set_location(
+            message,
+            "Atlantis",
+            reference_time=NOW,
+        )
+
+        self.assertFalse(outcome.ok)
+        self.assertFalse(outcome.mutated)
+        self.assertFalse(outcome.retryable)
+        self.assertEqual(outcome.error_code, "unsupported_city")
+        self.assertTrue(outcome.response_sent)
+        self.assertEqual(len(message.replies), 1)
+        self.assertEqual(monitor.response_count, 1)
+        monitor.user_memory.snapshot_user.assert_not_called()
+        monitor.user_memory.get_or_create_user_result.assert_not_awaited()
+        monitor.user_memory.set_location_result.assert_not_awaited()
+
+    async def test_set_location_returns_exact_changed_and_noop_mutation_truth(self):
+        for current_city, changed in (("Oslo", True), ("Trondheim", False)):
+            with self.subTest(changed=changed):
+                monitor = self.make_monitor()
+                calls = []
+
+                class LocationMemory:
+                    def snapshot_user(self, user_id):
+                        calls.append(("snapshot", user_id))
+                        return {"location": current_city}
+
+                    async def get_or_create_user_result(
+                        self,
+                        user_id,
+                        username,
+                        *,
+                        reference_time,
+                    ):
+                        calls.append(
+                            (
+                                "get_or_create",
+                                user_id,
+                                username,
+                                reference_time,
+                            )
+                        )
+                        return {"location": current_city}
+
+                    async def set_location_result(self, user_id, city):
+                        calls.append(("set_location", user_id, city))
+                        return changed
+
+                monitor.user_memory = LocationMemory()
+                message = RecordingMessage("contradictory raw content")
+                route = IntentResult(
+                    BotIntent.SET_LOCATION,
+                    1.0,
+                    {"city": "  trondheim  "},
+                    source=IntentSource.DETERMINISTIC,
+                )
+
+                outcome = await monitor._handle_intent(
+                    message,
+                    route,
+                    reference_time=NOW,
+                )
+
+                self.assertTrue(outcome.ok)
+                self.assertIs(outcome.mutated, changed)
+                self.assertTrue(outcome.response_sent)
+                self.assertEqual(
+                    calls,
+                    [
+                        ("snapshot", 7),
+                        ("get_or_create", 7, "Tester", NOW),
+                        ("set_location", 7, "Trondheim"),
+                    ],
+                )
+                self.assertEqual(len(message.replies), 1)
+                self.assertEqual(monitor.response_count, 1)
+
+    async def test_set_location_new_user_counts_lazy_creation_as_mutation(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        class LocationMemory:
+            def snapshot_user(self, user_id):
+                calls.append(("snapshot", user_id))
+                return None
+
+            async def get_or_create_user_result(
+                self,
+                user_id,
+                username,
+                *,
+                reference_time,
+            ):
+                calls.append(("create", user_id, username, reference_time))
+                return {"location": None}
+
+            async def set_location_result(self, user_id, city):
+                calls.append(("set", user_id, city))
+                return True
+
+        monitor.user_memory = LocationMemory()
+        outcome = await monitor._handle_set_location(
+            RecordingMessage("contradictory raw content"),
+            "Trondheim",
+            reference_time=NOW,
+        )
+
+        self.assertTrue(outcome.ok)
+        self.assertTrue(outcome.mutated)
+        self.assertEqual(
+            calls,
+            [
+                ("snapshot", 7),
+                ("create", 7, "Tester", NOW),
+                ("set", 7, "Trondheim"),
+            ],
+        )
+
+    async def test_set_location_second_write_failure_retains_first_commit_truth(self):
+        monitor = self.make_monitor()
+
+        class LocationMemory:
+            def snapshot_user(self, _user_id):
+                return None
+
+            async def get_or_create_user_result(self, *_args, **_kwargs):
+                return {"location": None}
+
+            async def set_location_result(self, _user_id, _city):
+                raise ManagerMutationError(
+                    "storage_write_failed",
+                    mutated=False,
+                )
+
+        monitor.user_memory = LocationMemory()
+        outcome = await monitor._handle_set_location(
+            RecordingMessage("contradictory raw content"),
+            "Trondheim",
+            reference_time=NOW,
+        )
+
+        self.assertFalse(outcome.ok)
+        self.assertTrue(outcome.mutated)
+        self.assertFalse(outcome.retryable)
+        self.assertEqual(outcome.error_code, "storage_write_failed")
+        self.assertTrue(outcome.response_sent)
+
+    async def test_chat_survives_local_user_memory_write_failure(self):
+        monitor = self.make_monitor()
+        monitor.user_memory.update_last_interaction_result = AsyncMock(
+            side_effect=ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            )
+        )
+        message = RecordingMessage("@inebotten hvordan går det?")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(message.replies), 1)
+        self.assertEqual(monitor.response_count, 1)
+
+    async def test_setup_initializes_gcal_before_frozen_background_sync(self):
+        monitor = MessageMonitor.__new__(MessageMonitor)
+        calls = []
+        tracked = []
+
+        class Calendar:
+            async def setup(self):
+                calls.append("calendar_setup")
+
+            async def ensure_gcal_configured(self):
+                calls.append("gcal_initialize")
+                return ExternalMutationResult(
+                    True,
+                    ExternalCommitState.UNCHANGED,
+                    value=True,
+                )
+
+            def sync_from_gcal_result(self, *, reference_time):
+                calls.append(("sync_created", reference_time))
+
+                async def run():
+                    calls.append(("sync_ran", reference_time))
+
+                return run()
+
+        class UserMemory:
+            async def setup(self):
+                calls.append("memory_setup")
+
+        async def console_loop():
+            return None
+
+        def track(coro, name):
+            tracked.append((name, coro))
+            return coro
+
+        monitor.calendar = Calendar()
+        monitor.user_memory = UserMemory()
+        monitor.reminder_clock = SimpleNamespace(now=Mock(return_value=NOW))
+        monitor._track_background_task = track
+        monitor._console_persistence_loop = console_loop
+        monitor._set_task_health = lambda *args, **kwargs: None
+
+        await monitor.setup()
+
+        self.assertEqual(
+            calls,
+            [
+                "calendar_setup",
+                "memory_setup",
+                "gcal_initialize",
+                ("sync_created", NOW),
+            ],
+        )
+        self.assertEqual(
+            [name for name, _ in tracked],
+            ["initial-gcal-sync", "console-persistence"],
+        )
+        monitor.reminder_clock.now.assert_called_once_with()
+        await tracked[0][1]
+        await tracked[1][1]
+        self.assertEqual(calls[-1], ("sync_ran", NOW))
+
+    async def test_legacy_read_adapter_retains_unknown_delivery(self):
+        monitor = self.make_monitor()
+        monitor.discord_sender = SimpleNamespace(
+            send_result=AsyncMock(
+                return_value=MessageSendResult(
+                    DeliveryState.UNKNOWN,
+                    "timeout",
+                )
+            )
+        )
+
+        async def legacy_read():
+            await monitor._send_response(
+                RecordingMessage("@inebotten les"),
+                "Svar",
+            )
+
+        outcome = await monitor._invoke_legacy_read(legacy_read)
+
+        self.assertTrue(outcome.ok)
+        self.assertFalse(outcome.response_sent)
+        self.assertFalse(outcome.retryable)
+        self.assertIs(outcome.delivery_result.state, DeliveryState.UNKNOWN)
+
+    async def test_delivered_reply_survives_conversation_recording_failure(self):
+        monitor = self.make_monitor()
+        monitor.conversation.add_message = Mock(
+            side_effect=RuntimeError("private storage detail")
+        )
+        message = RecordingMessage("@inebotten hei")
+
+        result = await monitor._send_response_result(message, "Hei tilbake")
+
+        self.assertIs(result.state, DeliveryState.DELIVERED)
+        self.assertEqual(message.replies, ["Hei tilbake"])
+        self.assertEqual(monitor.response_count, 1)
+        monitor.conversation.add_message.assert_called_once()
+
+    async def test_legacy_handler_exception_returns_bounded_outcome(self):
         monitor = self.make_monitor()
 
         async def boom(message):
@@ -446,11 +1153,24 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         monitor.handlers["help"].handle_help = boom
         message = RecordingMessage("@inebotten hjelp")
+        route = IntentResult(
+            BotIntent.HELP,
+            1.0,
+            {},
+            source=IntentSource.DETERMINISTIC,
+        )
 
-        await monitor.handle_message(message)
+        outcome = await monitor._handle_intent(
+            message,
+            route,
+            reference_time=NOW,
+        )
 
-        self.assertEqual(monitor.error_count, 1)
-        self.assertEqual(monitor.intent_stats[BotIntent.HELP.value]["errors"], 1)
+        self.assertFalse(outcome.ok)
+        self.assertFalse(outcome.mutated)
+        self.assertFalse(outcome.retryable)
+        self.assertEqual(outcome.error_code, "handler_exception")
+        self.assertIsNone(outcome.delivery_result)
 
     async def test_status_response_includes_intent_stats(self):
         monitor = self.make_monitor()
@@ -533,8 +1253,14 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor = self.make_monitor()
         captured = {}
 
-        async def fake_ai_response(message, forced_search_info=None):
+        async def fake_ai_response(
+            message,
+            forced_search_info=None,
+            *,
+            reference_time,
+        ):
             captured["forced_search_info"] = forced_search_info
+            captured["reference_time"] = reference_time
 
         monitor._send_ai_response = fake_ai_response
         search_payload = {"query": "dagens nyheter", "type": "web"}
@@ -544,24 +1270,31 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             payload={"search": search_payload},
         )
 
-        await monitor._handle_intent(RecordingMessage("@inebotten søk på nett dagens nyheter"), route)
+        await monitor._handle_intent(
+            RecordingMessage("@inebotten søk på nett dagens nyheter"),
+            route,
+            reference_time=NOW,
+        )
 
         self.assertEqual(captured["forced_search_info"], search_payload)
+        self.assertIs(captured["reference_time"], NOW)
 
     async def test_dashboard_intent_uses_explicit_dashboard_handler(self):
         monitor = self.make_monitor()
         captured = {}
 
-        async def fake_dashboard(message):
+        async def fake_dashboard(message, *, reference_time):
             captured["message"] = message
+            captured["reference_time"] = reference_time
 
         monitor._send_dashboard_response = fake_dashboard
         route = SimpleNamespace(intent=BotIntent.DASHBOARD, confidence=0.9, payload={})
         message = RecordingMessage("@inebotten dashboard")
 
-        await monitor._handle_intent(message, route)
+        await monitor._handle_intent(message, route, reference_time=NOW)
 
         self.assertIs(captured["message"], message)
+        self.assertIs(captured["reference_time"], NOW)
 
     async def test_ai_fallback_no_longer_crashes_on_chat(self):
         monitor = self.make_monitor()
@@ -572,11 +1305,20 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor.mention_count, 1)
         self.assertEqual(len(message.replies), 1)
         self.assertEqual(monitor.response_count, 1)
+        self.assertEqual(monitor.rate_limiter.can_send_calls, 0)
+        self.assertEqual(monitor.rate_limiter.wait_calls, 1)
 
     async def test_dashboard_fallback_has_defined_context(self):
         monitor = self.make_monitor(wants_dashboard=True)
 
-        async def fake_dashboard(guild_id, city_name=None, show_navnedag=False, user_id=None):
+        async def fake_dashboard(
+            guild_id,
+            city_name=None,
+            show_navnedag=False,
+            user_id=None,
+            *,
+            reference_time=None,
+        ):
             return f"dashboard:{guild_id}:{show_navnedag}"
 
         monitor._generate_dashboard = fake_dashboard
@@ -591,8 +1333,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         calls = []
 
-        async def fake_handle_poll_list(message):
-            calls.append(message)
+        async def fake_handle_poll_list(message, *, reference_time):
+            calls.append((message, reference_time))
+            return DispatchOutcome.success(mutated=False)
 
         monitor.handlers["polls"].handle_poll_list = fake_handle_poll_list
         message = RecordingMessage("@inebotten polls")
@@ -600,7 +1343,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0].content, "polls")
+        self.assertEqual(calls[0][0].content, "polls")
+        self.assertIs(calls[0][1], NOW)
         self.assertEqual(monitor.intent_stats[BotIntent.POLL_LIST.value]["count"], 1)
 
     async def test_active_poll_vote_routes_before_ai(self):
@@ -614,14 +1358,16 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             monitor.recording_polls.votes[0][1],
             {"option": 1, "poll_id": "poll1"},
         )
+        self.assertIs(monitor.recording_polls.votes[0][2], NOW)
         self.assertEqual(message.replies, [])
 
     async def test_incomplete_reminder_edit_falls_back_without_handler(self):
         monitor = self.make_monitor()
         calls = []
 
-        async def fake_handle_reminder_edit(message, payload):
+        async def fake_handle_reminder_edit(message, payload, *, reference_time):
             calls.append((message.content, payload["watchlist"] if "watchlist" in payload else payload))
+            return DispatchOutcome.success(mutated=True)
 
         monitor.handlers["reminders"].handle_reminder_edit = fake_handle_reminder_edit
         message = RecordingMessage("@inebotten endre påminnelse")
@@ -636,8 +1382,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor = self.make_monitor()
         calls = []
 
-        async def fake_handle_reminder_edit(message, payload):
-            calls.append((message.content, payload))
+        async def fake_handle_reminder_edit(message, payload, *, reference_time):
+            calls.append((message.content, payload, reference_time))
+            return DispatchOutcome.success(mutated=True)
 
         monitor.handlers["reminders"].handle_reminder_edit = fake_handle_reminder_edit
         message = RecordingMessage(
@@ -648,21 +1395,23 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(
-            calls[0][1]["reminder"],
+            calls[0][1],
             {
                 "action": "edit",
                 "number": 1,
                 "changes": {"text": "Ring legen"},
             },
         )
+        self.assertIs(calls[0][2], NOW)
         self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_EDIT.value]["count"], 1)
 
     async def test_calendar_search_routes_to_handler(self):
         monitor = self.make_monitor()
         calls = []
 
-        async def fake_handle_calendar_search(message, payload):
-            calls.append((message.content, payload))
+        async def fake_handle_calendar_search(message, payload, *, reference_time):
+            calls.append((message.content, payload, reference_time))
+            return DispatchOutcome.success(mutated=False)
 
         monitor.handlers["calendar"].handle_search = fake_handle_calendar_search
         message = RecordingMessage("@inebotten søk kalender møte")
@@ -671,20 +1420,24 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][1]["query"], "møte")
+        self.assertIs(calls[0][2], NOW)
         self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_SEARCH.value]["count"], 1)
 
     async def test_reminder_create_list_and_complete_route_to_handlers(self):
         monitor = self.make_monitor(active_reminders=True)
         calls = []
 
-        async def fake_create(message, payload):
-            calls.append(("create", payload))
+        async def fake_create(message, payload, *, reference_time):
+            calls.append(("create", payload, reference_time))
+            return DispatchOutcome.success(mutated=True)
 
-        async def fake_list(message, payload):
-            calls.append(("list", payload))
+        async def fake_list(message, payload, *, reference_time):
+            calls.append(("list", payload, reference_time))
+            return DispatchOutcome.success(mutated=False)
 
-        async def fake_complete(message, payload):
-            calls.append(("complete", payload))
+        async def fake_complete(message, payload, *, reference_time):
+            calls.append(("complete", payload, reference_time))
+            return DispatchOutcome.success(mutated=True)
 
         monitor.handlers["reminders"].handle_reminder_create = fake_create
         monitor.handlers["reminders"].handle_reminder_list = fake_list
@@ -695,8 +1448,12 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(RecordingMessage("@inebotten ferdig 1"))
 
         self.assertEqual([call[0] for call in calls], ["create", "list", "complete"])
+        self.assertEqual(calls[0][1]["action"], "add")
+        self.assertEqual(calls[1][1], {"action": "list"})
+        self.assertEqual(calls[2][1], {"action": "complete", "number": 1})
+        self.assertTrue(all(call[2] is NOW for call in calls))
 
-    async def test_bare_calendar_title_delete_routes_to_calendar_handler(self):
+    async def test_bare_calendar_title_delete_fails_closed_until_confirmation(self):
         monitor = self.make_monitor()
         monitor.calendar = SimpleNamespace(
             get_upcoming=lambda guild_id, days=365, reference_time=None: [
@@ -714,15 +1471,18 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
-        self.assertEqual(calls, ["slett meldekort"])
+        self.assertEqual(calls, [])
+        self.assertEqual(len(message.replies), 1)
+        self.assertIn("Ingenting ble endret", message.replies[0])
         self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_DELETE.value]["count"], 1)
 
     async def test_reminder_search_routes_to_handler(self):
         monitor = self.make_monitor()
         calls = []
 
-        async def fake_handle_reminder_search(message, payload):
-            calls.append((message.content, payload))
+        async def fake_handle_reminder_search(message, payload, *, reference_time):
+            calls.append((message.content, payload, reference_time))
+            return DispatchOutcome.success(mutated=False)
 
         monitor.handlers["reminders"].handle_reminder_search = fake_handle_reminder_search
         message = RecordingMessage("@inebotten søk påminnelse lege")
@@ -730,22 +1490,24 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1]["reminder"]["query"], "lege")
+        self.assertEqual(calls[0][1]["query"], "lege")
+        self.assertIs(calls[0][2], NOW)
         self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_SEARCH.value]["count"], 1)
 
     async def test_quote_list_routes_to_handler(self):
         monitor = self.make_monitor()
         calls = []
 
-        async def fake_handle_quote_list(message):
-            calls.append(message.content)
+        async def fake_handle_quote_list(message, payload):
+            calls.append((message.content, payload))
+            return DispatchOutcome.success(mutated=False)
 
         monitor.handlers["quotes"].handle_quote_list = fake_handle_quote_list
         message = RecordingMessage("@inebotten liste sitater")
 
         await monitor.handle_message(message)
 
-        self.assertEqual(calls, ["liste sitater"])
+        self.assertEqual(calls, [("liste sitater", {"action": "list", "lang": "no"})])
         self.assertEqual(monitor.intent_stats[BotIntent.QUOTE_LIST.value]["count"], 1)
 
     async def test_birthday_edit_without_stable_identity_clarifies(self):
@@ -780,7 +1542,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor.intent_stats[BotIntent.AI_CHAT.value]["count"], 1)
         self.assertEqual(len(message.replies), 1)
 
-    async def test_watchlist_remove_sends_returned_handler_response(self):
+    async def test_watchlist_remove_fails_closed_until_confirmation(self):
         monitor = self.make_monitor()
 
         async def fake_handle_watchlist_remove(message, payload):
@@ -791,7 +1553,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
-        self.assertEqual(message.replies, ["✅ Fjernet Movie A"])
+        self.assertEqual(len(message.replies), 1)
+        self.assertIn("Ingenting ble endret", message.replies[0])
         self.assertEqual(monitor.response_count, 1)
 
 

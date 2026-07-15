@@ -8,10 +8,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from cal_system.reminder_manager import ReminderManager, parse_reminder_command
 from cal_system.temporal_resolver import DATE_ALIASES, TemporalResolver
+from core.dispatch_result import DeliveryState, MessageSendResult
 from features.reminder_handler import ReminderHandler
 
 
@@ -425,19 +426,25 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             reminders=self.manager,
             rate_limiter=SimpleNamespace(record_sent=lambda: None, record_failure=lambda **kwargs: None),
             loc=SimpleNamespace(
-                t=lambda key, **kwargs: f"{key}:{kwargs.get('title', kwargs.get('num', ''))}"
+                t=lambda key, **kwargs: f"{key}:{kwargs.get('title', kwargs.get('num', ''))}",
+                current_lang="no",
             ),
             client=SimpleNamespace(),
+            nlu_metrics=SimpleNamespace(
+                record_legacy_payload_fallback=Mock(),
+            ),
         )
         self.handler = ReminderHandler(self.monitor)
-        self.handler.send_response = AsyncMock(return_value=None)
+        self.handler.send_response_result = AsyncMock(
+            return_value=MessageSendResult(DeliveryState.DELIVERED)
+        )
 
     def tearDown(self):
         self.tmp.cleanup()
 
     async def test_handle_reminder_edit_updates_title(self):
         message = SimpleNamespace(
-            content="@inebotten endre påminnelse 1 tittel: Oppdatert tittel",
+            content="@inebotten endre påminnelse 1 tekst: Oppdatert tittel",
             guild=SimpleNamespace(id=123),
             channel=SimpleNamespace(id=456),
             author=SimpleNamespace(id=7, name="Tester"),
@@ -446,9 +453,9 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.handler.handle_reminder_edit(message)
 
         self.assertEqual(self.manager.reminders["123"][0]["text"], "Oppdatert tittel")
-        self.handler.send_response.assert_awaited_once()
-        self.assertIn("reminder_edit_success", self.handler.send_response.await_args.args[1])
-        self.assertIn("Oppdatert tittel", self.handler.send_response.await_args.args[1])
+        self.handler.send_response_result.assert_awaited_once()
+        self.assertIn("reminder_edit_success", self.handler.send_response_result.await_args.args[1])
+        self.assertIn("Oppdatert tittel", self.handler.send_response_result.await_args.args[1])
 
     async def test_handle_reminder_delete_removes_reminder(self):
         message = SimpleNamespace(
@@ -461,8 +468,8 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.handler.handle_reminder_delete(message)
 
         self.assertEqual(self.manager.reminders["123"], [])
-        self.handler.send_response.assert_awaited_once()
-        self.assertIn("reminder_delete_success", self.handler.send_response.await_args.args[1])
+        self.handler.send_response_result.assert_awaited_once()
+        self.assertIn("reminder_delete_success", self.handler.send_response_result.await_args.args[1])
 
     async def test_handle_reminder_search_outputs_matches(self):
         message = SimpleNamespace(
@@ -474,12 +481,12 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         await self.handler.handle_reminder_search(message)
 
-        self.handler.send_response.assert_awaited_once()
-        self.assertIn("Første oppgave", self.handler.send_response.await_args.args[1])
+        self.handler.send_response_result.assert_awaited_once()
+        self.assertIn("Første oppgave", self.handler.send_response_result.await_args.args[1])
 
     async def test_handle_reminder_create_adds_reminder(self):
         message = SimpleNamespace(
-            content="@inebotten påminnelse Ring lege 20.06",
+            content="@inebotten påminnelse Ring lege",
             guild=SimpleNamespace(id=123),
             channel=SimpleNamespace(id=456),
             author=SimpleNamespace(id=7, name="Tester"),
@@ -489,7 +496,7 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         texts = [reminder["text"] for reminder in self.manager.reminders["123"]]
         self.assertIn("Ring lege", texts)
-        self.handler.send_response.assert_awaited()
+        self.handler.send_response_result.assert_awaited()
 
     async def test_handle_reminder_list_outputs_active_reminders(self):
         message = SimpleNamespace(
@@ -501,8 +508,8 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         await self.handler.handle_reminder_list(message)
 
-        self.handler.send_response.assert_awaited_once()
-        self.assertIn("Første oppgave", self.handler.send_response.await_args.args[1])
+        self.handler.send_response_result.assert_awaited_once()
+        self.assertIn("Første oppgave", self.handler.send_response_result.await_args.args[1])
 
     async def test_handle_reminder_complete_marks_done(self):
         message = SimpleNamespace(
@@ -515,8 +522,8 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.handler.handle_reminder_complete(message)
 
         self.assertTrue(self.manager.reminders["123"][0]["completed"])
-        self.handler.send_response.assert_awaited_once()
-        self.assertIn("Fullført", self.handler.send_response.await_args.args[1])
+        self.handler.send_response_result.assert_awaited_once()
+        self.assertIn("Fullført", self.handler.send_response_result.await_args.args[1])
 
 
 if __name__ == "__main__":

@@ -11,11 +11,28 @@ import signal
 import subprocess
 import sys
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 import discord
 
+from cal_system.reminder_clock import SystemReminderClock
+from core.dispatch_result import (
+    DeliveryState,
+    DispatchCancelled,
+    DispatchOutcome,
+    ExternalCommitState,
+    ManagerMutationCancelled,
+    ManagerMutationError,
+    MessageSendCancelled,
+    MessageSendResult,
+)
 from core.intent_router import BotIntent, IntentRouter
+from core.intent_payloads import (
+    ENVELOPE_KEYS,
+    PayloadValidationError,
+    validate_intent_payload,
+)
 from core.intent_thresholds import CONFIDENCE_THRESHOLDS
 from core.intent_keywords import (
     CALENDAR_KEYWORDS,
@@ -25,6 +42,13 @@ from core.intent_keywords import (
     HELP_KEYWORDS,
     LIST_KEYWORDS,
     STATUS_KEYWORDS,
+)
+from core.message_context import routing_context_from_message
+from core.mutation_coordinator import MEMORY_STORE_SCOPE, MutationCoordinator
+from core.send_receipt import (
+    DiscordSendCoordinator,
+    _settle_owned_send,
+    capture_send_receipt,
 )
 from web_console.server import ConsoleServer
 
@@ -61,6 +85,7 @@ COMMAND_REGISTRY = [
 
 
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
+_NO_TYPED_ENVELOPE = object()
 
 
 def _counter_stats_delta(current, previous):
@@ -146,35 +171,42 @@ class MessageMonitor:
         self.response_gen = response_generator
         self.bot_name = bot_name
         self.bot_mention = f"@{bot_name}"
+        self.mutation_coordinator = MutationCoordinator()
+        self.reminder_clock = SystemReminderClock()
+        self.discord_sender = DiscordSendCoordinator(self.rate_limiter)
 
         # Initialize unified calendar manager
         from cal_system.calendar_manager import CalendarManager
         from cal_system.natural_language_parser import NaturalLanguageParser
         from cal_system.google_calendar_manager import GoogleCalendarManager
 
-        # Initialize GCal manager if token exists
-        gcal = GoogleCalendarManager()
-        if not gcal.is_configured():
-            gcal = None
-        else:
-            print("[MONITOR] Google Calendar integration enabled")
+        # Construction is deliberately offline.  The same injected manager is
+        # initialized during ``setup`` and remains available for later auth.
+        gcal = GoogleCalendarManager(
+            mutation_coordinator=self.mutation_coordinator,
+        )
 
         self.calendar = CalendarManager(
             gcal_manager=gcal,
             owner_email=getattr(self.client.config, 'DISCORD_EMAIL', None),
-            owner_name=getattr(self.client.config, 'CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
+            owner_name=getattr(self.client.config, 'CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ'),
+            clock=self.reminder_clock,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.nlp_parser = NaturalLanguageParser()
 
         from cal_system.reminder_manager import ReminderManager
-        self.reminders = ReminderManager()
+        self.reminders = ReminderManager(
+            clock=self.reminder_clock,
+            mutation_coordinator=self.mutation_coordinator,
+        )
 
         # Initialize personality and memory systems
         from memory.user_memory import get_user_memory
         from memory.conversation_context import get_context_manager
         from ai.personality_config import get_system_prompt, ResponseStyle
 
-        self.user_memory = get_user_memory()
+        self.user_memory = get_user_memory(self.mutation_coordinator)
         self.conversation = get_context_manager()
         self.get_system_prompt = get_system_prompt
         self.ResponseStyle = ResponseStyle
@@ -207,10 +239,17 @@ class MessageMonitor:
         from features.daily_digest_manager import DailyDigestManager
 
         self.countdown = CountdownManager()
-        self.poll = PollManager()
-        self.watchlist = WatchlistManager()
+        self.poll = PollManager(
+            clock=self.reminder_clock,
+            mutation_coordinator=self.mutation_coordinator,
+        )
+        self.watchlist = WatchlistManager(
+            mutation_coordinator=self.mutation_coordinator,
+        )
         self.wod = WordOfTheDay()
-        self.quote = QuoteManager()
+        self.quote = QuoteManager(
+            mutation_coordinator=self.mutation_coordinator,
+        )
         self.crypto = CryptoManager()
         self.compliments = ComplimentsManager()
         self.horoscope = HoroscopeManager()
@@ -221,14 +260,18 @@ class MessageMonitor:
         self.browser_manager = BrowserManager()
         self.detect_search_intent = detect_search_intent
         from features.birthday_manager import BirthdayManager
-        self.birthdays = BirthdayManager()
+        self.birthdays = BirthdayManager(
+            mutation_coordinator=self.mutation_coordinator,
+            gcal_manager=gcal,
+        )
 
         self.daily_digest = DailyDigestManager(
             event_manager=self.calendar,
             birthday_manager=self.birthdays,
             crypto_manager=self.crypto,
             aurora_manager=self.aurora,
-            watchlist_manager=self.watchlist
+            watchlist_manager=self.watchlist,
+            user_memory=self.user_memory,
         )
 
         self.parse_poll_command = parse_poll_command
@@ -255,6 +298,7 @@ class MessageMonitor:
         self.handlers = {}
         self._register_handlers()
         self.intent_router = IntentRouter(self)
+        self.nlu_metrics = self.intent_router.metrics
 
     def _track_background_task(self, coro, name):
         task = asyncio.create_task(coro, name=name)
@@ -316,14 +360,26 @@ class MessageMonitor:
         await self.calendar.setup()
         await self.user_memory.setup()
 
-        # Auto-sync from GCal on startup if enabled
-        if self.calendar.gcal_enabled:
+        # OAuth/token refresh is an explicit startup boundary, never
+        # constructor I/O.  Keep the injected manager even when initially
+        # unconfigured so an auth flow can enable it later in this process.
+        gcal_status = await self.calendar.ensure_gcal_configured()
+        if gcal_status.ok:
+            print("[MONITOR] Google Calendar integration enabled")
             print("[MONITOR] Performing initial Google Calendar sync...")
-            try:
-                # Use a background task so we don't block startup
-                self._track_background_task(self.calendar.sync_from_gcal(), "initial-gcal-sync")
-            except Exception as e:
-                print(f"[MONITOR] Initial GCal sync failed: {e}")
+            reference_time = self.reminder_clock.now()
+            self._track_background_task(
+                self.calendar.sync_from_gcal_result(
+                    reference_time=reference_time,
+                ),
+                "initial-gcal-sync",
+            )
+        elif gcal_status.state is ExternalCommitState.UNKNOWN:
+            self._set_task_health(
+                "initial-gcal-sync",
+                state="degraded",
+                last_error="external_commit_unknown",
+            )
 
         # Start periodic console stats persistence
         self._track_background_task(self._console_persistence_loop(), "console-persistence")
@@ -462,31 +518,23 @@ class MessageMonitor:
         self.processed_messages.append(msg_id)
 
         message = authorized_message
+        reference_time = self.reminder_clock.now()
+        routing_context = routing_context_from_message(
+            message,
+            bot_user_id=self.client.user.id,
+        )
         self.mention_count += 1
         print(
             f"[MONITOR] Mention detected from {message.author.name} "
             f"in {self._get_channel_type(message.channel)}"
         )
 
-        # Rate limit check
-        can_send, reason = self.rate_limiter.can_send()
-        if not can_send:
-            print(f"[MONITOR] Rate limited, cannot respond: {reason}")
-            self.rate_limiter.record_dropped()
-            return
-
-        # Wait if needed
-        if not await self.rate_limiter.wait_if_needed():
-            print("[MONITOR] Daily quota exceeded, dropping message")
-            self.rate_limiter.record_dropped()
-            return
-
         # Detect language from message
         lang = self.loc.detect_language(message.content)
         self.loc.set_language(lang)
         print(f"[MONITOR] Detected language: {lang}")
 
-        guild_id = message.guild.id if message.guild else message.channel.id
+        guild_id = routing_context.key.guild_id
         route = None
         try:
             route = self.intent_router.route(
@@ -494,10 +542,16 @@ class MessageMonitor:
                 guild_id=guild_id,
                 channel_id=message.channel.id,
                 user_id=message.author.id,
+                routing_context=routing_context,
+                reference_time=reference_time,
             )
             self._last_routed_intent = route.intent
             print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
-            await self._handle_intent(message, route)
+            await self._handle_intent(
+                message,
+                route,
+                reference_time=reference_time,
+            )
             self.intent_stats[route.intent.value]["count"] += 1
         except Exception as exc:
             import traceback
@@ -508,13 +562,91 @@ class MessageMonitor:
             self.error_count += 1
             self.intent_stats[route_name]["errors"] += 1
             try:
-                await self._send_ai_response(message)
+                await self._send_ai_response(
+                    message,
+                    reference_time=reference_time,
+                )
             except Exception as ai_exc:
                 print(f"[MONITOR] AI fallback also failed: {ai_exc}")
 
-    async def _handle_intent(self, message, route):
-        """Execute the handler for a routed intent."""
-        payload = route.payload
+    def _typed_inner_payload(self, route):
+        """Return one validated canonical inner payload or compatibility absence."""
+        key = ENVELOPE_KEYS.get(route.intent)
+        if key is None:
+            return _NO_TYPED_ENVELOPE
+        route_payload = getattr(route, "payload", None)
+        if route_payload is None:
+            return None
+        if not isinstance(route_payload, Mapping):
+            raise PayloadValidationError("missing_payload")
+        if key not in route_payload:
+            return None
+        source = getattr(route, "source", None)
+        if source is None:
+            return validate_intent_payload(
+                route.intent,
+                route_payload[key],
+            )
+        return validate_intent_payload(
+            route.intent,
+            route_payload[key],
+            source=source,
+        )
+
+    async def _invoke_legacy_read(self, callback) -> DispatchOutcome:
+        """Adapt one unchanged read handler using task-local delivery truth."""
+        with capture_send_receipt() as receipt:
+            try:
+                result = await callback()
+            except Exception:
+                base = DispatchOutcome.failure("handler_exception")
+                return (
+                    base
+                    if receipt.result is None
+                    else base.with_delivery(receipt.result)
+                )
+        if isinstance(result, DispatchOutcome):
+            if result.delivery_result is not None:
+                return result
+            base = result
+        else:
+            base = DispatchOutcome.success(mutated=False)
+        return (
+            base
+            if receipt.result is None
+            else base.with_delivery(receipt.result)
+        )
+
+    async def _handle_intent(self, message, route, *, reference_time: datetime):
+        """Execute one routed intent from its already parsed payload."""
+        raw_payload = getattr(route, "payload", None)
+        payload = raw_payload if isinstance(raw_payload, Mapping) else {}
+
+        try:
+            typed_payload = self._typed_inner_payload(route)
+        except PayloadValidationError as exc:
+            print(
+                f"[MONITOR] Rejected malformed {route.intent.value} payload: "
+                f"{exc.code}"
+            )
+            send = await self._send_response_result(
+                message,
+                "Jeg klarte ikke å tolke handlingen trygt. Ingenting ble endret.",
+            )
+            return DispatchOutcome.failure(
+                "invalid_payload",
+            ).with_delivery(send)
+
+        if getattr(route, "requires_confirmation", False):
+            send = await self._send_response_result(
+                message,
+                "Jeg kan ikke bekrefte denne handlingen trygt ennå. "
+                "Ingenting ble endret.",
+            )
+            return DispatchOutcome.failure(
+                "confirmation_unavailable",
+                retryable=False,
+            ).with_delivery(send)
 
         threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
         if route.confidence < threshold:
@@ -522,115 +654,315 @@ class MessageMonitor:
                 f"[MONITOR] Intent {route.intent.value} rejected: confidence {route.confidence:.2f} < threshold {threshold}"
             )
             self.intent_stats[route.intent.value]["low_confidence"] += 1
-            await self._send_ai_response(message)
-            return
+            fallback = await self._invoke_legacy_read(
+                lambda: self._send_ai_response(
+                    message,
+                    reference_time=reference_time,
+                )
+            )
+            base = DispatchOutcome.failure("low_confidence")
+            return (
+                base
+                if fallback.delivery_result is None
+                else base.with_delivery(fallback.delivery_result)
+            )
 
         if route.intent == BotIntent.HELP:
-            await self.handlers["help"].handle_help(message)
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["help"].handle_help(message)
+            )
         elif route.intent == BotIntent.CALENDAR_HELP:
-            await self._send_response(message, self.conv_gen.get_calendar_help())
+            return await self._invoke_legacy_read(
+                lambda: self._send_response(
+                    message,
+                    self.conv_gen.get_calendar_help(),
+                )
+            )
         elif route.intent == BotIntent.STATUS:
-            await self._send_status_response(message)
+            return await self._invoke_legacy_read(
+                lambda: self._send_status_response(message)
+            )
         elif route.intent == BotIntent.PROFILE:
-            if not await self.handlers["profile"].handle_profile_command(message):
-                await self._send_ai_response(message)
-        elif route.intent == BotIntent.CALENDAR_LIST:
-            await self.handlers["calendar"].handle_list(message)
-        elif route.intent == BotIntent.CALENDAR_SYNC:
-            await self.handlers["calendar"].handle_sync(message)
-        elif route.intent == BotIntent.CALENDAR_DELETE:
-            await self.handlers["calendar"].handle_delete(message)
-        elif route.intent == BotIntent.CALENDAR_COMPLETE:
-            await self.handlers["calendar"].handle_complete(message)
-        elif route.intent == BotIntent.CALENDAR_EDIT:
-            await self.handlers["calendar"].handle_edit(message)
-        elif route.intent == BotIntent.CALENDAR_SEARCH:
-            await self.handlers["calendar"].handle_search(message, payload)
-        elif route.intent == BotIntent.CALENDAR_CLEAR:
-            await self.handlers["calendar"].handle_clear(message)
-        elif route.intent == BotIntent.CALENDAR_ITEM:
-            await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
-        elif route.intent == BotIntent.CALENDAR_AUTH:
-            await self.handlers["calendar"].handle_auth(message, payload)
-        elif route.intent == BotIntent.REMINDER_EDIT:
-            await self.handlers["reminders"].handle_reminder_edit(message, payload)
-        elif route.intent == BotIntent.REMINDER_DELETE:
-            await self.handlers["reminders"].handle_reminder_delete(message, payload)
-        elif route.intent == BotIntent.REMINDER_SEARCH:
-            await self.handlers["reminders"].handle_reminder_search(message, payload)
-        elif route.intent == BotIntent.REMINDER_CREATE:
-            await self.handlers["reminders"].handle_reminder_create(message, payload)
-        elif route.intent == BotIntent.REMINDER_LIST:
-            await self.handlers["reminders"].handle_reminder_list(message, payload)
-        elif route.intent == BotIntent.REMINDER_COMPLETE:
-            await self.handlers["reminders"].handle_reminder_complete(message, payload)
-        elif route.intent == BotIntent.POLL_CREATE:
-            await self.handlers["polls"].handle_poll(message, payload["poll"])
-        elif route.intent == BotIntent.POLL_VOTE:
-            await self.handlers["polls"].handle_vote(message, payload["vote"])
-        elif route.intent == BotIntent.POLL_EDIT:
-            await self.handlers["polls"].handle_poll_edit(message, payload["poll_edit"])
-        elif route.intent == BotIntent.POLL_DELETE:
-            await self.handlers["polls"].handle_poll_delete(message, payload["poll_delete"])
-        elif route.intent == BotIntent.POLL_CLOSE:
-            await self.handlers["polls"].handle_poll_close(message, payload["poll_close"])
-        elif route.intent == BotIntent.POLL_LIST:
-            await self.handlers["polls"].handle_poll_list(message)
-        elif route.intent == BotIntent.COUNTDOWN:
-            await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
-        elif route.intent == BotIntent.WATCHLIST:
-            watchlist_payload = payload.get("watchlist", {})
-            action = watchlist_payload.get("action")
-            if action == "remove":
-                response_text = await self.handlers["watchlist"].handle_watchlist_remove(message, watchlist_payload)
-                if response_text:
-                    await self._send_response(message, response_text)
-            elif action == "edit":
-                response_text = await self.handlers["watchlist"].handle_watchlist_edit(message, watchlist_payload)
-                if response_text:
-                    await self._send_response(message, response_text)
-            else:
-                await self.handlers["watchlist"].handle_watchlist(message, watchlist_payload)
-        elif route.intent == BotIntent.WORD_OF_DAY:
-            await self.handlers["fun"].handle_word_of_day(message)
-        elif route.intent == BotIntent.QUOTE:
-            await self.handlers["fun"].handle_quote_command(message, payload["quote"])
-        elif route.intent == BotIntent.QUOTE_LIST:
-            await self.handlers["quotes"].handle_quote_list(message)
-        elif route.intent == BotIntent.QUOTE_EDIT:
-            await self.handlers["quotes"].handle_quote_edit(message, payload)
-        elif route.intent == BotIntent.QUOTE_DELETE:
-            await self.handlers["quotes"].handle_quote_delete(message, payload)
-        elif route.intent == BotIntent.AURORA:
-            await self.handlers["aurora"].handle_aurora(message)
-        elif route.intent == BotIntent.SCHOOL_HOLIDAYS:
-            await self.handlers["school_holidays"].handle_school_holidays(message)
-        elif route.intent == BotIntent.PRICE:
-            await self.handlers["utility"].handle_price(message, payload["price"])
-        elif route.intent == BotIntent.HOROSCOPE:
-            await self.handlers["fun"].handle_horoscope(message, payload["horoscope"])
-        elif route.intent == BotIntent.COMPLIMENT:
-            await self.handlers["fun"].handle_compliment(message, payload["compliment"])
-        elif route.intent == BotIntent.CALCULATOR:
-            await self.handlers["utility"].handle_calculator(message, payload["calculator"])
-        elif route.intent == BotIntent.SHORTEN_URL:
-            await self.handlers["utility"].handle_shorten(message, payload["shorten"])
-        elif route.intent == BotIntent.DAILY_DIGEST:
-            await self.handlers["daily_digest"].handle_daily_digest(message)
-        elif route.intent == BotIntent.BIRTHDAY_EDIT:
-            await self.handlers["birthdays"].handle_birthday_edit(message, payload)
-        elif route.intent == BotIntent.SET_LOCATION:
-            await self._handle_set_location(message, payload["city"])
-        elif route.intent in (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_EXPORT, BotIntent.MEMORY_DELETE):
-            await self.handlers["memory"].handle_memory(message, payload.get("memory", {}))
-        elif route.intent == BotIntent.SEARCH:
-            await self._send_ai_response(message, forced_search_info=payload.get("search"))
-        elif route.intent == BotIntent.DASHBOARD:
-            await self._send_dashboard_response(message)
-        else:
-            await self._send_ai_response(message)
+            async def handle_profile_or_chat():
+                handled = await self.handlers["profile"].handle_profile_command(
+                    message
+                )
+                if not handled:
+                    await self._send_ai_response(
+                        message,
+                        reference_time=reference_time,
+                    )
 
-    async def _send_dashboard_response(self, message):
+            return await self._invoke_legacy_read(handle_profile_or_chat)
+        elif route.intent == BotIntent.CALENDAR_LIST:
+            return await self.handlers["calendar"].handle_list(
+                message,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_SYNC:
+            return await self.handlers["calendar"].handle_sync(
+                message,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_DELETE:
+            return await self.handlers["calendar"].handle_delete(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_COMPLETE:
+            return await self.handlers["calendar"].handle_complete(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_EDIT:
+            return await self.handlers["calendar"].handle_edit(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_SEARCH:
+            return await self.handlers["calendar"].handle_search(
+                message,
+                payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_CLEAR:
+            return await self.handlers["calendar"].handle_clear(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_ITEM:
+            return await self.handlers["calendar"].handle_calendar_item(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.CALENDAR_AUTH:
+            return await self.handlers["calendar"].handle_auth(
+                message,
+                payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.REMINDER_EDIT:
+            return await self.handlers["reminders"].handle_reminder_edit(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.REMINDER_DELETE:
+            return await self.handlers["reminders"].handle_reminder_delete(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.REMINDER_SEARCH:
+            return await self.handlers["reminders"].handle_reminder_search(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.REMINDER_CREATE:
+            return await self.handlers["reminders"].handle_reminder_create(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.REMINDER_LIST:
+            return await self.handlers["reminders"].handle_reminder_list(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.REMINDER_COMPLETE:
+            return await self.handlers["reminders"].handle_reminder_complete(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.POLL_CREATE:
+            return await self.handlers["polls"].handle_poll(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.POLL_VOTE:
+            return await self.handlers["polls"].handle_vote(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.POLL_EDIT:
+            return await self.handlers["polls"].handle_poll_edit(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.POLL_DELETE:
+            return await self.handlers["polls"].handle_poll_delete(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.POLL_CLOSE:
+            return await self.handlers["polls"].handle_poll_close(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.POLL_LIST:
+            return await self.handlers["polls"].handle_poll_list(
+                message,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.COUNTDOWN:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["countdown"].handle_countdown(
+                    message,
+                    payload.get("countdown"),
+                )
+            )
+        elif route.intent == BotIntent.WATCHLIST:
+            return await self.handlers["watchlist"].handle_watchlist(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.WORD_OF_DAY:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["fun"].handle_word_of_day(message)
+            )
+        elif route.intent == BotIntent.QUOTE:
+            return await self.handlers["fun"].handle_quote_command(
+                message,
+                typed_payload,
+            )
+        elif route.intent == BotIntent.QUOTE_LIST:
+            return await self.handlers["quotes"].handle_quote_list(
+                message,
+                typed_payload,
+            )
+        elif route.intent == BotIntent.QUOTE_EDIT:
+            return await self.handlers["quotes"].handle_quote_edit(
+                message,
+                typed_payload,
+            )
+        elif route.intent == BotIntent.QUOTE_DELETE:
+            return await self.handlers["quotes"].handle_quote_delete(
+                message,
+                typed_payload,
+            )
+        elif route.intent == BotIntent.AURORA:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["aurora"].handle_aurora(message)
+            )
+        elif route.intent == BotIntent.SCHOOL_HOLIDAYS:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["school_holidays"].handle_school_holidays(
+                    message
+                )
+            )
+        elif route.intent == BotIntent.PRICE:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["utility"].handle_price(
+                    message,
+                    payload.get("price"),
+                )
+            )
+        elif route.intent == BotIntent.HOROSCOPE:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["fun"].handle_horoscope(
+                    message,
+                    payload.get("horoscope"),
+                )
+            )
+        elif route.intent == BotIntent.COMPLIMENT:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["fun"].handle_compliment(
+                    message,
+                    payload.get("compliment"),
+                )
+            )
+        elif route.intent == BotIntent.CALCULATOR:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["utility"].handle_calculator(
+                    message,
+                    payload.get("calculator"),
+                )
+            )
+        elif route.intent == BotIntent.SHORTEN_URL:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["utility"].handle_shorten(
+                    message,
+                    payload.get("shorten"),
+                )
+            )
+        elif route.intent == BotIntent.DAILY_DIGEST:
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["daily_digest"].handle_daily_digest(message)
+            )
+        elif route.intent == BotIntent.BIRTHDAY_CREATE:
+            return await self.handlers["birthdays"].handle_birthday_create(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.BIRTHDAY_LIST:
+            return await self.handlers["birthdays"].handle_birthday_list(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.BIRTHDAY_EDIT:
+            return await self.handlers["birthdays"].handle_birthday_edit(
+                message,
+                typed_payload,
+                reference_time=reference_time,
+            )
+        elif route.intent == BotIntent.SET_LOCATION:
+            return await self._handle_set_location(
+                message,
+                payload.get("city"),
+                reference_time=reference_time,
+            )
+        elif route.intent in (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_EXPORT, BotIntent.MEMORY_DELETE):
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["memory"].handle_memory(
+                    message,
+                    payload.get("memory", {}),
+                )
+            )
+        elif route.intent == BotIntent.SEARCH:
+            return await self._invoke_legacy_read(
+                lambda: self._send_ai_response(
+                    message,
+                    forced_search_info=payload.get("search"),
+                    reference_time=reference_time,
+                )
+            )
+        elif route.intent == BotIntent.DASHBOARD:
+            return await self._invoke_legacy_read(
+                lambda: self._send_dashboard_response(
+                    message,
+                    reference_time=reference_time,
+                )
+            )
+        else:
+            return await self._invoke_legacy_read(
+                lambda: self._send_ai_response(
+                    message,
+                    reference_time=reference_time,
+                )
+            )
+
+    async def _send_dashboard_response(
+        self,
+        message,
+        *,
+        reference_time: datetime,
+    ):
         """Generate and send an explicit dashboard response."""
         guild_id = message.guild.id if message.guild else message.channel.id
         content_lower = message.content.lower()
@@ -644,10 +976,17 @@ class MessageMonitor:
                 for word in ["navnedag", "oppsummering", "brief", "status"]
             ),
             user_id=message.author.id,
+            reference_time=reference_time,
         )
         await self._send_response(message, response_text)
 
-    async def _send_ai_response(self, message, forced_search_info=None):
+    async def _send_ai_response(
+        self,
+        message,
+        forced_search_info=None,
+        *,
+        reference_time: datetime,
+    ):
         """
         Generate and send an AI response to a mention.
         Uses Hermes AI with personality system.
@@ -684,12 +1023,28 @@ class MessageMonitor:
             is_bot=False,
         )
 
-        # Update user memory
-        await self.user_memory.update_last_interaction(
-            message.author.id,
-            topic=self.conversation.get_conversation_summary(channel_id),
-            username=message.author.name,
-        )
+        # Conversation persistence is helpful context, but a local memory
+        # write failure must not turn an otherwise valid chat turn into
+        # command-style silence.  Cancellation still propagates separately.
+        try:
+            await self.user_memory.update_last_interaction_result(
+                message.author.id,
+                reference_time=reference_time,
+                topic=self.conversation.get_conversation_summary(channel_id),
+                username=message.author.name,
+            )
+        except ManagerMutationError as exc:
+            code = (
+                exc.code
+                if exc.code in {"storage_write_failed", "commit_state_unknown"}
+                else "commit_state_unknown"
+            )
+            print(f"[MONITOR] User-memory update degraded: {code}")
+        except Exception as exc:
+            print(
+                "[MONITOR] User-memory update degraded: "
+                f"{type(exc).__name__}"
+            )
 
         response_text = None
 
@@ -788,7 +1143,11 @@ class MessageMonitor:
                         if success and ai_response:
                             print("[MONITOR] Using personalized AI response")
                             # Parse and execute actions before sending
-                            response_text = await self._parse_and_execute_actions(ai_response, message)
+                            response_text = await self._parse_and_execute_actions(
+                                ai_response,
+                                message,
+                                reference_time=reference_time,
+                            )
                 except Exception as e:
                     print(f"[MONITOR] Personalized AI failed: {e}")
 
@@ -799,7 +1158,8 @@ class MessageMonitor:
                     guild_id, 
                     city_name=city_name, 
                     show_navnedag=show_navnedag,
-                    user_id=message.author.id
+                    user_id=message.author.id,
+                    reference_time=reference_time,
                 )
             else:
                 from ai.personality_config import get_fallback_response
@@ -808,7 +1168,13 @@ class MessageMonitor:
         # Send the response
         await self._send_response(message, response_text)
 
-    async def _parse_and_execute_actions(self, response_text, message):
+    async def _parse_and_execute_actions(
+        self,
+        response_text,
+        message,
+        *,
+        reference_time: datetime | None = None,
+    ):
         """
         Parses AI response for [ACTION] tags and executes them.
         Returns the cleaned response text.
@@ -836,10 +1202,17 @@ class MessageMonitor:
                         print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
                         try:
                             guild_id = message.guild.id if message.guild else message.channel.id
-                            user_mem = await self.user_memory.get_user(message.author.id)
+                            user_mem = (
+                                self.user_memory.snapshot_user(message.author.id)
+                                or {}
+                            )
                             city_name = user_mem.get("location", "Oslo")
 
-                            dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
+                            dashboard_text = await self._generate_dashboard(
+                                guild_id,
+                                city_name=city_name,
+                                reference_time=reference_time,
+                            )
                             await self._send_response(message, dashboard_text)
                         except Exception as e:
                             print(f"[ROUTER] Failed to show dashboard: {e}")
@@ -865,10 +1238,14 @@ class MessageMonitor:
             try:
                 guild_id = message.guild.id if message.guild else message.channel.id
                 # Get location from user memory
-                user_mem = await self.user_memory.get_user(message.author.id)
+                user_mem = self.user_memory.snapshot_user(message.author.id) or {}
                 city_name = user_mem.get("location", "Oslo")
                 
-                dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
+                dashboard_text = await self._generate_dashboard(
+                    guild_id,
+                    city_name=city_name,
+                    reference_time=reference_time,
+                )
                 await self._send_response(message, dashboard_text)
             except Exception as e:
                 print(f"[ROUTER] Failed to show dashboard: {e}")
@@ -896,22 +1273,116 @@ class MessageMonitor:
         )
         return f"{text}\n\n{draft}".strip() if text else draft
 
-    async def _handle_set_location(self, message, city):
-        """Handle setting the user's location."""
+    async def _handle_set_location(
+        self,
+        message,
+        city,
+        *,
+        reference_time: datetime,
+    ) -> DispatchOutcome:
+        """Persist one canonical city and report mutation/delivery truth."""
+        from features.weather_api import NORWEGIAN_CITIES
+
+        city_info = (
+            NORWEGIAN_CITIES.get(city.strip().lower())
+            if isinstance(city, str) and city.strip()
+            else None
+        )
+        if city_info is None:
+            response = (
+                f'❌ Beklager, jeg kjenner ikke til "{city or ""}" ennå. '
+                "Jeg kan foreløpig bare lagre norske byer."
+            )
+            base = DispatchOutcome.failure(
+                "unsupported_city",
+            )
+            try:
+                delivery = await self._send_response_result(message, response)
+            except MessageSendCancelled as exc:
+                raise DispatchCancelled(base.with_delivery(exc.result)) from None
+            return base.with_delivery(delivery)
+
+        known_manager_codes = {
+            "cancelled",
+            "commit_state_unknown",
+            "storage_write_failed",
+        }
+        prior_mutated = False
+
+        def manager_outcome(exc, *, cancelled: bool) -> DispatchOutcome:
+            code = getattr(exc, "code", "commit_state_unknown")
+            bounded = code if code in known_manager_codes else "commit_state_unknown"
+            mutated = prior_mutated or bool(getattr(exc, "mutated", False))
+            commit_unknown = bool(getattr(exc, "commit_unknown", False)) or (
+                bounded == "commit_state_unknown" and code not in known_manager_codes
+            )
+            retryable = (
+                bool(getattr(exc, "retryable", False))
+                if cancelled
+                else bounded == "storage_write_failed"
+            )
+            return DispatchOutcome.failure(
+                bounded,
+                mutated=mutated,
+                retryable=retryable and not mutated and not commit_unknown,
+                commit_unknown=commit_unknown,
+            )
+
         try:
-            from features.weather_api import NORWEGIAN_CITIES
-            city_info = NORWEGIAN_CITIES.get(city.lower())
-            
-            if city_info:
-                await self.user_memory.set_location(message.author.id, city_info['name'])
-                response = f"✅ Den er grei! Jeg har lagret at du bor i **{city_info['name']}**. Jeg skal bruke dette når jeg henter været for deg framover. 😊"
-            else:
-                response = f"❌ Beklager, jeg kjenner ikke til \"{city}\" ennå. Jeg kan foreløpig bare store norske byer."
-            
-            await self._send_response(message, response)
-        except Exception as e:
-            print(f"[MONITOR] Error setting location: {e}")
-            await self._send_response(message, "❌ Beklager, det oppstod en feil da jeg prøvde å lagre lokasjonen din.")
+            # Keep lazy user creation and the location update in one reentrant
+            # family lease so another task cannot make mutation attribution
+            # ambiguous between the two compatibility writes.
+            async with self.mutation_coordinator.hold(MEMORY_STORE_SCOPE):
+                existed = (
+                    self.user_memory.snapshot_user(message.author.id) is not None
+                )
+                await self.user_memory.get_or_create_user_result(
+                    message.author.id,
+                    message.author.name,
+                    reference_time=reference_time,
+                )
+                prior_mutated = not existed
+                changed = await self.user_memory.set_location_result(
+                    message.author.id,
+                    city_info["name"],
+                )
+        except ManagerMutationCancelled as exc:
+            raise DispatchCancelled(
+                manager_outcome(exc, cancelled=True)
+            ) from None
+        except ManagerMutationError as exc:
+            base = manager_outcome(exc, cancelled=False)
+            response = (
+                "❌ Beklager, det oppstod en feil da jeg prøvde å lagre "
+                "lokasjonen din."
+            )
+        except Exception as exc:
+            print(
+                "[MONITOR] Unexpected location mutation error: "
+                f"{type(exc).__name__}"
+            )
+            base = DispatchOutcome.failure(
+                "commit_state_unknown",
+                mutated=prior_mutated,
+                commit_unknown=True,
+            )
+            response = (
+                "❌ Beklager, det oppstod en feil da jeg prøvde å lagre "
+                "lokasjonen din."
+            )
+        else:
+            base = DispatchOutcome.success(mutated=prior_mutated or changed)
+            response = (
+                "✅ Den er grei! Jeg har lagret at du bor i "
+                f"**{city_info['name']}**. Jeg bruker dette når jeg henter "
+                "været for deg framover. 😊"
+            )
+
+        try:
+            delivery = await self._send_response_result(message, response)
+        except MessageSendCancelled as exc:
+            raise DispatchCancelled(base.with_delivery(exc.result)) from None
+        return base.with_delivery(delivery)
 
     def _is_status_command(self, content_lower):
         """Return True for bot health/status commands, not profile status changes."""
@@ -962,7 +1433,15 @@ class MessageMonitor:
             response_text += "\nIntent stats:\n" + "\n".join(intent_stats_lines)
         await self._send_response(message, response_text)
 
-    async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False, user_id: int = None) -> str:
+    async def _generate_dashboard(
+        self,
+        guild_id: int,
+        city_name: str = None,
+        show_navnedag: bool = False,
+        user_id: int = None,
+        *,
+        reference_time: datetime | None = None,
+    ) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
         from features.weather_api import METWeatherAPI, NORWEGIAN_CITIES
@@ -972,7 +1451,7 @@ class MessageMonitor:
         
         # If no city name provided, check user memory
         if not city_name and user_id:
-            user_mem = await self.user_memory.get_user(user_id)
+            user_mem = self.user_memory.snapshot_user(user_id) or {}
             if user_mem.get("location"):
                 city_name = user_mem["location"]
                 print(f"[MONITOR] Using stored location for dashboard: {city_name}")
@@ -1004,7 +1483,13 @@ class MessageMonitor:
                 "lon": city_info['lon']
             }
 
-        upcoming_items = self.calendar.get_upcoming(guild_id, days=7)
+        if reference_time is None:
+            reference_time = self.reminder_clock.now()
+        upcoming_items = self.calendar.get_upcoming(
+            guild_id,
+            days=7,
+            reference_time=reference_time,
+        )
 
         dashboard = self.conv_gen.generate_dashboard(
             weather_data=weather_formatted,
@@ -1016,38 +1501,57 @@ class MessageMonitor:
 
         return dashboard
 
-    async def _send_response(self, message, response_text):
-        """Send response with proper channel handling."""
+    def _record_monitor_delivery(
+        self,
+        message,
+        response_text: str,
+        result: MessageSendResult,
+    ) -> None:
+        if result.state is not DeliveryState.DELIVERED:
+            return
+        self.response_count += 1
+        author_name = getattr(getattr(message, "author", None), "name", "unknown")
+        print(
+            f"[MONITOR] Response sent to {author_name}: "
+            f"{response_text[:100]}..."
+        )
+        add_message = getattr(self.conversation, "add_message", None)
+        if callable(add_message):
+            try:
+                add_message(
+                    channel_id=message.channel.id,
+                    user_id=message.author.id,
+                    username="Inebotten",
+                    content=response_text,
+                    is_bot=True,
+                )
+            except Exception:
+                # Conversation history is contextual bookkeeping.  Once the
+                # Discord adapter has confirmed delivery it must not rewrite
+                # that truth or trigger an alternate response.
+                print("[MONITOR] Conversation response recording degraded")
+
+    async def _send_response_result(
+        self,
+        message,
+        response_text: str,
+    ) -> MessageSendResult:
+        """Delegate one response to the monitor-owned canonical sender."""
+        owned_send = asyncio.create_task(
+            self.discord_sender.send_result(message, response_text)
+        )
         try:
-            if not response_text:
-                print("[MONITOR] Warning: Attempted to send empty response. Skipping.")
-                return
+            result = await _settle_owned_send(owned_send)
+        except MessageSendCancelled as exc:
+            self._record_monitor_delivery(message, response_text, exc.result)
+            raise
+        self._record_monitor_delivery(message, response_text, result)
+        return result
 
-            if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.rate_limiter.record_sent()
-            self.response_count += 1
-            print(f"[MONITOR] Response sent to {message.author.name}: {response_text[:100]}...")
-
-            # Bind the bot turn to its initiating user so contextual lookups can
-            # fail closed when several users share a channel.
-            self.conversation.add_message(
-                channel_id=message.channel.id,
-                user_id=message.author.id,
-                username="Inebotten",
-                content=response_text,
-                is_bot=True,
-            )
-
-        except discord.errors.Forbidden:
-            print("[MONITOR] Forbidden: Cannot send message in this channel")
-            self.rate_limiter.record_failure()
-        except discord.errors.HTTPException as e:
-            print(f"[MONITOR] HTTP error sending message: {e}")
-            self.rate_limiter.record_failure(is_rate_limit=(e.status == 429))
+    async def _send_response(self, message, response_text):
+        """One-release projection over tri-state monitor delivery truth."""
+        result = await self._send_response_result(message, response_text)
+        return True if result.state is DeliveryState.DELIVERED else None
 
     def _get_channel_type(self, channel):
         """Get string representation of channel type"""
@@ -1342,19 +1846,19 @@ class SelfbotClient(discord.Client):
     def _create_reminder_checker(self):
         """Create a ReminderChecker wired to the bot's channels."""
         from cal_system.reminder_checker import ReminderChecker
-        from cal_system.calendar_manager import CalendarManager
-        from cal_system.reminder_manager import ReminderManager
 
-        calendar = self.monitor.calendar if self.monitor else CalendarManager()
-        reminders = ReminderManager()
+        if self.monitor is None:
+            return None
 
         def get_channel(channel_id: int):
             return self.get_channel(channel_id)
 
         return ReminderChecker(
-            calendar_manager=calendar,
-            reminder_manager=reminders,
+            calendar_manager=self.monitor.calendar,
+            reminder_manager=self.monitor.reminders,
             get_channel_func=get_channel,
+            clock=self.monitor.reminder_clock,
+            mutation_coordinator=self.monitor.mutation_coordinator,
         )
 
     def _setup_signal_handlers(self):

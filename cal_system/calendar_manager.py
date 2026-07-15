@@ -8,15 +8,78 @@ import json
 import re
 import uuid
 import asyncio
+import inspect
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from zoneinfo import ZoneInfo
 
+from cal_system.reminder_clock import ReminderClock, SystemReminderClock
+from cal_system.google_calendar_manager import (
+    ExternalOperationCancelled,
+    GoogleCalendarManager,
+)
+from core.dispatch_result import (
+    ExternalCommitState,
+    ExternalMutationResult,
+    ManagerMutationCancelled,
+    ManagerMutationError,
+)
+from core.mutation_coordinator import CALENDAR_SHARED_SCOPE, MutationCoordinator
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 OSLO = ZoneInfo("Europe/Oslo")
+_MISSING = object()
+_CANCEL_CODES = frozenset(
+    {
+        "external_commit_unknown",
+        "external_sync_pending",
+        "external_delete_pending",
+        "external_read_failed",
+        "cancelled_after_external_commit",
+        "cancelled_after_external_read",
+        "cancelled_after_credential_refresh",
+        "external_state_changed_storage_failed",
+        "commit_state_unknown",
+        "not_configured",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarSyncResult:
+    ok: bool
+    mutated: bool
+    added: int = 0
+    updated: int = 0
+    removed: int = 0
+    error_code: str | None = None
+    commit_unknown: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _SettledExternal:
+    result: ExternalMutationResult
+    cancelled: bool = False
+
+    @property
+    def ok(self):
+        return self.result.ok
+
+    @property
+    def state(self):
+        return self.result.state
+
+    @property
+    def value(self):
+        return self.result.value
+
+    @property
+    def error_code(self):
+        return self.result.error_code
 
 
 class AwaitableDict(dict):
@@ -78,43 +141,76 @@ class CalendarManager:
     Manages calendar items - everything is just something happening on a date
     """
 
-    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None):
+    SHARED_KEY = "shared"
+
+    def __init__(
+        self,
+        storage_path=None,
+        gcal_manager=None,
+        owner_email=None,
+        owner_name=None,
+        *,
+        clock: ReminderClock | None = None,
+        mutation_coordinator: MutationCoordinator | None = None,
+    ):
         if storage_path is None:
             storage_path = hermes_discord_data_path("calendar.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.gcal = gcal_manager
-        self.gcal_enabled = gcal_manager is not None
+        self.clock = clock or SystemReminderClock()
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
         self.owner_email = owner_email
         self.owner_name = owner_name
         self.last_gcal_sync_error = None
-        self.SHARED_KEY = "shared"
         self.items = {}  # Will be transitioned to {self.SHARED_KEY: [...]}
 
-    def ensure_gcal_configured(self):
-        """Refresh or lazily initialize Google Calendar integration."""
-        if self.gcal and self.gcal.is_configured():
-            self.gcal_enabled = True
-            return True
+    @property
+    def gcal_enabled(self) -> bool:
+        """Compatibility view over the injected manager's live state."""
+        if self.gcal is None:
+            return False
+        enabled = getattr(self.gcal, "enabled", None)
+        if enabled is not None:
+            return bool(enabled)
+        configured = getattr(self.gcal, "is_configured", None)
+        return bool(configured()) if callable(configured) else True
 
-        try:
-            from cal_system.google_calendar_manager import GoogleCalendarManager
+    @gcal_enabled.setter
+    def gcal_enabled(self, value: bool) -> None:
+        # Compatibility for old tests which explicitly disable a fake.  Real
+        # configured managers remain the source of truth.
+        if self.gcal is None and value:
+            raise AttributeError("missing_gcal_manager")
 
-            gcal = GoogleCalendarManager()
-            if gcal.is_configured():
-                self.gcal = gcal
-                self.gcal_enabled = True
-                return True
-        except Exception as e:
-            print(f"[CAL] Google Calendar init failed: {e}")
-
-        self.gcal_enabled = False
-        return False
+    async def ensure_gcal_configured(self) -> ExternalMutationResult:
+        """Refresh the one injected Google Calendar manager in place."""
+        if self.gcal is None:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            )
+        refresh = getattr(self.gcal, "refresh_configuration_result", None)
+        if callable(refresh):
+            return await refresh()
+        if self.gcal_enabled:
+            return ExternalMutationResult(
+                True,
+                ExternalCommitState.UNCHANGED,
+                value=True,
+            )
+        return ExternalMutationResult(
+            False,
+            ExternalCommitState.UNCHANGED,
+            error_code="not_configured",
+        )
 
     async def setup(self):
         """Async initialization and migration to shared calendar"""
-        self.items = await self._load_data()
+        loaded = await self._load_data()
+        self.items = loaded
         
         # Migration to shared calendar if multiple buckets exist or if only old guild-specific buckets exist
         keys = list(self.items.keys())
@@ -130,8 +226,9 @@ class CalendarManager:
                         merged.append(item)
                         seen_ids.add(item.get("id"))
             
-            self.items = {self.SHARED_KEY: merged}
-            await self._save_data()
+            candidate = {self.SHARED_KEY: merged}
+            async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+                await self._persist_candidate(candidate)
             print(f"[CAL] Migration complete: {len(merged)} items moved to '{self.SHARED_KEY}'")
             
         print(f"[CAL] Calendar system initialized with {sum(len(v) for v in self.items.values())} items")
@@ -151,16 +248,946 @@ class CalendarManager:
 
         return await asyncio.to_thread(_read)
 
-    async def _save_data(self):
+    async def _save_data(self, candidate=None):
         """Save calendar data to JSON file atomically and asynchronously"""
-        await asyncio.to_thread(self._save_data_sync)
+        await asyncio.to_thread(
+            self._save_data_sync,
+            self.items if candidate is None else candidate,
+        )
 
-    def _save_data_sync(self):
+    def _save_data_sync(self, candidate=None):
         """Save calendar data to JSON file atomically."""
+        write_json_atomic(
+            self.storage_path,
+            self.items if candidate is None else candidate,
+            indent=2,
+        )
+
+    @staticmethod
+    def _require_aware(reference_time: datetime) -> datetime:
+        if reference_time.tzinfo is None or reference_time.utcoffset() is None:
+            raise ValueError("reference_time_must_be_aware")
+        return reference_time
+
+    async def _persist_candidate(
+        self,
+        candidate: dict[str, list[dict[str, Any]]],
+        *,
+        mutated_if_cancelled: bool = True,
+    ) -> None:
+        """Persist a detached root and publish only after known completion."""
+        writer = asyncio.create_task(
+            asyncio.to_thread(self._save_data_sync, candidate)
+        )
+        outer_cancelled = False
+        while True:
+            try:
+                await asyncio.shield(writer)
+                break
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is None or current.cancelling() == 0:
+                    raise ManagerMutationError(
+                        "commit_state_unknown",
+                        mutated=False,
+                        commit_unknown=True,
+                    )
+                outer_cancelled = True
+                current.uncancel()
+                if writer.done():
+                    # Record outer cancellation first, then settle the writer's
+                    # independently known result.
+                    try:
+                        writer.result()
+                    except asyncio.CancelledError as exc:
+                        raise ManagerMutationCancelled(
+                            "commit_state_unknown",
+                            mutated=False,
+                            retryable=False,
+                            commit_unknown=True,
+                        ) from exc
+                    except Exception as exc:
+                        raise ManagerMutationCancelled(
+                            "storage_write_failed",
+                            mutated=False,
+                            retryable=True,
+                        ) from exc
+                    break
+                continue
+            except Exception as exc:
+                if outer_cancelled:
+                    raise ManagerMutationCancelled(
+                        "storage_write_failed",
+                        mutated=False,
+                        retryable=True,
+                    ) from exc
+                raise ManagerMutationError(
+                    "storage_write_failed",
+                    mutated=False,
+                ) from exc
+
+        if writer.cancelled():
+            raise ManagerMutationError(
+                "commit_state_unknown",
+                mutated=False,
+                commit_unknown=True,
+            )
+        failure = writer.exception()
+        if failure is not None:
+            if outer_cancelled:
+                raise ManagerMutationCancelled(
+                    "storage_write_failed",
+                    mutated=False,
+                    retryable=True,
+                ) from failure
+            raise ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            ) from failure
+
+        self.items = candidate
+        if outer_cancelled:
+            raise ManagerMutationCancelled(
+                "cancelled_after_storage_commit",
+                mutated=mutated_if_cancelled,
+                retryable=False,
+            )
+
+    @staticmethod
+    def _run_offline(factory):
         try:
-            write_json_atomic(self.storage_path, self.items, indent=2)
-        except Exception as e:
-            print(f"[CAL] Error saving calendar data: {e}")
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(factory())
+        raise RuntimeError("use_async_result_api")
+
+    @staticmethod
+    def _external_result_from_legacy(
+        value,
+        *,
+        mutation: bool,
+        expected: str | None = None,
+    ) -> ExternalMutationResult:
+        if isinstance(value, ExternalMutationResult):
+            return value
+        if mutation:
+            valid = (
+                value is True
+                if expected == "bool"
+                else isinstance(value, dict) and bool(value.get("id"))
+            )
+            if valid:
+                return ExternalMutationResult(
+                    True,
+                    ExternalCommitState.CHANGED,
+                    value=value,
+                )
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNKNOWN,
+                error_code="external_commit_unknown",
+            )
+        if value is None:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="external_read_failed",
+            )
+        return ExternalMutationResult(
+            True,
+            ExternalCommitState.UNCHANGED,
+            value=value,
+        )
+
+    async def _call_gcal(self, result_name: str, legacy_name: str, *args, **kwargs):
+        if self.gcal is None:
+            return ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            )
+        result_method = getattr(self.gcal, result_name, None)
+        mutation = result_name not in {
+            "list_upcoming_events_result",
+            "get_event_result",
+        }
+        expected = (
+            "bool"
+            if result_name == "delete_event_result"
+            else ("dict" if mutation else None)
+        )
+
+        def normalize(result):
+            if not isinstance(result, ExternalMutationResult):
+                return self._external_result_from_legacy(
+                    result,
+                    mutation=mutation,
+                    expected=expected,
+                )
+            if mutation and result.ok:
+                valid = (
+                    result.value is True
+                    if expected == "bool"
+                    else isinstance(result.value, dict)
+                    and bool(result.value.get("id"))
+                )
+                if result.state is not ExternalCommitState.CHANGED or not valid:
+                    return ExternalMutationResult(
+                        False,
+                        ExternalCommitState.UNKNOWN,
+                        error_code="external_commit_unknown",
+                    )
+            return result
+
+        def compatible_kwargs(method):
+            """Drop only the new optional clock keyword for old test/fake APIs."""
+            if "reference_time" not in kwargs:
+                return kwargs
+            try:
+                parameters = inspect.signature(method).parameters.values()
+            except (TypeError, ValueError):
+                return kwargs
+            if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+                return kwargs
+            if any(parameter.name == "reference_time" for parameter in parameters):
+                return kwargs
+            compatible = dict(kwargs)
+            compatible.pop("reference_time")
+            return compatible
+
+        if callable(result_method):
+            try:
+                result = result_method(
+                    *args,
+                    **compatible_kwargs(result_method),
+                )
+                if hasattr(result, "__await__"):
+                    result = await result
+                result = normalize(result)
+                return _SettledExternal(result)
+            except ExternalOperationCancelled as exc:
+                return _SettledExternal(normalize(exc.result), cancelled=True)
+            except Exception:
+                return _SettledExternal(
+                    ExternalMutationResult(
+                        False,
+                        (
+                            ExternalCommitState.UNKNOWN
+                            if mutation
+                            else ExternalCommitState.UNCHANGED
+                        ),
+                        error_code=(
+                            "external_commit_unknown"
+                            if mutation
+                            else "external_read_failed"
+                        ),
+                    )
+                )
+        legacy = getattr(self.gcal, legacy_name, None)
+        if not callable(legacy):
+            return _SettledExternal(
+                ExternalMutationResult(
+                    False,
+                    (
+                        ExternalCommitState.UNKNOWN
+                        if mutation
+                        else ExternalCommitState.UNCHANGED
+                    ),
+                    error_code=(
+                        "external_commit_unknown"
+                        if mutation
+                        else "external_read_failed"
+                    ),
+                )
+            )
+        try:
+            value = await GoogleCalendarManager._await_worker(
+                legacy,
+                *args,
+                **compatible_kwargs(legacy),
+            )
+        except ExternalOperationCancelled as exc:
+            return _SettledExternal(normalize(exc.result), cancelled=True)
+        except Exception:
+            return _SettledExternal(
+                ExternalMutationResult(
+                    False,
+                    (
+                        ExternalCommitState.UNKNOWN
+                        if mutation
+                        else ExternalCommitState.UNCHANGED
+                    ),
+                    error_code=(
+                        "external_commit_unknown"
+                        if mutation
+                        else "external_read_failed"
+                    ),
+                )
+            )
+        return _SettledExternal(normalize(value))
+
+    @staticmethod
+    def _raise_external_cancellation(
+        external: _SettledExternal,
+        *,
+        mutated: bool,
+        default_code: str,
+    ) -> None:
+        if not external.cancelled:
+            return
+        if external.state is ExternalCommitState.UNKNOWN:
+            raise ManagerMutationCancelled(
+                "external_commit_unknown",
+                mutated=mutated,
+                retryable=False,
+                commit_unknown=True,
+            )
+        code = (
+            default_code
+            if default_code in _CANCEL_CODES
+            else "cancelled_after_external_commit"
+        )
+        raise ManagerMutationCancelled(
+            code,
+            mutated=mutated,
+            retryable=False,
+        )
+
+    @staticmethod
+    def _translate_post_external_cancel(
+        exc: ManagerMutationCancelled,
+    ) -> ManagerMutationCancelled:
+        if exc.commit_unknown:
+            return ManagerMutationCancelled(
+                "commit_state_unknown",
+                mutated=True,
+                retryable=False,
+                commit_unknown=True,
+            )
+        if exc.mutated:
+            return ManagerMutationCancelled(
+                "cancelled_after_external_commit",
+                mutated=True,
+                retryable=False,
+            )
+        return ManagerMutationCancelled(
+            "external_state_changed_storage_failed",
+            mutated=True,
+            retryable=False,
+        )
+
+    @staticmethod
+    def _translate_cancelled_external_storage_error(exc):
+        return ManagerMutationCancelled(
+            (
+                "commit_state_unknown"
+                if exc.commit_unknown
+                else "external_state_changed_storage_failed"
+            ),
+            mutated=True,
+            retryable=False,
+            commit_unknown=exc.commit_unknown,
+        )
+
+    def _event_times(self, date_str: str, time_str: str | None) -> tuple[str, str]:
+        day, month, year = date_str.split(".")
+        hour, minute = (time_str or "12:00").split(":")
+        start = datetime(
+            int(year),
+            int(month),
+            int(day),
+            int(hour),
+            int(minute),
+            tzinfo=OSLO,
+        )
+        return start.isoformat(), (start + timedelta(hours=1)).isoformat()
+
+    def _validate_item_state(self, item: dict[str, Any]) -> None:
+        title = item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("invalid_title")
+        if not self._validate_date_format(item.get("date")):
+            raise ValueError("invalid_date")
+        time_value = item.get("time")
+        if time_value is not None:
+            try:
+                datetime.strptime(time_value, "%H:%M")
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid_time") from exc
+        recurrence = item.get("recurrence")
+        if recurrence not in {None, "daily", "weekly", "biweekly", "monthly", "yearly"}:
+            raise ValueError("invalid_recurrence")
+        if item.get("type", "event") not in {"event", "task"}:
+            raise ValueError("invalid_item_type")
+        description = item.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError("invalid_description")
+
+    async def add_item_result(
+        self,
+        guild_id,
+        user_id,
+        username,
+        title,
+        date_str,
+        time_str=None,
+        recurrence=None,
+        recurrence_day=None,
+        *,
+        channel_id=None,
+        item_type="event",
+        description=None,
+        rrule_day=None,
+        reference_time: datetime,
+        gcal_event_id=None,
+        gcal_link=None,
+    ) -> dict[str, Any]:
+        """Create one durable record, then settle optional external sync."""
+        reference_time = self._require_aware(reference_time)
+        normalized_date = self._normalize_date_format(date_str)
+        if not self._validate_date_format(normalized_date):
+            raise ValueError("invalid_date")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("invalid_title")
+        if item_type not in {"event", "task"}:
+            raise ValueError("invalid_item_type")
+
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            candidate = deepcopy(self.items)
+            bucket = candidate.setdefault(self.SHARED_KEY, [])
+            wants_external = bool(
+                self.gcal_enabled and gcal_event_id is None
+            )
+            item = {
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "username": username,
+                "title": title.strip(),
+                "date": normalized_date,
+                "time": time_str,
+                "type": item_type,
+                "description": description,
+                "recurrence": recurrence,
+                "recurrence_day": recurrence_day,
+                "rrule_day": rrule_day,
+                "created_at": reference_time.isoformat(),
+                "completed": False,
+                "gcal_event_id": gcal_event_id,
+                "gcal_link": gcal_link,
+                "gcal_sync_pending": wants_external,
+                "channel_id": str(channel_id) if channel_id is not None else None,
+            }
+            self._validate_item_state(item)
+            bucket.append(item)
+            await self._persist_candidate(candidate)
+
+            if not wants_external:
+                return deepcopy(item)
+
+            start_time, end_time = self._event_times(normalized_date, time_str)
+            external = await self._call_gcal(
+                "create_event_result",
+                "create_event",
+                title.strip(),
+                start_time,
+                end_time,
+                description,
+                None,
+                None,
+                recurrence,
+                rrule_day or recurrence_day,
+                user_id,
+                username,
+            )
+            if external.state is ExternalCommitState.UNKNOWN:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_commit_unknown",
+                )
+                raise ManagerMutationError(
+                    "external_commit_unknown",
+                    mutated=True,
+                    commit_unknown=True,
+                )
+            if not external.ok or external.state is not ExternalCommitState.CHANGED:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_sync_pending",
+                )
+                raise ManagerMutationError(
+                    "external_sync_pending",
+                    mutated=True,
+                )
+
+            value = external.value if isinstance(external.value, dict) else {}
+            final_candidate = deepcopy(self.items)
+            final_item = self._find_item(final_candidate, item["id"])
+            final_item["gcal_event_id"] = value.get("id")
+            final_item["gcal_link"] = value.get("htmlLink")
+            final_item["gcal_sync_pending"] = False
+            try:
+                await self._persist_candidate(final_candidate)
+            except ManagerMutationCancelled as exc:
+                raise self._translate_post_external_cancel(exc) from exc
+            except ManagerMutationError as exc:
+                if external.cancelled:
+                    raise self._translate_cancelled_external_storage_error(exc) from exc
+                raise ManagerMutationError(
+                    "external_state_changed_storage_failed",
+                    mutated=True,
+                ) from exc
+            self._raise_external_cancellation(
+                external,
+                mutated=True,
+                default_code="cancelled_after_external_commit",
+            )
+            return deepcopy(final_item)
+
+    @staticmethod
+    def _find_item(candidate, item_id):
+        for item in candidate.get(CalendarManager.SHARED_KEY, []):
+            if item.get("id") == item_id:
+                return item
+        raise ValueError("not_found")
+
+    async def edit_item_result(
+        self,
+        *,
+        item_id,
+        reference_time: datetime,
+        title=None,
+        date=None,
+        time=None,
+        recurrence=_MISSING,
+        description=None,
+        type=None,
+    ) -> dict[str, Any]:
+        reference_time = self._require_aware(reference_time)
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            candidate = deepcopy(self.items)
+            item = self._find_item(candidate, item_id)
+            self._apply_item_updates(
+                item,
+                title,
+                date,
+                time,
+                recurrence,
+                description,
+                item_type=type,
+            )
+            self._validate_item_state(item)
+            item["updated_at"] = reference_time.isoformat()
+            wants_external = bool(self.gcal_enabled and item.get("gcal_event_id"))
+            if wants_external:
+                item["gcal_sync_pending"] = True
+            await self._persist_candidate(candidate)
+            if not wants_external:
+                return deepcopy(item)
+
+            external = await self._call_gcal(
+                "update_event_result",
+                "update_event",
+                item["gcal_event_id"],
+                item.get("title"),
+                item.get("description"),
+                False,
+                item.get("date"),
+                item.get("time"),
+                item.get("recurrence"),
+                item.get("rrule_day") or item.get("recurrence_day"),
+            )
+            if external.state is ExternalCommitState.UNKNOWN:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_commit_unknown",
+                )
+                raise ManagerMutationError(
+                    "external_commit_unknown",
+                    mutated=True,
+                    commit_unknown=True,
+                )
+            if not external.ok or external.state is not ExternalCommitState.CHANGED:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_sync_pending",
+                )
+                raise ManagerMutationError("external_sync_pending", mutated=True)
+
+            final_candidate = deepcopy(self.items)
+            final_item = self._find_item(final_candidate, item_id)
+            if isinstance(external.value, dict):
+                final_item["gcal_event_id"] = (
+                    external.value.get("id") or final_item.get("gcal_event_id")
+                )
+                final_item["gcal_link"] = (
+                    external.value.get("htmlLink") or final_item.get("gcal_link")
+                )
+            final_item["gcal_sync_pending"] = False
+            try:
+                await self._persist_candidate(final_candidate)
+            except ManagerMutationCancelled as exc:
+                raise self._translate_post_external_cancel(exc) from exc
+            except ManagerMutationError as exc:
+                if external.cancelled:
+                    raise self._translate_cancelled_external_storage_error(exc) from exc
+                raise ManagerMutationError(
+                    "external_state_changed_storage_failed",
+                    mutated=True,
+                ) from exc
+            self._raise_external_cancellation(
+                external,
+                mutated=True,
+                default_code="cancelled_after_external_commit",
+            )
+            return deepcopy(final_item)
+
+    async def complete_item_result(
+        self,
+        guild_id,
+        *,
+        item_id,
+        reference_time: datetime,
+    ) -> tuple[bool, str | None, str | None]:
+        reference_time = self._require_aware(reference_time)
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            candidate = deepcopy(self.items)
+            item = self._find_item(candidate, item_id)
+            title = item.get("title")
+            next_date = None
+            if item.get("recurrence"):
+                next_date = self._calculate_next_date(
+                    item.get("date"), item.get("recurrence")
+                )
+                if not next_date:
+                    raise ValueError("invalid_recurrence")
+                item["date"] = next_date
+            else:
+                item["completed"] = True
+            self._validate_item_state(item)
+            item["updated_at"] = reference_time.isoformat()
+            wants_external = bool(self.gcal_enabled and item.get("gcal_event_id"))
+            if wants_external:
+                item["gcal_sync_pending"] = True
+            await self._persist_candidate(candidate)
+            if not wants_external:
+                return True, title, next_date
+
+            external = await self._call_gcal(
+                "update_event_result",
+                "update_event",
+                item["gcal_event_id"],
+                item.get("title"),
+                item.get("description"),
+                not bool(item.get("recurrence")),
+                item.get("date") if item.get("recurrence") else None,
+                item.get("time"),
+                item.get("recurrence"),
+                item.get("rrule_day") or item.get("recurrence_day"),
+            )
+            if external.state is ExternalCommitState.UNKNOWN:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_commit_unknown",
+                )
+                raise ManagerMutationError(
+                    "external_commit_unknown",
+                    mutated=True,
+                    commit_unknown=True,
+                )
+            if not external.ok or external.state is not ExternalCommitState.CHANGED:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_sync_pending",
+                )
+                raise ManagerMutationError("external_sync_pending", mutated=True)
+            final_candidate = deepcopy(self.items)
+            final_item = self._find_item(final_candidate, item_id)
+            final_item["gcal_sync_pending"] = False
+            try:
+                await self._persist_candidate(final_candidate)
+            except ManagerMutationCancelled as exc:
+                raise self._translate_post_external_cancel(exc) from exc
+            except ManagerMutationError as exc:
+                if external.cancelled:
+                    raise self._translate_cancelled_external_storage_error(exc) from exc
+                raise ManagerMutationError(
+                    "external_state_changed_storage_failed",
+                    mutated=True,
+                ) from exc
+            self._raise_external_cancellation(
+                external,
+                mutated=True,
+                default_code="cancelled_after_external_commit",
+            )
+            return True, title, next_date
+
+    @staticmethod
+    def _delete_result(*, title=None, requested=0, deleted=0, pending=0):
+        return CalendarDeleteResult(
+            {
+                "success": bool(deleted) and not pending,
+                "title": title,
+                "requested_count": requested,
+                "deleted_count": deleted,
+                "deleted_titles": [title] if deleted and title else [],
+                "pending_count": pending,
+                "pending_titles": [title] if pending and title else [],
+                "pending_errors": ({title: "external_delete_pending"} if pending and title else {}),
+            }
+        )
+
+    async def delete_item_result(
+        self,
+        guild_id,
+        *,
+        item_id,
+        reference_time: datetime,
+    ) -> CalendarDeleteResult:
+        reference_time = self._require_aware(reference_time)
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            try:
+                current = self._find_item(self.items, item_id)
+            except ValueError:
+                return self._delete_result(requested=0)
+            title = current.get("title", "Uten tittel")
+            wants_external = bool(self.gcal_enabled and current.get("gcal_event_id"))
+            if not wants_external:
+                candidate = deepcopy(self.items)
+                candidate[self.SHARED_KEY] = [
+                    row
+                    for row in candidate.get(self.SHARED_KEY, [])
+                    if row.get("id") != item_id
+                ]
+                await self._persist_candidate(candidate)
+                return self._delete_result(
+                    title=title,
+                    requested=1,
+                    deleted=1,
+                )
+
+            pending_candidate = deepcopy(self.items)
+            pending_item = self._find_item(pending_candidate, item_id)
+            self._mark_delete_pending(
+                pending_item,
+                "external_delete_pending",
+                reference_time.isoformat(),
+            )
+            await self._persist_candidate(pending_candidate)
+            external = await self._call_gcal(
+                "delete_event_result",
+                "delete_event",
+                pending_item["gcal_event_id"],
+            )
+            authoritative_absence = (
+                external.state is ExternalCommitState.UNCHANGED
+                and external.error_code == "external_not_found"
+            )
+            if (
+                external.ok
+                and external.state is ExternalCommitState.CHANGED
+            ) or authoritative_absence:
+                final_candidate = deepcopy(self.items)
+                final_candidate[self.SHARED_KEY] = [
+                    row
+                    for row in final_candidate.get(self.SHARED_KEY, [])
+                    if row.get("id") != item_id
+                ]
+                try:
+                    await self._persist_candidate(final_candidate)
+                except ManagerMutationCancelled as exc:
+                    raise self._translate_post_external_cancel(exc) from exc
+                except ManagerMutationError as exc:
+                    if external.cancelled:
+                        raise self._translate_cancelled_external_storage_error(exc) from exc
+                    raise ManagerMutationError(
+                        (
+                            "external_state_changed_storage_failed"
+                            if external.ok
+                            else "storage_write_failed"
+                        ),
+                        mutated=True,
+                    ) from exc
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="cancelled_after_external_commit",
+                )
+                return self._delete_result(
+                    title=title,
+                    requested=1,
+                    deleted=1,
+                )
+            if external.state is ExternalCommitState.UNKNOWN:
+                self._raise_external_cancellation(
+                    external,
+                    mutated=True,
+                    default_code="external_commit_unknown",
+                )
+                raise ManagerMutationError(
+                    "external_commit_unknown",
+                    mutated=True,
+                    commit_unknown=True,
+                )
+            self._raise_external_cancellation(
+                external,
+                mutated=True,
+                default_code="external_delete_pending",
+            )
+            return self._delete_result(
+                title=title,
+                requested=1,
+                pending=1,
+            )
+
+    async def clear_calendar_result(
+        self,
+        guild_id,
+        *,
+        reference_time: datetime,
+    ) -> dict[str, Any]:
+        reference_time = self._require_aware(reference_time)
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            current_items = deepcopy(self.items.get(self.SHARED_KEY, []))
+            if not current_items:
+                return {
+                    "requested_count": 0,
+                    "deleted_count": 0,
+                    "failed_count": 0,
+                    "pending_titles": [],
+                }
+
+            external_items = [
+                row
+                for row in current_items
+                if self.gcal_enabled and row.get("gcal_event_id")
+            ]
+            if external_items:
+                pending_candidate = deepcopy(self.items)
+                for row in pending_candidate.get(self.SHARED_KEY, []):
+                    if row.get("gcal_event_id"):
+                        self._mark_delete_pending(
+                            row,
+                            "external_delete_pending",
+                            reference_time.isoformat(),
+                        )
+                await self._persist_candidate(pending_candidate)
+
+            deleted_ids = {
+                row.get("id")
+                for row in current_items
+                if row not in external_items
+            }
+            pending_titles: list[str] = []
+            commit_unknown = False
+            external_changed = False
+            cancelled_external = None
+            for index, row in enumerate(external_items):
+                external = await self._call_gcal(
+                    "delete_event_result",
+                    "delete_event",
+                    row["gcal_event_id"],
+                )
+                authoritative_absence = (
+                    external.state is ExternalCommitState.UNCHANGED
+                    and external.error_code == "external_not_found"
+                )
+                if (
+                    external.ok
+                    and external.state is ExternalCommitState.CHANGED
+                ) or authoritative_absence:
+                    deleted_ids.add(row.get("id"))
+                    external_changed = external_changed or external.ok
+                else:
+                    pending_titles.append(row.get("title", "Uten tittel"))
+                    commit_unknown = (
+                        commit_unknown
+                        or external.state is ExternalCommitState.UNKNOWN
+                    )
+                if external.cancelled:
+                    cancelled_external = external
+                    pending_titles.extend(
+                        item.get("title", "Uten tittel")
+                        for item in external_items[index + 1 :]
+                    )
+                    break
+
+            final_candidate = deepcopy(self.items)
+            final_candidate[self.SHARED_KEY] = [
+                row
+                for row in final_candidate.get(self.SHARED_KEY, [])
+                if row.get("id") not in deleted_ids
+            ]
+            # A local-only clear still needs exactly one durable publish.
+            if final_candidate != self.items:
+                try:
+                    await self._persist_candidate(final_candidate)
+                except ManagerMutationCancelled as exc:
+                    if commit_unknown:
+                        raise ManagerMutationCancelled(
+                            "external_commit_unknown",
+                            mutated=True,
+                            retryable=False,
+                            commit_unknown=True,
+                        ) from exc
+                    raise self._translate_post_external_cancel(exc) from exc
+                except ManagerMutationError as exc:
+                    if commit_unknown:
+                        if cancelled_external is not None:
+                            raise ManagerMutationCancelled(
+                                "external_commit_unknown",
+                                mutated=True,
+                                retryable=False,
+                                commit_unknown=True,
+                            ) from exc
+                        raise ManagerMutationError(
+                            "external_commit_unknown",
+                            mutated=True,
+                            commit_unknown=True,
+                        ) from exc
+                    if cancelled_external is not None:
+                        raise self._translate_cancelled_external_storage_error(exc) from exc
+                    if external_changed:
+                        raise ManagerMutationError(
+                            "external_state_changed_storage_failed",
+                            mutated=True,
+                        ) from exc
+                    if external_items:
+                        raise ManagerMutationError(
+                            "storage_write_failed",
+                            mutated=True,
+                        ) from exc
+                    raise
+            if commit_unknown:
+                if cancelled_external is not None:
+                    raise ManagerMutationCancelled(
+                        "external_commit_unknown",
+                        mutated=True,
+                        retryable=False,
+                        commit_unknown=True,
+                    )
+                raise ManagerMutationError(
+                    "external_commit_unknown",
+                    mutated=bool(external_items),
+                    commit_unknown=True,
+                )
+            if cancelled_external is not None:
+                self._raise_external_cancellation(
+                    cancelled_external,
+                    mutated=True,
+                    default_code="external_delete_pending",
+                )
+            return {
+                "requested_count": len(current_items),
+                "deleted_count": len(deleted_ids),
+                "failed_count": len(pending_titles),
+                "pending_titles": pending_titles,
+            }
 
     def add_item(
         self,
@@ -175,33 +1202,31 @@ class CalendarManager:
         gcal_event_id=None,
         gcal_link=None,
         channel_id=None,
+        item_type="event",
+        description=None,
+        rrule_day=None,
     ):
-        """Add a new item to the calendar"""
-        date_str = self._normalize_date_format(date_str)
-
-        guild_key = self.SHARED_KEY
-        if guild_key not in self.items:
-            self.items[guild_key] = []
-
-        item = {
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "username": username,
-            "title": title,
-            "date": date_str,
-            "time": time_str,
-            "recurrence": recurrence,
-            "recurrence_day": recurrence_day,
-            "created_at": datetime.now().isoformat(),
-            "completed": False,
-            "gcal_event_id": gcal_event_id,
-            "gcal_link": gcal_link,
-            "channel_id": str(channel_id) if channel_id else None,
-        }
-
-        self.items[guild_key].append(item)
-        self._save_data_sync()
-        return AwaitableDict(item)
+        """Offline compatibility projection over ``add_item_result``."""
+        result = self._run_offline(
+            lambda: self.add_item_result(
+                guild_id,
+                user_id,
+                username,
+                title,
+                date_str,
+                time_str,
+                recurrence,
+                recurrence_day,
+                channel_id=channel_id,
+                item_type=item_type,
+                description=description,
+                rrule_day=rrule_day,
+                reference_time=self.clock.now(),
+                gcal_event_id=gcal_event_id,
+                gcal_link=gcal_link,
+            )
+        )
+        return AwaitableDict(result)
 
     def _mark_delete_pending(self, item, error=None, now=None):
         now = now or datetime.now().isoformat()
@@ -210,67 +1235,20 @@ class CalendarManager:
         item["delete_last_attempt_at"] = now
         item["delete_error"] = error or "Google Calendar deletion returned false"
 
-    def _delete_from_gcal_or_mark_pending(self, item, *, now=None, context="delete"):
-        if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
-            return True
-
-        delete_ok = False
-        error = None
-        try:
-            delete_ok = bool(self.gcal.delete_event(item["gcal_event_id"]))
-        except Exception as e:
-            error = str(e)
-
-        if not delete_ok:
-            title = item.get("title", "Uten tittel")
-            self._mark_delete_pending(item, error, now)
-            print(f"[CAL] GCal {context} failed for {title}: {item['delete_error']}")
-            return False
-
-        print(f"[CAL] Deleted from GCal: {item.get('title', 'Uten tittel')}")
-        return True
-
-    def _delete_item_record(self, guild_key, item_id):
-        self.items[guild_key] = [
-            i for i in self.items.get(guild_key, []) if i.get("id") != item_id
-        ]
-
-    def _delete_one_item(self, guild_key, item_to_delete, *, now=None):
-        title = item_to_delete.get("title", "Uten tittel")
-        requested = CalendarDeleteResult(
-            {
-                "success": False,
-                "title": title,
-                "requested_count": 1,
-                "deleted_count": 0,
-                "deleted_titles": [],
-                "pending_count": 0,
-                "pending_titles": [],
-                "pending_errors": {},
-            }
-        )
-
-        if not self._delete_from_gcal_or_mark_pending(item_to_delete, now=now):
-            requested["pending_count"] = 1
-            requested["pending_titles"] = [title]
-            requested["pending_errors"] = {title: item_to_delete.get("delete_error")}
-            return requested
-
-        self._delete_item_record(guild_key, item_to_delete.get("id"))
-        requested["success"] = True
-        requested["deleted_count"] = 1
-        requested["deleted_titles"] = [title]
-        return requested
-
     def delete_item(self, guild_id, item_num):
         """Delete an item by its list number (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
         items = self.get_upcoming(guild_key, days=365)
 
         if item_num is not None and 1 <= item_num <= len(items):
-            item_to_delete = items[item_num - 1]
-            result = self._delete_one_item(guild_key, item_to_delete)
-            self._save_data_sync()
+            item_id = items[item_num - 1].get("id")
+            result = self._run_offline(
+                lambda: self.delete_item_result(
+                    guild_id,
+                    item_id=item_id,
+                    reference_time=self.clock.now(),
+                )
+            )
             return AwaitableValue(result)
 
         return AwaitableValue(
@@ -290,16 +1268,14 @@ class CalendarManager:
 
     async def delete_item_by_title(self, guild_id, title_search):
         """Delete a single item by title matching (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
-        if guild_key not in self.items:
-            return False, None
-
         title_search = title_search.lower()
-        for i, item in enumerate(self.items[guild_key]):
-            if title_search in item["title"].lower():
-                result = self._delete_one_item(guild_key, item)
-                await self._save_data()
-                return result
+        for item in self.items.get(self.SHARED_KEY, []):
+            if title_search in item.get("title", "").lower():
+                return await self.delete_item_result(
+                    guild_id,
+                    item_id=item.get("id"),
+                    reference_time=self.clock.now(),
+                )
 
         return CalendarDeleteResult(
             {
@@ -315,107 +1291,49 @@ class CalendarManager:
         )
 
     async def delete_items_by_title(self, guild_id, title_search):
-        """Delete multiple items by title matching (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
-        if guild_key not in self.items:
+        """Awaitable compatibility projection over exact result transactions."""
+        reference_time = self.clock.now()
+        title_search = title_search.lower()
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            requested = [
+                (item.get("id"), item.get("title", "Uten tittel"))
+                for item in self.items.get(self.SHARED_KEY, [])
+                if title_search in item.get("title", "").lower()
+            ]
+            deleted_titles = []
+            pending_titles = []
+            pending_errors = {}
+            for item_id, title in requested:
+                result = await self.delete_item_result(
+                    guild_id,
+                    item_id=item_id,
+                    reference_time=reference_time,
+                )
+                if result.get("deleted_count"):
+                    deleted_titles.append(title)
+                if result.get("pending_count"):
+                    pending_titles.append(title)
+                    pending_errors[title] = "external_delete_pending"
+
             return CalendarDeleteResult(
                 {
                     "bulk": True,
-                    "success": False,
-                    "requested_count": 0,
-                    "deleted_count": 0,
-                    "deleted_titles": [],
-                    "pending_count": 0,
-                    "pending_titles": [],
-                    "pending_errors": {},
+                    "success": bool(deleted_titles) and not pending_titles,
+                    "requested_count": len(requested),
+                    "deleted_count": len(deleted_titles),
+                    "deleted_titles": deleted_titles,
+                    "pending_count": len(pending_titles),
+                    "pending_titles": pending_titles,
+                    "pending_errors": pending_errors,
                 }
             )
 
-        title_search = title_search.lower()
-        requested = []
-        deleted_ids = set()
-        deleted_titles = []
-        pending_titles = []
-        pending_errors = {}
-        now = datetime.now().isoformat()
-
-        for item in self.items[guild_key]:
-            if title_search in item["title"].lower():
-                requested.append(item)
-                title = item.get("title", "Uten tittel")
-                if self._delete_from_gcal_or_mark_pending(item, now=now, context="bulk delete"):
-                    deleted_ids.add(item.get("id"))
-                    deleted_titles.append(title)
-                else:
-                    pending_titles.append(title)
-                    pending_errors[title] = item.get("delete_error")
-
-        if requested:
-            self.items[guild_key] = [
-                item for item in self.items[guild_key]
-                if item.get("id") not in deleted_ids
-            ]
-            await self._save_data()
-
-        return CalendarDeleteResult(
-            {
-                "bulk": True,
-                "success": bool(deleted_titles) and not pending_titles,
-                "requested_count": len(requested),
-                "deleted_count": len(deleted_titles),
-                "deleted_titles": deleted_titles,
-                "pending_count": len(pending_titles),
-                "pending_titles": pending_titles,
-                "pending_errors": pending_errors,
-            }
-        )
-
     async def clear_calendar(self, guild_id):
-        """Delete all items from the shared calendar (ignoring guild_id)"""
-        guild_key = self.SHARED_KEY
-        if guild_key not in self.items or not self.items[guild_key]:
-            return {
-                "requested_count": 0,
-                "deleted_count": 0,
-                "failed_count": 0,
-                "pending_titles": [],
-            }
-
-        items_to_delete = list(self.items[guild_key])
-        deleted_ids = set()
-        pending_titles = []
-        now = datetime.now().isoformat()
-
-        for item in items_to_delete:
-            if self.gcal_enabled and item.get("gcal_event_id"):
-                delete_ok = False
-                error = None
-                try:
-                    delete_ok = bool(self.gcal.delete_event(item["gcal_event_id"]))
-                except Exception as e:
-                    error = str(e)
-
-                if not delete_ok:
-                    title = item.get("title", "Uten tittel")
-                    pending_titles.append(title)
-                    self._mark_delete_pending(item, error, now)
-                    print(f"[CAL] GCal clear delete failed for {title}: {item['delete_error']}")
-                    continue
-
-            deleted_ids.add(item.get("id"))
-
-        self.items[guild_key] = [
-            item for item in self.items[guild_key]
-            if item.get("id") not in deleted_ids
-        ]
-        await self._save_data()
-
-        return {
-            "requested_count": len(items_to_delete),
-            "deleted_count": len(deleted_ids),
-            "failed_count": len(pending_titles),
-            "pending_titles": pending_titles,
-        }
+        """Awaitable compatibility delegator over ``clear_calendar_result``."""
+        return await self.clear_calendar_result(
+            guild_id,
+            reference_time=self.clock.now(),
+        )
 
     def complete_item(self, guild_id, item_num=None, item_id=None):
         """Mark an item as complete (ignoring guild_id for shared calendar)"""
@@ -425,12 +1343,28 @@ class CalendarManager:
         if item_id:
             for item in items:
                 if item.get("id") == item_id:
-                    return AwaitableValue(self._process_completion_sync(guild_key, item))
+                    return AwaitableValue(
+                        self._run_offline(
+                            lambda: self.complete_item_result(
+                                guild_id,
+                                item_id=item_id,
+                                reference_time=self.clock.now(),
+                            )
+                        )
+                    )
             return AwaitableValue((False, None, None))
 
         if item_num is not None and 1 <= item_num <= len(items):
             item = items[item_num - 1]
-            return AwaitableValue(self._process_completion_sync(guild_key, item))
+            return AwaitableValue(
+                self._run_offline(
+                    lambda: self.complete_item_result(
+                        guild_id,
+                        item_id=item.get("id"),
+                        reference_time=self.clock.now(),
+                    )
+                )
+            )
 
         return AwaitableValue((False, None, None))
 
@@ -442,7 +1376,11 @@ class CalendarManager:
         title_search = title_search.lower()
         for item in items:
             if title_search in item["title"].lower():
-                return await self._process_completion(guild_key, item)
+                return await self.complete_item_result(
+                    guild_id,
+                    item_id=item.get("id"),
+                    reference_time=self.clock.now(),
+                )
 
         return False, None, None
 
@@ -458,7 +1396,11 @@ class CalendarManager:
 
         for item in items:
             if title_search in item["title"].lower():
-                success, title, next_date = await self._process_completion(guild_key, item)
+                success, title, next_date = await self.complete_item_result(
+                    guild_id,
+                    item_id=item.get("id"),
+                    reference_time=self.clock.now(),
+                )
                 if success:
                     count += 1
                     completed_titles.append(title)
@@ -475,57 +1417,69 @@ class CalendarManager:
         if index is None or not (1 <= index <= len(items)):
             raise ValueError(f"Ugyldig indeks: {index}")
 
-        item = items[index - 1]
-
-        self._apply_item_updates(item, title, date, time, recurrence, description)
-        self._sync_item_update_to_gcal(item)
-
-        self._save_data_sync()
-        return AwaitableDict(item)
+        item_id = items[index - 1].get("id")
+        changes = {
+            "title": title,
+            "date": date,
+            "time": time,
+            "description": description,
+        }
+        if recurrence is not None:
+            changes["recurrence"] = recurrence
+        return self._legacy_edit_item_by_id(item_id, **changes)
 
     def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None):
         """Edit a calendar item by stable ID, including past/non-upcoming entries."""
-        guild_key = self.SHARED_KEY
-        for item in self.items.get(guild_key, []):
-            if item.get("id") == item_id:
-                self._apply_item_updates(item, title, date, time, recurrence, description)
-                self._sync_item_update_to_gcal(item)
-                self._save_data_sync()
-                return AwaitableDict(item)
-        raise ValueError(f"Fant ikke kalenderoppføring med ID: {item_id}")
+        changes = {
+            "title": title,
+            "date": date,
+            "time": time,
+            "description": description,
+        }
+        if recurrence is not None:
+            changes["recurrence"] = recurrence
+        return self._legacy_edit_item_by_id(item_id, **changes)
 
-    def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None):
+    def _legacy_edit_item_by_id(self, item_id, **changes):
+        try:
+            item = self._run_offline(
+                lambda: self.edit_item_result(
+                    item_id=item_id,
+                    reference_time=self.clock.now(),
+                    **changes,
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Fant ikke kalenderoppføring med ID: {item_id}"
+            ) from exc
+        return AwaitableDict(item)
+
+    def _apply_item_updates(
+        self,
+        item,
+        title=None,
+        date=None,
+        time=None,
+        recurrence=_MISSING,
+        description=None,
+        *,
+        item_type=None,
+    ):
         if title is not None:
             item["title"] = title
         if date is not None:
             item["date"] = self._normalize_date_format(date)
         if time is not None:
             item["time"] = time
-        if recurrence is not None:
+        if recurrence is not _MISSING:
             item["recurrence"] = recurrence
         if description is not None:
             item["description"] = description
-
-    def _sync_item_update_to_gcal(self, item):
-        if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
-            return
-        try:
-            result = self.gcal.update_event(
-                item["gcal_event_id"],
-                title=item.get("title"),
-                description=item.get("description"),
-                date_str=item.get("date"),
-                time_str=item.get("time"),
-                recurrence=item.get("recurrence"),
-                rrule_day=item.get("rrule_day") or item.get("recurrence_day"),
-            )
-            if result and isinstance(result, dict):
-                if result.get("id"):
-                    item["gcal_event_id"] = result["id"]
-                if result.get("htmlLink"):
-                    item["gcal_link"] = result["htmlLink"]
-        except Exception as e:
-            print(f"[CAL] GCal edit sync failed for {item.get('title')}: {e}")
+        if item_type is not None:
+            if item_type not in {"event", "task"}:
+                raise ValueError("invalid_item_type")
+            item["type"] = item_type
 
     def search_items(self, query):
         """Search calendar items by title (case-insensitive substring match)"""
@@ -564,35 +1518,6 @@ class CalendarManager:
         lines.append("\nNumrene matcher `@inebotten kalender`-lista.")
         return "\n".join(lines)
 
-    async def _process_completion(self, guild_key, item):
-        """Internal helper to handle completion logic"""
-        return self._process_completion_sync(guild_key, item)
-
-    def _process_completion_sync(self, guild_key, item):
-        """Internal helper to handle completion logic synchronously."""
-        title = item["title"]
-
-        if item.get("recurrence"):
-            # Update to next date
-            next_date = self._calculate_next_date(item["date"], item["recurrence"])
-            item["date"] = next_date
-            self._save_data_sync()
-            return True, title, next_date
-        else:
-            # Mark as completed
-            item["completed"] = True
-            
-            # Sync to GCal if enabled
-            if self.gcal_enabled and item.get("gcal_event_id"):
-                try:
-                    self.gcal.update_event(item["gcal_event_id"], completed=True)
-                    print(f"[CAL] Marked completed in GCal: {title}")
-                except Exception as e:
-                    print(f"[CAL] GCal update failed: {e}")
-
-            self._save_data_sync()
-            return True, title, None
-
     def _calculate_next_date(self, current_date_str, recurrence):
         """Calculate next occurrence date with month-end safety"""
         try:
@@ -628,227 +1553,314 @@ class CalendarManager:
             print(f"[CALENDAR] Calendar parse error: {e}")
             return None
 
-    async def sync_from_gcal(self, default_guild_id=None, default_channel_id=None):
-        """
-        Pull events from Google Calendar and sync to local store
-        """
+    async def sync_from_gcal_result(
+        self,
+        default_guild_id=None,
+        default_channel_id=None,
+        *,
+        reference_time: datetime,
+    ) -> CalendarSyncResult:
+        reference_time = self._require_aware(reference_time)
         self.last_gcal_sync_error = None
-        if not self.ensure_gcal_configured():
-            self.last_gcal_sync_error = "Google Calendar er ikke konfigurert eller koblet til ennå."
-            return 0
+        async with self.mutation_coordinator.hold(CALENDAR_SHARED_SCOPE):
+            credential_mutated = False
+            if not self.gcal_enabled:
+                try:
+                    configured = await self.ensure_gcal_configured()
+                    configured_call = _SettledExternal(configured)
+                except ExternalOperationCancelled as exc:
+                    configured = exc.result
+                    configured_call = _SettledExternal(
+                        configured,
+                        cancelled=True,
+                    )
+                credential_mutated = configured.state is ExternalCommitState.CHANGED
+                if not configured.ok:
+                    self.last_gcal_sync_error = (
+                        "Google Calendar er ikke konfigurert eller koblet til ennå."
+                    )
+                    self._raise_external_cancellation(
+                        configured_call,
+                        mutated=credential_mutated,
+                        default_code=configured.error_code or "not_configured",
+                    )
+                    return CalendarSyncResult(
+                        False,
+                        credential_mutated,
+                        error_code=configured.error_code or "not_configured",
+                        commit_unknown=(
+                            configured.state is ExternalCommitState.UNKNOWN
+                        ),
+                    )
+                self._raise_external_cancellation(
+                    configured_call,
+                    mutated=credential_mutated,
+                    default_code="cancelled_after_credential_refresh",
+                )
 
-        fallback_channel_id = default_channel_id
+            listed = await self._call_gcal(
+                "list_upcoming_events_result",
+                "list_upcoming_events",
+                90,
+                reference_time=reference_time,
+            )
+            credential_mutated = (
+                credential_mutated
+                or listed.state is ExternalCommitState.CHANGED
+            )
+            if not listed.ok or not isinstance(listed.value, list):
+                self.last_gcal_sync_error = (
+                    "Kunne ikke hente hendelser fra Google Calendar."
+                )
+                self._raise_external_cancellation(
+                    listed,
+                    mutated=credential_mutated,
+                    default_code=listed.error_code or "external_read_failed",
+                )
+                return CalendarSyncResult(
+                    False,
+                    credential_mutated,
+                    error_code=listed.error_code or "external_read_failed",
+                    commit_unknown=(listed.state is ExternalCommitState.UNKNOWN),
+                )
 
-        print("[CAL] Syncing from Google Calendar...")
-        gcal_events = self.gcal.list_upcoming_events(days=90)
-        if gcal_events is None:
-            self.last_gcal_sync_error = "Kunne ikke hente hendelser fra Google Calendar."
-            return 0
-
-        added_count = 0
-        updated_count = 0
-        removed_count = 0
-
-        # Build a map of canonical GCal IDs -> (guild_id, item) for quick lookup.
-        # Recurring events arrive as expanded instances whose "id" differs per
-        # occurrence, while "recurringEventId" points back to the master event.
-        gcal_map = {}
-        for guild_id, items in self.items.items():
-            for item in items:
-                if item.get("gcal_event_id"):
-                    gcal_map[item["gcal_event_id"]] = (guild_id, item)
-
-        processed_recurring_ids = set()
-        seen_gcal_ids = set()
-        for event in gcal_events:
-            gcal_id = event.get("id")
-            if not gcal_id:
-                continue
-            canonical_gcal_id = event.get("recurringEventId") or gcal_id
-            seen_gcal_ids.add(gcal_id)
-            seen_gcal_ids.add(canonical_gcal_id)
-            is_recurring_instance = bool(event.get("recurringEventId"))
-            if is_recurring_instance and canonical_gcal_id in processed_recurring_ids:
-                continue
-            if is_recurring_instance:
-                processed_recurring_ids.add(canonical_gcal_id)
-
-            summary = event.get("summary", "Uten tittel")
-            
-            # Check if marked as completed in GCal
-            gcal_completed = summary.endswith(" [FERDIG]")
-            if gcal_completed:
-                summary = summary.replace(" [FERDIG]", "").strip()
-
-            start = event.get("start", {})
-            
-            # Parse date and time from GCal
-            date_str = ""
-            time_str = None
-            
             try:
-                if "dateTime" in start:
-                    # ISO format: 2024-04-24T10:00:00+02:00
-                    dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
-                    from zoneinfo import ZoneInfo
-                    local_dt = dt.astimezone(ZoneInfo("Europe/Oslo"))
-                    date_str = local_dt.strftime("%d.%m.%Y")
-                    time_str = local_dt.strftime("%H:%M")
+                candidate, added, updated, removed = self._build_sync_candidate(
+                    listed.value,
+                    default_channel_id=default_channel_id,
+                    reference_time=reference_time,
+                )
+            except Exception:
+                self._raise_external_cancellation(
+                    listed,
+                    mutated=credential_mutated,
+                    default_code="cancelled_after_external_read",
+                )
+                return CalendarSyncResult(
+                    False,
+                    credential_mutated,
+                    error_code="sync_transform_failed",
+                    commit_unknown=False,
+                )
+
+            if candidate != self.items:
+                try:
+                    await self._persist_candidate(candidate)
+                except ManagerMutationCancelled as exc:
+                    if credential_mutated:
+                        raise self._translate_post_external_cancel(exc) from exc
+                    raise
+                except ManagerMutationError as exc:
+                    if listed.cancelled:
+                        if credential_mutated:
+                            raise self._translate_cancelled_external_storage_error(exc) from exc
+                        raise ManagerMutationCancelled(
+                            (
+                                "commit_state_unknown"
+                                if exc.commit_unknown
+                                else "storage_write_failed"
+                            ),
+                            mutated=False,
+                            retryable=False,
+                            commit_unknown=exc.commit_unknown,
+                        ) from exc
+                    if credential_mutated:
+                        raise ManagerMutationError(
+                            "external_state_changed_storage_failed",
+                            mutated=True,
+                        ) from exc
+                    raise
+            self._raise_external_cancellation(
+                listed,
+                mutated=credential_mutated or bool(added or updated or removed),
+                default_code="cancelled_after_external_read",
+            )
+            return CalendarSyncResult(
+                True,
+                credential_mutated or bool(added or updated or removed),
+                added=added,
+                updated=updated,
+                removed=removed,
+            )
+
+    def _build_sync_candidate(
+        self,
+        gcal_events,
+        *,
+        default_channel_id,
+        reference_time,
+    ):
+        candidate = deepcopy(self.items)
+        bucket = candidate.setdefault(self.SHARED_KEY, [])
+        by_gcal_id = {
+            row.get("gcal_event_id"): row
+            for row in bucket
+            if row.get("gcal_event_id")
+        }
+        processed_recurring: set[str] = set()
+        seen_ids: set[str] = set()
+        added = updated = 0
+
+        for event in gcal_events:
+            if not isinstance(event, dict):
+                continue
+            event_id = event.get("id")
+            if not isinstance(event_id, str) or not event_id:
+                continue
+            canonical_id = event.get("recurringEventId") or event_id
+            seen_ids.update({event_id, canonical_id})
+            if event.get("recurringEventId"):
+                if canonical_id in processed_recurring:
+                    continue
+                processed_recurring.add(canonical_id)
+
+            summary = event.get("summary") or "Uten tittel"
+            completed = summary.endswith(" [FERDIG]")
+            if completed:
+                summary = summary.removesuffix(" [FERDIG]").strip()
+            start = event.get("start") or {}
+            try:
+                if start.get("dateTime"):
+                    local = datetime.fromisoformat(
+                        start["dateTime"].replace("Z", "+00:00")
+                    ).astimezone(OSLO)
+                    date_str = local.strftime("%d.%m.%Y")
+                    time_str = local.strftime("%H:%M")
+                elif start.get("date"):
+                    local = datetime.strptime(start["date"], "%Y-%m-%d")
+                    date_str = local.strftime("%d.%m.%Y")
+                    time_str = None
                 else:
-                    # Date only: 2024-04-24
-                    d_str = start.get("date", "")
-                    if d_str:
-                        dt = datetime.strptime(d_str, "%Y-%m-%d")
-                        date_str = dt.strftime("%d.%m.%Y")
-            except Exception as e:
-                print(f"[CAL] Error parsing GCal date for {summary}: {e}")
+                    continue
+            except (TypeError, ValueError):
                 continue
 
-            if not date_str:
-                continue
-
-            # Extract creator information if available
+            ext = event.get("extendedProperties", {}).get("private", {})
             creator = event.get("creator", {})
             organizer = event.get("organizer", {})
-            
-            # Check for Discord metadata in extended properties first
-            ext_props = event.get("extendedProperties", {}).get("private", {})
-            gcal_username = ext_props.get("discord_username")
-            gcal_user_id = ext_props.get("discord_user_id") or "gcal_sync"
+            username = ext.get("discord_username")
+            user_id = ext.get("discord_user_id") or "gcal_sync"
+            if not username or str(username).lower() == "inebotten":
+                username = creator.get("displayName") or organizer.get("displayName")
+                email = creator.get("email") or organizer.get("email")
+                if not username and email and self.owner_email and self.owner_name:
+                    if email.lower() == self.owner_email.lower():
+                        username = self.owner_name
+                if not username and email:
+                    username = email.split("@", 1)[0]
+            username = username or self.owner_name or "Google Calendar"
 
-            if not gcal_username or gcal_username.lower() == "inebotten":
-                # Fallback to Display Name > Email > Default
-                gcal_username = creator.get("displayName") or organizer.get("displayName")
-                
-                if not gcal_username or gcal_username.lower() == "inebotten":
-                    email = creator.get("email") or organizer.get("email")
-                    if email and self.owner_email and email.lower() == self.owner_email.lower() and self.owner_name:
-                        gcal_username = self.owner_name
-                    elif email and "@" in email:
-                        gcal_username = email.split("@")[0]
-                    else:
-                        gcal_username = email or self.owner_name or "Google Calendar"
-                
-            # Final fallback if still empty or generic
-            if not gcal_username or gcal_username.lower() in ["google calendar", "inebotten"]:
-                gcal_username = self.owner_name or "Google Calendar"
+            row = by_gcal_id.get(canonical_id) or by_gcal_id.get(event_id)
+            if row is None:
+                row = {
+                    "id": str(uuid.uuid4()),
+                    "user_id": user_id,
+                    "username": username,
+                    "title": summary,
+                    "date": date_str,
+                    "time": time_str,
+                    "type": "event",
+                    "description": event.get("description"),
+                    "recurrence": None,
+                    "recurrence_day": None,
+                    "rrule_day": None,
+                    "created_at": reference_time.isoformat(),
+                    "completed": completed,
+                    "gcal_event_id": canonical_id,
+                    "gcal_link": event.get("htmlLink"),
+                    "gcal_sync_pending": False,
+                    "channel_id": (
+                        str(default_channel_id)
+                        if default_channel_id is not None
+                        else None
+                    ),
+                }
+                bucket.append(row)
+                by_gcal_id[canonical_id] = row
+                added += 1
+                continue
 
-            matched_gcal_key = canonical_gcal_id if canonical_gcal_id in gcal_map else None
-            if matched_gcal_key is None and gcal_id in gcal_map:
-                matched_gcal_key = gcal_id
+            changes = {
+                "gcal_event_id": canonical_id,
+                "title": summary,
+                "date": date_str,
+                "time": time_str,
+                "completed": completed,
+                "gcal_link": event.get("htmlLink") or row.get("gcal_link"),
+                "gcal_sync_pending": False,
+            }
+            if row.get("username") == "Google Calendar":
+                changes["username"] = username
+            if row.get("user_id") == "gcal_sync":
+                changes["user_id"] = user_id
+            if not row.get("channel_id") and default_channel_id is not None:
+                changes["channel_id"] = str(default_channel_id)
+            if any(row.get(key) != value for key, value in changes.items()):
+                row.update(changes)
+                updated += 1
 
-            if matched_gcal_key:
-                # Existing item, check for updates
-                guild_id, item = gcal_map[matched_gcal_key]
-                changed = False
-                if item.get("gcal_event_id") != canonical_gcal_id:
-                    item["gcal_event_id"] = canonical_gcal_id
-                    changed = True
-                
-                if item["title"] != summary:
-                    item["title"] = summary
-                    changed = True
-                if item["date"] != date_str:
-                    item["date"] = date_str
-                    changed = True
-                if item.get("time") != time_str:
-                    item["time"] = time_str
-                    changed = True
-                
-                # Update username/user_id if it's currently generic and we found better info
-                if item.get("username") == "Google Calendar" and gcal_username != "Google Calendar":
-                    item["username"] = gcal_username
-                    changed = True
-                
-                if item.get("user_id") == "gcal_sync" and gcal_user_id != "gcal_sync":
-                    item["user_id"] = gcal_user_id
-                    changed = True
-
-                if not item.get("channel_id") and fallback_channel_id is not None:
-                    item["channel_id"] = str(fallback_channel_id)
-                    changed = True
-                
-                # Check if it was marked as completed in GCal
-                if gcal_completed and not item.get("completed"):
-                    item["completed"] = True
-                    changed = True
-                
-                if changed:
-                    updated_count += 1
+        today = reference_time.astimezone(OSLO).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+            tzinfo=None,
+        )
+        cutoff = today + timedelta(days=90)
+        kept = []
+        removed = 0
+        for row in bucket:
+            gcal_id = row.get("gcal_event_id")
+            if not gcal_id or gcal_id in seen_ids:
+                kept.append(row)
+                continue
+            try:
+                row_date = datetime.strptime(row.get("date", ""), "%d.%m.%Y")
+            except (TypeError, ValueError):
+                kept.append(row)
+                continue
+            if today <= row_date <= cutoff:
+                removed += 1
             else:
-                # New item from GCal
-                guild_id = self.SHARED_KEY
-                
-                await self.add_item(
-                    guild_id=guild_id,
-                    user_id=gcal_user_id,
-                    username=gcal_username,
-                    title=summary,
-                    date_str=date_str,
-                    time_str=time_str,
-                    gcal_event_id=canonical_gcal_id,
-                    gcal_link=event.get("htmlLink"),
-                    channel_id=fallback_channel_id,
+                kept.append(row)
+        candidate[self.SHARED_KEY] = kept
+        return candidate, added, updated, removed
+
+    async def sync_from_gcal(self, default_guild_id=None, default_channel_id=None):
+        """Legacy count projection over the structured atomic sync."""
+        result = await self.sync_from_gcal_result(
+            default_guild_id,
+            default_channel_id,
+            reference_time=self.clock.now(),
+        )
+        return result.added + result.updated + result.removed if result.ok else 0
+
+    def snapshot_pending_items(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> tuple[dict[str, object], ...]:
+        reference_time = self._require_aware(reference_time)
+        return tuple(
+            deepcopy(
+                self.get_upcoming(
+                    self.SHARED_KEY,
+                    days=365,
+                    reference_time=reference_time,
                 )
-                
-                # If it was completed, mark it so (add_item defaults to False)
-                if gcal_completed:
-                    self.items[str(guild_id)][-1]["completed"] = True
-                
-                added_count += 1
-
-        removed_count = self._remove_missing_gcal_items(seen_gcal_ids, days=90)
-
-        if added_count > 0 or updated_count > 0 or removed_count > 0:
-            await self._save_data()
-            print(
-                f"[CAL] Sync complete: {added_count} added, "
-                f"{updated_count} updated, {removed_count} removed"
             )
-        
-        return added_count + updated_count + removed_count
+        )
 
-    def _remove_missing_gcal_items(self, seen_gcal_ids, days=90):
-        """Remove local GCal-backed items absent from Google inside the sync window."""
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        cutoff = today + timedelta(days=days)
-        removed_count = 0
-
-        for guild_id, items in list(self.items.items()):
-            kept_items = []
-            for item in items:
-                gcal_id = item.get("gcal_event_id")
-                if not gcal_id or gcal_id in seen_gcal_ids:
-                    kept_items.append(item)
-                    continue
-
-                try:
-                    item_date = datetime.strptime(item.get("date", ""), "%d.%m.%Y")
-                except (TypeError, ValueError):
-                    kept_items.append(item)
-                    continue
-
-                if not (today <= item_date <= cutoff):
-                    kept_items.append(item)
-                    continue
-
-                remote_event = None
-                if self.gcal and hasattr(self.gcal, "get_event"):
-                    try:
-                        remote_event = self.gcal.get_event(gcal_id)
-                    except Exception as e:
-                        print(f"[CAL] GCal get_event failed for {gcal_id}: {e}")
-
-                if remote_event and remote_event.get("status") != "cancelled":
-                    kept_items.append(item)
-                    continue
-
-                print(f"[CAL] Removed deleted GCal event locally: {item.get('title')}")
-                removed_count += 1
-
-            self.items[guild_id] = kept_items
-
-        return removed_count
+    def snapshot_all_item_ids(self) -> tuple[str, ...]:
+        ids: list[str] = []
+        seen: set[str] = set()
+        for item in self.items.get(self.SHARED_KEY, []):
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not item_id.strip() or item_id in seen:
+                raise ValueError("invalid_target_state")
+            seen.add(item_id)
+            ids.append(item_id)
+        return tuple(sorted(ids))
 
     def get_upcoming(
         self,
@@ -864,7 +1876,7 @@ class CalendarManager:
         guild_key = self.SHARED_KEY
 
         if reference_time is None:
-            now = datetime.now()
+            now = self.clock.now().astimezone(OSLO).replace(tzinfo=None)
         else:
             if (
                 reference_time.tzinfo is None

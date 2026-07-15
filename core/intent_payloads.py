@@ -812,7 +812,10 @@ def _watchlist(raw: Mapping[str, Any], *, source: IntentSource) -> dict[str, Any
     if action == "edit":
         if "index" not in result:
             _fail("missing_target")
-        if not any(key in value for key in ("title", "type", "genre", "comment")):
+        has_change = any(
+            key in value for key in ("title", "genre", "comment")
+        ) or ("type" in value and value["type"] is not None)
+        if not has_change:
             _fail("missing_change")
     if action == "remove" and "index" not in result:
         _fail("missing_target")

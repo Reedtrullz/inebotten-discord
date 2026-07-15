@@ -13,7 +13,26 @@ from typing import Dict, Any, Optional
 
 import discord
 
+from core.dispatch_result import (
+    DispatchCancelled,
+    DispatchOutcome,
+    ManagerMutationCancelled,
+    ManagerMutationError,
+    MessageSendCancelled,
+)
+from core.intent_payloads import (
+    PayloadValidationError,
+    typed_or_legacy_payload,
+    validate_intent_payload,
+)
+from core.intent_router import BotIntent
 from features.base_handler import BaseHandler
+from features.quote_manager import parse_quote_command
+
+
+_MANAGER_ERROR_CODES = frozenset(
+    {"cancelled", "commit_state_unknown", "storage_write_failed"}
+)
 
 
 class FunHandler(BaseHandler):
@@ -36,7 +55,23 @@ class FunHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error handling word of day: {e}")
 
-    async def handle_quote_command(self, message, quote_cmd: Dict[str, Any]) -> None:
+    async def _finish_quote(
+        self,
+        message,
+        response_text: str,
+        base: DispatchOutcome,
+    ) -> DispatchOutcome:
+        try:
+            delivery = await self.send_response_result(message, response_text)
+        except MessageSendCancelled as exc:
+            raise DispatchCancelled(base.with_delivery(exc.result)) from None
+        return base.with_delivery(delivery)
+
+    async def handle_quote_command(
+        self,
+        message,
+        quote_cmd: Dict[str, Any] | None,
+    ) -> DispatchOutcome:
         """
         Handle quote commands.
 
@@ -44,28 +79,128 @@ class FunHandler(BaseHandler):
             message: The Discord message
             quote_cmd: Parsed quote command with 'action' and optional 'text'
         """
-        try:
-            guild_id = self.get_guild_id(message)
-            lang = quote_cmd.get("lang", self.loc.current_lang)
+        used_legacy = quote_cmd is None
+        payload = typed_or_legacy_payload(
+            monitor=self.monitor,
+            family="quote",
+            typed_value=quote_cmd,
+            legacy_factory=lambda: parse_quote_command(message.content),
+        )
+        if used_legacy and isinstance(payload, dict):
+            try:
+                payload = validate_intent_payload(BotIntent.QUOTE, payload)
+            except PayloadValidationError:
+                payload = None
+        if not isinstance(payload, dict) or payload.get("action") not in {
+            "save",
+            "get",
+        }:
+            return await self._finish_quote(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
 
-            if quote_cmd["action"] == "save":
-                self.quote.add_quote(
-                    guild_id=guild_id,
-                    text=quote_cmd["text"],
-                    author=message.author.name,
+        guild_id = self.get_guild_id(message)
+        lang = payload.get("lang", self.loc.current_lang)
+        if payload["action"] == "get":
+            try:
+                author = payload.get("author")
+                quote = (
+                    self.quote.get_quote_by_author(guild_id, author)
+                    if author
+                    else self.quote.get_random_quote(guild_id)
                 )
-                response_text = self.quote.format_confirmation(quote_cmd["text"], lang)
-            else:  # "get"
-                quote = self.quote.get_random_quote(guild_id)
-                if quote:
-                    response_text = self.quote.format_quote(quote, lang)
-                else:
-                    response_text = self.loc.t("no_quotes")
+                response_text = (
+                    self.quote.format_quote(quote, lang)
+                    if quote
+                    else self.loc.t("no_quotes")
+                )
+                base = DispatchOutcome.success(mutated=False)
+            except Exception:
+                response_text = self.loc.t("error_generic")
+                base = DispatchOutcome.failure(
+                    "manager_rejected",
+                    retryable=True,
+                )
+            return await self._finish_quote(message, response_text, base)
 
-            await self.send_response(message, response_text)
+        quote_text = payload.get("text")
+        if not isinstance(quote_text, str) or not quote_text.strip():
+            return await self._finish_quote(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
+        try:
+            success = await self.quote.add_quote_result(
+                guild_id=guild_id,
+                text=quote_text,
+                author=payload.get("author") or message.author.name,
+            )
+        except ManagerMutationCancelled as exc:
+            if exc.code not in _MANAGER_ERROR_CODES:
+                raise DispatchCancelled(
+                    DispatchOutcome.failure(
+                        "commit_state_unknown",
+                        mutated=exc.mutated,
+                        commit_unknown=True,
+                    )
+                ) from None
+            raise DispatchCancelled(
+                DispatchOutcome.failure(
+                    exc.code,
+                    mutated=exc.mutated,
+                    retryable=exc.retryable,
+                    commit_unknown=exc.commit_unknown,
+                )
+            ) from None
+        except ManagerMutationError as exc:
+            if exc.code not in _MANAGER_ERROR_CODES:
+                base = DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    mutated=exc.mutated,
+                    commit_unknown=True,
+                )
+            else:
+                base = DispatchOutcome.failure(
+                    exc.code,
+                    mutated=exc.mutated,
+                    retryable=(
+                        exc.code == "storage_write_failed"
+                        and not exc.mutated
+                        and not exc.commit_unknown
+                    ),
+                    commit_unknown=exc.commit_unknown,
+                )
+            return await self._finish_quote(
+                message,
+                self.loc.t("error_generic"),
+                base,
+            )
+        except Exception:
+            return await self._finish_quote(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    commit_unknown=True,
+                ),
+            )
 
-        except Exception as e:
-            self.log(f"Error handling quote: {e}")
+        base = (
+            DispatchOutcome.success(mutated=True)
+            if success
+            else DispatchOutcome.failure("manager_rejected")
+        )
+        if success:
+            try:
+                response_text = self.quote.format_confirmation(quote_text, lang)
+            except Exception:
+                response_text = self.loc.t("error_generic")
+        else:
+            response_text = self.loc.t("error_generic")
+        return await self._finish_quote(message, response_text, base)
 
     async def handle_compliment(self, message, compliment_cmd: Dict[str, Any]) -> None:
         """

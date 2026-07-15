@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -47,7 +48,8 @@ async def test_sync_from_gcal_backfills_channel_id_for_existing_items():
     with TemporaryDirectory() as tmpdir:
         manager = CalendarManager(storage_path=Path(tmpdir) / "calendar.json", gcal_manager=FakeGCal())
         await manager.setup()
-        manager.add_item(
+        reference_time = datetime.now(ZoneInfo("Europe/Oslo"))
+        await manager.add_item_result(
             guild_id="123",
             user_id="gcal_sync",
             username="Google Calendar",
@@ -55,6 +57,7 @@ async def test_sync_from_gcal_backfills_channel_id_for_existing_items():
             date_str=(datetime.now() + timedelta(days=1)).strftime("%d.%m.%Y"),
             gcal_event_id="gcal-1",
             channel_id=None,
+            reference_time=reference_time,
         )
 
         count = await manager.sync_from_gcal(default_guild_id="123", default_channel_id="999")
