@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from core.intent_router import BotIntent, IntentRouter
 from core.message_monitor import MessageMonitor
+from features.quote_manager import parse_quote_command
 from features.watchlist_manager import parse_watchlist_command
 from memory.conversation_context import ConversationContext
 
@@ -146,7 +147,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.parse_poll_command = lambda content: None
         monitor.parse_vote = lambda content: int(content) if content.strip().isdigit() else None
         monitor.parse_watchlist_command = parse_watchlist_command
-        monitor.parse_quote_command = lambda content: None
+        monitor.parse_quote_command = parse_quote_command
         monitor.parse_price_command = lambda content: None
         monitor.parse_horoscope_command = lambda content: None
         monitor.parse_compliment_command = lambda content: None
@@ -609,7 +610,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(len(monitor.recording_polls.votes), 1)
-        self.assertEqual(monitor.recording_polls.votes[0][1], 1)
+        self.assertEqual(
+            monitor.recording_polls.votes[0][1],
+            {"option": 1, "poll_id": "poll1"},
+        )
         self.assertEqual(message.replies, [])
 
     async def test_incomplete_reminder_edit_falls_back_without_handler(self):
@@ -726,7 +730,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1]["query"], "lege")
+        self.assertEqual(calls[0][1]["reminder"]["query"], "lege")
         self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_SEARCH.value]["count"], 1)
 
     async def test_quote_list_routes_to_handler(self):
@@ -744,7 +748,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["liste sitater"])
         self.assertEqual(monitor.intent_stats[BotIntent.QUOTE_LIST.value]["count"], 1)
 
-    async def test_birthday_edit_routes_to_handler(self):
+    async def test_birthday_edit_without_stable_identity_clarifies(self):
         monitor = self.make_monitor()
         calls = []
 
@@ -756,8 +760,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(monitor.intent_stats[BotIntent.BIRTHDAY_EDIT.value]["count"], 1)
+        self.assertEqual(calls, [])
+        self.assertEqual(monitor.intent_stats[BotIntent.CLARIFY.value]["count"], 1)
+        self.assertEqual(len(message.replies), 1)
 
     async def test_incomplete_watchlist_remove_falls_back_without_handler(self):
         monitor = self.make_monitor()
