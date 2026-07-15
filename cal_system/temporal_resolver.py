@@ -396,6 +396,39 @@ class TemporalResolver:
             by_utc[candidate_utc] = candidate
         return tuple(by_utc[key] for key in sorted(by_utc))
 
+    def resolve_recurrence_wall_time(self, local: datetime) -> datetime:
+        """Apply the sole deterministic policy for recurring Oslo wall time.
+
+        User-entered ambiguous/nonexistent values remain rejected by
+        ``validate_fields``.  This method is intentionally recurrence-only:
+        it keeps an accepted nominal wall-time schedule usable across later
+        daylight-saving transitions.
+        """
+        if not isinstance(local, datetime) or local.tzinfo is not None:
+            raise ValueError("recurrence_wall_time_must_be_naive")
+
+        candidates = self._valid_candidates(local.date(), local.time())
+        if candidates:
+            # _valid_candidates is ordered by UTC instant, so the first value
+            # is fold=0 (the earlier occurrence) when the wall time repeats.
+            return candidates[0]
+
+        # A nonexistent wall time round-trips to either side of the gap.  The
+        # first valid projection after the requested nominal time represents
+        # an exact forward shift by the transition gap (02:30 -> 03:30).
+        projections: list[datetime] = []
+        for fold in (0, 1):
+            attached = local.replace(tzinfo=self.zone, fold=fold)
+            projected = attached.astimezone(timezone.utc).astimezone(self.zone)
+            if projected.replace(tzinfo=None) > local:
+                projections.append(projected)
+        if not projections:
+            raise ValueError("invalid_recurrence_wall_time")
+        return min(
+            projections,
+            key=lambda value: value.replace(tzinfo=None) - local,
+        )
+
     def _parse_date_scalar(
         self,
         value: str,

@@ -9,17 +9,88 @@ import copy
 import json
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from dateutil.relativedelta import relativedelta
+
 from cal_system.reminder_clock import ReminderClock, SystemReminderClock
+from cal_system.temporal_resolver import TemporalResolver
 from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
 from core.mutation_coordinator import MutationCoordinator, REMINDER_STORE_SCOPE
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 OSLO = ZoneInfo("Europe/Oslo")
+_UNSET = object()
+RECURRENCE_DELTAS = {
+    "daily": relativedelta(days=1),
+    "weekly": relativedelta(weeks=1),
+    "biweekly": relativedelta(weeks=2),
+    "monthly": relativedelta(months=1),
+    "yearly": relativedelta(years=1),
+}
+FIXED_DAY_STEPS = {"daily": 1, "weekly": 7, "biweekly": 14}
+MAX_CALENDAR_STEPS = 2400
+
+
+def _after(left: datetime, right: datetime) -> bool:
+    """Compare recurrence instants, never same-zone wall-clock values."""
+    return left.astimezone(timezone.utc) > right.astimezone(timezone.utc)
+
+
+def advance_due_at(
+    due_at: datetime,
+    recurrence: str,
+    *,
+    reference_time: datetime,
+    anchor_local: datetime | None = None,
+    sequence: int = 0,
+    resolver: TemporalResolver | None = None,
+) -> tuple[datetime, int] | None:
+    """Advance one recurring schedule to its first instant after reference."""
+    delta = RECURRENCE_DELTAS.get(recurrence)
+    if delta is None:
+        return None
+    if (
+        due_at.tzinfo is None
+        or due_at.utcoffset() is None
+        or reference_time.tzinfo is None
+        or reference_time.utcoffset() is None
+    ):
+        raise ValueError("naive_recurrence_datetime")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+        raise ValueError("invalid_recurrence_sequence")
+
+    temporal = resolver or TemporalResolver(zone=OSLO)
+    current = due_at.astimezone(OSLO)
+    reference = reference_time.astimezone(OSLO)
+    anchor = anchor_local or current.replace(tzinfo=None)
+    if anchor.tzinfo is not None:
+        raise ValueError("recurrence_anchor_must_be_naive")
+
+    if recurrence in FIXED_DAY_STEPS:
+        days = FIXED_DAY_STEPS[recurrence]
+        elapsed_days = max(0, (reference.date() - anchor.date()).days)
+        next_sequence = max(sequence + 1, elapsed_days // days)
+        wall = anchor + relativedelta(days=next_sequence * days)
+        candidate = temporal.resolve_recurrence_wall_time(wall)
+        while not _after(candidate, reference):
+            next_sequence += 1
+            wall = anchor + relativedelta(days=next_sequence * days)
+            candidate = temporal.resolve_recurrence_wall_time(wall)
+        return candidate, next_sequence
+
+    for next_sequence in range(
+        sequence + 1,
+        sequence + MAX_CALENDAR_STEPS + 1,
+    ):
+        wall = anchor + next_sequence * delta
+        candidate = temporal.resolve_recurrence_wall_time(wall)
+        if _after(candidate, reference):
+            return candidate, next_sequence
+    raise ValueError("recurrence_catchup_limit")
 
 
 class ReminderManager:
@@ -67,6 +138,99 @@ class ReminderManager:
         ):
             raise ValueError("reference_time_must_be_aware")
         return reference_time.astimezone(OSLO)
+
+    @staticmethod
+    def _validate_recurrence(value):
+        if value is not None and value not in RECURRENCE_DELTAS:
+            raise ValueError("invalid_recurrence")
+        return value
+
+    @staticmethod
+    def _parse_due_at(value):
+        if not isinstance(value, str):
+            raise ValueError("invalid_due_at")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid_due_at") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("invalid_due_at")
+        return parsed.astimezone(OSLO)
+
+    @staticmethod
+    def _due_projection(value):
+        local = value.astimezone(OSLO)
+        return {
+            "due_at": local.isoformat(timespec="seconds"),
+            "due_date": local.strftime("%d.%m.%Y"),
+            "time": local.strftime("%H:%M"),
+            "timezone": "Europe/Oslo",
+        }
+
+    @classmethod
+    def _resolve_due_fields(
+        cls,
+        *,
+        due_at,
+        due_date,
+        time_value,
+        timezone_name,
+        reference_time,
+    ):
+        """Resolve one canonical schedule without consulting a wall clock."""
+        if timezone_name != "Europe/Oslo":
+            raise ValueError("invalid_timezone")
+        if due_at is not None:
+            return cls._due_projection(cls._parse_due_at(due_at))
+        if due_date is None:
+            if time_value is not None:
+                raise ValueError("missing_date")
+            return {
+                "due_at": None,
+                "due_date": None,
+                "time": None,
+                "timezone": "Europe/Oslo",
+            }
+        if not isinstance(due_date, str) or not due_date.strip():
+            raise ValueError("invalid_date")
+        if time_value is not None and not isinstance(time_value, str):
+            raise ValueError("invalid_time")
+
+        temporal = TemporalResolver(zone=OSLO)
+        resolved = temporal.validate_fields(
+            due_date,
+            time_value or "09:00",
+            reference=reference_time,
+        )
+        if resolved.errors:
+            raise ValueError(resolved.errors[0])
+        if resolved.due_at is None:
+            raise ValueError("invalid_due_at")
+        return {
+            "due_at": resolved.due_at,
+            "due_date": resolved.date,
+            "time": resolved.time,
+            "timezone": "Europe/Oslo",
+        }
+
+    @classmethod
+    def _canonical_existing_due(cls, reminder, reference_time):
+        """Canonicalize a record only as part of an explicit mutation."""
+        raw_due_at = reminder.get("due_at")
+        if raw_due_at is not None:
+            return cls._due_projection(cls._parse_due_at(raw_due_at))
+        return cls._resolve_due_fields(
+            due_at=None,
+            due_date=reminder.get("due_date"),
+            time_value=reminder.get("time"),
+            timezone_name=reminder.get("timezone") or "Europe/Oslo",
+            reference_time=reference_time,
+        )
+
+    @classmethod
+    def _anchor_from_due_at(cls, due_at):
+        local = cls._parse_due_at(due_at)
+        return local.replace(tzinfo=None).isoformat(timespec="seconds")
 
     @staticmethod
     def _require_offline_projection():
@@ -177,10 +341,28 @@ class ReminderManager:
         gcal_link=None,
         channel_id=None,
         *,
+        due_at=None,
+        time=None,
+        timezone="Europe/Oslo",
         reference_time,
     ):
         """Create and durably publish a reminder from one captured instant."""
         now = self._require_aware(reference_time)
+        canonical_recurrence = self._validate_recurrence(recurrence)
+        due = self._resolve_due_fields(
+            due_at=due_at,
+            due_date=due_date,
+            time_value=time,
+            timezone_name=timezone,
+            reference_time=now,
+        )
+        if canonical_recurrence is not None and due["due_at"] is None:
+            raise ValueError("invalid_recurrence")
+        anchor = (
+            self._anchor_from_due_at(due["due_at"])
+            if canonical_recurrence is not None
+            else None
+        )
 
         def mutate(candidate):
             guild_key = str(guild_id)
@@ -190,10 +372,14 @@ class ReminderManager:
                 "user_id": str(user_id),
                 "username": username,
                 "text": text,
-                "due_date": due_date,
-                "recurrence": recurrence,
+                **due,
+                "recurrence": canonical_recurrence,
                 "recurrence_day": recurrence_day,
                 "rrule_day": rrule_day,
+                "recurrence_anchor_local": anchor,
+                "recurrence_sequence": (
+                    0 if canonical_recurrence is not None else None
+                ),
                 "gcal_event_id": gcal_event_id,
                 "gcal_link": gcal_link,
                 "channel_id": (
@@ -222,6 +408,10 @@ class ReminderManager:
         gcal_event_id=None,
         gcal_link=None,
         channel_id=None,
+        *,
+        due_at=None,
+        time=None,
+        timezone="Europe/Oslo",
     ):
         """
         Add a new reminder
@@ -257,6 +447,9 @@ class ReminderManager:
                 gcal_event_id,
                 gcal_link,
                 channel_id,
+                due_at=due_at,
+                time=time,
+                timezone=timezone,
                 reference_time=reference_time,
             )
         )
@@ -269,7 +462,7 @@ class ReminderManager:
         *,
         reference_time,
     ):
-        """Complete one reminder or advance its legacy recurrence atomically."""
+        """Complete one reminder or advance its recurrence atomically."""
         now = self._require_aware(reference_time)
 
         def mutate(candidate):
@@ -292,21 +485,57 @@ class ReminderManager:
             if target is None:
                 return (False, None, None), False
 
-            if target.get("recurrence") and target.get("due_date"):
-                next_date = self._calculate_next_date(
-                    target["due_date"],
-                    target["recurrence"],
-                    target.get("recurrence_day"),
-                )
-                if next_date:
-                    target["due_date"] = next_date
+            recurrence = target.get("recurrence")
+            if recurrence in RECURRENCE_DELTAS and (
+                target.get("due_at") is not None
+                or target.get("due_date") is not None
+            ):
+                due = self._canonical_existing_due(target, now)
+                current_due = self._parse_due_at(due["due_at"])
+                raw_anchor = target.get("recurrence_anchor_local")
+                if raw_anchor is None:
+                    anchor = current_due.replace(tzinfo=None)
+                else:
+                    try:
+                        anchor = datetime.fromisoformat(raw_anchor)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError("invalid_recurrence") from exc
+                    if anchor.tzinfo is not None:
+                        raise ValueError("invalid_recurrence")
+
+                raw_sequence = target.get("recurrence_sequence")
+                sequence = 0 if raw_sequence is None else raw_sequence
+                try:
+                    advanced = advance_due_at(
+                        current_due,
+                        recurrence,
+                        reference_time=now,
+                        anchor_local=anchor,
+                        sequence=sequence,
+                    )
+                except ValueError as exc:
+                    raise ValueError("invalid_recurrence") from exc
+                if advanced is not None:
+                    next_due, next_sequence = advanced
+                    projection = self._due_projection(next_due)
+                    target.update(projection)
+                    target["recurrence_anchor_local"] = anchor.isoformat(
+                        timespec="seconds"
+                    )
+                    target["recurrence_sequence"] = next_sequence
                     target["completed_count"] = (
                         target.get("completed_count", 0) + 1
                     )
-                    return (True, target["text"], next_date), True
+                    target["updated_at"] = now.isoformat()
+                    return (
+                        True,
+                        target["text"],
+                        projection["due_date"],
+                    ), True
 
             target["completed"] = True
             target["completed_at"] = now.isoformat()
+            target["updated_at"] = now.isoformat()
             return (True, target["text"], None), True
 
         return await self._transaction(mutate)
@@ -349,22 +578,10 @@ class ReminderManager:
         """
         try:
             current = datetime.strptime(current_date_str, "%d.%m.%Y")
-
-            if recurrence == "weekly":
-                next_date = current + timedelta(weeks=1)
-            elif recurrence == "biweekly":
-                next_date = current + timedelta(weeks=2)
-            elif recurrence == "monthly":
-                # Add one month (approximate)
-                if current.month == 12:
-                    next_date = current.replace(year=current.year + 1, month=1)
-                else:
-                    next_date = current.replace(month=current.month + 1)
-            elif recurrence == "yearly":
-                next_date = current.replace(year=current.year + 1)
-            else:
+            delta = RECURRENCE_DELTAS.get(recurrence)
+            if delta is None:
                 return None
-
+            next_date = current + delta
             return next_date.strftime("%d.%m.%Y")
         except Exception as e:
             print(f"[CALENDAR] Reminder parse error: {e}")
@@ -386,6 +603,257 @@ class ReminderManager:
                 self._active_reminders_in(self.reminders, scope_id)
             )
         )
+
+    @classmethod
+    def _canonical_delivery_due_at(cls, reminder, reference_time):
+        """Resolve one stored schedule without mutating or consulting a clock."""
+        raw_due_at = reminder.get("due_at")
+        if raw_due_at is not None:
+            try:
+                due_at = cls._parse_due_at(raw_due_at)
+            except (TypeError, ValueError):
+                return None, "malformed", False
+            if due_at.microsecond:
+                return None, "malformed", False
+
+            projection = cls._due_projection(due_at)
+            raw_date = reminder.get("due_date")
+            raw_time = reminder.get("time")
+            mismatch = (
+                raw_date != projection["due_date"]
+                or raw_time != projection["time"]
+            )
+            return due_at, "valid", mismatch
+
+        raw_date = reminder.get("due_date")
+        raw_time = reminder.get("time")
+        if raw_date is None:
+            if raw_time not in (None, ""):
+                return None, "malformed", False
+            return None, "undated", False
+
+        try:
+            projection = cls._resolve_due_fields(
+                due_at=None,
+                due_date=raw_date,
+                time_value=raw_time,
+                timezone_name=(
+                    reminder.get("timezone") or "Europe/Oslo"
+                ),
+                reference_time=reference_time,
+            )
+            due_at = cls._parse_due_at(projection["due_at"])
+        except (KeyError, TypeError, ValueError):
+            return None, "malformed", False
+        if due_at.microsecond:
+            return None, "malformed", False
+        return due_at, "valid", False
+
+    @staticmethod
+    def _canonical_delivery_anchor_sequence(anchor, sequence):
+        """Validate the two exact recurrence fields used by a fingerprint."""
+        if anchor is None and sequence is None:
+            return (None, None)
+        if anchor is None or sequence is None:
+            return None
+        if (
+            isinstance(sequence, bool)
+            or not isinstance(sequence, int)
+            or sequence < 0
+            or not isinstance(anchor, str)
+        ):
+            return None
+        try:
+            parsed_anchor = datetime.fromisoformat(anchor)
+        except ValueError:
+            return None
+        if (
+            parsed_anchor.tzinfo is not None
+            or parsed_anchor.microsecond
+            or anchor != parsed_anchor.isoformat(timespec="seconds")
+        ):
+            return None
+        return (anchor, sequence)
+
+    @classmethod
+    def _canonical_delivery_recurrence(cls, reminder):
+        """Return the exact recurrence fingerprint fields or fail closed."""
+        recurrence = reminder.get("recurrence")
+        anchor = reminder.get("recurrence_anchor_local")
+        sequence = reminder.get("recurrence_sequence")
+
+        if recurrence is None:
+            if anchor is not None or sequence is not None:
+                return None
+            return (None, None)
+        if (
+            not isinstance(recurrence, str)
+            or recurrence not in RECURRENCE_DELTAS
+        ):
+            return None
+
+        # Untouched legacy recurring rows legitimately have neither field.
+        return cls._canonical_delivery_anchor_sequence(anchor, sequence)
+
+    def _delivery_occurrence_snapshot(self, *, reference_time):
+        """Build rows plus bounded diagnostics from one current root read."""
+        # Validate without replacing the caller's object. Yearless legacy
+        # resolution must receive the exact turn-captured reference identity.
+        self._require_aware(reference_time)
+        diagnostics = {
+            "malformed_legacy_due_at": 0,
+            "legacy_due_mismatch": 0,
+        }
+        if not isinstance(self.reminders, dict):
+            return [], diagnostics
+
+        stored_rows = []
+        id_counts = {}
+        for bucket in self.reminders.values():
+            if not isinstance(bucket, list):
+                continue
+            for reminder in bucket:
+                if not isinstance(reminder, dict):
+                    continue
+                stored_rows.append(reminder)
+                raw_id = reminder.get("id")
+                if not isinstance(raw_id, str):
+                    continue
+                trimmed_id = raw_id.strip()
+                if not trimmed_id or ":" in trimmed_id:
+                    continue
+                id_counts[trimmed_id] = id_counts.get(trimmed_id, 0) + 1
+
+        rows = []
+        for reminder in stored_rows:
+            # A missing flag is the only accepted legacy projection. Stored
+            # non-bool falsey values are malformed rather than active.
+            if reminder.get("completed", False) is not False:
+                continue
+
+            reminder_id = reminder.get("id")
+            if (
+                not isinstance(reminder_id, str)
+                or not reminder_id
+                or reminder_id != reminder_id.strip()
+                or ":" in reminder_id
+                or id_counts.get(reminder_id) != 1
+            ):
+                continue
+            text = reminder.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+
+            due_at, due_state, mismatch = self._canonical_delivery_due_at(
+                reminder,
+                reference_time,
+            )
+            if due_state == "malformed":
+                diagnostics["malformed_legacy_due_at"] += 1
+                continue
+            if due_state != "valid" or due_at is None:
+                continue
+            if mismatch:
+                diagnostics["legacy_due_mismatch"] += 1
+
+            recurrence = self._canonical_delivery_recurrence(reminder)
+            if recurrence is None:
+                continue
+            anchor, sequence = recurrence
+            rows.append(
+                {
+                    "source_kind": "reminder",
+                    "id": reminder_id,
+                    "due_at": due_at,
+                    "recurrence_anchor_local": anchor,
+                    "recurrence_sequence": sequence,
+                    "completed": False,
+                    "user_id": copy.deepcopy(reminder.get("user_id")),
+                    "channel_id": copy.deepcopy(reminder.get("channel_id")),
+                    "text": text.strip(),
+                }
+            )
+
+        rows.sort(
+            key=lambda row: (
+                row["due_at"].astimezone(timezone.utc),
+                row["id"],
+            )
+        )
+        return rows, diagnostics
+
+    def snapshot_delivery_occurrences(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> tuple[dict[str, object], ...]:
+        """Return detached active occurrences eligible for checker delivery."""
+        rows, _ = self._delivery_occurrence_snapshot(
+            reference_time=reference_time,
+        )
+        return tuple(copy.deepcopy(rows))
+
+    def snapshot_delivery_diagnostics(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> dict[str, int]:
+        """Return bounded detached legacy schedule diagnostics."""
+        _, diagnostics = self._delivery_occurrence_snapshot(
+            reference_time=reference_time,
+        )
+        return copy.deepcopy(diagnostics)
+
+    def matches_delivery_fingerprint(
+        self,
+        fingerprint,
+        *,
+        reference_time: datetime,
+    ) -> bool:
+        """Revalidate one frozen occurrence while its store scope is held."""
+        self._require_aware(reference_time)
+        self.mutation_coordinator.assert_held(REMINDER_STORE_SCOPE)
+
+        if not isinstance(fingerprint, tuple) or len(fingerprint) != 5:
+            return False
+        reminder_id, due_at, anchor, sequence, completed = fingerprint
+        if (
+            not isinstance(reminder_id, str)
+            or not reminder_id
+            or reminder_id != reminder_id.strip()
+            or ":" in reminder_id
+            or not isinstance(due_at, datetime)
+            or due_at.tzinfo is None
+            or completed is not False
+        ):
+            return False
+        try:
+            if due_at.utcoffset() is None or due_at.microsecond:
+                return False
+            fingerprint_instant = due_at.astimezone(timezone.utc)
+        except (OverflowError, TypeError, ValueError):
+            return False
+
+        if self._canonical_delivery_anchor_sequence(
+            anchor,
+            sequence,
+        ) != (anchor, sequence):
+            return False
+
+        rows, _ = self._delivery_occurrence_snapshot(
+            reference_time=reference_time,
+        )
+        for row in rows:
+            if row["id"] != reminder_id:
+                continue
+            return (
+                row["due_at"].astimezone(timezone.utc)
+                == fingerprint_instant
+                and row["recurrence_anchor_local"] == anchor
+                and row["recurrence_sequence"] == sequence
+                and row["completed"] is completed
+            )
+        return False
 
     def get_completed_reminders(
         self,
@@ -441,6 +909,7 @@ class ReminderManager:
                 recurrence_str = ""
                 if r.get("recurrence"):
                     recurrence_labels = {
+                        "daily": "dag",
                         "weekly": "uke",
                         "biweekly": "2uker",
                         "monthly": "mnd",
@@ -531,16 +1000,20 @@ class ReminderManager:
         self,
         guild_id,
         index=None,
-        title=None,
-        date=None,
-        time=None,
-        recurrence=None,
+        title=_UNSET,
+        date=_UNSET,
+        time=_UNSET,
+        recurrence=_UNSET,
         *,
         reminder_id=None,
+        text=_UNSET,
+        due_at=_UNSET,
+        due_date=_UNSET,
+        timezone=_UNSET,
         reference_time,
     ):
         """Edit a numbered or stable-ID reminder on a detached candidate."""
-        self._require_aware(reference_time)
+        now = self._require_aware(reference_time)
 
         def mutate(candidate):
             active = self._active_reminders_in(candidate, guild_id)
@@ -560,27 +1033,116 @@ class ReminderManager:
                     target = active[position]
 
             if target is None:
-                if not candidate.get(str(guild_id)):
-                    raise ValueError(
-                        "Ingen påminnelser funnet for denne serveren."
-                    )
-                selector = reminder_id if reminder_id is not None else index
-                raise ValueError(f"Ugyldig påminnelse-nummer: {selector}")
+                raise ValueError("not_found")
 
-            if title is not None:
-                target["text"] = title
-            if date is not None:
-                target["due_date"] = date
-            # Separate reminder time storage arrives in Task 5. Preserve the
-            # historical no-op projection until that schema lands.
-            _ = time
-            if recurrence is not None:
-                target["recurrence"] = recurrence
-            return target, True
+            before = copy.deepcopy(target)
+
+            selected_text = text if text is not _UNSET else title
+            if selected_text is not _UNSET:
+                if not isinstance(selected_text, str) or not selected_text.strip():
+                    raise ValueError("blank_value")
+                target["text"] = selected_text
+
+            selected_date = due_date if due_date is not _UNSET else date
+            date_explicit = selected_date is not _UNSET
+            time_explicit = time is not _UNSET
+            due_at_explicit = due_at is not _UNSET
+            timezone_explicit = timezone is not _UNSET
+            schedule_explicit = (
+                due_at_explicit
+                or date_explicit
+                or time_explicit
+                or timezone_explicit
+            )
+
+            timezone_name = (
+                timezone
+                if timezone_explicit
+                else target.get("timezone") or "Europe/Oslo"
+            )
+            if timezone_name != "Europe/Oslo":
+                raise ValueError("invalid_timezone")
+
+            if due_at_explicit:
+                if due_at is None:
+                    projection = {
+                        "due_at": None,
+                        "due_date": None,
+                        "time": None,
+                        "timezone": "Europe/Oslo",
+                    }
+                else:
+                    # Explicit due_at is authoritative over any compatibility
+                    # date/time fields supplied in the same edit.
+                    projection = self._resolve_due_fields(
+                        due_at=due_at,
+                        due_date=None,
+                        time_value=None,
+                        timezone_name=timezone_name,
+                        reference_time=now,
+                    )
+                target.update(projection)
+            elif date_explicit or time_explicit:
+                next_date = (
+                    selected_date
+                    if date_explicit
+                    else target.get("due_date")
+                )
+                next_time = time if time_explicit else target.get("time")
+                projection = self._resolve_due_fields(
+                    due_at=None,
+                    due_date=next_date,
+                    time_value=next_time,
+                    timezone_name=timezone_name,
+                    reference_time=now,
+                )
+                target.update(projection)
+            elif timezone_explicit:
+                # The only accepted timezone is Oslo. Reproject a canonical
+                # due_at when present so all three schedule fields agree.
+                target.update(self._canonical_existing_due(target, now))
+
+            recurrence_explicit = recurrence is not _UNSET
+            next_recurrence = (
+                recurrence if recurrence_explicit else target.get("recurrence")
+            )
+            self._validate_recurrence(next_recurrence)
+
+            if recurrence_explicit:
+                target["recurrence"] = next_recurrence
+
+            reset_anchor = schedule_explicit or recurrence_explicit
+            if next_recurrence is not None:
+                if target.get("due_at") is None:
+                    if recurrence_explicit and target.get("due_date") is not None:
+                        target.update(self._canonical_existing_due(target, now))
+                    if target.get("due_at") is None:
+                        raise ValueError("invalid_recurrence")
+                if reset_anchor:
+                    target["recurrence_anchor_local"] = (
+                        self._anchor_from_due_at(target["due_at"])
+                    )
+                    target["recurrence_sequence"] = 0
+            elif reset_anchor:
+                target["recurrence_anchor_local"] = None
+                target["recurrence_sequence"] = None
+
+            changed = target != before
+            if changed:
+                target["updated_at"] = now.isoformat()
+            return target, changed
 
         return await self._transaction(mutate)
 
-    def edit_reminder(self, guild_id, index, title=None, date=None, time=None, recurrence=None):
+    def edit_reminder(
+        self,
+        guild_id,
+        index,
+        title=None,
+        date=None,
+        time=None,
+        recurrence=None,
+    ):
         """
         Edit an existing reminder by its 1-based index in active reminders.
 
@@ -600,15 +1162,21 @@ class ReminderManager:
         """
         self._require_offline_projection()
         reference_time = self._require_aware(self.clock.now())
+        kwargs = {}
+        if title is not None:
+            kwargs["title"] = title
+        if date is not None:
+            kwargs["date"] = date
+        if time is not None:
+            kwargs["time"] = time
+        if recurrence is not None:
+            kwargs["recurrence"] = recurrence
         return asyncio.run(
             self.edit_reminder_result(
                 guild_id,
                 index,
-                title,
-                date,
-                time,
-                recurrence,
                 reference_time=reference_time,
+                **kwargs,
             )
         )
 

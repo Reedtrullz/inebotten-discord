@@ -106,6 +106,16 @@ class MutationCoordinator:
             self._locks[scope] = lock
         return lock
 
+    def assert_held(self, scope: MutationScope) -> None:
+        """Require the current asyncio task to own an existing scope lease."""
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        lock = self._locks.get(scope)
+        if task is None or lock is None or lock._owner is not task:
+            raise RuntimeError("mutation_scope_not_owned")
+
     @asynccontextmanager
     async def hold(self, scope: MutationScope) -> AsyncIterator[None]:
         lock = self._lock_for(scope)

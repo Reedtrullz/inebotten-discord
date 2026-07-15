@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -14,7 +15,12 @@ from core.dispatch_result import (
     ManagerMutationError,
     MessageSendCancelled,
 )
-from core.intent_payloads import typed_or_legacy_payload
+from core.intent_models import BotIntent
+from core.intent_payloads import (
+    PayloadValidationError,
+    typed_or_legacy_payload,
+    validate_intent_payload,
+)
 from features.base_handler import BaseHandler
 
 
@@ -27,6 +33,17 @@ _MANAGER_ERROR_CODES = frozenset(
         "storage_write_failed",
     }
 )
+_MANAGER_PAYLOAD_ERROR_CODES = frozenset(
+    {
+        "blank_value",
+        "invalid_date",
+        "invalid_due_at",
+        "invalid_recurrence",
+        "invalid_time",
+        "invalid_timezone",
+        "missing_date",
+    }
+)
 
 
 class ReminderHandler(BaseHandler):
@@ -35,30 +52,46 @@ class ReminderHandler(BaseHandler):
     def __init__(self, monitor):
         super().__init__(monitor)
         self.reminders = monitor.reminders
+        # MessageMonitor constructs NaturalLanguageParser before handlers and
+        # IntentRouter inherits this exact resolver.  Reusing it keeps the
+        # one-release raw fallback on the same temporal policy as routing.
+        self.temporal_resolver = monitor.nlp_parser.temporal_resolver
 
-    def _turn_time(self, reference_time: datetime | None) -> datetime:
-        if reference_time is None:
-            reference_time = self.reminders.clock.now()
-        return self.reminders._require_aware(reference_time)
+    @staticmethod
+    def _turn_time(reference_time: datetime) -> datetime:
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            raise ValueError("reference_time_must_be_aware")
+        # Preserve object identity. The manager validates/converts internally,
+        # but every handler call receives the exact turn-captured value.
+        return reference_time
 
     def _payload(
         self,
         message,
         typed_value,
         *,
+        intent: BotIntent,
         reference_time: datetime,
     ):
         # ``typed_value`` is authoritative even when it is an empty mapping.
         # Only the explicit compatibility path may inspect the raw message.
-        return typed_or_legacy_payload(
+        canonical = typed_or_legacy_payload(
             monitor=self.monitor,
             family="reminder",
             typed_value=typed_value,
             legacy_factory=lambda: parse_reminder_command(
                 message.content,
                 now=reference_time,
+                temporal_resolver=self.temporal_resolver,
             ),
         )
+        if typed_value is not None:
+            return canonical
+        return validate_intent_payload(intent, canonical)
 
     async def _finish(
         self,
@@ -141,11 +174,23 @@ class ReminderHandler(BaseHandler):
         message,
         payload: dict[str, Any] | None = None,
         *,
-        reference_time: datetime | None = None,
+        reference_time: datetime,
     ) -> DispatchOutcome:
         """Search reminder text from one canonical query."""
         now = self._turn_time(reference_time)
-        canonical = self._payload(message, payload, reference_time=now)
+        try:
+            canonical = self._payload(
+                message,
+                payload,
+                intent=BotIntent.REMINDER_SEARCH,
+                reference_time=now,
+            )
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                "🔎 Skriv hva du vil søke etter i påminnelser.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
         query = canonical.get("query") if isinstance(canonical, dict) else None
         if (
             not isinstance(canonical, dict)
@@ -176,11 +221,24 @@ class ReminderHandler(BaseHandler):
         message,
         payload: dict[str, Any] | None = None,
         *,
-        reference_time: datetime | None = None,
+        reference_time: datetime,
     ) -> DispatchOutcome:
-        """Create a reminder through the current Task 3 temporal boundary."""
+        """Create one canonical reminder without re-resolving its schedule."""
         now = self._turn_time(reference_time)
-        canonical = self._payload(message, payload, reference_time=now)
+        try:
+            canonical = self._payload(
+                message,
+                payload,
+                intent=BotIntent.REMINDER_CREATE,
+                reference_time=now,
+            )
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                "🔔 Skriv hva jeg skal minne deg på, f.eks. "
+                "`@inebotten påminnelse ring legen 20.06`.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
         text = canonical.get("text") if isinstance(canonical, dict) else None
         if (
             not isinstance(canonical, dict)
@@ -194,14 +252,12 @@ class ReminderHandler(BaseHandler):
                 "`@inebotten påminnelse ring legen 20.06`.",
                 DispatchOutcome.failure("invalid_payload"),
             )
-        if "due_at" in canonical or "timezone" in canonical:
-            return await self._finish(
-                message,
-                "🔔 Tidspunktet kan ikke lagres trygt ennå. Ingenting ble endret.",
-                DispatchOutcome.failure("unsupported_temporal_field"),
-            )
-
         guild_id = self.get_guild_id(message)
+        temporal_kwargs = {
+            key: canonical[key]
+            for key in ("due_at", "time", "timezone")
+            if key in canonical
+        }
         try:
             reminder_id = await self.reminders.add_reminder_result(
                 guild_id,
@@ -212,7 +268,16 @@ class ReminderHandler(BaseHandler):
                 canonical.get("recurrence"),
                 channel_id=getattr(getattr(message, "channel", None), "id", None),
                 reference_time=now,
+                **temporal_kwargs,
             )
+        except ValueError as exc:
+            if exc.args and exc.args[0] in _MANAGER_PAYLOAD_ERROR_CODES:
+                return await self._finish(
+                    message,
+                    self.loc.t("error_generic"),
+                    DispatchOutcome.failure("invalid_payload"),
+                )
+            return await self._mutation_exception(message, exc)
         except (ManagerMutationCancelled, ManagerMutationError) as exc:
             return await self._mutation_exception(message, exc)
         except Exception as exc:
@@ -236,11 +301,23 @@ class ReminderHandler(BaseHandler):
         message,
         payload: dict[str, Any] | None = None,
         *,
-        reference_time: datetime | None = None,
+        reference_time: datetime,
     ) -> DispatchOutcome:
         """List active and recently completed reminders."""
         now = self._turn_time(reference_time)
-        canonical = self._payload(message, payload, reference_time=now)
+        try:
+            canonical = self._payload(
+                message,
+                payload,
+                intent=BotIntent.REMINDER_LIST,
+                reference_time=now,
+            )
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
         if not isinstance(canonical, dict) or canonical.get("action") != "list":
             return await self._finish(
                 message,
@@ -269,11 +346,23 @@ class ReminderHandler(BaseHandler):
         message,
         payload: dict[str, Any] | None = None,
         *,
-        reference_time: datetime | None = None,
+        reference_time: datetime,
     ) -> DispatchOutcome:
         """Complete by one numbered or exact stable-ID selector."""
         now = self._turn_time(reference_time)
-        canonical = self._payload(message, payload, reference_time=now)
+        try:
+            canonical = self._payload(
+                message,
+                payload,
+                intent=BotIntent.REMINDER_COMPLETE,
+                reference_time=now,
+            )
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                "📝 Hvilken påminnelse er ferdig? Bruk et nummer eller en ID.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
         if (
             not isinstance(canonical, dict)
             or canonical.get("action") != "complete"
@@ -291,18 +380,31 @@ class ReminderHandler(BaseHandler):
         if isinstance(reminder_id, str):
             reminder_id = reminder_id.strip()
         try:
-            success, reminder_text, next_date = (
-                await self.reminders.complete_reminder_result(
-                    guild_id,
-                    reminder_num=number,
-                    reminder_id=reminder_id,
-                    reference_time=now,
-                )
+            completed = await self.reminders.complete_reminder_result(
+                guild_id,
+                reminder_num=number,
+                reminder_id=reminder_id,
+                reference_time=now,
             )
         except (ManagerMutationCancelled, ManagerMutationError) as exc:
             return await self._mutation_exception(message, exc)
         except Exception as exc:
             return await self._mutation_exception(message, exc)
+
+        # The production manager retains its historical three-value result;
+        # accept the documented two-value projection for one compatibility
+        # release without weakening mutation truth for malformed results.
+        if not isinstance(completed, tuple) or len(completed) not in {2, 3}:
+            return await self._finish(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    commit_unknown=True,
+                ),
+            )
+        success, reminder_text = completed[:2]
+        next_date = completed[2] if len(completed) == 3 else None
 
         selector = reminder_id if reminder_id is not None else number
         if not success:
@@ -325,11 +427,23 @@ class ReminderHandler(BaseHandler):
         message,
         payload: dict[str, Any] | None = None,
         *,
-        reference_time: datetime | None = None,
+        reference_time: datetime,
     ) -> DispatchOutcome:
         """Edit one reminder without deriving a second target from raw text."""
         now = self._turn_time(reference_time)
-        canonical = self._payload(message, payload, reference_time=now)
+        try:
+            canonical = self._payload(
+                message,
+                payload,
+                intent=BotIntent.REMINDER_EDIT,
+                reference_time=now,
+            )
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                self.loc.t("calendar_edit_invalid"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
         changes = canonical.get("changes") if isinstance(canonical, dict) else None
         if (
             not isinstance(canonical, dict)
@@ -343,46 +457,59 @@ class ReminderHandler(BaseHandler):
                 self.loc.t("calendar_edit_invalid"),
                 DispatchOutcome.failure("invalid_payload"),
             )
-        if "due_at" in changes or "timezone" in changes:
-            return await self._finish(
-                message,
-                "🔔 Tidspunktet kan ikke lagres trygt ennå. Ingenting ble endret.",
-                DispatchOutcome.failure("unsupported_temporal_field"),
-            )
-
         guild_id = self.get_guild_id(message)
         reminder_id = canonical.get("reminder_id")
         if isinstance(reminder_id, str):
             reminder_id = reminder_id.strip()
+        edit_kwargs = {
+            key: changes[key]
+            for key in (
+                "text",
+                "due_at",
+                "due_date",
+                "time",
+                "timezone",
+                "recurrence",
+            )
+            if key in changes
+        }
         try:
             updated = await self.reminders.edit_reminder_result(
                 guild_id,
                 index=canonical.get("number"),
-                title=changes.get("text"),
-                date=changes.get("due_date"),
-                time=changes.get("time"),
-                recurrence=changes.get("recurrence"),
                 reminder_id=reminder_id,
                 reference_time=now,
+                **edit_kwargs,
             )
         except ValueError as exc:
-            if exc.args == ("invalid_recurrence",):
+            if exc.args and exc.args[0] in _MANAGER_PAYLOAD_ERROR_CODES:
                 return await self._finish(
                     message,
                     self.loc.t("calendar_edit_invalid"),
                     DispatchOutcome.failure("invalid_payload"),
                 )
-            selector = reminder_id or canonical.get("number", "?")
-            return await self._finish(
-                message,
-                self.loc.t("reminder_edit_not_found", num=selector),
-                DispatchOutcome.failure("not_found", retryable=True),
-            )
+            if exc.args == ("not_found",):
+                selector = reminder_id or canonical.get("number", "?")
+                return await self._finish(
+                    message,
+                    self.loc.t("reminder_edit_not_found", num=selector),
+                    DispatchOutcome.failure("not_found", retryable=True),
+                )
+            return await self._mutation_exception(message, exc)
         except (ManagerMutationCancelled, ManagerMutationError) as exc:
             return await self._mutation_exception(message, exc)
         except Exception as exc:
             return await self._mutation_exception(message, exc)
 
+        if not isinstance(updated, Mapping):
+            return await self._finish(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    commit_unknown=True,
+                ),
+            )
         if not updated:
             return await self._finish(
                 message,
@@ -400,11 +527,23 @@ class ReminderHandler(BaseHandler):
         message,
         payload: dict[str, Any] | None = None,
         *,
-        reference_time: datetime | None = None,
+        reference_time: datetime,
     ) -> DispatchOutcome:
         """Resolve a number once, then delete only by the stable record ID."""
         now = self._turn_time(reference_time)
-        canonical = self._payload(message, payload, reference_time=now)
+        try:
+            canonical = self._payload(
+                message,
+                payload,
+                intent=BotIntent.REMINDER_DELETE,
+                reference_time=now,
+            )
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                self.loc.t("reminder_delete_not_found", num="?"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
         if (
             not isinstance(canonical, dict)
             or canonical.get("action") != "delete"

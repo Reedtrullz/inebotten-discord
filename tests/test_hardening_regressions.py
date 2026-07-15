@@ -119,23 +119,38 @@ class BirthdayHardeningTests(unittest.TestCase):
 
 
 class ReminderHardeningTests(unittest.TestCase):
-    def test_stale_sent_log_allows_realert(self):
-        checker = ReminderChecker(storage_path=Path("/tmp/nonexistent-reminder-log.json"))
-        checker.sent_log = {
-            "reminders_sent": {"item-1:now": int(time.time()) - 3700},
-            "digest_log": {},
-        }
+    def test_malformed_sent_log_load_is_silent_and_does_not_rewrite(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reminder-log.json"
+            path.write_text('{"SECRET_PATH_CONTENT":', encoding="utf-8")
+            before = path.read_bytes()
+            checker = ReminderChecker(storage_path=path)
 
-        self.assertFalse(checker._has_been_sent("item-1", "now"))
+            with patch("builtins.print") as print_mock:
+                asyncio.run(checker.setup())
 
-    def test_recent_sent_log_still_suppresses(self):
-        checker = ReminderChecker(storage_path=Path("/tmp/nonexistent-reminder-log.json"))
-        checker.sent_log = {
-            "reminders_sent": {"item-1:now": int(time.time())},
-            "digest_log": {},
-        }
+            self.assertEqual(
+                checker.sent_log,
+                {"reminders_sent": {}, "digest_log": {}},
+            )
+            self.assertEqual(path.read_bytes(), before)
+            print_mock.assert_not_called()
 
-        self.assertTrue(checker._has_been_sent("item-1", "now"))
+    def test_setup_defers_legacy_normalization_without_rewriting(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reminder-log.json"
+            raw = {
+                "reminders_sent": {"calendar-item:30min": 1234.5},
+                "digest_log": {},
+            }
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            before = path.read_bytes()
+            checker = ReminderChecker(storage_path=path)
+
+            asyncio.run(checker.setup())
+
+            self.assertEqual(checker.sent_log, raw)
+            self.assertEqual(path.read_bytes(), before)
 
 
 class IdAndPersistenceHardeningTests(unittest.TestCase):

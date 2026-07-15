@@ -5,6 +5,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+import inspect
 import os
 import re
 import signal
@@ -16,6 +17,7 @@ from datetime import datetime, timedelta
 
 import discord
 
+from cal_system.reminder_checker import ReminderChecker
 from cal_system.reminder_clock import SystemReminderClock
 from core.dispatch_result import (
     DeliveryState,
@@ -163,6 +165,10 @@ class MessageMonitor:
         rate_limiter,
         response_generator,
         bot_name="inebotten",
+        *,
+        reminder_clock=None,
+        reminder_manager=None,
+        reminder_checker_factory=ReminderChecker,
     ):
         self.client = client
         self.bot = client
@@ -171,8 +177,16 @@ class MessageMonitor:
         self.response_gen = response_generator
         self.bot_name = bot_name
         self.bot_mention = f"@{bot_name}"
-        self.mutation_coordinator = MutationCoordinator()
-        self.reminder_clock = SystemReminderClock()
+        injected_coordinator = getattr(
+            reminder_manager,
+            "mutation_coordinator",
+            None,
+        )
+        self.mutation_coordinator = injected_coordinator or MutationCoordinator()
+        injected_clock = getattr(reminder_manager, "clock", None)
+        self.reminder_clock = (
+            reminder_clock or injected_clock or SystemReminderClock()
+        )
         self.discord_sender = DiscordSendCoordinator(self.rate_limiter)
 
         # Initialize unified calendar manager
@@ -196,10 +210,29 @@ class MessageMonitor:
         self.nlp_parser = NaturalLanguageParser()
 
         from cal_system.reminder_manager import ReminderManager
-        self.reminders = ReminderManager(
+        if reminder_manager is None:
+            self.reminders = ReminderManager(
+                clock=self.reminder_clock,
+                mutation_coordinator=self.mutation_coordinator,
+            )
+        else:
+            self.reminders = reminder_manager
+            self.reminders.clock = self.reminder_clock
+            self.reminders.mutation_coordinator = self.mutation_coordinator
+
+        get_channel = getattr(self.client, "get_channel", None)
+
+        def resolve_channel(channel_id):
+            return get_channel(channel_id) if callable(get_channel) else None
+
+        self.reminder_checker = reminder_checker_factory(
+            calendar_manager=self.calendar,
+            reminder_manager=self.reminders,
+            get_channel_func=resolve_channel,
             clock=self.reminder_clock,
             mutation_coordinator=self.mutation_coordinator,
         )
+        self.reminder_checker_task = None
 
         # Initialize personality and memory systems
         from memory.user_memory import get_user_memory
@@ -293,7 +326,12 @@ class MessageMonitor:
         self._last_persisted_intent_stats: dict[str, dict[str, int]] = {}
         self._last_persisted_rate_stats: dict[str, int] = {}
         self._background_tasks = set()
+        self._tasks_by_name = {}
         self._task_health: dict[str, dict[str, object]] = {}
+        self._setup_lock = asyncio.Lock()
+        self._setup_complete = False
+        self._close_lock = asyncio.Lock()
+        self._closed = False
 
         self.handlers = {}
         self._register_handlers()
@@ -301,12 +339,28 @@ class MessageMonitor:
         self.nlu_metrics = self.intent_router.metrics
 
     def _track_background_task(self, coro, name):
+        if not hasattr(self, "_tasks_by_name"):
+            self._tasks_by_name = {}
+        existing = self._tasks_by_name.get(name)
+        if existing is not None and not existing.done():
+            if inspect.iscoroutine(coro):
+                coro.close()
+            return existing
+
         task = asyncio.create_task(coro, name=name)
+        self._tasks_by_name[name] = task
         self._background_tasks.add(task)
         self._set_task_health(name, state="running", started_at=datetime.now().isoformat(), last_error=None)
+        task.add_done_callback(self._background_task_done(name))
+        return task
 
-        def _done_callback(done_task):
+    def _background_task_done(self, name):
+        def done_callback(done_task):
             self._background_tasks.discard(done_task)
+            tasks_by_name = getattr(self, "_tasks_by_name", {})
+            if tasks_by_name.get(name) is not done_task:
+                return
+            tasks_by_name.pop(name, None)
             if done_task.cancelled():
                 self._set_task_health(name, state="cancelled", finished_at=datetime.now().isoformat())
                 return
@@ -327,8 +381,7 @@ class MessageMonitor:
                     exception_type=None,
                 )
 
-        task.add_done_callback(_done_callback)
-        return task
+        return done_callback
 
     def _set_task_health(self, name, **updates):
         health = self._task_health.setdefault(name, {"state": "unknown"})
@@ -357,44 +410,89 @@ class MessageMonitor:
         return {name: dict(values) for name, values in self._task_health.items()}
 
     async def setup(self):
-        await self.calendar.setup()
-        await self.user_memory.setup()
+        if not hasattr(self, "_setup_lock"):
+            self._setup_lock = asyncio.Lock()
+        if not hasattr(self, "_setup_complete"):
+            self._setup_complete = False
+        async with self._setup_lock:
+            if getattr(self, "_closed", False) or self._setup_complete:
+                return
 
-        # OAuth/token refresh is an explicit startup boundary, never
-        # constructor I/O.  Keep the injected manager even when initially
-        # unconfigured so an auth flow can enable it later in this process.
-        gcal_status = await self.calendar.ensure_gcal_configured()
-        if gcal_status.ok:
-            print("[MONITOR] Google Calendar integration enabled")
-            print("[MONITOR] Performing initial Google Calendar sync...")
-            reference_time = self.reminder_clock.now()
+            await self.calendar.setup()
+            await self.user_memory.setup()
+
+            # OAuth/token refresh is an explicit startup boundary, never
+            # constructor I/O.  Keep the injected manager even when initially
+            # unconfigured so an auth flow can enable it later in this process.
+            gcal_status = await self.calendar.ensure_gcal_configured()
+            if gcal_status.ok:
+                print("[MONITOR] Google Calendar integration enabled")
+                print("[MONITOR] Performing initial Google Calendar sync...")
+                reference_time = self.reminder_clock.now()
+                self._track_background_task(
+                    self.calendar.sync_from_gcal_result(
+                        reference_time=reference_time,
+                    ),
+                    "initial-gcal-sync",
+                )
+            elif gcal_status.state is ExternalCommitState.UNKNOWN:
+                self._set_task_health(
+                    "initial-gcal-sync",
+                    state="degraded",
+                    last_error="external_commit_unknown",
+                )
+
             self._track_background_task(
-                self.calendar.sync_from_gcal_result(
-                    reference_time=reference_time,
-                ),
-                "initial-gcal-sync",
+                self._console_persistence_loop(),
+                "console-persistence",
             )
-        elif gcal_status.state is ExternalCommitState.UNKNOWN:
-            self._set_task_health(
-                "initial-gcal-sync",
-                state="degraded",
-                last_error="external_commit_unknown",
-            )
+            reminder_checker = getattr(self, "reminder_checker", None)
+            if reminder_checker is not None:
+                await reminder_checker.setup()
+                self.reminder_checker_task = self._track_background_task(
+                    reminder_checker.start(),
+                    "reminder-checker",
+                )
+                print("[MONITOR] Calendar reminder checker started")
+            self._setup_complete = True
 
-        # Start periodic console stats persistence
-        self._track_background_task(self._console_persistence_loop(), "console-persistence")
-
-        print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
+            print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
 
     async def close(self):
-        """Cancel monitor-owned background tasks."""
-        tasks = list(self._background_tasks)
-        if not tasks:
-            return
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self._background_tasks.clear()
+        """Stop the checker, then settle every monitor-owned task once."""
+        if not hasattr(self, "_setup_lock"):
+            self._setup_lock = asyncio.Lock()
+        if not hasattr(self, "_close_lock"):
+            self._close_lock = asyncio.Lock()
+        if not hasattr(self, "_closed"):
+            self._closed = False
+        # Serialize shutdown behind any in-flight setup. Once ``_closed`` is
+        # published under this boundary, a later setup cannot start new work.
+        async with self._setup_lock:
+            async with self._close_lock:
+                if self._closed:
+                    return
+
+                reminder_checker = getattr(self, "reminder_checker", None)
+                if reminder_checker is not None:
+                    try:
+                        stopped = reminder_checker.stop()
+                        if inspect.isawaitable(stopped):
+                            await stopped
+                    except Exception as exc:
+                        self._mark_task_error("reminder-checker", exc)
+
+                tasks = list(self._background_tasks)
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                self._background_tasks.clear()
+                getattr(self, "_tasks_by_name", {}).clear()
+                if hasattr(self, "reminder_checker_task"):
+                    self.reminder_checker_task = None
+                self._closed = True
 
     async def _console_persistence_loop(self) -> None:
         """Periodically save intent and rate-limit stats to disk."""
@@ -1490,11 +1588,12 @@ class MessageMonitor:
             days=7,
             reference_time=reference_time,
         )
+        active_reminders = self.reminders.get_active_reminders(guild_id)
 
         dashboard = self.conv_gen.generate_dashboard(
             weather_data=weather_formatted,
             events=upcoming_items,
-            reminders=[],
+            reminders=active_reminders,
             norwegian_data=norwegian_data,
             show_navnedag=show_navnedag,
         )
@@ -1647,13 +1746,30 @@ class SelfbotClient(discord.Client):
         self.monitor = None
         self.console_server = None
         self.console_task = None
-        self.reminder_checker = None
-        self.reminder_checker_task = None
         self.start_time = None
+        self._runtime_lock = asyncio.Lock()
 
     async def setup_hook(self):
         """Start diagnostics before the Discord session reaches ready."""
         await self.start_console()
+
+    async def _ensure_runtime_started(self):
+        """Create and attach the single monitor retained across reconnects."""
+        async with self._runtime_lock:
+            if self.monitor is None:
+                self.monitor = MessageMonitor(
+                    client=self,
+                    hermes_connector=self.hermes,
+                    rate_limiter=self.rate_limiter,
+                    response_generator=self.response_gen,
+                )
+            await self.monitor.setup()
+            await self.start_console()
+            if self.console_server is not None:
+                self.console_server.monitor = self.monitor
+            if self.start_time is None:
+                self.start_time = datetime.now()
+            return self.monitor
 
     async def start_console(self):
         if self.console_server is not None:
@@ -1792,7 +1908,6 @@ class SelfbotClient(discord.Client):
 
     async def on_ready(self):
         """Called when bot is ready"""
-        self.start_time = datetime.now()
         print(f"[BOT] Logged in as {self.user} (ID: {self.user.id})")
         print(f"[BOT] Connected to {len(self.guilds)} guilds")
         print(
@@ -1807,28 +1922,7 @@ class SelfbotClient(discord.Client):
         except Exception as e:
             print(f"[BOT] Could not set activity: {e}")
 
-        # Initialize message monitor
-        self.monitor = MessageMonitor(
-            client=self,
-            hermes_connector=self.hermes,
-            rate_limiter=self.rate_limiter,
-            response_generator=self.response_gen,
-        )
-        await self.monitor.setup()
-
-        await self.start_console()
-        if self.console_server:
-            self.console_server.monitor = self.monitor
-
-        # Initialize and start calendar reminder checker
-        self.reminder_checker = self._create_reminder_checker()
-        if self.reminder_checker:
-            await self.reminder_checker.setup()
-            self.reminder_checker_task = self.monitor._track_background_task(
-                self.reminder_checker.start(),
-                "reminder-checker",
-            )
-            print("[BOT] Calendar reminder checker started")
+        await self._ensure_runtime_started()
 
         # Check AI connector health
         if not self.hermes:
@@ -1842,24 +1936,6 @@ class SelfbotClient(discord.Client):
         else:
             print(f"[BOT] WARNING: AI connector issue - {message}")
             print("[BOT] Will use local response generator as fallback")
-
-    def _create_reminder_checker(self):
-        """Create a ReminderChecker wired to the bot's channels."""
-        from cal_system.reminder_checker import ReminderChecker
-
-        if self.monitor is None:
-            return None
-
-        def get_channel(channel_id: int):
-            return self.get_channel(channel_id)
-
-        return ReminderChecker(
-            calendar_manager=self.monitor.calendar,
-            reminder_manager=self.monitor.reminders,
-            get_channel_func=get_channel,
-            clock=self.monitor.reminder_clock,
-            mutation_coordinator=self.monitor.mutation_coordinator,
-        )
 
     def _setup_signal_handlers(self):
         try:
@@ -1892,21 +1968,6 @@ class SelfbotClient(discord.Client):
                 await self.monitor.close()
             except Exception as e:
                 print(f"[BOT] Error stopping monitor tasks: {e}")
-
-        if self.reminder_checker:
-            try:
-                self.reminder_checker.stop()
-            except Exception as e:
-                print(f"[BOT] Error stopping reminder checker: {e}")
-
-        if self.reminder_checker_task and not self.reminder_checker_task.done():
-            self.reminder_checker_task.cancel()
-            try:
-                await self.reminder_checker_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self.reminder_checker_task = None
 
         if self.console_task and not self.console_task.done():
             self.console_task.cancel()

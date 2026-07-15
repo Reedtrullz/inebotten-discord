@@ -14,6 +14,8 @@ from core.dispatch_result import (
     MessageSendCancelled,
     MessageSendResult,
 )
+from core.intent_models import BotIntent
+from core.intent_payloads import validate_intent_payload
 from features.reminder_handler import ReminderHandler
 
 
@@ -31,6 +33,7 @@ class TypedMessage:
 
 
 def make_handler(send_result=None):
+    temporal_resolver = Mock(name="shared_temporal_resolver")
     reminders = SimpleNamespace(
         clock=SimpleNamespace(now=Mock(return_value=REFERENCE_TIME)),
         _require_aware=lambda value: value,
@@ -58,6 +61,7 @@ def make_handler(send_result=None):
         ),
         client=SimpleNamespace(),
         nlu_metrics=metrics,
+        nlp_parser=SimpleNamespace(temporal_resolver=temporal_resolver),
     )
     handler = ReminderHandler(monitor)
     handler.send_response_result = AsyncMock(
@@ -75,9 +79,15 @@ async def test_all_typed_actions_use_exact_adapters_without_raw_reparse():
     handler._parse_search_query = Mock(side_effect=AssertionError("search reparse"))
     handler.extract_number = Mock(side_effect=AssertionError("number reparse"))
 
-    with patch(
-        "features.reminder_handler.parse_reminder_command",
-        side_effect=AssertionError("raw reminder reparse"),
+    with (
+        patch(
+            "features.reminder_handler.parse_reminder_command",
+            side_effect=AssertionError("raw reminder reparse"),
+        ),
+        patch(
+            "features.reminder_handler.validate_intent_payload",
+            side_effect=AssertionError("typed reminder was revalidated"),
+        ),
     ):
         create = await handler.handle_reminder_create(
             message,
@@ -153,6 +163,10 @@ async def test_all_typed_actions_use_exact_adapters_without_raw_reparse():
         channel_id=456,
         reference_time=REFERENCE_TIME,
     )
+    assert (
+        reminders.add_reminder_result.await_args.kwargs["reference_time"]
+        is REFERENCE_TIME
+    )
     reminders.format_reminders_list.assert_called_once_with(
         123,
         show_completed=True,
@@ -168,8 +182,8 @@ async def test_all_typed_actions_use_exact_adapters_without_raw_reparse():
     reminders.edit_reminder_result.assert_awaited_once_with(
         123,
         index=None,
-        title="Ring tannlegen",
-        date="21.07.2026",
+        text="Ring tannlegen",
+        due_date="21.07.2026",
         time="14:00",
         recurrence="monthly",
         reminder_id="rem_exact",
@@ -194,7 +208,13 @@ async def test_none_payload_uses_one_legacy_parse_and_one_bounded_metric():
     )
     parser = Mock(return_value={"action": "add", "text": "Ring legen"})
 
-    with patch("features.reminder_handler.parse_reminder_command", parser):
+    with (
+        patch("features.reminder_handler.parse_reminder_command", parser),
+        patch(
+            "features.reminder_handler.validate_intent_payload",
+            wraps=validate_intent_payload,
+        ) as validator,
+    ):
         outcome = await handler.handle_reminder_create(
             message,
             None,
@@ -202,9 +222,130 @@ async def test_none_payload_uses_one_legacy_parse_and_one_bounded_metric():
         )
 
     assert outcome.ok and outcome.mutated and outcome.response_sent
-    parser.assert_called_once_with("legacy sentinel", now=REFERENCE_TIME)
+    parser.assert_called_once_with(
+        "legacy sentinel",
+        now=REFERENCE_TIME,
+        temporal_resolver=handler.temporal_resolver,
+    )
+    assert parser.call_args.kwargs["now"] is REFERENCE_TIME
+    assert (
+        parser.call_args.kwargs["temporal_resolver"]
+        is handler.temporal_resolver
+    )
+    validator.assert_called_once_with(
+        BotIntent.REMINDER_CREATE,
+        {"action": "add", "text": "Ring legen"},
+    )
     metrics.record_legacy_payload_fallback.assert_called_once_with("reminder")
     reminders.add_reminder_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "intent", "raw"),
+    [
+        (
+            "handle_reminder_create",
+            BotIntent.REMINDER_CREATE,
+            {"action": "add", "text": "Ring legen"},
+        ),
+        (
+            "handle_reminder_list",
+            BotIntent.REMINDER_LIST,
+            {"action": "list"},
+        ),
+        (
+            "handle_reminder_search",
+            BotIntent.REMINDER_SEARCH,
+            {"action": "search", "query": "lege"},
+        ),
+        (
+            "handle_reminder_complete",
+            BotIntent.REMINDER_COMPLETE,
+            {"action": "complete", "reminder_id": "rem_exact"},
+        ),
+        (
+            "handle_reminder_edit",
+            BotIntent.REMINDER_EDIT,
+            {
+                "action": "edit",
+                "reminder_id": "rem_exact",
+                "changes": {"text": "Ring tannlegen"},
+            },
+        ),
+        (
+            "handle_reminder_delete",
+            BotIntent.REMINDER_DELETE,
+            {"action": "delete", "reminder_id": "rem_exact"},
+        ),
+    ],
+)
+async def test_each_legacy_fallback_validates_for_its_exact_intent(
+    method_name,
+    intent,
+    raw,
+):
+    handler, _, metrics = make_handler()
+    message = SimpleNamespace(
+        content="legacy sentinel",
+        guild=SimpleNamespace(id=123),
+        channel=SimpleNamespace(id=456),
+        author=SimpleNamespace(id=7, name="Tester"),
+    )
+
+    with (
+        patch(
+            "features.reminder_handler.parse_reminder_command",
+            return_value=raw,
+        ),
+        patch(
+            "features.reminder_handler.validate_intent_payload",
+            wraps=validate_intent_payload,
+        ) as validator,
+    ):
+        outcome = await getattr(handler, method_name)(
+            message,
+            None,
+            reference_time=REFERENCE_TIME,
+        )
+
+    assert outcome.ok
+    validator.assert_called_once_with(intent, raw)
+    metrics.record_legacy_payload_fallback.assert_called_once_with("reminder")
+
+
+@pytest.mark.asyncio
+async def test_malformed_legacy_fallback_is_bounded_before_any_manager_call():
+    handler, reminders, metrics = make_handler()
+    message = SimpleNamespace(
+        content="legacy sentinel",
+        guild=SimpleNamespace(id=123),
+        channel=SimpleNamespace(id=456),
+        author=SimpleNamespace(id=7, name="Tester"),
+    )
+
+    with patch(
+        "features.reminder_handler.parse_reminder_command",
+        return_value={
+            "action": "add",
+            "text": "Ring legen",
+            "unknown": "must-not-reach-manager",
+        },
+    ):
+        outcome = await handler.handle_reminder_create(
+            message,
+            None,
+            reference_time=REFERENCE_TIME,
+        )
+
+    assert not outcome.ok
+    assert not outcome.mutated
+    assert not outcome.retryable
+    assert outcome.error_code == "invalid_payload"
+    assert outcome.response_sent
+    reminders.add_reminder_result.assert_not_awaited()
+    metrics.record_legacy_payload_fallback.assert_called_once_with("reminder")
+    handler.send_response_result.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -230,7 +371,7 @@ async def test_empty_typed_payload_is_authoritative_and_never_falls_back():
 
 
 @pytest.mark.asyncio
-async def test_unsupported_temporal_fields_are_rejected_before_any_write():
+async def test_canonical_temporal_fields_reach_create_and_edit_unchanged():
     handler, reminders, _ = make_handler()
 
     create = await handler.handle_reminder_create(
@@ -245,24 +386,113 @@ async def test_unsupported_temporal_fields_are_rejected_before_any_write():
         },
         reference_time=REFERENCE_TIME,
     )
+    edit_due_at = "2026-07-16T15:00:00+02:00"
     edit = await handler.handle_reminder_edit(
         TypedMessage(),
         {
             "action": "edit",
             "number": 1,
-            "changes": {"timezone": "Europe/Oslo", "time": "15:00"},
+            "changes": {
+                "due_at": edit_due_at,
+                "due_date": "16.07.2026",
+                "time": "15:00",
+                "timezone": "Europe/Oslo",
+            },
         },
         reference_time=REFERENCE_TIME,
     )
 
     for outcome in (create, edit):
-        assert not outcome.ok
-        assert outcome.error_code == "unsupported_temporal_field"
-        assert not outcome.mutated
+        assert outcome.ok
+        assert outcome.mutated
         assert outcome.response_sent
-    reminders.add_reminder_result.assert_not_awaited()
-    reminders.edit_reminder_result.assert_not_awaited()
+    reminders.add_reminder_result.assert_awaited_once_with(
+        123,
+        7,
+        "Tester",
+        "Ring legen",
+        "15.07.2026",
+        None,
+        channel_id=456,
+        due_at="2026-07-15T14:00:00+02:00",
+        time="14:00",
+        timezone="Europe/Oslo",
+        reference_time=REFERENCE_TIME,
+    )
+    reminders.edit_reminder_result.assert_awaited_once_with(
+        123,
+        index=1,
+        due_at=edit_due_at,
+        due_date="16.07.2026",
+        time="15:00",
+        timezone="Europe/Oslo",
+        reminder_id=None,
+        reference_time=REFERENCE_TIME,
+    )
     assert handler.send_response_result.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_edit_omission_is_absent_but_explicit_none_is_forwarded():
+    handler, reminders, _ = make_handler()
+
+    text_only = await handler.handle_reminder_edit(
+        TypedMessage(),
+        {
+            "action": "edit",
+            "reminder_id": "rem_exact",
+            "changes": {"text": "Ny tekst"},
+        },
+        reference_time=REFERENCE_TIME,
+    )
+    explicit_clear = await handler.handle_reminder_edit(
+        TypedMessage(),
+        {
+            "action": "edit",
+            "reminder_id": "rem_exact",
+            "changes": {"due_at": None, "recurrence": None},
+        },
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert text_only.ok and text_only.mutated
+    assert explicit_clear.ok and explicit_clear.mutated
+    assert reminders.edit_reminder_result.await_args_list[0].kwargs == {
+        "index": None,
+        "reminder_id": "rem_exact",
+        "reference_time": REFERENCE_TIME,
+        "text": "Ny tekst",
+    }
+    assert reminders.edit_reminder_result.await_args_list[1].kwargs == {
+        "index": None,
+        "reminder_id": "rem_exact",
+        "reference_time": REFERENCE_TIME,
+        "due_at": None,
+        "recurrence": None,
+    }
+    for call in reminders.edit_reminder_result.await_args_list:
+        assert "title" not in call.kwargs
+        assert "date" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_handler_requires_the_turn_reference_and_never_reads_manager_clock():
+    handler, reminders, _ = make_handler()
+
+    with pytest.raises(TypeError, match="reference_time"):
+        await handler.handle_reminder_create(
+            TypedMessage(),
+            {"action": "add", "text": "Ring legen"},
+        )
+    with pytest.raises(ValueError, match="reference_time_must_be_aware"):
+        await handler.handle_reminder_create(
+            TypedMessage(),
+            {"action": "add", "text": "Ring legen"},
+            reference_time=datetime(2026, 7, 15, 10, 30),
+        )
+
+    reminders.clock.now.assert_not_called()
+    reminders.add_reminder_result.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -403,6 +633,123 @@ async def test_edit_maps_bounded_invalid_recurrence_before_write():
     assert not outcome.retryable
     assert outcome.error_code == "invalid_payload"
     assert outcome.response_sent
+
+
+@pytest.mark.asyncio
+async def test_create_maps_bounded_temporal_rejection_to_invalid_payload():
+    handler, reminders, _ = make_handler()
+    reminders.add_reminder_result.side_effect = ValueError(
+        "invalid_recurrence"
+    )
+
+    outcome = await handler.handle_reminder_create(
+        TypedMessage(),
+        {
+            "action": "add",
+            "text": "Ring legen",
+            "recurrence": "weekly",
+        },
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert not outcome.ok
+    assert not outcome.mutated
+    assert not outcome.retryable
+    assert outcome.error_code == "invalid_payload"
+    assert outcome.response_sent
+
+
+@pytest.mark.asyncio
+async def test_missing_date_edit_rejection_is_bounded_invalid_payload():
+    handler, reminders, _ = make_handler()
+    reminders.edit_reminder_result.side_effect = ValueError("missing_date")
+
+    outcome = await handler.handle_reminder_edit(
+        TypedMessage(),
+        {
+            "action": "edit",
+            "reminder_id": "rem_exact",
+            "changes": {"time": "14:00"},
+        },
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert not outcome.ok
+    assert not outcome.mutated
+    assert not outcome.retryable
+    assert outcome.error_code == "invalid_payload"
+    assert outcome.response_sent
+
+
+@pytest.mark.asyncio
+async def test_only_exact_lookup_error_maps_to_retryable_not_found():
+    handler, reminders, _ = make_handler()
+    reminders.edit_reminder_result.side_effect = ValueError("not_found")
+
+    outcome = await handler.handle_reminder_edit(
+        TypedMessage(),
+        {
+            "action": "edit",
+            "reminder_id": "rem_exact",
+            "changes": {"text": "Ring tannlegen"},
+        },
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert not outcome.ok
+    assert not outcome.mutated
+    assert outcome.retryable
+    assert outcome.error_code == "not_found"
+    assert outcome.response_sent
+
+
+@pytest.mark.asyncio
+async def test_unknown_edit_value_error_fails_closed_as_commit_unknown():
+    handler, reminders, _ = make_handler()
+    reminders.edit_reminder_result.side_effect = ValueError("secret_detail")
+
+    outcome = await handler.handle_reminder_edit(
+        TypedMessage(),
+        {
+            "action": "edit",
+            "reminder_id": "rem_exact",
+            "changes": {"text": "Ring tannlegen"},
+        },
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert not outcome.ok
+    assert not outcome.mutated
+    assert not outcome.retryable
+    assert outcome.commit_unknown
+    assert outcome.error_code == "commit_state_unknown"
+    assert outcome.response_sent
+    handler.send_response_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_truthy_non_mapping_edit_result_is_bounded_commit_unknown():
+    handler, reminders, _ = make_handler()
+    reminders.edit_reminder_result.return_value = ["unexpected", "result"]
+
+    outcome = await handler.handle_reminder_edit(
+        TypedMessage(),
+        {
+            "action": "edit",
+            "reminder_id": "rem_exact",
+            "changes": {"text": "Ring tannlegen"},
+        },
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert not outcome.ok
+    assert not outcome.mutated
+    assert not outcome.retryable
+    assert outcome.commit_unknown
+    assert outcome.error_code == "commit_state_unknown"
+    assert outcome.response_sent
+    reminders.edit_reminder_result.assert_awaited_once()
+    handler.send_response_result.assert_awaited_once()
 
 
 @pytest.mark.asyncio

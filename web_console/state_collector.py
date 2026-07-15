@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ from typing import Any
 from utils.json_storage import hermes_discord_data_path
 
 _JSON_READ_ERRORS: dict[str, str] = {}
+_TASK_STATES = frozenset(
+    {"running", "completed", "cancelled", "degraded", "failed", "other"}
+)
 
 
 def _read_json_file(path: Path, default: Any) -> Any:
@@ -125,19 +129,78 @@ def _anonymize_user_ids(user_stats: dict[str, dict[str, int]]) -> dict[str, dict
 
 
 def _collect_task_health(monitor: object | None = None) -> dict[str, Any]:
-    if monitor is None or not hasattr(monitor, "get_task_health"):
-        return {"status": "unknown", "items": {}}
+    counts = {state: 0 for state in sorted(_TASK_STATES)}
+    if monitor is None:
+        return {"status": "unknown", "counts": counts}
     try:
-        items = monitor.get_task_health()
+        get_task_health = getattr(monitor, "get_task_health", None)
+        if not callable(get_task_health):
+            return {"status": "unknown", "counts": counts}
+        items = get_task_health()
+        if not isinstance(items, Mapping):
+            return {"status": "degraded", "counts": counts}
         degraded_states = {"cancelled", "degraded", "failed"}
-        status = "degraded" if any(
-            str(task.get("state", "")).lower() in degraded_states
-            for task in items.values()
-            if isinstance(task, dict)
-        ) else "ok"
-        return {"status": status, "items": items}
-    except Exception as exc:
-        return {"status": "degraded", "items": {}, "last_error": str(exc)}
+        degraded = False
+        for task in items.values():
+            state = task.get("state") if isinstance(task, Mapping) else None
+            key = state if isinstance(state, str) and state in _TASK_STATES else "other"
+            counts[key] += 1
+            degraded = degraded or key in degraded_states
+        return {"status": "degraded" if degraded else "ok", "counts": counts}
+    except Exception:
+        return {"status": "degraded", "counts": counts}
+
+
+def _collect_public_reminder_runtime(
+    monitor: object | None = None,
+) -> dict[str, object] | None:
+    safe_degraded: dict[str, object] = {
+        "status": "degraded",
+        "running": False,
+        "stale": True,
+        "last_success_at": None,
+    }
+    if monitor is None:
+        return None
+
+    try:
+        checker = getattr(monitor, "reminder_checker", None)
+        if checker is None:
+            return None
+        get_health = getattr(checker, "get_health", None)
+        if not callable(get_health):
+            return None
+        health = get_health()
+        if not isinstance(health, Mapping):
+            return safe_degraded
+
+        status = health.get("status")
+        running = health.get("running")
+        stale = health.get("stale")
+        last_success_at = health.get("last_success_at")
+        if (
+            not isinstance(status, str)
+            or status not in {"starting", "ok", "degraded", "stopped"}
+            or type(running) is not bool
+            or type(stale) is not bool
+        ):
+            return safe_degraded
+
+        if last_success_at is not None:
+            if not isinstance(last_success_at, str) or len(last_success_at) > 64:
+                return safe_degraded
+            parsed_success = datetime.fromisoformat(last_success_at)
+            if parsed_success.tzinfo is None or parsed_success.utcoffset() is None:
+                return safe_degraded
+
+        return {
+            "status": status,
+            "running": running,
+            "stale": stale,
+            "last_success_at": last_success_at,
+        }
+    except Exception:
+        return safe_degraded
 
 
 def _collect_persistence_health() -> dict[str, Any]:
@@ -172,13 +235,20 @@ def _collect_calendar_sync_health(monitor: object | None = None) -> dict[str, An
 
 
 def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
+    reminder_runtime = _collect_public_reminder_runtime(monitor)
     if monitor is None:
         return {"status": "starting", "monitor_ready": False}
 
     try:
         client = getattr(monitor, "client", None) or getattr(monitor, "bot", None)
         if client is None:
-            return {"status": "degraded", "monitor_ready": False}
+            result: dict[str, Any] = {
+                "status": "degraded",
+                "monitor_ready": False,
+            }
+            if reminder_runtime is not None:
+                result["reminder_runtime"] = reminder_runtime
+            return result
 
         user = getattr(client, "user", None)
         guilds = list(getattr(client, "guilds", []) or [])
@@ -243,7 +313,7 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
             if calendar_sync.get("status") == "degraded":
                 degraded_reasons.append("calendar_sync_degraded")
 
-        return {
+        result = {
             "status": status,
             "uptime_seconds": uptime_seconds,
             "guilds": len(guilds),
@@ -258,12 +328,19 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
             "persistence": persistence,
             "calendar_sync": calendar_sync,
         }
+        if reminder_runtime is not None:
+            result["reminder_runtime"] = reminder_runtime
+        return result
     except Exception:
-        return {"status": "degraded", "monitor_ready": False}
+        result = {"status": "degraded", "monitor_ready": False}
+        if reminder_runtime is not None:
+            result["reminder_runtime"] = reminder_runtime
+        return result
 
 
 async def collect_console_health(monitor: object | None = None, *, port: int | None = None) -> dict[str, Any]:
     bot = collect_bot_status(monitor)
+    reminder_runtime = _collect_public_reminder_runtime(monitor)
     bridge = await collect_bridge_health(monitor)
     persistence = bot.get("persistence") or _collect_persistence_health()
     tasks = bot.get("tasks") or _collect_task_health(monitor)
@@ -283,7 +360,7 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
     else:
         status = "healthy"
 
-    return {
+    result = {
         "status": status,
         "timestamp": datetime.now().isoformat(),
         "console": {"status": "running", "port": port},
@@ -293,6 +370,9 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
         "persistence": persistence,
         "tasks": tasks,
     }
+    if reminder_runtime is not None:
+        result["reminder_runtime"] = reminder_runtime
+    return result
 
 
 async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
@@ -627,7 +707,7 @@ class StateCollector:
         self.monitor = monitor
 
     async def collect_all(self) -> dict[str, Any]:
-        return {
+        result = {
             "status": collect_bot_status(self.monitor),
             "bridge": await collect_bridge_health(self.monitor),
             "calendar": collect_calendar_data(self.monitor),
@@ -637,3 +717,7 @@ class StateCollector:
             "memory": collect_memory_stats(self.monitor),
             "logs": collect_logs(),
         }
+        reminder_runtime = _collect_public_reminder_runtime(self.monitor)
+        if reminder_runtime is not None:
+            result["reminder_runtime"] = reminder_runtime
+        return result

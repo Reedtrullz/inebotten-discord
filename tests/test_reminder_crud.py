@@ -417,6 +417,7 @@ class ReminderManagerCRUDTests(unittest.TestCase):
 
 class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.reference_time = OSLO_NOW
         self.tmp = TemporaryDirectory()
         self.storage_path = Path(self.tmp.name) / "reminders.json"
         self.manager = ReminderManager(storage_path=self.storage_path)
@@ -432,6 +433,9 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             client=SimpleNamespace(),
             nlu_metrics=SimpleNamespace(
                 record_legacy_payload_fallback=Mock(),
+            ),
+            nlp_parser=SimpleNamespace(
+                temporal_resolver=TemporalResolver(),
             ),
         )
         self.handler = ReminderHandler(self.monitor)
@@ -450,12 +454,56 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        await self.handler.handle_reminder_edit(message)
+        await self.handler.handle_reminder_edit(
+            message,
+            reference_time=self.reference_time,
+        )
 
         self.assertEqual(self.manager.reminders["123"][0]["text"], "Oppdatert tittel")
         self.handler.send_response_result.assert_awaited_once()
         self.assertIn("reminder_edit_success", self.handler.send_response_result.await_args.args[1])
         self.assertIn("Oppdatert tittel", self.handler.send_response_result.await_args.args[1])
+
+    async def test_time_only_edit_of_checklist_is_rejected_without_mutation(self):
+        reminder_id = await self.manager.add_reminder_result(
+            "123",
+            "7",
+            "Tester",
+            "Udatert oppgave",
+            reference_time=self.reference_time,
+        )
+        before_bytes = self.storage_path.read_bytes()
+        before_root = self.manager.reminders
+
+        outcome = await self.handler.handle_reminder_edit(
+            SimpleNamespace(
+                content="typed path must not parse this",
+                guild=SimpleNamespace(id=123),
+                channel=SimpleNamespace(id=456),
+                author=SimpleNamespace(id=7, name="Tester"),
+            ),
+            {
+                "action": "edit",
+                "reminder_id": reminder_id,
+                "changes": {"time": "14:00"},
+            },
+            reference_time=self.reference_time,
+        )
+
+        self.assertFalse(outcome.ok)
+        self.assertFalse(outcome.mutated)
+        self.assertFalse(outcome.retryable)
+        self.assertEqual(outcome.error_code, "invalid_payload")
+        self.assertIs(self.manager.reminders, before_root)
+        self.assertEqual(self.storage_path.read_bytes(), before_bytes)
+        checklist = next(
+            reminder
+            for reminder in self.manager.reminders["123"]
+            if reminder["id"] == reminder_id
+        )
+        self.assertIsNone(checklist["due_at"])
+        self.assertIsNone(checklist["due_date"])
+        self.assertIsNone(checklist["time"])
 
     async def test_handle_reminder_delete_removes_reminder(self):
         message = SimpleNamespace(
@@ -465,7 +513,10 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        await self.handler.handle_reminder_delete(message)
+        await self.handler.handle_reminder_delete(
+            message,
+            reference_time=self.reference_time,
+        )
 
         self.assertEqual(self.manager.reminders["123"], [])
         self.handler.send_response_result.assert_awaited_once()
@@ -479,7 +530,10 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        await self.handler.handle_reminder_search(message)
+        await self.handler.handle_reminder_search(
+            message,
+            reference_time=self.reference_time,
+        )
 
         self.handler.send_response_result.assert_awaited_once()
         self.assertIn("Første oppgave", self.handler.send_response_result.await_args.args[1])
@@ -492,11 +546,43 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        await self.handler.handle_reminder_create(message)
+        await self.handler.handle_reminder_create(
+            message,
+            reference_time=self.reference_time,
+        )
 
         texts = [reminder["text"] for reminder in self.manager.reminders["123"]]
         self.assertIn("Ring lege", texts)
         self.handler.send_response_result.assert_awaited()
+
+    async def test_relative_fallback_persists_one_canonical_oslo_occurrence(self):
+        message = SimpleNamespace(
+            content="@inebotten minn mæ om å ringe legen om 2 timer",
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            author=SimpleNamespace(id=7, name="Tester"),
+        )
+
+        outcome = await self.handler.handle_reminder_create(
+            message,
+            reference_time=self.reference_time,
+        )
+
+        self.assertTrue(outcome.ok)
+        self.assertTrue(outcome.mutated)
+        created = next(
+            reminder
+            for reminder in self.manager.reminders["123"]
+            if reminder["text"] == "ringe legen"
+        )
+        self.assertEqual(created["due_at"], "2026-07-14T14:00:00+02:00")
+        self.assertEqual(created["due_date"], "14.07.2026")
+        self.assertEqual(created["time"], "14:00")
+        self.assertEqual(created["timezone"], "Europe/Oslo")
+        self.assertEqual(created["created_at"], self.reference_time.isoformat())
+        self.monitor.nlu_metrics.record_legacy_payload_fallback.assert_called_once_with(
+            "reminder"
+        )
 
     async def test_handle_reminder_list_outputs_active_reminders(self):
         message = SimpleNamespace(
@@ -506,7 +592,10 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        await self.handler.handle_reminder_list(message)
+        await self.handler.handle_reminder_list(
+            message,
+            reference_time=self.reference_time,
+        )
 
         self.handler.send_response_result.assert_awaited_once()
         self.assertIn("Første oppgave", self.handler.send_response_result.await_args.args[1])
@@ -519,7 +608,10 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
-        await self.handler.handle_reminder_complete(message)
+        await self.handler.handle_reminder_complete(
+            message,
+            reference_time=self.reference_time,
+        )
 
         self.assertTrue(self.manager.reminders["123"][0]["completed"])
         self.handler.send_response_result.assert_awaited_once()

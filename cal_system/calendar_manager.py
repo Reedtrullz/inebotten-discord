@@ -11,7 +11,7 @@ import asyncio
 import inspect
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from zoneinfo import ZoneInfo
@@ -1850,6 +1850,177 @@ class CalendarManager:
                 )
             )
         )
+
+    @staticmethod
+    def _canonical_delivery_due_at(item: dict[str, object]) -> datetime | None:
+        """Project one stored calendar wall time to one unambiguous Oslo instant."""
+        date_value = item.get("date")
+        time_value = item.get("time")
+        if not isinstance(date_value, str):
+            return None
+        if time_value in (None, ""):
+            canonical_time = "09:00"
+        elif isinstance(time_value, str):
+            canonical_time = time_value
+        else:
+            return None
+
+        try:
+            date_part = datetime.strptime(date_value, "%d.%m.%Y")
+            time_part = datetime.strptime(canonical_time, "%H:%M")
+        except (TypeError, ValueError):
+            return None
+        wall_time = date_part.replace(
+            hour=time_part.hour,
+            minute=time_part.minute,
+            second=0,
+            microsecond=0,
+        )
+
+        # A stored calendar row has no fold/offset field.  Fail closed when
+        # that wall time maps to zero or two UTC instants rather than silently
+        # selecting the wrong occurrence.  Normal wall times yield the same
+        # instant for both fold probes and are deduplicated below.
+        candidates: dict[datetime, datetime] = {}
+        for fold in (0, 1):
+            aware = wall_time.replace(tzinfo=OSLO, fold=fold)
+            instant = aware.astimezone(timezone.utc)
+            round_trip = instant.astimezone(OSLO).replace(tzinfo=None)
+            if round_trip == wall_time:
+                candidates.setdefault(instant, aware)
+        if len(candidates) != 1:
+            return None
+        return next(iter(candidates.values()))
+
+    def _delivery_occurrence_rows(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> list[dict[str, object]]:
+        """Build the detached canonical rows shared by snapshot and claim checks."""
+        self._require_aware(reference_time)
+        bucket = self.items.get(self.SHARED_KEY, [])
+        if not isinstance(bucket, list):
+            return []
+
+        id_counts: dict[str, int] = {}
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            if (
+                isinstance(item_id, str)
+                and bool(item_id)
+                and item_id == item_id.strip()
+                and ":" not in item_id
+            ):
+                id_counts[item_id] = id_counts.get(item_id, 0) + 1
+
+        rows: list[dict[str, object]] = []
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            if (
+                not isinstance(item_id, str)
+                or ":" in item_id
+                or id_counts.get(item_id) != 1
+            ):
+                continue
+            completed = item.get("completed", False)
+            delete_pending = item.get("delete_pending", False)
+            if completed is not False or delete_pending is not False:
+                continue
+            title = item.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            due_at = self._canonical_delivery_due_at(item)
+            if due_at is None:
+                continue
+
+            stored_time = item.get("time")
+            rows.append(
+                {
+                    "source_kind": "calendar",
+                    "id": item_id,
+                    "due_at": due_at,
+                    "status": "active",
+                    "delete_pending": False,
+                    "user_id": deepcopy(item.get("user_id")),
+                    "channel_id": deepcopy(item.get("channel_id")),
+                    "title": title.strip(),
+                    "time": (
+                        None
+                        if stored_time in (None, "")
+                        else due_at.strftime("%H:%M")
+                    ),
+                }
+            )
+
+        rows.sort(
+            key=lambda row: (
+                row["due_at"].astimezone(timezone.utc),
+                row["id"],
+            )
+        )
+        return rows
+
+    def snapshot_delivery_occurrences(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> tuple[dict[str, object], ...]:
+        """Return detached active occurrences eligible for checker delivery."""
+        return tuple(
+            deepcopy(
+                self._delivery_occurrence_rows(
+                    reference_time=reference_time,
+                )
+            )
+        )
+
+    def matches_delivery_fingerprint(
+        self,
+        fingerprint,
+        *,
+        reference_time: datetime,
+    ) -> bool:
+        """Revalidate one frozen occurrence while the caller holds its scope."""
+        self._require_aware(reference_time)
+        assert_held = getattr(self.mutation_coordinator, "assert_held", None)
+        if callable(assert_held):
+            assert_held(CALENDAR_SHARED_SCOPE)
+
+        if not isinstance(fingerprint, tuple) or len(fingerprint) != 4:
+            return False
+        item_id, due_at, status, delete_pending = fingerprint
+        if (
+            not isinstance(item_id, str)
+            or not item_id
+            or item_id != item_id.strip()
+            or ":" in item_id
+            or not isinstance(due_at, datetime)
+            or due_at.tzinfo is None
+            or due_at.utcoffset() is None
+            or due_at.microsecond
+            or status != "active"
+            or delete_pending is not False
+        ):
+            return False
+
+        for row in self._delivery_occurrence_rows(
+            reference_time=reference_time,
+        ):
+            if row["id"] != item_id:
+                continue
+            current = (
+                row["id"],
+                row["due_at"],
+                row["status"],
+                row["delete_pending"],
+            )
+            return current == fingerprint
+        return False
 
     def snapshot_all_item_ids(self) -> tuple[str, ...]:
         ids: list[str] = []

@@ -632,3 +632,32 @@ def test_strip_temporal_evidence_explicit_reference_skips_provider():
         reference=NOW,
     ) == "ring legen"
     assert calls == []
+
+
+def test_recurrence_wall_time_returns_unambiguous_oslo_occurrence():
+    result = RESOLVER.resolve_recurrence_wall_time(
+        datetime(2026, 7, 14, 9, 15)
+    )
+    assert result.isoformat() == "2026-07-14T09:15:00+02:00"
+
+
+def test_recurrence_wall_time_shifts_spring_gap_by_exact_round_trip_gap():
+    result = RESOLVER.resolve_recurrence_wall_time(
+        datetime(2026, 3, 29, 2, 30)
+    )
+    assert result.isoformat() == "2026-03-29T03:30:00+02:00"
+
+
+def test_recurrence_wall_time_selects_earlier_fold_zero_occurrence():
+    result = RESOLVER.resolve_recurrence_wall_time(
+        datetime(2026, 10, 25, 2, 30)
+    )
+    assert result.isoformat() == "2026-10-25T02:30:00+02:00"
+    assert result.fold == 0
+
+
+def test_recurrence_wall_time_rejects_aware_input():
+    with pytest.raises(ValueError, match="recurrence_wall_time_must_be_naive"):
+        RESOLVER.resolve_recurrence_wall_time(
+            datetime(2026, 7, 14, 9, 15, tzinfo=OSLO)
+        )
