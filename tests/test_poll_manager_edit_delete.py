@@ -1,6 +1,8 @@
 import unittest
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 from features.poll_manager import PollManager
 
@@ -111,6 +113,29 @@ class PollManagerEditDeleteTests(unittest.TestCase):
         poll = self.pm.create_poll("123", "Q?", ["A", "B"], "Alice")
         self.assertIn("created_by_id", poll)
         self.assertIsNone(poll["created_by_id"])
+
+    def test_active_poll_read_uses_explicit_reference_time(self):
+        poll = self.pm.create_poll("123", "Q?", ["A", "B"], "Alice")
+        poll["expires_at"] = "2026-07-15T00:00:00"
+        oslo = ZoneInfo("Europe/Oslo")
+
+        before = self.pm.get_active_polls(
+            "123",
+            reference_time=datetime(2026, 7, 14, 23, 59, tzinfo=oslo),
+        )
+        after = self.pm.get_active_polls(
+            "123",
+            reference_time=datetime(2026, 7, 15, 0, 1, tzinfo=oslo),
+        )
+
+        self.assertEqual(before, [poll])
+        self.assertEqual(after, [])
+
+    def test_active_poll_read_rejects_naive_reference_time(self):
+        with self.assertRaisesRegex(ValueError, "reference_time_must_be_aware"):
+            self.pm.get_active_polls(
+                "123", reference_time=datetime(2026, 7, 14, 12, 0)
+            )
 
 
 if __name__ == "__main__":

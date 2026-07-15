@@ -98,6 +98,31 @@ class CalendarManagerEditSearchTests(unittest.TestCase):
 
         self.assertEqual(self.manager.search_items("middag"), [])
 
+    def test_upcoming_read_uses_explicit_oslo_reference_date(self):
+        self._add_item("Midnight boundary", "15.07.2026")
+        oslo = ZoneInfo("Europe/Oslo")
+
+        before = self.manager.get_upcoming(
+            "123",
+            days=0,
+            reference_time=datetime(2026, 7, 14, 23, 59, tzinfo=oslo),
+        )
+        after = self.manager.get_upcoming(
+            "123",
+            days=0,
+            reference_time=datetime(2026, 7, 15, 0, 1, tzinfo=oslo),
+        )
+
+        self.assertEqual(before, [])
+        self.assertEqual([item["title"] for item in after], ["Midnight boundary"])
+
+    def test_upcoming_read_rejects_naive_reference_time(self):
+        with self.assertRaisesRegex(ValueError, "reference_time_must_be_aware"):
+            self.manager.get_upcoming(
+                "123",
+                reference_time=datetime(2026, 7, 14, 12, 0),
+            )
+
     def test_calendar_save_uses_unique_atomic_temp_file(self):
         self._add_item("Møte", _date(1))
 

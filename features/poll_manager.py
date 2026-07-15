@@ -10,8 +10,12 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 import random
+from zoneinfo import ZoneInfo
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+
+
+OSLO = ZoneInfo("Europe/Oslo")
 
 
 class PollManager:
@@ -183,20 +187,41 @@ class PollManager:
 
         return True, "Vote recorded"
 
-    def get_active_polls(self, guild_id):
-        """Get active polls for a guild"""
+    def get_active_polls(self, guild_id, *, reference_time=None):
+        """Get active polls for a guild at one explicit point in time."""
         guild_key = str(guild_id)
+
+        if reference_time is None:
+            now = datetime.now()
+        else:
+            if (
+                reference_time.tzinfo is None
+                or reference_time.utcoffset() is None
+            ):
+                raise ValueError("reference_time_must_be_aware")
+            now = reference_time.astimezone(OSLO)
 
         if guild_key not in self.polls:
             return []
 
-        now = datetime.now()
         active = []
 
         for poll_id, poll in self.polls[guild_key].items():
             if poll["status"] == "active":
                 expires = datetime.fromisoformat(poll["expires_at"])
-                if expires > now:
+                comparison_now = now
+                if expires.tzinfo is None or expires.utcoffset() is None:
+                    if comparison_now.tzinfo is not None:
+                        comparison_now = comparison_now.astimezone(OSLO).replace(
+                            tzinfo=None
+                        )
+                elif comparison_now.tzinfo is None:
+                    comparison_now = comparison_now.replace(
+                        tzinfo=OSLO
+                    ).astimezone(expires.tzinfo)
+                else:
+                    comparison_now = comparison_now.astimezone(expires.tzinfo)
+                if expires > comparison_now:
                     active.append(poll)
 
         return active

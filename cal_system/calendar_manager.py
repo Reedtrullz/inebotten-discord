@@ -11,8 +11,12 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
+from zoneinfo import ZoneInfo
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+
+
+OSLO = ZoneInfo("Europe/Oslo")
 
 
 class AwaitableDict(dict):
@@ -846,16 +850,33 @@ class CalendarManager:
 
         return removed_count
 
-    def get_upcoming(self, guild_id, days=30, include_completed=False):
+    def get_upcoming(
+        self,
+        guild_id,
+        days=30,
+        include_completed=False,
+        *,
+        reference_time=None,
+    ):
         """
         Get upcoming calendar items (ignoring guild_id for shared calendar)
         """
         guild_key = self.SHARED_KEY
 
+        if reference_time is None:
+            now = datetime.now()
+        else:
+            if (
+                reference_time.tzinfo is None
+                or reference_time.utcoffset() is None
+            ):
+                raise ValueError("reference_time_must_be_aware")
+            now = reference_time.astimezone(OSLO).replace(tzinfo=None)
+
         if guild_key not in self.items:
             return []
 
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         cutoff = today + timedelta(days=days)
 
         upcoming = []
