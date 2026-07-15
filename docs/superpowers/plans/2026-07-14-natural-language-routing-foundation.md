@@ -2854,19 +2854,19 @@ Lower tier is earlier. Specificity is independent: `0` implicit parser shape, `1
 | `memory_delete_keyword` | 10 | 50 | 4 |
 | `memory_export_keyword` | 10 | 51 | 4 |
 | `memory_view_keyword` | 10 | 52 | 4 |
-| `reminder_edit_keyword` | 20 | 60 | 2/3 |
-| `reminder_delete_keyword` | 20 | 70 | 2/3 |
-| `reminder_complete_keyword` | 20 | 90 | 2/3 |
+| `reminder_edit_keyword` | 20 | 60 | 3 |
+| `reminder_delete_keyword` | 20 | 70 | 3 |
+| `reminder_complete_keyword` | 20 | 90 | 3 |
 | `active_reminder_numeric_complete` | 20 | 91 | 4 |
 | `active_reminder_complete_number` | 20 | 92 | 4 |
 | `calendar_auth_keyword` | 20 | 100 | 4 |
 | `calendar_sync_keyword` | 20 | 110 | 2 |
-| `calendar_clear_keyword` | 20 | 111 | 2/3 |
-| `calendar_delete_keyword` | 20 | 112 | 2/3 |
+| `calendar_clear_keyword` | 20 | 111 | 3 |
+| `calendar_delete_keyword` | 20 | 112 | 3 |
 | `calendar_delete_title_match` | 20 | 113 | 3 |
-| `calendar_complete_keyword` | 20 | 114 | 2/3 |
+| `calendar_complete_keyword` | 20 | 114 | 3 |
 | `calendar_complete_title_match` | 20 | 115 | 3 |
-| `calendar_edit_keyword` | 20 | 116 | 2/3 |
+| `calendar_edit_keyword` | 20 | 116 | 3 |
 | `calendar_edit_natural` | 20 | 117 | 3 |
 | `reminder_search_keyword` | 30 | 80 | 3 |
 | `calendar_search_keyword` | 30 | 81 | 3 |
@@ -2913,14 +2913,16 @@ Lower tier is earlier. Specificity is independent: `0` implicit parser shape, `1
 
 Exact variable-specificity tests are:
 
-- reminder edit/delete/complete: `3` only with a positive `number`, nonblank `id`, or nonblank `target` in the reminder envelope;
-- calendar clear/delete/complete/edit and birthday edit: `3` only with nonblank `target`, positive `number/index`, or typed changes;
+- reminder edit/delete/complete are fixed at `3` and are emitted only from a complete parser object: edit has exactly one positive `number` or nonblank `reminder_id` plus nonempty canonical `changes`; delete/complete has exactly one such selector;
+- calendar clear/delete/complete/edit are fixed at `3` and are emitted only with their complete canonical envelope: clear has `all=True`; delete/complete has exactly one nonblank target, stable ID, or positive displayed number; edit has a nonblank target plus nonempty canonical changes. Birthday edit alone retains `2/3` according to whether a resolved target is present;
 - calendar NLP: `3` only with nonblank title and date/recurrence; otherwise `0`;
 - poll parser: `3` only with an explicit `poll|avstemning` term plus parsed nonblank question and at least two nonblank options; otherwise `0`;
 - poll edit/delete/close and countdown: `3` only with a parsed positive index/id/event target; otherwise `2`;
 - watchlist: `3` for add/edit/remove with typed nonblank title or positive index; `1` for status/list/suggest;
 - quote parser: `3` for save with nonblank text; `1` for get. Quote edit/delete branches use `3` with a positive index, otherwise `2`;
 - horoscope/compliment: `3` only with parsed sign/person target, otherwise `2`.
+
+No required-target row has a targetless compatibility form. If calendar edit/delete/complete or reminder edit/delete/complete parsing lacks any mandatory selector, target, or change field above, emit no action candidate and let the ordinary bounded `AI_CHAT` fallback win; do not manufacture `CLARIFY`, because tier-35 cross-domain conflict remains its only deterministic source. Add incomplete-command negatives proving the result has empty payload and no mutating intent.
 
 The two `*_title_match` candidates are not trusted bypasses. They carry the exact matched delete/complete surface verb in `action_terms`. For an unquoted target, `domain_terms` contains the resolved live title span. A quoted span may be consumed as **target data only** when an unquoted finite family noun (`møte|avtale|kalender|påminnelse|reminder|event`) and unquoted action verb are both live, the quoted value resolves to exactly one stable target, and the whole utterance is not meta/hypothetical; in that case `domain_terms` contains the live family noun, never the masked target text. Thus `slett møte "Møte med Ola"` may produce a confirmation, while `jeg skrev "slett møte Møte med Ola"` and `hva betyr "slett møte Møte med Ola"?` remain inert. Add router/corpus cases for these pairs, `ikke slett <live title>`, `ikkje fullfør <live title>`, and quoted/meta versions. Every unsafe form is blocked or falls back with zero mutation candidate; each equivalent direct form selects the uniquely bound route and still follows normal destructive confirmation.
 
@@ -3058,7 +3060,7 @@ Expected: control/memory tests pass.
 
 - [ ] **Step 10: Migrate calendar and reminder branches into the second collector (2–5 minutes)**
 
-`_collect_calendar_reminder_candidates(context)` independently evaluates reminder edit/delete, local search, reminder helper, calendar auth, calendar helper, birthday edit, and calendar NLP. It may read active reminder/calendar state but may not write.
+`_collect_calendar_reminder_candidates(context)` independently evaluates reminder edit/delete, local search, reminder helper, calendar auth, calendar helper, birthday edit, and calendar NLP. It may read active reminder/calendar state but may not write. Every required-target mutation row is emitted only after its complete canonical parser object passes the contract above; an incomplete keyword frame contributes no action candidate.
 
 - [ ] **Step 10a: Isolate temporal parser diagnostics (2–5 minutes)**
 
@@ -3079,11 +3081,13 @@ match = re.match(
 
 Require a nonblank target and valid temporal evidence in the change phrase. Emit `CALENDAR_EDIT`, confidence `0.98`, payload `{"calendar_edit": {"target": target, "changes": changes}}`, where `changes` contains only non-`None` canonical `date` and `time`; reason `calendar_edit_natural`; tier/order/spec `20/117/3`; action terms from the matched verb; domain terms `("møte", "avtale", "arrangement", "meeting", "event")`. If temporal evidence is invalid, add the bounded invalid-temporal rejection instead.
 
+The compatibility `calendar_edit_keyword` row uses this same complete target/change shape (or an existing pure helper result normalized to that exact shape) and is emitted only when both fields are present. Calendar delete/complete similarly require one concrete canonical target; a bare `endre kalender`, `slett møte`, or `fullfør avtale` frame emits no mutation candidate. Whole-calendar clear is the sole target-free surface form because its canonical target is explicitly `{"all": True}`.
+
 - [ ] **Step 10c: Add explicit reminder and calendar-create evidence (2–5 minutes)**
 
 This routing task owns the pure prerequisite expansion of `cal_system.reminder_manager.parse_reminder_command`; the later typed-runtime plan consumes it without changing its signature or vocabulary. Preserve compatibility calls with no keywords, but production routing always passes both `now=context.reference_time` and `temporal_resolver=self.temporal_resolver` through `_safe_parse` with the collector's shared parser-error and rejection lists. The parser reads neither wall time nor a manager clock when either is supplied. It returns the complete typed `{"action":"add", "text":..., optional due_at/due_date/time/timezone/recurrence}` object; relative/yearless inputs resolve from `now`, and date-only uses the documented 09:00 policy before year selection. Resolve one `resolver = temporal_resolver or TemporalResolver()` and clean the reminder title by calling Task 4's `resolver.strip_temporal_evidence(text, reference=now)` after bounded command-frame extraction. That shared finite evidence collector is the only temporal stripping grammar; the reminder parser must not add or maintain a second date/time regex vocabulary. Add fixed-clock parser tests for relative hours, `i morgen|i morgon|imårra`, weekdays, date-only before/after 09:00, title cleanup for every Task 4 temporal family, and checklist-only input.
 
-The same function, not a second edit parser, owns the bounded edit/target frames. `endre|rediger|edit` plus `påminnelse|påminning|reminder` and one positive visible number accepts one or more labeled `tekst|text:`, `dato|date:`, `tid|time|kl:`, and `gjentakelse|gjentaking|recurrence:` clauses, rejects duplicate/unknown/empty clauses, and returns exactly `{"action":"edit","number":N,"changes":{...canonical fields...}}`. Pin `endre påminnelse 1 tekst: Ring tannlegen` to `{"action":"edit","number":1,"changes":{"text":"Ring tannlegen"}}`. Complete/delete/list/search frames return their corresponding canonical Task-6 action discriminators and target/query fields. Add tests for every shape, parser exceptions through the shared `_safe_parse` lists, and contradictory temporal clauses; no handler-private `_parse_edit_command` is part of production routing.
+The same function, not a second edit parser, owns the bounded edit/target frames. `endre|rediger|edit` plus `påminnelse|påminning|reminder` and one positive visible number accepts one or more labeled `tekst|text:`, `dato|date:`, `tid|time|kl:`, and `gjentakelse|gjentaking|recurrence:` clauses, rejects duplicate/unknown/empty clauses, and returns exactly `{"action":"edit","number":N,"changes":{...canonical fields...}}`. Pin `endre påminnelse 1 tekst: Ring tannlegen` to `{"action":"edit","number":1,"changes":{"text":"Ring tannlegen"}}`. Complete/delete frames require exactly one positive number or nonblank stable ID; an omitted selector returns `None`. List/search frames return their corresponding canonical Task-6 action discriminators and query fields. Add tests for every shape, targetless edit/delete/complete negatives, parser exceptions through the shared `_safe_parse` lists, and contradictory temporal clauses; no handler-private `_parse_edit_command` is part of production routing.
 
 Treat `påminn meg`, `minn meg`, Trøndelag-adjacent `minn mæ`, `husk å`, Nynorsk-adjacent `hugs å`, and `remind me` as explicit reminder-domain evidence. Reuse the production `parse_reminder_command` result; retain its whole dict under `payload["reminder"]`. Do not invent a result when the production parser returns `None`. The parser itself must return `None` for the finite media frames `husk å se <title>`, `hugs å sjå <title>`, and `remember to watch <title>` so the watchlist collector owns them; every other valid `husk/hugs` create such as `husk å kjøpe melk på mandag` is a reminder, not a generic calendar task. Use tier/order/spec `35/122/3`, confidence `0.96`, reason `reminder_create_natural`, action terms containing only the exact matched surface from `("påminn", "minn", "husk", "hugs", "remind")`, and domain terms containing the matched frame. Add focused route tests for `minn mæ om å ringe legen i morra`, `husk å kjøpe melk på mandag`, all three media exclusions, and a provider spy proving one route call reads the injected clock only once. Calendar natural create at tier 35 is emitted only when explicit `møte|avtale|arrangement|meeting|event` evidence and a validated title/date exist; otherwise it remains the high/low NLP row.
 

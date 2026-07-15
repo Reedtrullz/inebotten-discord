@@ -1256,19 +1256,19 @@ Use the following complete branch policy. `2/3` means 3 only when the typed payl
 | memory_delete_keyword | 10 | 50 | 4 |
 | memory_export_keyword | 10 | 51 | 4 |
 | memory_view_keyword | 10 | 52 | 4 |
-| reminder_edit_keyword | 20 | 60 | 2/3 |
-| reminder_delete_keyword | 20 | 70 | 2/3 |
-| reminder_complete_keyword | 20 | 90 | 2/3 |
+| reminder_edit_keyword | 20 | 60 | 3 |
+| reminder_delete_keyword | 20 | 70 | 3 |
+| reminder_complete_keyword | 20 | 90 | 3 |
 | active_reminder_numeric_complete | 20 | 91 | 4 |
 | active_reminder_complete_number | 20 | 92 | 4 |
 | calendar_auth_keyword | 20 | 100 | 4 |
 | calendar_sync_keyword | 20 | 110 | 2 |
-| calendar_clear_keyword | 20 | 111 | 2/3 |
-| calendar_delete_keyword | 20 | 112 | 2/3 |
+| calendar_clear_keyword | 20 | 111 | 3 |
+| calendar_delete_keyword | 20 | 112 | 3 |
 | calendar_delete_title_match | 20 | 113 | 3 |
-| calendar_complete_keyword | 20 | 114 | 2/3 |
+| calendar_complete_keyword | 20 | 114 | 3 |
 | calendar_complete_title_match | 20 | 115 | 3 |
-| calendar_edit_keyword | 20 | 116 | 2/3 |
+| calendar_edit_keyword | 20 | 116 | 3 |
 | calendar_edit_natural | 20 | 117 | 3 |
 | reminder_search_keyword | 30 | 80 | 3 |
 | calendar_search_keyword | 30 | 81 | 3 |
@@ -1313,7 +1313,7 @@ Use the following complete branch policy. `2/3` means 3 only when the typed payl
 | location_pattern | 80 | 380 | 3 |
 | fallback | 90 | 390 | 0 |
 
-`reminder_create_parser` becomes `reminder_create_natural` once it has explicit reminder-domain evidence; `reminder_complete_parser` becomes `reminder_complete_keyword` after payload normalization. Calendar NLP emits `calendar_nlp_high` only when its existing confidence is at least 0.94. `poll_parser` uses 3 only with an explicit poll trigger plus parsed question/options and 0 for the legacy slash-only parser shape, allowing an explicit URL-shortening candidate to win. `watchlist_parser` uses specificity 3 for add/edit/remove with a typed title/index and 1 for status/suggestion. `quote_parser` uses 3 for save and 1 for get. The arbiter checks ambiguity before applying `order` only when both leading candidates are tier 35 with equal specificity and confidence distance at most 0.05; every other same-tier tie preserves `order`. It never compares candidates from different tiers as ambiguous.
+`reminder_create_parser` becomes `reminder_create_natural` once it has explicit reminder-domain evidence; `reminder_complete_parser` becomes `reminder_complete_keyword` after payload normalization. Required-target calendar edit/delete/complete and reminder edit/delete/complete rows are emitted only with their complete canonical target/change objects and therefore have fixed specificity 3; targetless/incomplete frames emit no mutation candidate and fall through to bounded `AI_CHAT`, never deterministic `CLARIFY`. Whole-calendar clear is complete through `{"all": True}`. Calendar NLP emits `calendar_nlp_high` only when its existing confidence is at least 0.94. `poll_parser` uses 3 only with an explicit poll trigger plus parsed question/options and 0 for the legacy slash-only parser shape, allowing an explicit URL-shortening candidate to win. `watchlist_parser` uses specificity 3 for add/edit/remove with a typed title/index and 1 for status/suggestion. `quote_parser` uses 3 for save and 1 for get. The arbiter checks ambiguity before applying `order` only when both leading candidates are tier 35 with equal specificity and confidence distance at most 0.05; every other same-tier tie preserves `order`. It never compares candidates from different tiers as ambiguous.
 
 - [ ] **Step 1: Write pure arbitration tests**
 
@@ -1464,7 +1464,7 @@ Task 5 resolver selection is explicit injection, else `monitor.nlp_parser.tempor
 
 - [ ] **Step 3b: Migrate control, memory, calendar, and reminder branches**
 
-Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday branches into the first two collectors without changing reason strings or outer payloads. As required globally, feed `control_text` to command/evidence gates and `text` to payload parsers only after a live gate. Preserve the calendar confidence >=0.94 early tier and lower-confidence late tier. Task 5 owns the complete canonical `CALENDAR_EDIT` target/change envelope and the pure `parse_reminder_command` create/edit/target vocabulary, including fixed-clock canonical timing. Reminder title cleanup must call Task 4's `TemporalResolver.strip_temporal_evidence(text, reference=now)` and must not introduce a second temporal regex grammar. Run:
+Move calendar-help/status/help/profile/memory/auth/reminder/calendar/birthday branches into the first two collectors without changing reason strings or outer payloads. As required globally, feed `control_text` to command/evidence gates and `text` to payload parsers only after a live gate. Preserve the calendar confidence >=0.94 early tier and lower-confidence late tier. Task 5 owns the complete canonical `CALENDAR_EDIT` target/change envelope and the pure `parse_reminder_command` create/edit/target vocabulary, including fixed-clock canonical timing. Required-target calendar/reminder mutations emit no candidate unless that complete object contains every mandatory target/change field; add targetless/incomplete negatives. Reminder title cleanup must call Task 4's `TemporalResolver.strip_temporal_evidence(text, reference=now)` and must not introduce a second temporal regex grammar. Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
