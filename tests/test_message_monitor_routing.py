@@ -5,12 +5,12 @@
 import unittest
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from core.intent_router import BotIntent, IntentRouter
 from core.message_monitor import MessageMonitor
 from features.watchlist_manager import parse_watchlist_command
+from memory.conversation_context import ConversationContext
 
 
 class FakeRateLimiter:
@@ -41,17 +41,23 @@ class FakeConversation:
         self.wants_dashboard_value = wants_dashboard
         self.messages = []
         self.threads = {}
+        self.dashboard_channels = []
+        self.summary_channels = []
+        self.context_channels = []
 
     def should_show_dashboard(self, content, channel_id):
+        self.dashboard_channels.append(channel_id)
         return self.wants_dashboard_value, "test"
 
     def add_message(self, **kwargs):
         self.messages.append(kwargs)
 
     def get_conversation_summary(self, channel_id):
+        self.summary_channels.append(channel_id)
         return None
 
     def get_context(self, channel_id, limit=5):
+        self.context_channels.append(channel_id)
         return ""
 
 
@@ -244,45 +250,179 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_vague_reminder_followup_stays_in_channel_scope(self):
+    async def test_ai_conversation_uses_channel_scope_and_recipient_identity(self):
         monitor = self.make_monitor()
-        base_time = datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc)
-        monitor.conversation.threads = {
-            100: [
-                {
-                    "user_id": 42,
-                    "username": "Inebotten",
-                    "content": "Skal jeg legge inn en påminnelse om å kjøpe melk?",
-                    "is_bot": True,
-                    "timestamp": base_time,
-                }
-            ],
-            200: [
-                {
-                    "user_id": 88,
-                    "username": "Inebotten",
-                    "content": "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
-                    "is_bot": True,
-                    "timestamp": base_time + timedelta(minutes=5),
-                }
-            ],
-        }
-        created = []
 
-        async def capture_reminder(message, payload):
-            created.append(payload["reminder"])
+        class FakeHermes:
+            async def generate_response(self, **kwargs):
+                return True, "Et kaninsvar"
 
-        monitor.handlers["reminders"].handle_reminder_create = capture_reminder
-        message = RecordingMessage("@inebotten minn meg på det i morgen")
+        monitor.hermes = FakeHermes()
+        message = RecordingMessage("@inebotten fortell en historie om kaniner")
         message.guild = SimpleNamespace(id=999)
         message.channel = SimpleNamespace(id=100)
         message.author = SimpleNamespace(id=7, name="Current user")
 
         await monitor.handle_message(message)
 
+        self.assertEqual(monitor.conversation.dashboard_channels, [100])
+        self.assertEqual(monitor.conversation.summary_channels, [100])
+        self.assertEqual(monitor.conversation.context_channels, [100])
+        self.assertEqual(
+            [entry["channel_id"] for entry in monitor.conversation.messages],
+            [100, 100],
+        )
+        self.assertEqual(
+            [entry["user_id"] for entry in monitor.conversation.messages],
+            [7, 7],
+        )
+        self.assertEqual(
+            [entry["is_bot"] for entry in monitor.conversation.messages],
+            [False, True],
+        )
+
+    async def test_dashboard_generation_keeps_guild_domain_scope(self):
+        monitor = self.make_monitor(wants_dashboard=True)
+        generated = []
+
+        async def fake_dashboard(
+            guild_id, city_name=None, show_navnedag=False, user_id=None
+        ):
+            generated.append((guild_id, user_id))
+            return "dashboard"
+
+        monitor._generate_dashboard = fake_dashboard
+        message = RecordingMessage("@inebotten fortell en historie om kaniner")
+        message.guild = SimpleNamespace(id=999)
+        message.channel = SimpleNamespace(id=100)
+        message.author = SimpleNamespace(id=7, name="Current user")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(monitor.conversation.dashboard_channels, [100])
+        self.assertEqual(generated, [(999, 7)])
+        self.assertEqual(
+            [entry["channel_id"] for entry in monitor.conversation.messages],
+            [100, 100],
+        )
+
+    async def test_real_conversation_followup_is_scoped_by_channel_and_user(self):
+        monitor = self.make_monitor()
+        monitor.conversation = ConversationContext(max_history=20)
+        monitor.intent_router = IntentRouter(monitor)
+        created = []
+
+        async def capture_reminder(message, payload):
+            created.append(payload["reminder"])
+
+        monitor.handlers["reminders"].handle_reminder_create = capture_reminder
+        own_offer = RecordingMessage("ignored")
+        own_offer.guild = SimpleNamespace(id=999)
+        own_offer.channel = SimpleNamespace(id=100)
+        own_offer.author = SimpleNamespace(id=7, name="Current user")
+        await monitor._send_response(
+            own_offer,
+            "Skal jeg legge inn en påminnelse om å kjøpe melk?",
+        )
+
+        other_channel_offer = RecordingMessage("ignored")
+        other_channel_offer.guild = SimpleNamespace(id=999)
+        other_channel_offer.channel = SimpleNamespace(id=200)
+        other_channel_offer.author = SimpleNamespace(id=7, name="Current user")
+        await monitor._send_response(
+            other_channel_offer,
+            "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
+        )
+
+        other_user_offer = RecordingMessage("ignored")
+        other_user_offer.guild = SimpleNamespace(id=999)
+        other_user_offer.channel = SimpleNamespace(id=100)
+        other_user_offer.author = SimpleNamespace(id=8, name="Other user")
+        await monitor._send_response(
+            other_user_offer,
+            "Skal jeg legge inn en påminnelse om å sende lønnsslippen?",
+        )
+
+        followup = RecordingMessage("@inebotten minn meg på det i morgen")
+        followup.guild = SimpleNamespace(id=999)
+        followup.channel = SimpleNamespace(id=100)
+        followup.author = SimpleNamespace(id=7, name="Current user")
+
+        await monitor.handle_message(followup)
+
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0]["text"], "Kjøpe melk")
         self.assertNotIn("helsejournal", created[0]["text"].casefold())
+        self.assertNotIn("lønnsslipp", created[0]["text"].casefold())
+        self.assertEqual(set(monitor.conversation.threads), {100, 200})
+        self.assertNotIn(999, monitor.conversation.threads)
+
+    async def test_real_conversation_dm_followup_uses_exact_dm_and_user(self):
+        monitor = self.make_monitor()
+        monitor.conversation = ConversationContext(max_history=20)
+        monitor.intent_router = IntentRouter(monitor)
+        created = []
+
+        async def capture_reminder(message, payload):
+            created.append(payload["reminder"])
+
+        monitor.handlers["reminders"].handle_reminder_create = capture_reminder
+        own_offer = RecordingMessage("ignored")
+        own_offer.guild = None
+        own_offer.channel = SimpleNamespace(id=300)
+        own_offer.author = SimpleNamespace(id=7, name="Current user")
+        await monitor._send_response(
+            own_offer,
+            "Skal jeg legge inn en påminnelse om å kjøpe melk?",
+        )
+
+        other_dm_offer = RecordingMessage("ignored")
+        other_dm_offer.guild = None
+        other_dm_offer.channel = SimpleNamespace(id=301)
+        other_dm_offer.author = SimpleNamespace(id=7, name="Current user")
+        await monitor._send_response(
+            other_dm_offer,
+            "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
+        )
+
+        followup = RecordingMessage("@inebotten minn meg på det i morgen")
+        followup.guild = None
+        followup.channel = SimpleNamespace(id=300)
+        followup.author = SimpleNamespace(id=7, name="Current user")
+        await monitor.handle_message(followup)
+
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["text"], "Kjøpe melk")
+        self.assertNotIn("helsejournal", created[0]["text"].casefold())
+        self.assertEqual(set(monitor.conversation.threads), {300, 301})
+
+    async def test_untagged_contextual_followup_keeps_mention_gate(self):
+        monitor = self.make_monitor()
+        monitor.conversation = ConversationContext(max_history=20)
+        monitor.intent_router = IntentRouter(monitor)
+        created = []
+
+        async def capture_reminder(message, payload):
+            created.append(payload["reminder"])
+
+        monitor.handlers["reminders"].handle_reminder_create = capture_reminder
+        offer = RecordingMessage("ignored")
+        offer.guild = SimpleNamespace(id=999)
+        offer.channel = SimpleNamespace(id=100)
+        offer.author = SimpleNamespace(id=7, name="Current user")
+        await monitor._send_response(
+            offer,
+            "Skal jeg legge inn en påminnelse om å kjøpe melk?",
+        )
+
+        followup = RecordingMessage("minn meg på det i morgen")
+        followup.guild = SimpleNamespace(id=999)
+        followup.channel = SimpleNamespace(id=100)
+        followup.author = SimpleNamespace(id=7, name="Current user")
+        await monitor.handle_message(followup)
+
+        self.assertEqual(created, [])
+        self.assertEqual(monitor.mention_count, 0)
 
     async def test_low_confidence_rejection_is_tracked(self):
         monitor = self.make_monitor()

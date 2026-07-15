@@ -657,9 +657,10 @@ class MessageMonitor:
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
         guild_id = message.guild.id if message.guild else message.channel.id
+        channel_id = message.channel.id
         content_lower = message.content.lower()
         wants_dashboard, dashboard_reason = self.conversation.should_show_dashboard(
-            message.content, guild_id
+            message.content, channel_id
         )
         print(f"[MONITOR] AI fallback mode: dashboard={wants_dashboard} ({dashboard_reason})")
 
@@ -676,7 +677,7 @@ class MessageMonitor:
 
         # Update conversation history
         self.conversation.add_message(
-            channel_id=guild_id,
+            channel_id=channel_id,
             user_id=message.author.id,
             username=message.author.name,
             content=message.content,
@@ -686,7 +687,7 @@ class MessageMonitor:
         # Update user memory
         await self.user_memory.update_last_interaction(
             message.author.id,
-            topic=self.conversation.get_conversation_summary(guild_id),
+            topic=self.conversation.get_conversation_summary(channel_id),
             username=message.author.name,
         )
 
@@ -708,7 +709,7 @@ class MessageMonitor:
                         message.author.id, message.author.name
                     )
                     conversation_context = self.conversation.get_context(
-                        guild_id, limit=5
+                        channel_id, limit=5
                     )
 
                     # Check for search intent
@@ -1031,11 +1032,11 @@ class MessageMonitor:
             self.response_count += 1
             print(f"[MONITOR] Response sent to {message.author.name}: {response_text[:100]}...")
 
-            # Add bot response to conversation history
-            guild_id = message.guild.id if message.guild else message.channel.id
+            # Bind the bot turn to its initiating user so contextual lookups can
+            # fail closed when several users share a channel.
             self.conversation.add_message(
-                channel_id=guild_id,
-                user_id=None,
+                channel_id=message.channel.id,
+                user_id=message.author.id,
                 username="Inebotten",
                 content=response_text,
                 is_bot=True,
