@@ -3599,7 +3599,7 @@ Store transitions are synchronous and contain no await. MessageMonitor holds one
 
 PRESENTING does not consume READY TTL. `activate_presentation()` resets `created_at` and `expires_at` only after the final chunk is definitely delivered. `abort_presentation(..., safe_to_restore_previous=True)` is legal only with proof that zero new chunks were delivered and the first attempted send is definitely NOT_DELIVERED. Any delivered chunk, unknown delivery, mid-sequence failure, or correction failure passes `False`, leaves the new draft terminal FAILED, and never restores an older READY action.
 
-- [ ] **Step 1: Write failing scope, resolver, copy, and transition tests (5 minutes)**
+- [x] **Step 1: Write failing scope, resolver, copy, and transition tests (5 minutes)**
 
 Create tests/test_pending_actions.py:
 
@@ -3871,7 +3871,7 @@ Run:
 
 Expected: FAIL because core/pending_actions.py does not exist.
 
-- [ ] **Step 2: Implement exact Discord context extraction (5 minutes)**
+- [x] **Step 2: Implement exact Discord context extraction (5 minutes)**
 
 In core/message_context.py retain the Task-2 dataclasses and add:
 
@@ -3936,7 +3936,7 @@ Run:
 
 Expected: PASS with routing contracts and Discord extraction covered in the existing model-contract test file.
 
-- [ ] **Step 3: Define pending types and bounded phrase recognition (5 minutes)**
+- [x] **Step 3: Define pending types and bounded phrase recognition (5 minutes)**
 
 Create core/pending_actions.py with:
 
@@ -4186,7 +4186,7 @@ Run:
 
 Expected: collection succeeds; tests fail because PendingActionStore is absent.
 
-- [ ] **Step 4: Implement the complete synchronous store (5 minutes)**
+- [x] **Step 4: Implement the complete synchronous store (5 minutes)**
 
 Append:
 
@@ -4697,7 +4697,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Add terminal-state and choice-consumption tests (5 minutes)**
+- [x] **Step 5: Add terminal-state and choice-consumption tests (5 minutes)**
 
 Add:
 
@@ -4777,7 +4777,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the pure state layer (5 minutes)**
+- [x] **Step 6: Commit the pure state layer (5 minutes)**
 
 ~~~bash
 git add core/message_context.py core/pending_actions.py \

@@ -1,6 +1,7 @@
 """Resolved and authorized identity context for intent routing."""
 
 from dataclasses import dataclass
+import re
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,25 @@ def conversation_key_from_message(message) -> ConversationKey:
         channel_id=message.channel.id,
         user_id=message.author.id,
     )
+
+
+def strip_leading_bot_invocation(
+    content: str,
+    *,
+    bot_user_id: int,
+) -> str:
+    """Remove one authorized leading bot invocation without crossing lines."""
+
+    if not isinstance(content, str):
+        raise TypeError("message_content_must_be_string")
+    if isinstance(bot_user_id, bool) or not isinstance(bot_user_id, int):
+        raise TypeError("bot_user_id_must_be_integer")
+    invocation = re.compile(
+        rf"^[ \t]*(?:<@!?{bot_user_id}>|@inebotten(?!\w))"
+        rf"[ \t]*[,;:]?[ \t]*",
+        re.IGNORECASE,
+    )
+    return invocation.sub("", content, count=1)
 
 
 def routing_context_from_message(
