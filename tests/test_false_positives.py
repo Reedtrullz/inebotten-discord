@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime
 from types import SimpleNamespace
 
+from core.intent_models import IntentRisk
 from core.intent_router import BotIntent, IntentRouter
 from cal_system.natural_language_parser import NaturalLanguageParser
 from features.search_manager import detect_search_intent
@@ -16,7 +17,9 @@ class DummyMonitor:
         self.nlp_parser = NaturalLanguageParser()
         self.countdown = SimpleNamespace(parse_countdown_query=self._parse_countdown)
         self.poll = SimpleNamespace(
-            get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
+            get_active_polls=lambda guild_id, reference_time=None: (
+                [{"id": "poll1"}] if active_polls else []
+            )
         )
         self.conversation = SimpleNamespace(
             should_show_dashboard=ConversationContext().should_show_dashboard,
@@ -43,7 +46,7 @@ class DummyMonitor:
     def _parse_vote(self, content):
         return int(content) if content.strip().isdigit() else None
 
-    def _parse_watchlist(self, content):
+    def _parse_watchlist(self, content, **_kwargs):
         return {"action": "suggest"} if "hva skal vi se" in content.lower() else None
 
     def _parse_quote(self, content):
@@ -112,11 +115,11 @@ class FalsePositiveTests(unittest.TestCase):
 
     def test_real_calendar_remember(self):
         result = self.route("husk å kjøpe melk på mandag")
-        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
 
     def test_minn_meg_pa_stays_calendar_not_memory(self):
         result = self.route("minn meg på å kjøpe melk på mandag")
-        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
         self.assertNotIn(result.intent, (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_DELETE))
 
     def test_real_calendar_event(self):
@@ -171,7 +174,7 @@ class FalsePositiveTests(unittest.TestCase):
 
     def test_nynorsk_calendar_still_works(self):
         result = self.route("Husk å kjøpe melk på måndag")
-        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
 
     def test_english_weather_conversational(self):
         result = self.route("What do you think about the weather tomorrow?")
@@ -192,6 +195,96 @@ class FalsePositiveTests(unittest.TestCase):
     def test_explicit_calendar_list(self):
         result = self.route("kalender")
         self.assertEqual(result.intent, BotIntent.CALENDAR_LIST)
+
+    def test_conversation_and_quoted_actions_never_route_to_write(self):
+        texts = [
+            "Kva meiner du om RBK i morgon?",
+            "Ka trur du skjer i morra?",
+            "Æ ska bare høre ka du tænke om kampen i morra",
+            "Do not delete reminder 1",
+            'Explain the command "delete poll 2"',
+        ]
+        writes = {
+            BotIntent.CALENDAR_ITEM,
+            BotIntent.CALENDAR_DELETE,
+            BotIntent.REMINDER_CREATE,
+            BotIntent.REMINDER_DELETE,
+            BotIntent.POLL_CREATE,
+            BotIntent.POLL_DELETE,
+        }
+        for text in texts:
+            with self.subTest(text=text):
+                result = self.route(text, active_polls=True)
+                self.assertIs(result.risk, IntentRisk.READ_ONLY)
+                self.assertNotIn(result.intent, writes)
+
+    def test_english_polite_and_negated_delete_are_independent(self):
+        positive = self.route("Could you delete reminder 1?")
+        negative = self.route("Do not delete reminder 1")
+        self.assertEqual(positive.intent, BotIntent.REMINDER_DELETE)
+        self.assertIs(positive.risk, IntentRisk.DESTRUCTIVE)
+        self.assertTrue(positive.requires_confirmation)
+        self.assertEqual(negative.intent, BotIntent.AI_CHAT)
+        self.assertIs(negative.risk, IntentRisk.READ_ONLY)
+
+    def test_descriptive_command_words_do_not_become_actions(self):
+        texts = (
+            "ordene slett poll 1 står i teksten",
+            "kommandoen slett sitat 2 er farlig",
+            "jeg liker kalender synk",
+            "calendar sync failed yesterday",
+            "kalender auth er vanskelig",
+            "vi diskuterer kalender login",
+            "the phrase set my location to Oslo is common",
+            "jeg liker set my location to Oslo",
+            "jeg spiller fotball",
+            "Ola spiller fotball",
+            "jeg ser på The Bear",
+            "I am watching The Bear",
+            "playing football is fun",
+            "ordene møte i morgen kl 14 står i teksten",
+            "vi diskuterte møte i morgen kl 14",
+        )
+        mutating = {
+            BotIntent.POLL_DELETE,
+            BotIntent.QUOTE_DELETE,
+            BotIntent.CALENDAR_SYNC,
+            BotIntent.CALENDAR_AUTH,
+            BotIntent.SET_LOCATION,
+            BotIntent.PROFILE,
+            BotIntent.CALENDAR_ITEM,
+        }
+        for text in texts:
+            with self.subTest(text=text):
+                result = self.route(text, active_polls=True)
+                self.assertEqual(result.intent, BotIntent.AI_CHAT)
+                self.assertNotIn(result.intent, mutating)
+
+    def test_trailing_cancellation_blocks_every_write_family(self):
+        texts = (
+            "slett poll 1 fordi den er gammel men vent litt nå og ikke gjør det",
+            "slett sitat 2 fordi det er feil men ikke gjør det",
+            "påminn meg om å ringe legen i morgen "
+            "men vent litt nå og ikke gjør det",
+            "husk å se Arrival men vent litt nå og ikke gjør det",
+            "avstemning Pizza? Ja eller Nei "
+            "men vent litt nå og ikke gjør det",
+            "møte med Ola i morgen kl 14 "
+            "men vent litt nå og ikke gjør det",
+        )
+        writes = {
+            BotIntent.POLL_DELETE,
+            BotIntent.QUOTE_DELETE,
+            BotIntent.REMINDER_CREATE,
+            BotIntent.WATCHLIST,
+            BotIntent.POLL_CREATE,
+            BotIntent.CALENDAR_ITEM,
+        }
+        for text in texts:
+            with self.subTest(text=text):
+                result = self.route(text, active_polls=True)
+                self.assertEqual(result.intent, BotIntent.AI_CHAT)
+                self.assertNotIn(result.intent, writes)
 
 
 if __name__ == "__main__":

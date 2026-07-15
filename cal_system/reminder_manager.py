@@ -433,85 +433,419 @@ class ReminderManager:
         return "\n".join(lines)
 
 
-def parse_reminder_command(message_content):
-    """
-    Parse reminder commands
+_REMINDER_NOUN = (
+    r"(?:påminnelse|påminnelsen|påminning|påminninga|reminder)"
+)
+_POLITE_PREFIX = (
+    r"(?:(?:kan|kunne|vil|can|could|would|will)\s+(?:du|you)\s+|"
+    r"(?:vennligst|please)\s+)?"
+)
+_REMINDER_QUOTE = re.compile(
+    r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|«[^»\n]*»|(?<!\w)\'[^\'\n]+\'(?!\w)'
+)
+_REMINDER_EDIT_FIELD = re.compile(
+    r"(?<!\w)(tekst|text|dato|date|tid|time|kl|"
+    r"gjentakelse|gjentaking|recurrence)\s*:\s*",
+    re.I,
+)
+_REMINDER_ANY_LABEL = re.compile(r"(?<!\w)([^\W\d_][^\W_]*)\s*:\s*", re.I)
+_REMINDER_RECURRENCE = {
+    "hver dag": "daily",
+    "kvar dag": "daily",
+    "daglig": "daily",
+    "daily": "daily",
+    "hver uke": "weekly",
+    "kvar veke": "weekly",
+    "ukentlig": "weekly",
+    "weekly": "weekly",
+    "annenhver uke": "biweekly",
+    "hver andre uke": "biweekly",
+    "kvar andre veke": "biweekly",
+    "biweekly": "biweekly",
+    "hver måned": "monthly",
+    "kvar månad": "monthly",
+    "månedlig": "monthly",
+    "monthly": "monthly",
+    "hvert år": "yearly",
+    "kvart år": "yearly",
+    "årlig": "yearly",
+    "yearly": "yearly",
+}
 
-    Returns:
-        dict with action and data, or None
-    """
-    cleaned_content = re.sub(r"<@!?\d+>", "", message_content)
-    cleaned_content = cleaned_content.replace("@inebotten", "").strip()
-    content_lower = cleaned_content.lower()
 
-    # Check for explicit complete reminder commands before creation, so
-    # "ferdig påminnelse 1" does not become a new reminder titled "ferdig 1".
-    complete_keywords = ["ferdig", "fullfør", "fullført", "done", "completed", "gjort", "✓"]
-    complete_pattern = "|".join(re.escape(keyword) for keyword in complete_keywords)
-    reminder_context = r"(?:påminnelse|påminnelser|reminder|reminders|gjøremål|todo)"
-    complete_match = re.fullmatch(
-        rf"\s*(?:{complete_pattern})\s+{reminder_context}(?:\s+(\d+))?\s*",
-        content_lower,
-        flags=re.IGNORECASE,
+def _strip_reminder_temporal_data(text, resolver, now):
+    """Strip resolver-owned evidence outside supported quoted title data."""
+    def preserve_boundary_spacing(raw_part, cleaned_part):
+        if not cleaned_part:
+            return cleaned_part
+        if raw_part[:1].isspace() and not cleaned_part[:1].isspace():
+            cleaned_part = f" {cleaned_part}"
+        if raw_part[-1:].isspace() and not cleaned_part[-1:].isspace():
+            cleaned_part = f"{cleaned_part} "
+        return cleaned_part
+
+    parts = []
+    cursor = 0
+    stripped_temporal = False
+    for match in _REMINDER_QUOTE.finditer(text):
+        raw_part = text[cursor : match.start()]
+        cleaned_part = resolver.strip_temporal_evidence(
+            raw_part,
+            reference=now,
+        )
+        stripped_temporal = stripped_temporal or cleaned_part != raw_part
+        parts.append(preserve_boundary_spacing(raw_part, cleaned_part))
+        parts.append(match.group(0))
+        cursor = match.end()
+    raw_part = text[cursor:]
+    cleaned_part = resolver.strip_temporal_evidence(raw_part, reference=now)
+    stripped_temporal = stripped_temporal or cleaned_part != raw_part
+    parts.append(preserve_boundary_spacing(raw_part, cleaned_part))
+    cleaned = "".join(parts).strip()
+    if stripped_temporal:
+        # The shared resolver owns temporal grammar and its own cue cleanup.
+        # This only removes conjunctions stranded by removing a later/earlier
+        # temporal span (for example, ``ring legen fredag og kl 14``).
+        connector = r"(?:og|and|på|til|den|at|kl\.?|rundt|about|om|in)"
+        cleaned = re.sub(
+            rf"^(?:{connector}\b[\s,;:-]*)+",
+            "",
+            cleaned,
+            flags=re.I,
+        )
+        cleaned = re.sub(
+            rf"(?:[\s,;:-]*{connector}\b)+$",
+            "",
+            cleaned,
+            flags=re.I,
+        )
+    return cleaned.strip()
+
+
+def _mask_reminder_quotes(text):
+    """Mask supported quote spans without changing string offsets."""
+    chars = list(text)
+    for match in _REMINDER_QUOTE.finditer(text):
+        for index in range(match.start(), match.end()):
+            if not chars[index].isspace():
+                # A non-whitespace, non-word sentinel keeps ``\s*`` field
+                # delimiters from consuming the whole masked quoted value.
+                chars[index] = "\ufffc"
+    return "".join(chars)
+
+
+def _collapse_reminder_unquoted_whitespace(text):
+    """Collapse spacing introduced by removals while preserving quote data."""
+    parts = []
+    cursor = 0
+    for match in _REMINDER_QUOTE.finditer(text):
+        parts.append(re.sub(r"\s+", " ", text[cursor : match.start()]))
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(re.sub(r"\s+", " ", text[cursor:]))
+    return "".join(parts).strip()
+
+
+def _canonical_recurrence(value):
+    folded = " ".join(value.casefold().split())
+    if folded in _REMINDER_RECURRENCE.values():
+        return folded
+    return _REMINDER_RECURRENCE.get(folded)
+
+
+def _extract_recurrence(text):
+    """Extract consistent recurrence evidence only from unquoted text."""
+    masked = _mask_reminder_quotes(text)
+    matches = []
+    occupied = []
+    for phrase in sorted(_REMINDER_RECURRENCE, key=len, reverse=True):
+        for match in re.finditer(
+            rf"(?<!\w){re.escape(phrase)}(?!\w)",
+            masked,
+            re.I,
+        ):
+            if any(
+                match.start() < end and match.end() > start
+                for start, end in occupied
+            ):
+                continue
+            matches.append((match, _REMINDER_RECURRENCE[phrase]))
+            occupied.append(match.span())
+    if not matches:
+        return None, text, False
+    recurrences = {value for _, value in matches}
+    if len(recurrences) != 1:
+        return None, text, True
+    chars = list(text)
+    for match, _ in matches:
+        for index in range(match.start(), match.end()):
+            if not chars[index].isspace():
+                chars[index] = " "
+    cleaned = _collapse_reminder_unquoted_whitespace("".join(chars))
+    cleaned = re.sub(r"^(?:(?:og|and)\b[\s,;:-]*)+", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?:[\s,;:-]*(?:og|and)\b)+$", "", cleaned, flags=re.I)
+    return next(iter(recurrences)), cleaned.strip(), False
+
+
+def _parse_reminder_selector(value):
+    value = value.strip().strip("?.!,")
+    explicit_id = re.fullmatch(
+        r"id\s*[:#]?\s*([a-z0-9][a-z0-9_-]{5,79})",
+        value,
+        re.I,
     )
-    if complete_match:
-        number = complete_match.group(1)
-        return {"action": "complete", "number": int(number) if number else None}
+    if explicit_id:
+        return "reminder_id", explicit_id.group(1)
 
-    # Check for list reminders before singular creation.
-    list_keywords = ["påminnelser", "gjøremål", "reminders", "todos", "huskeliste"]
+    value = re.sub(
+        r"^(?:nummer|number|nr\.?|no\.?)\s+",
+        "",
+        value,
+        flags=re.I,
+    )
+    value = value.lstrip("#").strip()
+    if value.isdigit() and int(value) > 0:
+        return "number", int(value)
+    if re.fullmatch(r"rem_[a-z0-9][a-z0-9_-]{3,75}", value, re.I):
+        return "reminder_id", value
+    return None
+
+
+def _parse_reminder_edit_fields(body, resolver, now):
+    from core.utterance import normalize_utterance
+
+    masked = _mask_reminder_quotes(body)
+    matches = list(_REMINDER_EDIT_FIELD.finditer(masked))
+    if not matches or masked[: matches[0].start()].strip():
+        return None
+    supported_colons = {match.end() - 1 for match in matches}
     if any(
-        re.search(rf"\b{re.escape(word)}\b", content_lower)
-        for word in list_keywords
+        match.end() - 1 not in supported_colons
+        for match in _REMINDER_ANY_LABEL.finditer(masked)
+    ):
+        return None
+    values = {}
+    aliases = {
+        "tekst": "text",
+        "text": "text",
+        "dato": "date",
+        "date": "date",
+        "tid": "time",
+        "time": "time",
+        "kl": "time",
+        "gjentakelse": "recurrence",
+        "gjentaking": "recurrence",
+        "recurrence": "recurrence",
+    }
+    for index, match in enumerate(matches):
+        key = aliases[match.group(1).casefold()]
+        if key in values:
+            return None
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        value = body[match.end() : end].strip(" ,;?.")
+        if not value or not value.strip(" \t\r\n\"'“”‘’«»"):
+            return None
+        values[key] = value
+
+    changes = {}
+    if "text" in values:
+        changes["text"] = values["text"]
+    if "recurrence" in values:
+        recurrence = _canonical_recurrence(values["recurrence"])
+        if recurrence is None:
+            return None
+        changes["recurrence"] = recurrence
+
+    date_value = values.get("date")
+    time_value = values.get("time")
+    if date_value is not None or time_value is not None:
+        date_control = (
+            normalize_utterance(date_value).control_text
+            if date_value is not None
+            else None
+        )
+        time_control = (
+            normalize_utterance(time_value).control_text
+            if time_value is not None
+            else None
+        )
+        time_expression = time_control
+        if time_control is not None:
+            direct_time = resolver.resolve(time_control, reference=now)
+            if direct_time.errors:
+                return None
+            if direct_time.time is None:
+                time_expression = f"kl {time_control}"
+        if date_value is not None and time_value is not None:
+            resolved = resolver.resolve(
+                f"{date_control} {time_expression}", reference=now
+            )
+            if resolved.errors or resolved.date is None or resolved.time is None:
+                return None
+            changes.update(
+                due_at=resolved.due_at,
+                due_date=resolved.date,
+                time=resolved.time,
+                timezone="Europe/Oslo",
+            )
+        elif date_value is not None:
+            resolved = resolver.resolve(date_control, reference=now)
+            if resolved.errors or resolved.date is None:
+                return None
+            changes["due_date"] = resolved.date
+        else:
+            resolved = resolver.resolve(time_expression, reference=now)
+            if resolved.errors or resolved.time is None:
+                return None
+            changes["time"] = resolved.time
+    return changes or None
+
+
+def parse_reminder_command(
+    message_content, *, now=None, temporal_resolver=None
+):
+    """Parse one bounded reminder frame into a complete canonical object."""
+    from cal_system.temporal_resolver import TemporalResolver
+    from core.utterance import normalize_utterance
+
+    if not isinstance(message_content, str):
+        return None
+    resolver = temporal_resolver or TemporalResolver()
+    cleaned = re.sub(r"<@!?\d+>", "", message_content)
+    cleaned = re.sub(r"^\s*@inebotten\b", "", cleaned, flags=re.I).strip()
+    control = normalize_utterance(cleaned).control_text.strip()
+
+    # A plain media-title frame belongs to the watchlist parser. Temporal or
+    # caretaking/checking forms remain reminders ("se på saken", "watch the
+    # kids tomorrow") instead of being swallowed as titles.
+    media_frame = re.match(
+        r"^(?:husk\s+å\s+se|hugs\s+å\s+sjå|remember\s+to\s+watch)\s+(.+)$",
+        cleaned,
+        re.I,
+    )
+    if media_frame:
+        media_body = normalize_utterance(
+            media_frame.group(1).strip()
+        ).control_text
+        media_temporal = resolver.resolve(media_body, reference=now)
+        reminder_media_shape = bool(
+            media_temporal.date
+            or media_temporal.time
+            or re.match(
+                r"^(?:på|om|til)\b|^(?:the\s+)?(?:kids|children)\b",
+                media_body,
+                re.I,
+            )
+        )
+        if not reminder_media_shape:
+            return None
+
+    edit = re.match(
+        rf"^{_POLITE_PREFIX}(?:endre|rediger|edit)\s+{_REMINDER_NOUN}\s+"
+        r"(\d+|(?:id\s*[:#]?\s*)?[a-z0-9][a-z0-9_-]{5,79})\s+(.+)$",
+        cleaned,
+        re.I,
+    )
+    if edit:
+        selector = _parse_reminder_selector(edit.group(1))
+        changes = _parse_reminder_edit_fields(edit.group(2), resolver, now)
+        if selector is None or changes is None:
+            return None
+        key, value = selector
+        return {"action": "edit", key: value, "changes": changes}
+
+    target = re.fullmatch(
+        rf"{_POLITE_PREFIX}(?P<verb>slett|fjern|delete|remove|ferdig|fullfør|"
+        rf"fullført|done|complete|gjort)\s+(?:the\s+)?{_REMINDER_NOUN}\s+"
+        rf"(?P<selector>.+?)\s*[?.!]*",
+        cleaned,
+        re.I,
+    )
+    if target:
+        selector = _parse_reminder_selector(target.group("selector"))
+        if selector is None:
+            return None
+        key, value = selector
+        action = (
+            "delete"
+            if target.group("verb").casefold()
+            in {"slett", "fjern", "delete", "remove"}
+            else "complete"
+        )
+        return {"action": action, key: value}
+
+    search = re.fullmatch(
+        r"(?:søk|search)\s+(?:påminnelse|påminnelser|påminning|"
+        r"påminningar|reminder|reminders)\s+(.+?)\s*[?.!]*",
+        cleaned,
+        re.I,
+    )
+    if search and search.group(1).strip():
+        return {"action": "search", "query": search.group(1).strip()}
+
+    if re.fullmatch(
+        r"(?:(?:vis|list|show)\s+)?(?:påminnelser|påminningar|reminders|"
+        r"gjøremål|todos|huskeliste)\s*[?.!]*",
+        cleaned,
+        re.I,
     ):
         return {"action": "list"}
 
-    # Check for reminder creation
-    reminder_keywords = [
-        "påminnelse",
-        "husk å",
-        "husk at",
-        "reminder",
-        "gjøremål",
-        "todo",
-    ]
+    frame = re.match(
+        rf"^{_POLITE_PREFIX}(?:påminn(?:e)?\s+meg(?:\s+(?:om|på))?(?:\s+å)?|"
+        r"minn(?:e)?\s+(?:meg|mæ)(?:\s+(?:om|på))?(?:\s+å)?|"
+        r"husk\s+(?:å|at)|hugs\s+(?:å|at)|"
+        r"ikke\s+glem\s+(?:å|at)|ikkje\s+gløym\s+(?:å|at)|"
+        r"(?:don't|don’t)\s+forget\s+(?:to|that)|"
+        r"remind\s+me(?:\s+(?:to|that))?|"
+        r"remember\s+to|"
+        r"påminnelse|påminning|reminder|gjøremål|todo)\s+(.+)$",
+        cleaned,
+        re.I,
+    )
+    if frame is None:
+        return None
+    body = frame.group(1).strip()
+    if not body:
+        return None
 
-    for keyword in reminder_keywords:
-        if re.search(rf"\b{re.escape(keyword)}\b", content_lower):
-            # Extract reminder text
-            text = cleaned_content
+    recurrence, body_without_recurrence, recurrence_conflict = _extract_recurrence(body)
+    if recurrence_conflict:
+        return None
+    temporal_control = normalize_utterance(body_without_recurrence).control_text
+    resolved = resolver.resolve(temporal_control, reference=now)
+    if resolved.errors:
+        return None
+    if resolved.date is not None and resolved.time is None:
+        # Date-only reminder policy is 09:00, included before year selection.
+        resolved = resolver.resolve(
+            f"{temporal_control} kl 09:00", reference=now
+        )
+        if resolved.errors:
+            return None
+    elif recurrence is not None and resolved.date is None:
+        resolved = resolver.resolve("kl 09:00", reference=now)
+        if resolved.errors:
+            return None
 
-            # Remove the keyword phrase
-            patterns = [
-                f"^{keyword}\\s*",
-                f"{keyword}\\s*",
-            ]
-            for pattern in patterns:
-                text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
-
-            # Clean up common prefixes
-            prefixes = ["å", "at", "om å", "på å", "meg om å", "meg på å"]
-            for prefix in prefixes:
-                if text.lower().startswith(prefix + " "):
-                    text = text[len(prefix) :].strip()
-
-            # Check for due date in text (DD.MM)
-            date_match = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", text)
-            due_date = None
-            if date_match:
-                day, month, year = date_match.groups()
-                if year:
-                    due_date = f"{day}.{month}.{year}"
-                else:
-                    due_date = f"{day}.{month}"
-                # Remove date from text
-                text = text[: date_match.start()] + text[date_match.end() :]
-                text = text.strip(" -–—")
-
-            if text and len(text) > 2:
-                return {"action": "add", "text": text, "due_date": due_date}
-
-    return None
+    title = _strip_reminder_temporal_data(
+        body_without_recurrence, resolver, now
+    )
+    title = title.strip(" -–—,;:.!?")
+    if len(title) < 2:
+        return None
+    result = {"action": "add", "text": title}
+    if resolved.date is not None:
+        result["due_date"] = resolved.date
+    if resolved.time is not None:
+        result["time"] = resolved.time
+    if resolved.due_at is not None:
+        result["due_at"] = resolved.due_at
+    if resolved.date is not None or resolved.time is not None:
+        result["timezone"] = "Europe/Oslo"
+    if recurrence is not None:
+        result["recurrence"] = recurrence
+    return result
 
 
 if __name__ == "__main__":

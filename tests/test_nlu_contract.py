@@ -196,11 +196,11 @@ def test_load_cases_accepts_calendar_clear_family(tmp_path: Path):
 def test_versioned_corpus_loads_the_declared_baseline():
     cases = load_cases(CORPUS_PATH)
 
-    assert len(cases) == 11
+    assert len(cases) == 27
     assert {case.locale for case in cases} == {"nb", "nn", "en"}
     assert cases[0].id == "nb-reminder-husk-mandag"
-    assert cases[-1].id == "nn-conversational-future"
-    assert sum(case.critical for case in cases) == 9
+    assert cases[-1].id == "en-negated-reminder-delete"
+    assert sum(case.critical for case in cases) == 25
 
 
 def test_evaluator_uses_router_result_and_labeled_payload():

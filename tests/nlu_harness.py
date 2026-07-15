@@ -11,11 +11,12 @@ import math
 from pathlib import Path
 import re
 from types import SimpleNamespace
-from typing import Literal, Protocol, TypeAlias, cast
+from typing import Literal, Protocol, TypeAlias, cast, get_args
 
 from cal_system.natural_language_parser import NaturalLanguageParser
 from core.eval_fixtures import EvalFixture
 from core.intent_router import BotIntent, IntentResult, IntentRouter
+from core.utterance import normalize_utterance
 
 
 ParserName: TypeAlias = Literal[
@@ -61,6 +62,7 @@ PARSER_NAMES: tuple[ParserName, ...] = (
     "parse_birthday_command",
     "parse_profile_command",
 )
+PARSER_NAME_VALUES = frozenset(get_args(ParserName))
 EVAL_LOCALES = ("nb", "nn", "en")
 CASE_KEYS = frozenset(
     {
@@ -431,16 +433,21 @@ class ParserProbe:
 
 
 class ProductionRouterAdapter:
-    def __init__(self, monitor: object, probe: ParserProbe) -> None:
+    def __init__(self, monitor: object) -> None:
         self._router = IntentRouter(monitor)
-        self._probe = probe
 
     def evaluate(
         self, text: str, *, guild_id: int | None
     ) -> tuple[IntentResult, tuple[ParserName, ...]]:
-        self._probe.reset()
-        result = self._router.route(text, guild_id=guild_id)
-        return result, self._probe.snapshot()
+        routed = self._router.evaluate_utterance(
+            normalize_utterance(text), guild_id=guild_id
+        )
+        parser_names = tuple(
+            name
+            for name in routed.diagnostics.parser_errors
+            if name in PARSER_NAME_VALUES
+        )
+        return routed.result, parser_names
 
 
 def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
@@ -460,23 +467,8 @@ def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
     from features.watchlist_manager import parse_watchlist_command
     from memory.conversation_context import ConversationContext
 
-    probe = ParserProbe()
     nlp_parser = NaturalLanguageParser()
-    nlp_parser.parse_task_with_recurrence = cast(
-        object,
-        probe.wrap(
-            "parse_task_with_recurrence", nlp_parser.parse_task_with_recurrence
-        ),
-    )
-    nlp_parser.parse_event = cast(
-        object, probe.wrap("parse_event", nlp_parser.parse_event)
-    )
-
     countdown = CountdownManager()
-    countdown.parse_countdown_query = cast(
-        object,
-        probe.wrap("parse_countdown_query", countdown.parse_countdown_query),
-    )
 
     calendar_record = {
         "id": "calendar-1",
@@ -516,51 +508,31 @@ def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
     monitor = SimpleNamespace(
         nlp_parser=nlp_parser,
         countdown=countdown,
-        parse_poll_command=probe.wrap(
-            "parse_poll_command", parse_poll_command
-        ),
-        parse_vote=probe.wrap("parse_vote", parse_vote),
-        parse_watchlist_command=probe.wrap(
-            "parse_watchlist_command", parse_watchlist_command
-        ),
-        parse_quote_command=probe.wrap(
-            "parse_quote_command", parse_quote_command
-        ),
-        parse_price_command=probe.wrap(
-            "parse_price_command", parse_price_command
-        ),
-        parse_horoscope_command=probe.wrap(
-            "parse_horoscope_command", parse_horoscope_command
-        ),
-        parse_compliment_command=probe.wrap(
-            "parse_compliment_command", parse_compliment_command
-        ),
-        parse_calculator_command=probe.wrap(
-            "parse_calculator_command", parse_calculator_command
-        ),
-        parse_shorten_command=probe.wrap(
-            "parse_shorten_command", parse_shorten_command
-        ),
-        detect_search_intent=probe.wrap(
-            "detect_search_intent", detect_search_intent
-        ),
-        # The current router imports this function locally. It is bound here so
-        # Task 5 consumes the same finite probe without changing this harness.
-        parse_reminder_command=probe.wrap(
-            "parse_reminder_command", parse_reminder_command
-        ),
-        parse_birthday_command=probe.wrap(
-            "parse_birthday_command", parse_birthday_command
-        ),
+        parse_poll_command=parse_poll_command,
+        parse_vote=parse_vote,
+        parse_watchlist_command=parse_watchlist_command,
+        parse_quote_command=parse_quote_command,
+        parse_price_command=parse_price_command,
+        parse_horoscope_command=parse_horoscope_command,
+        parse_compliment_command=parse_compliment_command,
+        parse_calculator_command=parse_calculator_command,
+        parse_shorten_command=parse_shorten_command,
+        detect_search_intent=detect_search_intent,
+        parse_reminder_command=parse_reminder_command,
+        parse_birthday_command=parse_birthday_command,
         conversation=ConversationContext(),
         calendar=SimpleNamespace(
-            get_upcoming=lambda guild_id, days=365: list(calendar_rows)
+            get_upcoming=lambda guild_id, days=365, reference_time=None: list(
+                calendar_rows
+            )
         ),
         reminders=SimpleNamespace(
             get_active_reminders=lambda guild_id: list(reminder_rows)
         ),
         poll=SimpleNamespace(
-            get_active_polls=lambda guild_id: list(poll_rows)
+            get_active_polls=lambda guild_id, reference_time=None: list(
+                poll_rows
+            )
         ),
         guild_id=123,
         channel_id=456,
@@ -568,7 +540,7 @@ def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
         author_name="Kari",
         resolved_mentions=resolved_mentions,
     )
-    return ProductionRouterAdapter(monitor, probe)
+    return ProductionRouterAdapter(monitor)
 
 
 def dotted_payload_matches(

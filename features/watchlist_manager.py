@@ -406,105 +406,424 @@ class WatchlistManager:
         return "\n".join(lines)
 
 
-def parse_watchlist_command(message_content):
-    """
-    Parse watchlist commands (Norwegian and English)
+def parse_watchlist_command(
+    message_content,
+    *,
+    reference_time=None,
+    temporal_resolver=None,
+):
+    """Parse only bounded, case-preserving watchlist command frames."""
+    from cal_system.temporal_resolver import TemporalResolver
+    from core.utterance import normalize_utterance
 
-    Returns:
-        dict with action and data, or None
-    """
-    content_lower = message_content.lower()
+    if not isinstance(message_content, str):
+        return None
+    resolver = temporal_resolver or TemporalResolver()
+    content = re.sub(r"^\s*<@!?\d+>\s*", "", message_content)
+    content = re.sub(r"^\s*@inebotten\b\s*", "", content, flags=re.I).strip()
+    surface = content.strip(" .!?")
+    folded = surface.casefold()
+    if not folded:
+        return None
+    lang = "no" if re.search(
+        r"\b(?:hva|skal|filmforslag|serieforslag|anbefaling|husk|hugs|"
+        r"legg|fjern|slett|endre|rediger|serie|sjå)\b",
+        folded,
+    ) else "en"
 
-    def _extract_scoped_index(phrases):
-        for phrase in phrases:
-            match = re.search(
-                rf"\b{re.escape(phrase)}\b\s*(?:(?:nummer|nr\.?)\s*)?(\d+)\b",
-                message_content,
-                flags=re.IGNORECASE,
-            )
-            if match:
-                return int(match.group(1))
+    def item_type(value):
+        value = value.casefold()
+        if value in {"film", "filmen", "movie"}:
+            return "movie"
+        if value in {"serie", "serien", "series", "show", "tv show"}:
+            return "series"
         return None
 
-    # Detect language
-    lang_keywords = ["filmforslag", "serieforslag", "anbefaling", "hva skal vi se"]
-    lang = (
-        "no"
-        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in lang_keywords)
-        else "en"
-    )
+    def clean_title(value):
+        title = value.strip()
+        quote_pairs = {
+            '"': '"',
+            "'": "'",
+            "“": "”",
+            "‘": "’",
+            "«": "»",
+        }
+        if len(title) >= 2 and quote_pairs.get(title[0]) == title[-1]:
+            title = title[1:-1].strip()
+        if not title or title.casefold() in {
+            "film",
+            "serie",
+            "movie",
+            "show",
+            "til",
+            "to",
+            "på",
+            "i",
+        }:
+            return None
+        return title
 
-    # Check for suggestion request
-    suggestion_keywords = [
-        "hva skal vi se",
-        "filmforslag",
-        "serieforslag",
-        "anbefaling",
-        "movie suggestion",
-        "series suggestion",
-        "what should we watch",
-        "recommend",
-    ]
+    def is_reserved_action_title(value):
+        return re.fullmatch(
+            r"(?:add|remove|delete|edit|change|legg\s+til|"
+            r"fjern|fjerne|slett|slette|endre|rediger)",
+            value,
+            re.I,
+        ) is not None
 
-    for keyword in suggestion_keywords:
-        if re.search(rf'\b{re.escape(keyword)}\b', content_lower):
-            # Determine type
-            content_type = None
-            if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in ["film", "movie", "filmforslag"]):
-                content_type = "movie"
-            elif any(
-                re.search(rf'\b{re.escape(word)}\b', content_lower)
-                for word in ["serie", "series", "serieforslag", "tv show", "program"]
-            ):
-                content_type = "series"
+    def is_descriptive_suffix(value, *, suffix_lang):
+        folded_value = value.casefold().strip()
+        if suffix_lang == "no":
+            return bool(
+                re.match(
+                    r"^(?:jeg|eg|vi|han|hun|ho|de|du)\b|"
+                    r"^(?:ikke|ikkje)\b|"
+                    r"^la\s+være\s+å\b|"
+                    r"^(?:kan|kunne|vil)\s+du\b",
+                    folded_value,
+                    re.I,
+                )
+                or re.search(
+                    r"\b(?:er|var|ble|blei|ligger|står)$",
+                    folded_value,
+                    re.I,
+                )
+            )
+        return bool(
+            re.match(
+                r"^(?:i|we|he|she|they|you)\s+"
+                r"(?:added|put|placed|have\s+added)\b",
+                folded_value,
+                re.I,
+            )
+            or re.match(
+                r"^(?:do\s+not|don't|not)\b",
+                folded_value,
+                re.I,
+            )
+            or re.search(
+                r"\b(?:is|are|was|were)$",
+                folded_value,
+                re.I,
+            )
+        )
 
-            # If it's a general 'recommend' without movie/series context, skip it
-            if keyword in ["recommend", "anbefaling"] and not content_type:
-                continue
+    def is_reminder_media_body(value):
+        folded_value = normalize_utterance(value).control_text.strip()
+        if re.match(
+            r"^(?:på|om|til)\b|^(?:the\s+)?(?:kids|children)\b",
+            folded_value,
+            re.I,
+        ):
+            return True
+        resolved = resolver.resolve(
+            folded_value,
+            reference=reference_time,
+        )
+        return bool(resolved.date or resolved.time)
 
-            # Check for genre
-            genre = None
-            genres = [
-                "komedie",
-                "comedy",
-                "drama",
-                "sci-fi",
-                "action",
-                "thriller",
-                "horror",
-            ]
-            for g in genres:
-                if re.search(rf'\b{re.escape(g)}\b', content_lower):
-                    genre = g
-                    break
+    def mask_quotes(value):
+        quote_re = re.compile(
+            r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|«[^»\n]*»|'
+            r"(?<!\w)'[^'\n]+'(?!\w)"
+        )
+        chars = list(value)
+        for quote in quote_re.finditer(value):
+            for position in range(quote.start(), quote.end()):
+                if not chars[position].isspace():
+                    chars[position] = "\ufffc"
+        return "".join(chars)
 
-            return {
-                "action": "suggest",
-                "type": content_type,
-                "genre": genre,
-                "lang": lang,
+    def parse_edit_fields(value, *, edit_lang):
+        aliases = (
+            {
+                "tittel": "title",
+                "type": "type",
+                "sjanger": "genre",
+                "kommentar": "comment",
             }
+            if edit_lang == "no"
+            else {
+                "title": "title",
+                "type": "type",
+                "genre": "genre",
+                "comment": "comment",
+            }
+        )
+        label_re = re.compile(
+            rf"(?<!\w)({'|'.join(map(re.escape, aliases))})\s*:\s*",
+            re.I,
+        )
+        any_label_re = re.compile(r"(?<!\w)([^\W\d_][^\W_]*)\s*:\s*", re.I)
+        masked = mask_quotes(value)
+        matches = list(label_re.finditer(masked))
+        if not matches or masked[: matches[0].start()].strip():
+            return None
+        supported_starts = {match.start() for match in matches}
+        if any(
+            match.start() not in supported_starts
+            for match in any_label_re.finditer(masked)
+        ):
+            return None
+        fields = {}
+        for position, match in enumerate(matches):
+            key = aliases[match.group(1).casefold()]
+            if key in fields:
+                return None
+            end = matches[position + 1].start() if position + 1 < len(matches) else len(value)
+            raw_value = value[match.end() : end].strip(" ,;?.")
+            if not raw_value or not raw_value.strip(" \t\r\n\"'“”‘’«»"):
+                return None
+            fields[key] = raw_value
+        if "title" in fields:
+            fields["title"] = clean_title(fields["title"])
+            if fields["title"] is None:
+                return None
+        if "type" in fields:
+            fields["type"] = item_type(fields["type"])
+            if fields["type"] is None:
+                return None
+        return fields or None
 
-    # Check for removing item (before generic status match)
-    remove_phrases = ["fjern watchlist", "slett watchlist", "fjern fra watchlist"]
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in remove_phrases):
-        return {"action": "remove", "index": _extract_scoped_index(remove_phrases), "lang": lang}
+    genre_frame = r"komedie|comedy|drama|sci-fi|action|thriller|horror"
+    suggestion = re.fullmatch(
+        rf"(?:hva\s+skal\s+vi\s+se|what\s+should\s+we\s+watch|"
+        rf"(?:filmforslag|serieforslag)(?:\s+(?:{genre_frame}))?|"
+        rf"(?:movie|series)\s+suggestion(?:\s+(?:{genre_frame}))?|"
+        rf"anbefaling\s+(?:(?:{genre_frame})\s+)?"
+        rf"(?:film|serie)(?:\s+(?:{genre_frame}))?|"
+        rf"(?:(?:can|could|would|will)\s+you\s+|please\s+)?"
+        rf"recommend(?:\s+me)?\s+(?:(?:a|an|some)\s+)?"
+        rf"(?:(?:{genre_frame})\s+)?(?:movie|series|show)"
+        rf"(?:\s+(?:{genre_frame}))?)",
+        folded,
+        re.I,
+    )
+    if suggestion:
+        kind = (
+            "movie"
+            if folded.startswith("filmforslag")
+            or re.search(r"\b(?:film|movie)\b", folded)
+            else "series"
+            if folded.startswith("serieforslag")
+            or re.search(r"\b(?:serie|series|show)\b", folded)
+            else None
+        )
+        genre = next(
+            (
+                value
+                for value in (
+                    "komedie",
+                    "comedy",
+                    "drama",
+                    "sci-fi",
+                    "action",
+                    "thriller",
+                    "horror",
+                )
+                if re.search(rf"(?<!\w){re.escape(value)}(?!\w)", folded)
+            ),
+            None,
+        )
+        return {
+            "action": "suggest",
+            "type": kind,
+            "genre": genre,
+            "lang": lang,
+        }
 
-    # Check for editing item (before generic status match)
-    edit_phrases = ["endre watchlist", "rediger watchlist"]
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in edit_phrases):
-        return {"action": "edit", "index": _extract_scoped_index(edit_phrases), "lang": lang}
-
-    # Check for adding item
-    add_phrases = ["legg til", "add to watchlist", "husk å se"]
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in add_phrases):
-        return {"action": "add", "lang": lang}
-
-    # Check for watchlist status
-    status_keywords = ["watchlist", "watchlista", "hva har vi"]
-    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in status_keywords):
+    if re.fullmatch(
+        r"(?:vis|list|show)?\s*(?:min |the )?(?:watchlist|watchlista|"
+        r"watch list)|hva har vi (?:på|i) watchlist",
+        folded,
+        re.I,
+    ):
         return {"action": "status", "lang": lang}
 
+    media_add = re.fullmatch(
+        r"(?P<frame>husk\s+å\s+se|hugs\s+å\s+sjå|remember\s+to\s+watch)\s+(.+)",
+        surface,
+        re.I,
+    )
+    if media_add:
+        title = clean_title(media_add.group(2))
+        if title is None or is_reminder_media_body(title):
+            return None
+        return {
+            "action": "add",
+            "title": title,
+            "type": None,
+            "lang": "en" if media_add.group("frame").casefold().startswith("remember") else "no",
+        }
+
+    norwegian_typed_add = re.fullmatch(
+        r"legg\s+til\s+(film|filmen|serie|serien)\s+(.+)",
+        surface,
+        re.I,
+    )
+    if norwegian_typed_add:
+        title = clean_title(norwegian_typed_add.group(2))
+        if title is None:
+            return None
+        return {
+            "action": "add",
+            "title": title,
+            "type": item_type(norwegian_typed_add.group(1)),
+            "lang": "no",
+        }
+
+    norwegian_action_add = re.fullmatch(
+        r"(?:(?:kan|kunne|vil)\s+du\s+|vennligst\s+)?"
+        r"(?:legg|legge)(?:\s+til)?\s+(.+?)\s+(?:på|i)\s+watchlist",
+        surface,
+        re.I,
+    )
+    if norwegian_action_add:
+        title = clean_title(norwegian_action_add.group(1))
+        if title is None:
+            return None
+        return {
+            "action": "add",
+            "title": title,
+            "type": None,
+            "lang": "no",
+        }
+
+    norwegian_suffix_add = re.fullmatch(
+        r"(.+?)\s+(?:på|i)\s+watchlist",
+        surface,
+        re.I,
+    )
+    if norwegian_suffix_add:
+        title = clean_title(norwegian_suffix_add.group(1))
+        if (
+            title is None
+            or is_reserved_action_title(title)
+            or re.match(r"^(?:add|legg\s+til)\b", title, re.I)
+            or is_descriptive_suffix(title, suffix_lang="no")
+        ):
+            return None
+        return {"action": "add", "title": title, "type": None, "lang": "no"}
+
+    english_action_add = re.fullmatch(
+        r"(?:(?:can|could|would|will)\s+you\s+|please\s+)?"
+        r"add\s+(.+?)\s+to\s+(?:the\s+)?watchlist",
+        surface,
+        re.I,
+    )
+    if english_action_add:
+        title = clean_title(english_action_add.group(1))
+        if title is None or re.match(r"^(?:film|serie)\b", title, re.I):
+            return None
+        return {"action": "add", "title": title, "type": None, "lang": "en"}
+
+    english_suffix_add = re.fullmatch(
+        r"(.+?)\s+to\s+(?:the\s+)?watchlist",
+        surface,
+        re.I,
+    )
+    if english_suffix_add:
+        title = clean_title(english_suffix_add.group(1))
+        if (
+            title is None
+            or is_reserved_action_title(title)
+            or re.match(r"^(?:legg\s+til)\b", title, re.I)
+            or is_descriptive_suffix(title, suffix_lang="en")
+        ):
+            return None
+        return {"action": "add", "title": title, "type": None, "lang": "en"}
+
+    remove_no = re.fullmatch(
+        r"(?:fjern|fjerne|slett|slette)\s+"
+        r"(film|filmen|serie|serien|watchlist)\s+"
+        r"(?:(?:nummer|nr\.?|#)\s*)?(\d+)",
+        surface,
+        re.I,
+    )
+    if remove_no and int(remove_no.group(2)) > 0:
+        return {
+            "action": "remove",
+            "index": int(remove_no.group(2)),
+            "type": item_type(remove_no.group(1)),
+            "lang": "no",
+        }
+    remove_en = re.fullmatch(
+        r"(?:remove|delete)\s+(movie|show|watchlist)\s+"
+        r"(?:(?:number|no\.?|#)\s*)?(\d+)",
+        surface,
+        re.I,
+    )
+    if remove_en and int(remove_en.group(2)) > 0:
+        return {
+            "action": "remove",
+            "index": int(remove_en.group(2)),
+            "type": item_type(remove_en.group(1)),
+            "lang": "en",
+        }
+
+    for pattern, remove_lang in (
+        (r"(?:fjern|fjerne|slett|slette)\s+(?:(?:nummer|nr\.?|#)\s*)?(\d+)\s+fra\s+watchlist", "no"),
+        (r"(?:remove|delete)\s+(?:(?:number|no\.?|#)\s*)?(\d+)\s+from\s+watchlist", "en"),
+    ):
+        remove_from = re.fullmatch(pattern, surface, re.I)
+        if remove_from and int(remove_from.group(1)) > 0:
+            return {
+                "action": "remove",
+                "index": int(remove_from.group(1)),
+                "lang": remove_lang,
+            }
+
+    edit = re.fullmatch(
+        r"(?P<action>endre|rediger|edit|change)\s+"
+        r"(?P<domain>film|filmen|serie|serien|movie|show|watchlist)\s+"
+        r"(?:(?:nummer|number|nr\.?|no\.?|#)\s*)?(?P<index>\d+)\s+"
+        r"(?P<body>.+)",
+        surface,
+        re.I,
+    )
+    if edit and int(edit.group("index")) > 0:
+        edit_lang = (
+            "no"
+            if edit.group("action").casefold() in {"endre", "rediger"}
+            else "en"
+        )
+        allowed_domains = (
+            {"film", "filmen", "serie", "serien", "watchlist"}
+            if edit_lang == "no"
+            else {"movie", "show", "watchlist"}
+        )
+        domain = edit.group("domain").casefold()
+        if domain not in allowed_domains:
+            return None
+        body = edit.group("body").strip()
+        connector = re.fullmatch(
+            r"(?:til|to)\s+(.+)",
+            body,
+            re.I,
+        )
+        if connector:
+            matched_connector = body.split(maxsplit=1)[0].casefold()
+            if (edit_lang == "no") != (matched_connector == "til"):
+                return None
+            title = clean_title(connector.group(1))
+            if title is None:
+                return None
+            changes = {"title": title}
+        else:
+            changes = parse_edit_fields(body, edit_lang=edit_lang)
+            if changes is None:
+                return None
+        domain_type = item_type(domain)
+        if domain_type is not None:
+            if changes.get("type") not in (None, domain_type):
+                return None
+            changes.setdefault("type", domain_type)
+        return {
+            "action": "edit",
+            "index": int(edit.group("index")),
+            **changes,
+            "lang": edit_lang,
+        }
     return None
 
 

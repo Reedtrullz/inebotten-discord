@@ -2,28 +2,50 @@
 """Regression tests for central intent routing."""
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
 from cal_system.natural_language_parser import NaturalLanguageParser
-from core.intent_router import BotIntent, IntentRouter
+from cal_system.temporal_resolver import DATE_ALIASES, OSLO, TemporalResolver
+from core.intent_models import IntentRisk, RejectionCode
+from core.intent_router import (
+    BotIntent,
+    COLLECTOR_ORDER,
+    CollectorContext,
+    CollectorOutput,
+    IntentRouter,
+)
+from core.message_context import (
+    ConversationKey,
+    ResolvedMention,
+    RoutingContext,
+)
+from core.nlu_metrics import NLUMetrics
+from core.utterance import normalize_utterance
+from core.utterance_semantics import analyze_utterance
 from features.crypto_manager import parse_price_command
 from features.search_manager import detect_search_intent
+from features.watchlist_manager import parse_watchlist_command
+
+
+NOW = datetime(2026, 7, 14, 12, 0, tzinfo=OSLO)
 
 
 class DummyMonitor:
     def __init__(self, active_polls=False, calendar_titles=None, active_reminders=False):
         self.nlp_parser = NaturalLanguageParser()
         self.calendar = SimpleNamespace(
-            get_upcoming=lambda guild_id, days=365: [
+            get_upcoming=lambda guild_id, days=365, reference_time=None: [
                 {"title": title, "date": "29.06.2026", "time": "12:00"}
                 for title in (calendar_titles or [])
             ]
         )
         self.countdown = SimpleNamespace(parse_countdown_query=self._parse_countdown)
         self.poll = SimpleNamespace(
-            get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
+            get_active_polls=lambda guild_id, reference_time=None: (
+                [{"id": "poll1"}] if active_polls else []
+            )
         )
         self.reminders = SimpleNamespace(
             get_active_reminders=lambda guild_id: [{"id": "rem1"}] if active_reminders else []
@@ -36,7 +58,7 @@ class DummyMonitor:
 
         self.parse_poll_command = self._parse_poll
         self.parse_vote = self._parse_vote
-        self.parse_watchlist_command = self._parse_watchlist
+        self.parse_watchlist_command = parse_watchlist_command
         self.parse_quote_command = self._parse_quote
         self.parse_price_command = self._parse_price
         self.parse_horoscope_command = self._parse_horoscope
@@ -53,7 +75,7 @@ class DummyMonitor:
     def _parse_vote(self, content):
         return int(content) if content.strip().isdigit() else None
 
-    def _parse_watchlist(self, content):
+    def _parse_watchlist(self, content, **_kwargs):
         lower = content.lower()
         if "fjern watchlist" in lower or "slett watchlist" in lower or "fjern fra watchlist" in lower:
             return {"action": "remove"}
@@ -94,13 +116,30 @@ class DummyMonitor:
 
 
 class IntentRouterTests(unittest.TestCase):
-    def route(self, text, active_polls=False, monitor=None, calendar_titles=None, active_reminders=False):
+    def route(
+        self,
+        text,
+        active_polls=False,
+        monitor=None,
+        calendar_titles=None,
+        active_reminders=False,
+        *,
+        channel_id=None,
+        user_id=None,
+    ):
         monitor = monitor or DummyMonitor(
             active_polls=active_polls,
             calendar_titles=calendar_titles,
             active_reminders=active_reminders,
         )
-        return IntentRouter(monitor).route(text, guild_id=123)
+        return IntentRouter(
+            monitor, now_provider=lambda: NOW
+        ).route(
+            text,
+            guild_id=123,
+            channel_id=channel_id,
+            user_id=user_id,
+        )
 
     def test_conversational_future_prompt_stays_ai_chat(self):
         result = self.route("jeg skal bare høre hva du synes om RBK i morgen")
@@ -108,8 +147,9 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_calendar_task_prompt_routes_to_calendar_item(self):
         result = self.route("husk å kjøpe melk på mandag")
-        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
-        self.assertEqual(result.payload["calendar_item"]["type"], "task")
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
+        self.assertEqual(result.payload["reminder"]["action"], "add")
+        self.assertEqual(result.payload["reminder"]["text"], "kjøpe melk")
 
     def test_calendar_event_prompt_routes_with_time(self):
         result = self.route("møte med Ola i morgen kl 14")
@@ -124,9 +164,10 @@ class IntentRouterTests(unittest.TestCase):
 
     def test_contextual_reminder_followup_uses_recent_offer(self):
         monitor = DummyMonitor()
-        monitor.conversation.threads[123] = [
+        monitor.conversation.threads[456] = [
             {
-                "user_id": None,
+                "channel_id": 456,
+                "user_id": 7,
                 "username": "Inebotten",
                 "content": "Skal jeg hjelpe deg med å legge inn en påminnelse om å bestille billettene, eller kanskje du vil planlegge turen?",
                 "is_bot": True,
@@ -134,12 +175,62 @@ class IntentRouterTests(unittest.TestCase):
             }
         ]
 
-        result = self.route("minn meg på det imorgen kveld :Pog:", monitor=monitor)
+        result = self.route(
+            "minn meg på det imorgen kveld :Pog:",
+            monitor=monitor,
+            channel_id=456,
+            user_id=7,
+        )
 
-        self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
-        self.assertEqual(result.payload["calendar_item"]["type"], "task")
-        self.assertEqual(result.payload["calendar_item"]["title"], "Bestille billettene")
-        self.assertEqual(result.payload["calendar_item"]["time"], "19:00")
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
+        self.assertEqual(result.payload["reminder"]["text"], "Bestille billettene")
+        self.assertEqual(result.payload["reminder"]["time"], "19:00")
+
+    def test_contextual_reminder_followup_is_channel_and_user_scoped(self):
+        monitor = DummyMonitor()
+        monitor.conversation.threads[456] = [
+            {
+                "channel_id": 456,
+                "user_id": 8,
+                "content": "Skal jeg legge inn en påminnelse om å kjøpe is?",
+                "is_bot": True,
+                "timestamp": NOW,
+            },
+            {
+                "channel_id": 456,
+                "user_id": 7,
+                "content": "Skal jeg legge inn en påminnelse om å bestille billetter?",
+                "is_bot": True,
+                "timestamp": NOW - timedelta(minutes=1),
+            },
+        ]
+        monitor.conversation.threads[999] = [
+            {
+                "channel_id": 999,
+                "user_id": 7,
+                "content": "Skal jeg legge inn en påminnelse om å hente pakken?",
+                "is_bot": True,
+                "timestamp": NOW + timedelta(minutes=1),
+            }
+        ]
+
+        matching = self.route(
+            "minn meg på det i morgen",
+            monitor=monitor,
+            channel_id=456,
+            user_id=7,
+        )
+        other_user = self.route(
+            "minn meg på det i morgen",
+            monitor=monitor,
+            channel_id=456,
+            user_id=9,
+        )
+
+        self.assertEqual(
+            matching.payload["reminder"]["text"], "Bestille billetter"
+        )
+        self.assertEqual(other_user.payload["reminder"]["text"], "det")
 
     def test_vague_hva_skjer_stays_ai_chat(self):
         result = self.route("hva skjer?")
@@ -208,10 +299,22 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(self.route("status invisible").intent, BotIntent.PROFILE)
         self.assertEqual(self.route("status").intent, BotIntent.STATUS)
 
-    def test_calendar_oppdater_routes_to_edit_not_sync(self):
+    def test_profile_activity_preserves_titles_with_copular_words(self):
+        for text in (
+            "playing Life is Strange",
+            "watching This Is Us",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.PROFILE)
+        self.assertEqual(
+            self.route("playing football is fun").intent,
+            BotIntent.AI_CHAT,
+        )
+
+    def test_incomplete_calendar_oppdater_falls_back(self):
         result = self.route("kalender oppdater")
-        self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
-        self.assertEqual(result.reason, "calendar_edit_keyword")
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+        self.assertEqual(result.payload, {})
 
     def test_calendar_oppdater_fra_google_routes_to_sync(self):
         result = self.route("kalender oppdater fra google")
@@ -273,9 +376,10 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(self.route("slett poll 2", active_polls=True).intent, BotIntent.POLL_DELETE)
         self.assertEqual(self.route("slett sitat 1").intent, BotIntent.QUOTE_DELETE)
 
-    def test_reminder_edit_routes_to_reminder_edit(self):
+    def test_incomplete_reminder_edit_falls_back(self):
         result = self.route("endre påminnelse")
-        self.assertEqual(result.intent, BotIntent.REMINDER_EDIT)
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+        self.assertEqual(result.payload, {})
 
     def test_bare_search_routes_to_web_search(self):
         result = self.route("søk møte")
@@ -350,10 +454,1056 @@ class IntentRouterTests(unittest.TestCase):
         result = self.route("endre bursdag")
         self.assertEqual(result.intent, BotIntent.BIRTHDAY_EDIT)
 
-    def test_watchlist_remove_routes_with_remove_action(self):
+    def test_birthday_edit_is_anchored_to_a_direct_frame(self):
+        for text in (
+            "Kan du endre bursdag?",
+            "Please edit birthday",
+            "endre bursdag Ola Nordmann 02.03.1991",
+            "Kan du endre bursdag Ola Nordmann 02.03.1991?",
+            "Please edit birthday Ola Nordmann 02.03.1991",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.route(text).intent,
+                    BotIntent.BIRTHDAY_EDIT,
+                )
+        for text in (
+            "jeg lurer på hvordan man kan endre bursdag",
+            "ordene endre bursdag står i teksten",
+            "ordene endre bursdag Ola Nordmann 02.03.1991 står i teksten",
+            "editing a birthday is complicated",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+    def test_birthday_edit_candidate_specificity_tracks_target(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+
+        def collect(text):
+            utterance = normalize_utterance(text)
+            context = CollectorContext(
+                utterance,
+                analyze_utterance(utterance),
+                None,
+                123,
+                None,
+                None,
+                NOW,
+            )
+            return [
+                candidate
+                for candidate in router._collect_calendar_reminder_candidates(
+                    context
+                ).candidates
+                if candidate.reason == "birthday_edit_keyword"
+            ]
+
+        targetless = collect("endre bursdag")
+        targetful = collect("endre bursdag Ola Nordmann 02.03.1991")
+
+        self.assertEqual(len(targetless), 1)
+        self.assertEqual(targetless[0].specificity, 2)
+        self.assertEqual(len(targetful), 1)
+        self.assertEqual(targetful[0].specificity, 3)
+
+    def test_incomplete_watchlist_remove_falls_back(self):
         result = self.route("fjern watchlist")
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+        self.assertEqual(result.payload, {})
+
+    def test_complete_calendar_edit_alias_keeps_canonical_payload(self):
+        result = self.route("kalender oppdatere 1 tittel: Ny")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
+        self.assertEqual(
+            result.payload,
+            {
+                "calendar_edit": {
+                    "target": "1",
+                    "changes": {"title": "Ny"},
+                }
+            },
+        )
+
+    def test_bare_display_number_is_bounded_calendar_target_evidence(self):
+        result = self.route("slett 2")
+        self.assertEqual(result.intent, BotIntent.CALENDAR_DELETE)
+        self.assertEqual(
+            result.payload, {"calendar_target": {"number": 2}}
+        )
+        self.assertIs(result.risk, IntentRisk.DESTRUCTIVE)
+        self.assertTrue(result.requires_confirmation)
+
+    def test_natural_calendar_edit_payload_is_complete(self):
+        result = self.route(
+            "Kan du endre møte med Ola til fredag kl 10?",
+            calendar_titles=["Møte med Ola"],
+        )
+        self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
+        self.assertEqual(
+            result.payload,
+            {
+                "calendar_edit": {
+                    "target": "møte med Ola",
+                    "changes": {
+                        "date": "17.07.2026",
+                        "time": "10:00",
+                    },
+                }
+            },
+        )
+
+    def test_natural_calendar_edit_uses_rightmost_unquoted_temporal_split(self):
+        cases = (
+            (
+                "Kan du endre møte Fra Oslo til Bergen til fredag kl 10?",
+                "møte Fra Oslo til Bergen",
+            ),
+            (
+                'Kan du endre møte "Fra Oslo til Bergen" til fredag kl 10?',
+                'møte "Fra Oslo til Bergen"',
+            ),
+            (
+                "Would you change meeting From Here to Eternity to Friday at 10?",
+                "meeting From Here to Eternity",
+            ),
+        )
+        for text, expected_target in cases:
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
+                self.assertEqual(
+                    result.payload["calendar_edit"]["target"],
+                    expected_target,
+                )
+                self.assertEqual(
+                    result.payload["calendar_edit"]["changes"],
+                    {"date": "17.07.2026", "time": "10:00"},
+                )
+
+    def test_natural_reminder_payload_is_complete(self):
+        result = self.route("Påminn meg om å ringe legen i morgen")
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
+        self.assertEqual(
+            result.payload,
+            {
+                "reminder": {
+                    "action": "add",
+                    "text": "ringe legen",
+                    "due_date": "15.07.2026",
+                    "time": "09:00",
+                    "due_at": "2026-07-15T09:00:00+02:00",
+                    "timezone": "Europe/Oslo",
+                }
+            },
+        )
+
+    def test_pure_route_wrapper_matches_normalized_entry(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+        self.assertEqual(
+            router.route("hjelp", 123),
+            router.route_utterance(
+                normalize_utterance("hjelp"), guild_id=123
+            ),
+        )
+
+    def test_routing_context_scalar_mismatches_fail_bounded(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+        routing = RoutingContext(
+            ConversationKey(123, 456, 7),
+            ResolvedMention(7, "Kari"),
+        )
+        for kwargs in (
+            {"guild_id": 999},
+            {"channel_id": 999},
+            {"user_id": 999},
+        ):
+            with self.subTest(kwargs=kwargs):
+                routed = router.evaluate_utterance(
+                    normalize_utterance("hjelp"),
+                    routing_context=routing,
+                    **kwargs,
+                )
+                self.assertEqual(routed.result.intent, BotIntent.AI_CHAT)
+                self.assertEqual(routed.result.reason, "invalid_context")
+                self.assertEqual(
+                    routed.diagnostics.rejection_counts,
+                    {RejectionCode.INVALID_CONTEXT: 1},
+                )
+
+    def test_supplied_scalar_identity_survives_only_on_collector_context(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+        seen = []
+
+        def capture(context):
+            seen.append(
+                (context.guild_id, context.channel_id, context.user_id)
+            )
+            return CollectorOutput()
+
+        for name in COLLECTOR_ORDER:
+            setattr(router, name, capture)
+        routed = router.evaluate_utterance(
+            normalize_utterance("hei"),
+            guild_id=123,
+            channel_id=456,
+            user_id=7,
+        )
+        self.assertEqual(seen, [(123, 456, 7)] * len(COLLECTOR_ORDER))
+        self.assertNotIn("123", repr(routed))
+        self.assertNotIn("456", repr(routed))
+
+    def test_routing_context_derives_all_three_scalar_ids(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+        seen = []
+
+        def capture(context):
+            seen.append(
+                (context.guild_id, context.channel_id, context.user_id)
+            )
+            return CollectorOutput()
+
+        for name in COLLECTOR_ORDER:
+            setattr(router, name, capture)
+        routing = RoutingContext(
+            ConversationKey(123, 456, 7),
+            ResolvedMention(7, "Kari"),
+        )
+        router.evaluate_utterance(
+            normalize_utterance("hei"), routing_context=routing
+        )
+        self.assertEqual(seen, [(123, 456, 7)] * len(COLLECTOR_ORDER))
+
+    def test_route_captures_injected_clock_exactly_once(self):
+        calls = []
+        before_midnight = datetime(
+            2026, 7, 14, 23, 59, tzinfo=OSLO
+        )
+        after_midnight = datetime(
+            2026, 7, 15, 0, 1, tzinfo=OSLO
+        )
+
+        def clock():
+            value = before_midnight if not calls else after_midnight
+            calls.append(value)
+            return value
+
+        result = IntentRouter(DummyMonitor(), now_provider=clock).route(
+            "påminn meg om å ringe legen i morgen", guild_id=123
+        )
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
+        self.assertEqual(calls, [before_midnight])
+        self.assertEqual(
+            result.payload["reminder"]["due_at"],
+            "2026-07-15T09:00:00+02:00",
+        )
+
+    def test_supplied_reference_time_never_reads_now_provider(self):
+        def unexpected_clock_read():
+            raise AssertionError("now_provider_was_read")
+
+        result = IntentRouter(
+            DummyMonitor(), now_provider=unexpected_clock_read
+        ).route(
+            "påminn meg om å ringe legen i morgen",
+            guild_id=123,
+            reference_time=NOW,
+        )
+        self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
+        self.assertEqual(
+            result.payload["reminder"]["due_at"],
+            "2026-07-15T09:00:00+02:00",
+        )
+
+    def test_reminder_parser_exception_is_bounded_one_for_one(self):
+        monitor = DummyMonitor()
+
+        def explode(_text, **_kwargs):
+            raise RuntimeError("SECRET_REMINDER_TOKEN")
+
+        monitor.parse_reminder_command = explode
+        metrics = NLUMetrics()
+        router = IntentRouter(
+            monitor, metrics=metrics, now_provider=lambda: NOW
+        )
+        routed = router.evaluate_utterance(
+            normalize_utterance(
+                "påminn meg om å ringe legen i morgen"
+            ),
+            guild_id=123,
+        )
+        self.assertEqual(
+            routed.diagnostics.parser_errors,
+            ("parse_reminder_command",),
+        )
+        self.assertEqual(
+            routed.diagnostics.rejection_counts,
+            {RejectionCode.PARSER_ERROR: 1},
+        )
+        self.assertEqual(
+            metrics.snapshot()["parser_errors"],
+            {"parser=reminder|code=exception": 1},
+        )
+        self.assertNotIn("SECRET_REMINDER_TOKEN", repr(routed))
+        self.assertNotIn("RuntimeError", repr(routed))
+
+    def test_invalid_calendar_temporal_is_diagnostic_only(self):
+        metrics = NLUMetrics()
+        routed = IntentRouter(
+            DummyMonitor(), metrics=metrics, now_provider=lambda: NOW
+        ).evaluate_utterance(
+            normalize_utterance("møte 31.02.2026 kl 14"),
+            guild_id=123,
+        )
+        self.assertEqual(routed.result.intent, BotIntent.AI_CHAT)
+        self.assertEqual(routed.result.payload, {})
+        self.assertEqual(
+            routed.diagnostics.rejection_counts,
+            {RejectionCode.INVALID_TEMPORAL: 1},
+        )
+        self.assertEqual(
+            metrics.snapshot()["parser_errors"],
+            {"parser=calendar|code=invalid_temporal": 1},
+        )
+
+    def test_quote_parser_exception_is_bounded_one_for_one(self):
+        monitor = DummyMonitor()
+
+        def explode(_text):
+            raise RuntimeError("SECRET_TOKEN")
+
+        monitor.parse_quote_command = explode
+        metrics = NLUMetrics()
+        router = IntentRouter(
+            monitor, metrics=metrics, now_provider=lambda: NOW
+        )
+        utterance = normalize_utterance("sitat")
+        routed = router.evaluate_utterance(utterance, guild_id=123)
+        self.assertEqual(
+            routed.diagnostics.parser_errors,
+            ("parse_quote_command",),
+        )
+        self.assertEqual(
+            routed.diagnostics.rejection_counts,
+            {RejectionCode.PARSER_ERROR: 1},
+        )
+        self.assertEqual(
+            metrics.snapshot()["parser_errors"],
+            {"parser=quote|code=exception": 1},
+        )
+        context = CollectorContext(
+            utterance,
+            analyze_utterance(utterance),
+            None,
+            123,
+            None,
+            None,
+            NOW,
+        )
+        output = router._collect_poll_watchlist_quote_candidates(context)
+        diagnostics = [
+            rejection
+            for rejection in output.rejections
+            if rejection.code is RejectionCode.PARSER_ERROR
+        ]
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0].candidate.payload, {})
+        self.assertEqual(
+            diagnostics[0].candidate.reason,
+            "parser_error_diagnostic",
+        )
+        self.assertFalse(
+            any(
+                candidate.reason == "parser_error_diagnostic"
+                for candidate in output.candidates
+            )
+        )
+        self.assertNotIn("SECRET_TOKEN", repr(routed))
+        self.assertNotIn("RuntimeError", repr(routed))
+
+    def test_safe_parse_rejects_metric_family_mismatch(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+        with self.assertRaisesRegex(
+            ValueError, "invalid_parser_metric_family"
+        ):
+            router._safe_parse(
+                [], [], "parse_quote_command", "calendar", lambda: None
+            )
+
+    def test_read_command_examples_are_inert_in_all_masking_forms(self):
+        for inner in (
+            "vis watchlist",
+            "sitat",
+            "hvor lenge til jul",
+            "dagens ord",
+            "nordlys",
+            "skoleferie",
+        ):
+            for text in (
+                f'"{inner}"',
+                f"`{inner}`",
+                f"```text\n{inner}\n```",
+            ):
+                with self.subTest(text=text):
+                    self.assertEqual(
+                        self.route(text).intent, BotIntent.AI_CHAT
+                    )
+        for text in ('"polls"', "`polls`", "```text\npolls\n```"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.route(text, active_polls=True).intent,
+                    BotIntent.AI_CHAT,
+                )
+
+    def test_write_examples_are_inert_when_quoted_or_code_only(self):
+        for text in (
+            '`møte i morgen kl 14`',
+            "```text\nslett kalenderen\n```",
+            '"sett bosted Oslo"',
+        ):
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.AI_CHAT)
+                self.assertEqual(result.payload, {})
+
+    def test_live_quote_save_keeps_quoted_target_case(self):
+        result = self.route('lagre sitat "Carpe Diem"')
+        self.assertEqual(result.intent, BotIntent.QUOTE)
+        self.assertEqual(result.payload["quote"]["action"], "save")
+        self.assertEqual(result.payload["quote"]["text"], "Carpe Diem")
+
+    def test_quote_save_removes_only_the_leading_live_frame(self):
+        cases = {
+            'lagre sitat "Lagre dette, ikke slett sitatet"': (
+                "Lagre dette, ikke slett sitatet",
+                "no",
+            ),
+            "save this: Please save this quote for later": (
+                "Please save this quote for later",
+                "en",
+            ),
+            "husk dette: husk dette øyeblikket": (
+                "husk dette øyeblikket",
+                "no",
+            ),
+        }
+        for text, (expected_payload, expected_lang) in cases.items():
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.QUOTE)
+                self.assertEqual(
+                    result.payload["quote"]["text"], expected_payload
+                )
+                self.assertEqual(
+                    result.payload["quote"]["lang"], expected_lang
+                )
+
+    def test_resolved_quoted_calendar_target_is_safe_data(self):
+        result = self.route(
+            'slett møte "Møte med Ola"',
+            calendar_titles=["Møte med Ola"],
+        )
+        self.assertEqual(result.intent, BotIntent.CALENDAR_DELETE)
+        self.assertEqual(
+            result.payload,
+            {"calendar_target": {"target": "Møte med Ola"}},
+        )
+        self.assertTrue(result.requires_confirmation)
+        for text in (
+            'jeg skrev "slett møte Møte med Ola"',
+            'hva betyr "slett møte Møte med Ola"?',
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.route(
+                        text, calendar_titles=["Møte med Ola"]
+                    ).intent,
+                    BotIntent.AI_CHAT,
+                )
+
+    def test_complete_watchlist_routes_and_generic_frames(self):
+        positives = {
+            "husk å se Arrival": ("add", "Arrival"),
+            "hugs å sjå Arrival": ("add", "Arrival"),
+            "remember to watch The Bear": ("add", "The Bear"),
+            "add The Bear to watchlist": ("add", "The Bear"),
+            "fjern film 2": ("remove", None),
+            "remove show 2": ("remove", None),
+        }
+        for text, (action, title) in positives.items():
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.WATCHLIST)
+                self.assertEqual(result.payload["watchlist"]["action"], action)
+                if title:
+                    self.assertEqual(
+                        result.payload["watchlist"]["title"], title
+                    )
+        for text in (
+            "fjern på watchlist",
+            "endre i watchlist",
+            "remove 2",
+            "edit 2 to The Matrix",
+            '"husk å se Arrival"',
+            "ikke husk å se Arrival",
+            "jeg husket å se Arrival i går",
+            "jeg fjernet film 2 i går",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+    def test_norwegian_definite_watchlist_types_preserve_title_and_type(self):
+        cases = {
+            "legg til filmen Operation Cancel": ("Operation Cancel", "movie"),
+            "legg til serien This Is Us": ("This Is Us", "series"),
+        }
+        for text, (title, item_type) in cases.items():
+            with self.subTest(text=text):
+                parsed = parse_watchlist_command(text)
+                self.assertEqual(parsed["title"], title)
+                self.assertEqual(parsed["type"], item_type)
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.WATCHLIST)
+                self.assertEqual(result.payload["watchlist"]["title"], title)
+                self.assertEqual(
+                    result.payload["watchlist"]["type"], item_type
+                )
+
+    def test_reminder_ids_require_manager_shape_or_explicit_id_prefix(self):
+        positives = {
+            "slett påminnelse rem_123_abcdef": BotIntent.REMINDER_DELETE,
+            "slett påminnelse id custom_1": BotIntent.REMINDER_DELETE,
+            "endre påminnelse rem_123_abcdef tekst: Ring": BotIntent.REMINDER_EDIT,
+            "endre påminnelse id custom_1 tekst: Ring": BotIntent.REMINDER_EDIT,
+        }
+        for text, intent in positives.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, intent)
+        for text in (
+            "slett påminnelse tomorrow",
+            "slett påminnelse fredag",
+            "endre påminnelse tomorrow tekst: Ring",
+            "endre påminnelse fredag tekst: Ring",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+    def test_dashboard_conversation_scope_prefers_exact_channel_id(self):
+        monitor = DummyMonitor()
+        seen = []
+
+        def should_show_dashboard(content, conversation_id):
+            seen.append(conversation_id)
+            return True, "explicit_request"
+
+        monitor.conversation.should_show_dashboard = should_show_dashboard
+        router = IntentRouter(monitor, now_provider=lambda: NOW)
+
+        channel_result = router.route(
+            "vis dashboard",
+            guild_id=123,
+            channel_id=456,
+        )
+        legacy_result = router.route("vis dashboard", guild_id=123)
+
+        self.assertEqual(channel_result.intent, BotIntent.DASHBOARD)
+        self.assertEqual(legacy_result.intent, BotIntent.DASHBOARD)
+        self.assertEqual(seen, [456, 123])
+
+    def test_numeric_calendar_delete_boundaries_fail_closed(self):
+        for text in (
+            '"slett 2"',
+            "ikke slett 2",
+            "slett 0",
+            "slett -1",
+            "slett 2x",
+        ):
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.AI_CHAT)
+                self.assertEqual(result.payload, {})
+
+    def test_collectors_never_call_mutation_methods(self):
+        monitor = DummyMonitor(
+            active_polls=True,
+            calendar_titles=["Møte med Ola"],
+            active_reminders=True,
+        )
+
+        def mutation_called(*_args, **_kwargs):
+            raise AssertionError("collector_mutated_state")
+
+        monitor.calendar.add_item = mutation_called
+        monitor.calendar.edit_item = mutation_called
+        monitor.calendar.delete_item = mutation_called
+        monitor.reminders.add_reminder = mutation_called
+        monitor.reminders.edit_reminder = mutation_called
+        monitor.poll.create_poll = mutation_called
+        monitor.poll.delete_poll = mutation_called
+        router = IntentRouter(monitor, now_provider=lambda: NOW)
+        for text in (
+            "hjelp",
+            "påminn meg om å ringe legen i morgen",
+            "slett møte Møte med Ola",
+            "avstemning Pizza? Ja eller Nei",
+            "hugs å sjå Arrival",
+            "forkort https://example.com/a/b",
+        ):
+            with self.subTest(text=text):
+                router.evaluate_utterance(
+                    normalize_utterance(text), guild_id=123
+                )
+
+    def test_exact_memory_forget_frame_is_preserved_but_inert_in_examples(self):
+        for text, confirmed in (
+            ("glem meg", False),
+            ("glem meg bekreft", True),
+        ):
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.MEMORY_DELETE)
+                self.assertEqual(
+                    result.payload["memory"]["confirmed"], confirmed
+                )
+                self.assertTrue(result.requires_confirmation)
+        for text in (
+            '"glem meg"',
+            "ikke glem meg",
+            "jeg skrev glem meg",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+    def test_router_resolver_compatibility_smoke(self):
+        raw = self.route("møte 20.07.2026 13:30")
+        noon = self.route("møte 20.07.2026 noon")
+        self.assertEqual(raw.payload["calendar_item"]["time"], "13:30")
+        self.assertEqual(noon.payload["calendar_item"]["time"], "12:00")
+        for alias, offset in DATE_ALIASES.items():
+            with self.subTest(alias=alias):
+                result = self.route(f"møte {alias} kl 14")
+                self.assertEqual(result.intent, BotIntent.CALENDAR_ITEM)
+                self.assertEqual(
+                    result.payload["calendar_item"]["date"],
+                    (NOW.date() + timedelta(days=offset)).strftime(
+                        "%d.%m.%Y"
+                    ),
+                )
+
+    def test_labeled_watchlist_edit_keeps_complete_typed_fields(self):
+        result = self.route(
+            "endre watchlist 2 tittel: The Matrix type: film "
+            "sjanger: sci-fi kommentar: klassiker"
+        )
         self.assertEqual(result.intent, BotIntent.WATCHLIST)
-        self.assertEqual(result.payload["watchlist"]["action"], "remove")
+        self.assertEqual(
+            result.payload["watchlist"],
+            {
+                "action": "edit",
+                "index": 2,
+                "title": "The Matrix",
+                "type": "movie",
+                "genre": "sci-fi",
+                "comment": "klassiker",
+                "lang": "no",
+            },
+        )
+
+    def test_calendar_clear_never_absorbs_masked_target_data(self):
+        titles = ["Møte med Ola"]
+        positives = (
+            'slett kalender "Møte med Ola"',
+            "slett kalender «Møte med Ola»",
+            'kalender slett "Møte med Ola"',
+            'slett møte "Møte med Ola"',
+            'slett avtale "Møte med Ola"',
+            'slett påminnelse "Møte med Ola"',
+            'slett reminder "Møte med Ola"',
+            'slett event "Møte med Ola"',
+            "fullfør event «Møte med Ola»",
+        )
+        for text in positives:
+            with self.subTest(text=text):
+                result = self.route(text, calendar_titles=titles)
+                expected = (
+                    BotIntent.CALENDAR_COMPLETE
+                    if text.startswith("fullfør")
+                    else BotIntent.CALENDAR_DELETE
+                )
+                self.assertEqual(result.intent, expected)
+                self.assertEqual(
+                    result.payload,
+                    {"calendar_target": {"target": "Møte med Ola"}},
+                )
+                self.assertNotEqual(result.intent, BotIntent.CALENDAR_CLEAR)
+
+        for text, available in (
+            ('slett kalender "Møte med Ola"', titles * 2),
+            ("slett kalender `Møte med Ola`", titles),
+            ("slett kalender ```text\nMøte med Ola\n```", titles),
+            ('slett kalender "Ukjent møte"', titles),
+            ('slett arrangement "Møte med Ola"', titles),
+            ('slett meeting "Møte med Ola"', titles),
+        ):
+            with self.subTest(text=text):
+                result = self.route(text, calendar_titles=available)
+                self.assertEqual(result.intent, BotIntent.AI_CHAT)
+                self.assertNotEqual(result.intent, BotIntent.CALENDAR_CLEAR)
+
+        self.assertEqual(
+            self.route("slett kalender").intent,
+            BotIntent.CALENDAR_CLEAR,
+        )
+
+    def test_calendar_title_match_evidence_distinguishes_data_from_control(self):
+        monitor = DummyMonitor(calendar_titles=["Møte med Ola"])
+        router = IntentRouter(monitor, now_provider=lambda: NOW)
+
+        def collect(text):
+            utterance = normalize_utterance(text)
+            context = CollectorContext(
+                utterance,
+                analyze_utterance(utterance),
+                None,
+                123,
+                None,
+                None,
+                NOW,
+            )
+            return [
+                candidate
+                for candidate in router._collect_calendar_reminder_candidates(
+                    context
+                ).candidates
+                if candidate.reason == "calendar_delete_title_match"
+            ]
+
+        unquoted = collect("slett Møte med Ola")
+        quoted = collect('slett møte "Møte med Ola"')
+        self.assertEqual(unquoted[0].domain_terms, ("Møte med Ola",))
+        self.assertEqual(quoted[0].domain_terms, ("møte",))
+
+    def test_action_specific_parser_gates_ignore_inert_write_examples(self):
+        poll_examples = (
+            'vis poll "avstemning Pizza? Ja eller Nei"',
+            "vis poll `avstemning Pizza? Ja eller Nei`",
+            "vis poll ```text\navstemning Pizza? Ja eller Nei\n```",
+            "vis poll ```\navstemning Pizza? Ja eller Nei\n```",
+        )
+        for text in poll_examples:
+            with self.subTest(text=text):
+                result = self.route(text, active_polls=True)
+                self.assertNotEqual(result.intent, BotIntent.POLL_CREATE)
+
+        quote_examples = (
+            'vis sitat "lagre dette"',
+            "vis sitat `lagre dette`",
+            "vis sitat ```text\nlagre dette\n```",
+            "vis sitat ```\nlagre dette\n```",
+        )
+        for text in quote_examples:
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertFalse(
+                    result.intent is BotIntent.QUOTE
+                    and result.payload.get("quote", {}).get("action")
+                    == "save"
+                )
+
+    def test_poll_list_aliases_never_become_create_from_slash_data(self):
+        cases = (
+            'vis poll "Question / A / B"',
+            "poll list `Question / A / B`",
+            "avstemning liste ```text\nQuestion / A / B\n```",
+        )
+        for active_polls in (False, True):
+            for text in cases:
+                with self.subTest(active_polls=active_polls, text=text):
+                    monitor = DummyMonitor(active_polls=active_polls)
+                    monitor.parse_poll_command = lambda _text: {
+                        "question": "Question",
+                        "options": ["A", "B"],
+                    }
+                    result = self.route(text, monitor=monitor)
+                    self.assertNotEqual(result.intent, BotIntent.POLL_CREATE)
+                    self.assertEqual(
+                        result.intent,
+                        BotIntent.POLL_LIST
+                        if active_polls
+                        else BotIntent.AI_CHAT,
+                    )
+
+    def test_anchored_control_frames_preserve_direct_commands(self):
+        cases = {
+            "spiller Elden Ring": BotIntent.PROFILE,
+            "watching The Bear": BotIntent.PROFILE,
+            "kalender synkroniser": BotIntent.CALENDAR_SYNC,
+            "kalender auth AbC_12": BotIntent.CALENDAR_AUTH,
+            "kalenderkode AbC_12": BotIntent.CALENDAR_AUTH,
+            "sett min lokasjon til Oslo": BotIntent.SET_LOCATION,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, expected)
+        auth = self.route("kalender auth AbC_12")
+        self.assertEqual(auth.payload["auth_code"], "AbC_12")
+        compact_auth = self.route("kalenderkode AbC_12")
+        self.assertEqual(compact_auth.payload["auth_code"], "AbC_12")
+
+    def test_calendar_auth_rejects_cancellation_vocabulary_as_codes(self):
+        for text in (
+            "kalender auth cancel",
+            "kalender code nei",
+            "kalenderkode avbryt",
+            "gcal login stopp",
+            "gcal auth no",
+        ):
+            with self.subTest(text=text):
+                self.assertNotEqual(
+                    self.route(text).intent,
+                    BotIntent.CALENDAR_AUTH,
+                )
+
+    def test_watchlist_suggestion_compatibility_is_typed_and_scoped(self):
+        cases = {
+            "anbefaling film": "movie",
+            "anbefaling komedie film": "movie",
+            "recommend movie": "movie",
+            "Can you recommend a movie": "movie",
+            "recommend me a movie": "movie",
+            "filmforslag": "movie",
+            "serieforslag": "series",
+        }
+        for text, expected_type in cases.items():
+            with self.subTest(text=text):
+                direct = parse_watchlist_command(text)
+                self.assertEqual(direct["action"], "suggest")
+                self.assertEqual(direct["type"], expected_type)
+                routed = self.route(text)
+                self.assertEqual(routed.intent, BotIntent.WATCHLIST)
+                self.assertEqual(
+                    routed.payload["watchlist"]["type"], expected_type
+                )
+        for text in (
+            "anbefaling",
+            "recommend",
+            "I recommend a movie",
+            "recommend this",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_watchlist_command(text))
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+    def test_watchlist_temporal_ownership_uses_shared_resolver_and_clock(self):
+        resolver = TemporalResolver()
+        seen = []
+        monitor = DummyMonitor()
+
+        def recording_parser(content, **kwargs):
+            seen.append(kwargs)
+            return parse_watchlist_command(content, **kwargs)
+
+        monitor.parse_watchlist_command = recording_parser
+        router = IntentRouter(
+            monitor,
+            temporal_resolver=resolver,
+            now_provider=lambda: NOW,
+        )
+        cases = tuple(DATE_ALIASES) + ("i kveld", "20.07.2026")
+        for temporal in cases:
+            text = f"husk å se Arrival {temporal}"
+            with self.subTest(temporal=temporal):
+                self.assertIsNone(
+                    parse_watchlist_command(
+                        text,
+                        reference_time=NOW,
+                        temporal_resolver=resolver,
+                    )
+                )
+                self.assertEqual(
+                    router.route(text, guild_id=123).intent,
+                    BotIntent.REMINDER_CREATE,
+                )
+        self.assertTrue(seen)
+        self.assertTrue(
+            all(item["reference_time"] is NOW for item in seen)
+        )
+        self.assertTrue(
+            all(item["temporal_resolver"] is resolver for item in seen)
+        )
+
+    def test_polite_watchlist_add_preserves_title(self):
+        cases = (
+            "Kan du legge Arrival på watchlist?",
+            "Kan du legge til Arrival på watchlist?",
+            "Could you add Arrival to watchlist?",
+            "Please add Arrival to the watchlist",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                direct = parse_watchlist_command(text)
+                self.assertEqual(direct["title"], "Arrival")
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.WATCHLIST)
+                self.assertEqual(
+                    result.payload["watchlist"]["title"], "Arrival"
+                )
+
+    def test_watchlist_descriptions_and_non_media_tasks_are_not_adds(self):
+        descriptions = (
+            "jeg la Arrival på watchlist",
+            "Arrival er på watchlist",
+            "la være å legge Arrival på watchlist",
+            "I added Arrival to watchlist",
+            "ikke legg Arrival på watchlist",
+            "do not add Arrival to watchlist",
+            "legg til i watchlist",
+        )
+        for text in descriptions:
+            with self.subTest(text=text):
+                self.assertIsNone(parse_watchlist_command(text))
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+        reminder_tasks = (
+            "husk å se på saken i morgen",
+            "husk å se om døra er låst",
+            "husk å se til barna",
+            "remember to watch the kids tomorrow",
+            "husk å se Arrival i morgen",
+        )
+        for text in reminder_tasks:
+            with self.subTest(text=text):
+                self.assertIsNone(parse_watchlist_command(text))
+                self.assertEqual(
+                    self.route(text).intent,
+                    BotIntent.REMINDER_CREATE,
+                )
+
+    def test_inflected_calendar_edits_and_numeric_targets_route(self):
+        edit_cases = (
+            "Kan du endre møtet med Ola til fredag kl 10?",
+            "Kan du flytte møtet med Ola til fredag kl 10?",
+            "Endre avtalen med Ola til fredag kl 10",
+            "flytt eventet med Ola til fredag kl 10",
+            "Would you change meeting with Ola to Friday at 10?",
+        )
+        for text in edit_cases:
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
+                self.assertTrue(result.payload["calendar_edit"]["changes"])
+
+        targets = {
+            "slett møte 1": BotIntent.CALENDAR_DELETE,
+            "fullfør møte 1": BotIntent.CALENDAR_COMPLETE,
+            "delete event 1": BotIntent.CALENDAR_DELETE,
+            "complete meeting 1": BotIntent.CALENDAR_COMPLETE,
+        }
+        for text, expected in targets.items():
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, expected)
+                self.assertEqual(
+                    result.payload["calendar_target"], {"number": 1}
+                )
+
+    def test_polite_and_inflected_reminder_frames_route(self):
+        creates = (
+            "Kan du påminne meg om å ringe legen i morgen?",
+            "Kunne du minne meg om å ringe legen i morgen?",
+            "Vil du minne meg om å ringe legen i morgen?",
+            "Please remind me to call the doctor tomorrow",
+            "Could you remind me to call the doctor tomorrow?",
+            "Would you remind me to call the doctor tomorrow?",
+            "Kan du påminn meg om å ringe legen i morgen?",
+        )
+        for text in creates:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.route(text).intent,
+                    BotIntent.REMINDER_CREATE,
+                )
+
+        targets = {
+            "slett påminnelsen 1": BotIntent.REMINDER_DELETE,
+            "delete the reminder 1": BotIntent.REMINDER_DELETE,
+            "complete reminder number 1": BotIntent.REMINDER_COMPLETE,
+            "delete reminder #1": BotIntent.REMINDER_DELETE,
+        }
+        for text, expected in targets.items():
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, expected)
+                self.assertEqual(result.payload["reminder"]["number"], 1)
+
+    def test_positive_forget_reminder_frames_are_bounded_and_negation_safe(self):
+        creates = (
+            "ikke glem å kjøpe melk i morgen",
+            "ikkje gløym å kjøpe mjølk i morgon",
+            "don't forget to buy milk tomorrow",
+        )
+        for text in creates:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.route(text).intent,
+                    BotIntent.REMINDER_CREATE,
+                )
+        for text in (
+            "ikke glem å ikke kjøpe melk i morgen",
+            "don't forget not to buy milk tomorrow",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+    def test_reference_time_is_threaded_to_every_active_state_read(self):
+        poll_references = []
+        calendar_references = []
+        monitor = DummyMonitor()
+
+        def active_polls(_guild_id, *, reference_time):
+            poll_references.append(reference_time)
+            return [{"id": "poll1"}]
+
+        def upcoming(_guild_id, days=365, *, reference_time):
+            calendar_references.append(reference_time)
+            return [{"title": "Møte med Ola"}]
+
+        monitor.poll.get_active_polls = active_polls
+        monitor.calendar.get_upcoming = upcoming
+        router = IntentRouter(monitor, now_provider=lambda: NOW)
+
+        self.assertEqual(
+            router.route(
+                "vis poll", guild_id=123, reference_time=NOW
+            ).intent,
+            BotIntent.POLL_LIST,
+        )
+        self.assertEqual(
+            router.route(
+                "slett Møte med Ola",
+                guild_id=123,
+                reference_time=NOW,
+            ).intent,
+            BotIntent.CALENDAR_DELETE,
+        )
+        self.assertTrue(poll_references)
+        self.assertTrue(calendar_references)
+        self.assertTrue(
+            all(reference is NOW for reference in poll_references)
+        )
+        self.assertTrue(
+            all(reference is NOW for reference in calendar_references)
+        )
+
+    def test_capability_help_is_exact_not_generic_creation_help(self):
+        self.assertEqual(self.route("Kva kan du gjere?").intent, BotIntent.HELP)
+        for text in (
+            "ka kan du lage avstemning",
+            "hva kan du slette",
+            "what can you create tomorrow",
+        ):
+            with self.subTest(text=text):
+                self.assertNotEqual(self.route(text).intent, BotIntent.HELP)
 
 
 if __name__ == "__main__":
