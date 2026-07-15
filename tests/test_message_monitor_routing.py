@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from core.intent_router import BotIntent, IntentRouter
 from core.message_monitor import MessageMonitor
+from features.watchlist_manager import parse_watchlist_command
 
 
 class FakeRateLimiter:
@@ -132,14 +133,6 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         monitor.parse_poll_command = lambda content: None
         monitor.parse_vote = lambda content: int(content) if content.strip().isdigit() else None
-        def parse_watchlist_command(content):
-            lower = content.lower()
-            if "fjern watchlist" in lower or "slett watchlist" in lower or "fjern fra watchlist" in lower:
-                return {"action": "remove"}
-            if "endre watchlist" in lower or "rediger watchlist" in lower:
-                return {"action": "edit"}
-            return None
-
         monitor.parse_watchlist_command = parse_watchlist_command
         monitor.parse_quote_command = lambda content: None
         monitor.parse_price_command = lambda content: None
@@ -381,7 +374,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor.recording_polls.votes[0][1], 1)
         self.assertEqual(message.replies, [])
 
-    async def test_reminder_edit_routes_to_handler(self):
+    async def test_incomplete_reminder_edit_falls_back_without_handler(self):
         monitor = self.make_monitor()
         calls = []
 
@@ -393,7 +386,33 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
+        self.assertEqual(calls, [])
+        self.assertEqual(monitor.intent_stats[BotIntent.AI_CHAT.value]["count"], 1)
+        self.assertEqual(len(message.replies), 1)
+
+    async def test_complete_reminder_edit_routes_to_handler(self):
+        monitor = self.make_monitor()
+        calls = []
+
+        async def fake_handle_reminder_edit(message, payload):
+            calls.append((message.content, payload))
+
+        monitor.handlers["reminders"].handle_reminder_edit = fake_handle_reminder_edit
+        message = RecordingMessage(
+            "@inebotten endre påminnelse 1 tekst: Ring legen"
+        )
+
+        await monitor.handle_message(message)
+
         self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0][1]["reminder"],
+            {
+                "action": "edit",
+                "number": 1,
+                "changes": {"text": "Ring legen"},
+            },
+        )
         self.assertEqual(monitor.intent_stats[BotIntent.REMINDER_EDIT.value]["count"], 1)
 
     async def test_calendar_search_routes_to_handler(self):
@@ -502,7 +521,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(monitor.intent_stats[BotIntent.BIRTHDAY_EDIT.value]["count"], 1)
 
-    async def test_watchlist_remove_routes_to_handler(self):
+    async def test_incomplete_watchlist_remove_falls_back_without_handler(self):
         monitor = self.make_monitor()
         calls = []
 
@@ -514,9 +533,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1]["action"], "remove")
-        self.assertEqual(monitor.intent_stats[BotIntent.WATCHLIST.value]["count"], 1)
+        self.assertEqual(calls, [])
+        self.assertEqual(monitor.intent_stats[BotIntent.AI_CHAT.value]["count"], 1)
+        self.assertEqual(len(message.replies), 1)
 
     async def test_watchlist_remove_sends_returned_handler_response(self):
         monitor = self.make_monitor()
