@@ -26,7 +26,65 @@ except ModuleNotFoundError:
         ),
     )
 
-from features.watchlist_manager import WatchlistManager
+from features.watchlist_manager import WatchlistManager, parse_watchlist_command
+
+
+class WatchlistParserContractTests(unittest.TestCase):
+    def test_add_requires_a_bounded_watchlist_frame_and_preserves_case(self):
+        cases = (
+            ("husk å se Inception", "Inception"),
+            ("hugs å sjå Arrival", "Arrival"),
+            ("remember to watch The Bear", "The Bear"),
+            ("legg til film Inception", "Inception"),
+            ("add The Bear to watchlist", "The Bear"),
+        )
+        for text, title in cases:
+            with self.subTest(text=text):
+                parsed = parse_watchlist_command(text)
+                self.assertEqual(parsed["action"], "add")
+                self.assertEqual(parsed["title"], title)
+
+    def test_generic_and_cross_language_frames_are_inert(self):
+        for text in (
+            "legg til melk",
+            "fjern nummer 2",
+            "endre tittel",
+            "se her",
+            "add to watchlist",
+            "legg til i watchlist",
+            "fjern på watchlist",
+            "endre i watchlist",
+            "add movie Inception",
+            "legg til show The Bear",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_watchlist_command(text))
+
+    def test_mutations_return_complete_typed_fields(self):
+        self.assertEqual(
+            parse_watchlist_command("fjern film 2"),
+            {
+                "action": "remove",
+                "index": 2,
+                "type": "movie",
+                "lang": "no",
+            },
+        )
+        self.assertEqual(
+            parse_watchlist_command(
+                "endre watchlist 2 tittel: The Matrix type: film "
+                "sjanger: sci-fi kommentar: klassiker"
+            ),
+            {
+                "action": "edit",
+                "index": 2,
+                "title": "The Matrix",
+                "type": "movie",
+                "genre": "sci-fi",
+                "comment": "klassiker",
+                "lang": "no",
+            },
+        )
 
 
 class WatchlistScopeTests(unittest.TestCase):
