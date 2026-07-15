@@ -5,7 +5,7 @@ Connects to LM Studio on Windows host from WSL for AI responses
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 import logging
 import math
@@ -17,6 +17,7 @@ import time
 from datetime import datetime, date
 from urllib.parse import unquote, urlparse, parse_qs
 
+from ai.chat_contract import ChatContractError, ChatTurn, prepare_history
 from ai.response_cleaner import MAX_CLEANER_INPUT_BYTES
 
 # Configure logging
@@ -132,6 +133,30 @@ def build_untrusted_context_data(
     return serialize(context_prompt[:low])
 
 
+def parse_bridge_history(raw: object) -> tuple[ChatTurn, ...]:
+    """Validate untrusted bridge history before provider construction."""
+
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or len(raw) > 50:
+        raise ChatContractError("invalid_history")
+
+    turns: list[ChatTurn] = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"role", "content"}:
+            raise ChatContractError("invalid_history_turn")
+        role = item["role"]
+        content = item["content"]
+        if not isinstance(role, str) or role not in {"user", "assistant"}:
+            raise ChatContractError("invalid_history_role")
+        if not isinstance(content, str):
+            raise ChatContractError("invalid_history_content")
+        if len(content) > 8_000:
+            raise ChatContractError("history_turn_too_large")
+        turns.append(ChatTurn(role, content))
+    return prepare_history(turns)
+
+
 def build_bridge_request(
     *,
     message_content: str,
@@ -141,6 +166,7 @@ def build_bridge_request(
     model: str,
     model_config: Mapping[str, object],
     context_prompt: str = "",
+    history: Sequence[ChatTurn] = (),
 ) -> dict[str, object]:
     """Build one strict LM Studio request without reading clocks or I/O."""
 
@@ -194,6 +220,7 @@ def build_bridge_request(
         maximum=2.0,
     )
 
+    prepared_history = prepare_history(history)
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt}
     ]
@@ -204,6 +231,10 @@ def build_bridge_request(
                 "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt}",
             }
         )
+    messages.extend(
+        {"role": turn.role, "content": turn.content}
+        for turn in prepared_history
+    )
     messages.append({"role": "user", "content": message_content})
     request: dict[str, object] = {
         "model": model,
@@ -487,6 +518,7 @@ class HermesBridgeServer:
         temperature=None,
         max_tokens=None,
         context_prompt="",
+        history: Sequence[ChatTurn] = (),
     ):
         """Generate one raw visible response through the strict bridge contract."""
 
@@ -531,8 +563,9 @@ class HermesBridgeServer:
                 model=LM_STUDIO_MODEL,
                 model_config=config,
                 context_prompt=context_data,
+                history=history,
             )
-        except BridgeContractError as exc:
+        except (BridgeContractError, ChatContractError) as exc:
             logger.warning(
                 "bridge_request_rejected code=%s model=%s",
                 exc.code,
@@ -727,6 +760,7 @@ class HermesBridgeServer:
             "temperature",
             "max_tokens",
             "context_prompt",
+            "history",
         }
         if not set(payload).issubset(allowed_keys):
             await self._send_response(
@@ -741,10 +775,15 @@ class HermesBridgeServer:
         temperature = payload.get("temperature")
         max_tokens = payload.get("max_tokens")
         context_prompt = payload.get("context_prompt", "")
+        raw_history = payload.get("history", [])
         timestamp = payload.get("timestamp")
         is_mention = payload.get("is_mention", True)
 
-        if not isinstance(message, str) or not message:
+        if (
+            not isinstance(message, str)
+            or not message
+            or len(message) > 8_000
+        ):
             await self._send_response(
                 writer, 400, {"error": "invalid_message"}
             )
@@ -765,7 +804,10 @@ class HermesBridgeServer:
                 writer, 400, {"error": "invalid_channel_type"}
             )
             return
-        if system_prompt is not None and not isinstance(system_prompt, str):
+        if system_prompt is not None and (
+            not isinstance(system_prompt, str)
+            or len(system_prompt) > 64_000
+        ):
             await self._send_response(
                 writer, 400, {"error": "invalid_system_prompt"}
             )
@@ -812,7 +854,8 @@ class HermesBridgeServer:
                 channel_type=channel_type,
                 context_prompt=context_prompt,
             )
-        except BridgeContractError as exc:
+            history = parse_bridge_history(raw_history)
+        except (BridgeContractError, ChatContractError) as exc:
             await self._send_response(
                 writer, 400, {"error": exc.code}
             )
@@ -842,6 +885,7 @@ class HermesBridgeServer:
                 selected_temperature,
                 selected_max_tokens,
                 context_prompt,
+                history,
             )
 
         if response_text is None:

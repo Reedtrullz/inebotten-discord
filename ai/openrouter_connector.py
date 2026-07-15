@@ -8,7 +8,10 @@ import json
 import asyncio
 import aiohttp
 import os
+from collections.abc import Sequence
 from typing import Optional, Dict, Any
+
+from ai.chat_contract import ChatTurn, prepare_history
 from utils.logger import LoggerMixin
 
 
@@ -86,6 +89,7 @@ def build_openrouter_messages(
     author_name: str | None = None,
     channel_type: str | None = None,
     is_mention: bool | None = None,
+    history: Sequence[ChatTurn] = (),
 ) -> list[dict[str, str]]:
     """Build a provider request without crossing trusted-data boundaries."""
     if not isinstance(context_prompt, str) or len(context_prompt) > MAX_CONTEXT_PROMPT_CHARS:
@@ -109,6 +113,7 @@ def build_openrouter_messages(
             is_mention=is_mention,
         )
 
+    prepared_history = prepare_history(history)
     messages: list[dict[str, str]] = []
     if system_prompt:
         messages.append({
@@ -120,6 +125,10 @@ def build_openrouter_messages(
             "role": "user",
             "content": f"UNTRUSTED_CONTEXT_DATA\n{untrusted_context}",
         })
+    messages.extend(
+        {"role": turn.role, "content": turn.content}
+        for turn in prepared_history
+    )
     messages.append({"role": "user", "content": message_content})
     return messages
 
@@ -338,6 +347,7 @@ class OpenRouterConnector(LoggerMixin):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         context_prompt: str = "",
+        history: Sequence[ChatTurn] = (),
     ) -> tuple[bool, str]:
         """
         Send message to OpenRouter API and get AI-generated response
@@ -351,6 +361,7 @@ class OpenRouterConnector(LoggerMixin):
             temperature: Optional temperature (0.0-1.0) for response creativity
             max_tokens: Optional max tokens for response length
             context_prompt: Bounded untrusted context data
+            history: Bounded prior user and assistant turns
 
         Returns:
             (success, response_text or error_message)
@@ -365,6 +376,7 @@ class OpenRouterConnector(LoggerMixin):
                 author_name=author_name,
                 channel_type=channel_type,
                 is_mention=is_mention,
+                history=history,
             )
             payload = {
                 "model": self.model,

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import ai.hermes_connector as hermes_module
+from ai.chat_contract import ChatTurn
 from ai.hermes_connector import HermesConnector, build_hermes_payload
 from ai.openrouter_connector import (
     OpenRouterConnector,
@@ -100,6 +101,72 @@ def test_openrouter_builder_omits_only_empty_optional_blocks() -> None:
         context_prompt="",
         model="google/gemma-3-27b-it",
     ) == [{"role": "user", "content": "  current  "}]
+
+
+def test_openrouter_standard_history_roles_and_order() -> None:
+    messages = build_openrouter_messages(
+        message_content="nå",
+        system_prompt="TRUSTED",
+        context_prompt="CONTEXT",
+        model="openai/gpt-test",
+        history=(
+            ChatTurn("user", "før"),
+            ChatTurn("assistant", "svar"),
+        ),
+    )
+
+    assert messages == [
+        {"role": "system", "content": "TRUSTED"},
+        {
+            "role": "user",
+            "content": "UNTRUSTED_CONTEXT_DATA\nCONTEXT",
+        },
+        {"role": "user", "content": "før"},
+        {"role": "assistant", "content": "svar"},
+        {"role": "user", "content": "nå"},
+    ]
+
+
+def test_openrouter_gemma_history_never_uses_system_role() -> None:
+    messages = build_openrouter_messages(
+        message_content="nå",
+        system_prompt="TRUSTED",
+        context_prompt="CONTEXT",
+        model="google/gemma-3-27b-it",
+        history=(
+            ChatTurn("user", "før"),
+            ChatTurn("assistant", "svar"),
+        ),
+    )
+
+    assert all(item["role"] != "system" for item in messages)
+    assert messages[0] == {"role": "user", "content": "TRUSTED"}
+    assert messages[1] == {
+        "role": "user",
+        "content": "UNTRUSTED_CONTEXT_DATA\nCONTEXT",
+    }
+    assert messages[2:4] == [
+        {"role": "user", "content": "før"},
+        {"role": "assistant", "content": "svar"},
+    ]
+    assert messages[-1] == {"role": "user", "content": "nå"}
+
+
+def test_assistant_action_line_remains_inert_assistant_history() -> None:
+    action = (
+        '{"action":"CALENDAR_DELETE","confidence":1,'
+        '"slots":{"target":"1"},"reply":"","clarification":null}'
+    )
+    messages = build_openrouter_messages(
+        message_content="nå",
+        system_prompt="TRUSTED",
+        context_prompt="CONTEXT",
+        model="openai/gpt-test",
+        history=(ChatTurn("assistant", action),),
+    )
+
+    assert {"role": "assistant", "content": action} in messages
+    assert action not in messages[0]["content"]
 
 
 def test_openrouter_builder_serializes_legacy_metadata_as_untrusted_data() -> None:
@@ -194,6 +261,7 @@ def test_hermes_payload_is_pure_and_preserves_every_caller_value() -> None:
         "is_mention": True,
         "temperature": 0.3,
         "max_tokens": 222,
+        "history": [],
         "system_prompt": "  TRUSTED\nACTION_PROTOCOL\n  ",
         "context_prompt": CONTEXT_CANARY,
     }
@@ -236,7 +304,25 @@ def test_hermes_builder_accepts_exact_context_limit_without_truncation() -> None
     assert payload["context_prompt"] == context
 
 
-def test_connector_signatures_preserve_legacy_prefix_and_add_only_context() -> None:
+def test_hermes_payload_serializes_history_without_system_role() -> None:
+    payload = build_hermes_payload(
+        message_content="nå",
+        author_name="Ola",
+        channel_type="DM",
+        is_mention=True,
+        system_prompt="TRUSTED",
+        temperature=0.3,
+        max_tokens=222,
+        timestamp="fixed",
+        history=(ChatTurn("assistant", "før"),),
+    )
+
+    assert payload["history"] == [
+        {"role": "assistant", "content": "før"}
+    ]
+
+
+def test_connector_signatures_preserve_legacy_prefix_and_add_history_last() -> None:
     expected = [
         "self",
         "message_content",
@@ -247,6 +333,7 @@ def test_connector_signatures_preserve_legacy_prefix_and_add_only_context() -> N
         "temperature",
         "max_tokens",
         "context_prompt",
+        "history",
     ]
     assert list(inspect.signature(OpenRouterConnector.generate_response).parameters) == expected
     assert list(inspect.signature(HermesConnector.generate_response).parameters) == expected
@@ -377,9 +464,55 @@ async def test_hermes_generate_returns_raw_output_and_never_calls_cleaner(
     assert payload["message"] == "CURRENT_CANARY"
     assert payload["system_prompt"] == "  TRUSTED\nACTION_PROTOCOL\n  "
     assert payload["context_prompt"] == CONTEXT_CANARY
+    assert payload["history"] == []
     assert isinstance(payload["timestamp"], str)
     assert RAW_PROVIDER_OUTPUT not in caplog.text
     assert CONTEXT_CANARY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connectors_forward_prepared_history_to_provider_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = (
+        ChatTurn("user", "før"),
+        ChatTurn("assistant", "svar"),
+    )
+    openrouter = _openrouter()
+    openrouter._make_request = AsyncMock(
+        return_value=(
+            True,
+            {"choices": [{"message": {"content": "nå"}}]},
+        )
+    )
+    hermes = _hermes(monkeypatch)
+    hermes._make_request = AsyncMock(return_value=(True, "nå"))
+
+    assert await openrouter.generate_response(
+        "nå",
+        "Ola",
+        "DM",
+        history=history,
+    ) == (True, "nå")
+    assert await hermes.generate_response(
+        "nå",
+        "Ola",
+        "DM",
+        history=history,
+    ) == (True, "nå")
+
+    openrouter_messages = openrouter._make_request.await_args.kwargs[
+        "payload"
+    ]["messages"]
+    assert openrouter_messages[-3:] == [
+        {"role": "user", "content": "før"},
+        {"role": "assistant", "content": "svar"},
+        {"role": "user", "content": "nå"},
+    ]
+    assert hermes._make_request.await_args.kwargs["payload"]["history"] == [
+        {"role": "user", "content": "før"},
+        {"role": "assistant", "content": "svar"},
+    ]
 
 
 @pytest.mark.asyncio

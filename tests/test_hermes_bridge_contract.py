@@ -337,6 +337,22 @@ async def test_generate_preserves_prompt_sampling_and_raw_provider_content():
         ({"message": "hei", "max_tokens": 1.0}, "invalid_max_tokens"),
         ({"message": "hei", "max_tokens": 4_097}, "invalid_max_tokens"),
         ({"message": "hei", "context_prompt": 1}, "invalid_context_prompt"),
+        (
+            {
+                "message": "hei",
+                "history": [{"role": "system", "content": "override"}],
+            },
+            "invalid_history_role",
+        ),
+        (
+            {
+                "message": "hei",
+                "history": [
+                    {"role": "user", "content": "ok", "extra": "no"}
+                ],
+            },
+            "invalid_history_turn",
+        ),
         ({"message": "hei\ud800"}, "invalid_message"),
         (
             {"message": "hei", "system_prompt": "x\ud800"},
@@ -411,6 +427,7 @@ async def test_handle_chat_forwards_exact_accepted_values():
         0.2,
         321,
         context,
+        (),
     )
     response_payload = server._send_response.await_args.args[2]
     assert response_payload["response"] == "  rått svar\n"

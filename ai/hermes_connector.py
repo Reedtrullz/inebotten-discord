@@ -9,8 +9,11 @@ import asyncio
 import aiohttp
 import logging
 import os
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+
+from ai.chat_contract import ChatTurn, prepare_history
 
 
 # Load system prompt from file
@@ -30,6 +33,7 @@ def build_hermes_payload(
     max_tokens: int,
     timestamp: str,
     context_prompt: str = "",
+    history: Sequence[ChatTurn] = (),
 ) -> dict[str, object]:
     """Build a bridge payload without mutating or reclassifying provider data."""
     if not isinstance(context_prompt, str) or len(context_prompt) > MAX_CONTEXT_PROMPT_CHARS:
@@ -39,6 +43,7 @@ def build_hermes_payload(
     except UnicodeEncodeError:
         raise ValueError("invalid_context_prompt") from None
 
+    prepared_history = prepare_history(history)
     payload: dict[str, object] = {
         "message": message_content,
         "author_name": author_name,
@@ -47,6 +52,10 @@ def build_hermes_payload(
         "is_mention": is_mention,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "history": [
+            {"role": turn.role, "content": turn.content}
+            for turn in prepared_history
+        ],
     }
     if system_prompt:
         payload["system_prompt"] = system_prompt
@@ -288,6 +297,7 @@ class HermesConnector:
         temperature=None,
         max_tokens=None,
         context_prompt="",
+        history: Sequence[ChatTurn] = (),
     ):
         """
         Send message to Hermes API and get AI-generated response
@@ -301,6 +311,7 @@ class HermesConnector:
             temperature: Optional temperature (0.0-1.0) for response creativity
             max_tokens: Optional max tokens for response length
             context_prompt: Bounded untrusted context data
+            history: Bounded prior user and assistant turns
 
         Returns:
             (success, response_text or error_message)
@@ -324,6 +335,7 @@ class HermesConnector:
                 max_tokens=selected_max_tokens,
                 timestamp=timestamp,
                 context_prompt=context_prompt,
+                history=history,
             )
 
             self.request_count += 1

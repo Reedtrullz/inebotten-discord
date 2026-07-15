@@ -9899,7 +9899,7 @@ rules. Any older snippet below that uses `float()`/`int()` coercion, reads a
 clock inside a pure builder, slices serialized JSON/context, or names the
 superseded `tests/test_provider_prompt_contract.py` is non-authoritative.
 
-- [ ] **Step 1: Write failing provider order, bridge rejection, and inert-history tests (5 minutes)**
+- [x] **Step 1: Write failing provider order, bridge rejection, and inert-history tests (5 minutes)**
 
 Create tests/test_bridge_history.py:
 
@@ -10046,7 +10046,7 @@ Run:
 
 Expected: FAIL because connectors/bridge do not accept history.
 
-- [ ] **Step 2: Extend OpenRouter serialization with prepared history (5 minutes)**
+- [x] **Step 2: Extend OpenRouter serialization with prepared history (5 minutes)**
 
 Change build_openrouter_messages():
 
@@ -10107,7 +10107,7 @@ Run:
 
 Expected: PASS for both standard and Gemma transports.
 
-- [ ] **Step 3: Extend Hermes connector payloads (5 minutes)**
+- [x] **Step 3: Extend Hermes connector payloads (5 minutes)**
 
 Change build_hermes_payload():
 
@@ -10156,7 +10156,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 4: Validate bridge history before constructing provider messages (5 minutes)**
+- [x] **Step 4: Validate bridge history before constructing provider messages (5 minutes)**
 
 In ai/hermes_bridge_server.py import ChatContractError, ChatTurn, and prepare_history, then add:
 
@@ -10291,7 +10291,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Prove protocol lines remain history, never instructions or execution (5 minutes)**
+- [x] **Step 5: Prove protocol lines remain history, never instructions or execution (5 minutes)**
 
 Add:
 
@@ -10331,7 +10331,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Run provider/context regression slice and commit (5 minutes)**
+- [x] **Step 6: Run provider/context regression slice and commit (5 minutes)**
 
 ~~~bash
 .venv312/bin/python -m pytest \
