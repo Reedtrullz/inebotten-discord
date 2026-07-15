@@ -15,7 +15,12 @@
 - The AI may propose an action; it may not call managers, feature handlers, Discord send methods, or persistence.
 - Normalize each authorized inbound utterance once. Pass the same NormalizedUtterance through the router, AI request, ActionBridge, and pending-correction flow.
 - Explicit deterministic read-only routes execute immediately. Explicit deterministic additive routes retain Task-5 behavior. Semantic additive or mutating routes require confirmation. Every destructive route requires confirmation.
-- A semantic destructive proposal also requires explicit action evidence and explicit domain evidence outside quotes; vague cleanup language cannot stage a deletion.
+- Every semantic write requires explicit live action evidence outside quoted,
+  code, and other inert text. A semantic destructive proposal additionally
+  requires explicit live domain evidence; vague cleanup language cannot stage
+  a deletion.
+- `UtteranceSemantics.allows_mutation` is an independent defense-in-depth gate
+  for every semantic write, even after the shared arbiter accepts a candidate.
 - A negated, quoted-only, hypothetical, meta-discussed, or information-question mutation must never be staged or dispatched.
 - Keep CONFIDENCE_THRESHOLDS enforcement in MessageMonitor. A route below threshold is never staged.
 - A pending route stores validated Task-6 payloads, never raw model JSON or raw Discord content.
@@ -1730,6 +1735,8 @@ Expected: one commit containing no monitor or provider behavior.
 - Create: tests/test_action_bridge.py
 - Create: tests/nlu_test_support.py
 - Create: tests/test_nlu_test_support.py
+- Modify: core/utterance_semantics.py
+- Modify: tests/test_utterance_semantics.py
 - Modify: tests/conftest.py
 
 **Interfaces:**
@@ -1738,7 +1745,7 @@ Expected: one commit containing no monitor or provider behavior.
 - Produces: one arbitrated IntentResult or None.
 - Never calls: MessageMonitor._handle_intent(), feature handlers, managers, send(), reply(), or persistence.
 
-**Task-2 review amendment (2026-07-15):** `proposal_for()` accepts and forwards `clarification`; exhaustive write rows use utterances containing live action/domain evidence rather than the neutral default. Exact payload assertions are post-`validate_intent_payload()` canonical payloads, so reminder `due_at` may project Oslo date/time/timezone. Poll vote always injects the sole active `poll_id`; poll edit/delete/close inject it when target is omitted and reject zero/multiple-active-poll context. Explicit poll targets remain explicit. Tests pin `_ACTION_EVIDENCE` and `_DOMAIN_EVIDENCE` coverage, every false `semantics.allows_mutation` state, and the bounded bridge-only temporal error codes.
+**Task-2 review amendment (2026-07-15):** this amendment is authoritative over the older illustrative snippets in this task. `proposal_for()` accepts and forwards `clarification`; exhaustive write rows use utterances containing live action evidence rather than the neutral default, and destructive rows also contain live domain evidence. Exact payload assertions are post-`validate_intent_payload()` canonical payloads, so reminder `due_at` may project Oslo date/time/timezone. Poll vote always injects the sole active `poll_id`; poll edit/delete/close inject it when target is omitted and reject zero/multiple-active-poll context. The count is an actual non-boolean `int`, never a float or numeric string. Explicit poll targets remain explicit. Tests pin `_ACTION_EVIDENCE` and `_DOMAIN_EVIDENCE` coverage, every false `semantics.allows_mutation` state, and the bounded bridge-only temporal error codes. Natural-language evidence matching is finite and per lemma: it may use explicitly enumerated noun forms and start-anchored request/assignment frames, but never a shared suffix rule or generic prefix stemming (`poll` must not match `pollen`, `show` must not match `shower`, and `film` must not match `filmet`). Domain-only descriptions and historical reports never authorize writes. `husk å se om/hvordan/at/til ...` and finite child-watching variants are explicitly distinct from `husk å se <media>` unless a separate live add verb is present. Norwegian `kan du si/seie hvordan/korleis ...` mutation questions are information requests and cannot stage writes.
 
 Before writing the bridge tests, create one shared offline test-support surface; later tasks extend this same file rather than copying helpers between test modules. `tests/nlu_test_support.py` exports exactly:
 
@@ -2583,6 +2590,22 @@ class ActionBridge:
                 self.metrics.record_rejection(rejection.code)
         if decision.blocked or decision.selected is None:
             return None
+        if risk is not IntentRisk.READ_ONLY and not action_terms:
+            if self.metrics is not None:
+                self.metrics.record_rejection(
+                    RejectionCode.MISSING_ACTION_EVIDENCE
+                )
+            return None
+        if risk is IntentRisk.DESTRUCTIVE and not domain_terms:
+            if self.metrics is not None:
+                self.metrics.record_rejection(
+                    RejectionCode.MISSING_DOMAIN_EVIDENCE
+                )
+            return None
+        if risk is not IntentRisk.READ_ONLY and not semantics.allows_mutation:
+            if self.metrics is not None:
+                self.metrics.record_rejection(RejectionCode.UNSAFE_SEMANTIC)
+            return None
         semantic_result = decision.selected.to_result()
         deterministic = context.deterministic_route
         if deterministic is None or deterministic.intent is BotIntent.AI_CHAT:
@@ -2613,7 +2636,7 @@ class ActionBridge:
         )
 ~~~
 
-The evidence tuples contain only spans actually present outside quoted/code text in `NormalizedUtterance.control_text`; never derive evidence from English enum names or model slots. The routing-foundation arbiter remains authoritative. Every semantic write requires at least one live action/domain evidence phrase and `semantics.allows_mutation=true`; destructive proposals still require both categories. Negated, quoted-only, code-only, meta, hypothetical, and information-question mutations remain hard-blocked for every write risk. `semantic_action_allowed` is true only for ordinary AI chat and a deterministic candidate that already fell below its confidence threshold; it is false for accepted SEARCH/provider prose and every accepted deterministic route. The flag is checked before CLARIFY or any non-NONE model proposal. A model proposal that rescues a low-confidence candidate re-enters normal schema validation, arbitration, risk classification, thresholding, and confirmation—it never inherits authorization from the failed candidate. A below-threshold deterministic route permits a semantic confidence rescue only when intent and canonical validated payload are equal. Different intent or any material payload/target change returns the fixed typed CLARIFY choice above; it never silently replaces or stages the model route. The two routes and target guards are frozen before presentation. A later authorized `ACTION_SELECT` marks exactly the selected frozen route as `selected_interpretation=True`; this bypasses only the confidence-rescue gate and never calls the model again. Every selected non-read-only route is forced through confirmation with that same frozen guard, even if the original deterministic candidate did not require confirmation. Selection never raises confidence globally, changes payload/source, or re-resolves a target.
+The evidence tuples contain only spans actually present outside quoted/code text in `NormalizedUtterance.control_text`; never derive evidence from English enum names or model slots. The routing-foundation arbiter remains authoritative. Every semantic write requires at least one live action-evidence phrase and `semantics.allows_mutation=true`; destructive proposals additionally require at least one live domain-evidence phrase. The bridge rechecks both requirements independently after arbitration. Negated, quoted-only, code-only, meta, hypothetical, and information-question mutations remain hard-blocked for every write risk. Evidence morphology is allowlist-only and returns the actual live token span so the shared arbiter can verify it; no generic stem or prefix match is permitted. `semantic_action_allowed` is true only for ordinary AI chat and a deterministic candidate that already fell below its confidence threshold; it is false for accepted SEARCH/provider prose and every accepted deterministic route. The flag is checked before CLARIFY or any non-NONE model proposal. A model proposal that rescues a low-confidence candidate re-enters normal schema validation, arbitration, risk classification, thresholding, and confirmation—it never inherits authorization from the failed candidate. A below-threshold deterministic route permits a semantic confidence rescue only when intent and canonical validated payload are equal. Different intent or any material payload/target change returns the fixed typed CLARIFY choice above; it never silently replaces or stages the model route. The two routes and target guards are frozen before presentation. A later authorized `ACTION_SELECT` marks exactly the selected frozen route as `selected_interpretation=True`; this bypasses only the confidence-rescue gate and never calls the model again. Every selected non-read-only route is forced through confirmation with that same frozen guard, even if the original deterministic candidate did not require confirmation. Selection never raises confidence globally, changes payload/source, or re-resolves a target.
 
 Add tests for the evidence rule:
 
@@ -2891,7 +2914,9 @@ Expected: PASS.
 ~~~bash
 git add core/action_bridge.py tests/nlu_test_support.py \
   tests/test_nlu_test_support.py tests/conftest.py \
-  tests/test_action_bridge.py
+  tests/test_action_bridge.py core/utterance_semantics.py \
+  tests/test_utterance_semantics.py \
+  docs/superpowers/plans/2026-07-14-model-actions-pending-context.md
 git commit -m "feat: bridge validated model proposals to intents"
 ~~~
 

@@ -62,7 +62,8 @@ INFORMATION_MUTATION_PATTERNS = (
     ),
     re.compile(
         r"^(?:kan\s+du|kunne\s+du|could\s+you|would\s+you)\s+"
-        r"(?:forklare|vise|fortelle|explain|show|tell)\b.*"
+        r"(?:forklare|vise|fortelle|fortelje|si|seie|"
+        r"explain|show|tell)\b.*"
         r"\b(?:hvordan|korleis|how)\b"
     ),
 )

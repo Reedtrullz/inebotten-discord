@@ -53,12 +53,42 @@ except ModuleNotFoundError:
             self.args = args
             self.kwargs = kwargs
 
+    class _FakeObject:
+        def __init__(self, id: object, *, type: object | None = None):
+            self.id = int(id)
+            self.type = type or _FakeObject
+
+    class _FakeAllowedMentions:
+        def __init__(
+            self,
+            *,
+            users: bool,
+            roles: bool,
+            everyone: bool,
+            replied_user: bool,
+        ):
+            self.users = users
+            self.roles = roles
+            self.everyone = everyone
+            self.replied_user = replied_user
+
+        @classmethod
+        def none(cls):
+            return cls(
+                users=False,
+                roles=False,
+                everyone=False,
+                replied_user=False,
+            )
+
     discord_stub = ModuleType("discord")
     setattr(discord_stub, "Client", _FakeDiscordClient)
     setattr(discord_stub, "DMChannel", type("DMChannel", (), {}))
     setattr(discord_stub, "GroupChannel", type("GroupChannel", (), {}))
     setattr(discord_stub, "TextChannel", type("TextChannel", (), {}))
     setattr(discord_stub, "Message", type("Message", (), {}))
+    setattr(discord_stub, "Object", _FakeObject)
+    setattr(discord_stub, "AllowedMentions", _FakeAllowedMentions)
     setattr(
         discord_stub,
         "Status",
@@ -90,6 +120,51 @@ except ModuleNotFoundError:
         ),
     )
     sys.modules["discord"] = discord_stub
+
+
+# This support module imports Discord value types, so load it only after the
+# optional-dependency fallback above has installed its collection-time surface.
+from tests.nlu_test_support import (  # noqa: E402
+    FIXED_NOW,
+    OfflineMessageFactory,
+    routing_context as make_routing_context,
+)
+
+
+@pytest.fixture
+def fixed_now():
+    """Return the single captured Oslo reference used by NLU tests."""
+
+    return FIXED_NOW
+
+
+@pytest.fixture
+def routing_context():
+    """Return a fresh deterministic routing context."""
+
+    return make_routing_context()
+
+
+@pytest.fixture
+def offline_message_factory() -> OfflineMessageFactory:
+    """Return one socket-free factory shared by message helper fixtures."""
+
+    return OfflineMessageFactory()
+
+
+@pytest.fixture
+def mentioned_message(offline_message_factory: OfflineMessageFactory):
+    return offline_message_factory.mentioned_message
+
+
+@pytest.fixture
+def untagged_message(offline_message_factory: OfflineMessageFactory):
+    return offline_message_factory.untagged_message
+
+
+@pytest.fixture
+def message(mentioned_message):
+    return mentioned_message("test")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

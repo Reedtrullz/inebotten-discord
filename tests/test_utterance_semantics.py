@@ -199,6 +199,8 @@ def test_payload_words_and_distant_negation_are_not_cancellation(text):
         "Kan man slette kalenderen?",
         "Er det mulig å slette kalenderen?",
         "Kan du forklare hvordan jeg sletter kalenderen?",
+        "Kan du si hvordan jeg kan flytte møtet?",
+        "Kan du seie korleis eg kan flytte møtet?",
         "Could you explain how to delete a reminder?",
         "Why did you delete the calendar?",
         "Is it possible to delete the calendar?",
