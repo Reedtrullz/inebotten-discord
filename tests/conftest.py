@@ -12,6 +12,7 @@ import asyncio
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Generator
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -165,6 +166,35 @@ def untagged_message(offline_message_factory: OfflineMessageFactory):
 @pytest.fixture
 def message(mentioned_message):
     return mentioned_message("test")
+
+
+@pytest.fixture
+def action_handler():
+    """Return a socket-free action orchestrator with one shared metric sink."""
+
+    from cal_system.temporal_resolver import TemporalResolver
+    from core.dispatch_result import DispatchOutcome
+    from core.nlu_metrics import NLUMetrics
+    from core.pending_actions import PendingActionStore
+    from features.ai_action_handler import AIActionHandler
+
+    metrics = NLUMetrics()
+    store = PendingActionStore(
+        now_provider=lambda: FIXED_NOW,
+        metrics=metrics,
+    )
+    dispatch_claimed = AsyncMock(
+        name="dispatch_claimed",
+        return_value=DispatchOutcome.success(mutated=True),
+    )
+    return AIActionHandler(
+        store=store,
+        dispatch_claimed=dispatch_claimed,
+        metrics=metrics,
+        temporal_resolver=TemporalResolver(
+            now_provider=lambda: FIXED_NOW
+        ),
+    )
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

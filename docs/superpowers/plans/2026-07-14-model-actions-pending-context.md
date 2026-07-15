@@ -5155,7 +5155,7 @@ class ActionFlowOutcome:
 
 Action-result metrics are emitted only in `handle_model_response()`: each bounded parser error is normalized to `invalid_json`, `unknown_action`, `unknown_key`, `invalid_slot`, `missing_slot`, `multiple_proposals`, or `other`; a route-payload `PayloadValidationError` becomes `unknown_key`, `missing_slot`, or `invalid_slot` and returns an inert outcome; a current proposal records `accepted` only when the bridge returns a safe route; and a compatibility proposal records `legacy` only when it returns a safe route. A bridge safety/context rejection records its bounded `RejectionCode` through the same metrics object and never increments `accepted`. These call sites receive machine codes only, never model text or slots.
 
-- [ ] **Step 1: Write failing model, claim, correction, and no-send tests (5 minutes)**
+- [x] **Step 1: Write failing model, claim, correction, and no-send tests (5 minutes)**
 
 Create tests/test_ai_action_handler.py:
 
@@ -5593,7 +5593,7 @@ Run:
 
 Expected: FAIL because features/ai_action_handler.py does not exist.
 
-- [ ] **Step 2: Define result types and current-response handling (5 minutes)**
+- [x] **Step 2: Define result types and current-response handling (5 minutes)**
 
 Create features/ai_action_handler.py:
 
@@ -6126,7 +6126,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 3: Implement summaries, staging, confirmation, and cancellation (5 minutes)**
+- [x] **Step 3: Implement summaries, staging, confirmation, and cancellation (5 minutes)**
 
 Implement `format_confirmation_details()` as an exhaustive allowlist, not a generic intent label. Every value comes from the validated, frozen route or its guard and passes the same control/mention/Markdown neutralizer, but **no material field or option may be truncated or omitted**. Preserve all schema-valid poll options in order, including options 6–10, and preserve complete text/comment/description values. `format_confirmation_messages()` packs those complete details into at most five ordered Discord messages of at most 2000 characters each; only non-authoritative model prose may be truncated or dropped. Each preview chunk is numbered, and the final chunk contains the complete yes/no instruction. If the lossless neutralized proposition cannot fit, return `confirmation_preview_too_large`, send a bounded explanation, and create no PRESENTING state. It must render these propositions:
 
@@ -6393,7 +6393,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 4: Implement safe choice consumption (5 minutes)**
+- [x] **Step 4: Implement safe choice consumption (5 minutes)**
 
 Append:
 
@@ -6434,7 +6434,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Implement bounded correction merging and revalidation (5 minutes)**
+- [x] **Step 5: Implement bounded correction merging and revalidation (5 minutes)**
 
 Add module-level patterns:
 
@@ -6680,7 +6680,7 @@ Run:
 
 Expected: PASS. Corrections never mutate the store inside AIActionHandler, never change identifiers, target indexes, user IDs, action kind, or frozen guard, and every changed payload passes Task-6 validation with source=SEMANTIC. The exact monitor-owned `TemporalResolver` and `reminder_clock.now` are injected; no default resolver/clock exists. Add an Oslo-midnight barrier where the correction waits across midnight but uses the turn's single captured reference time, matching reminder/calendar parsing rather than drifting to a second `now()`.
 
-- [ ] **Step 6: Commit the send-free action handler (5 minutes)**
+- [x] **Step 6: Commit the send-free action handler (5 minutes)**
 
 ~~~bash
 git add features/ai_action_handler.py core/action_bridge.py \
