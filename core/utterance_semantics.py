@@ -83,6 +83,25 @@ NEGATIONS = frozenset({
     "shouldn't", "shouldn’t",
 })
 POSITIVE_FORGET = ("ikke glem", "ikkje gløym", "don't forget", "don’t forget")
+TRAILING_CANCELLATIONS = (
+    "ikke gjør det", "ikke gjør dette", "ikke gjør det likevel",
+    "gjør det ikke", "ikkje gjer det", "ikkje gjer dette",
+    "ikkje gjer det likevel", "gjer det ikkje", "la være",
+    "la det være", "lat vere", "lat det vere", "dropp det",
+    "do not do it", "don't do it", "don’t do it",
+    "do not do that", "don't do that", "don’t do that",
+    "do not proceed", "don't proceed", "don’t proceed",
+    "do not do it after all", "don't do it after all",
+    "don’t do it after all", "never mind",
+    "avbryt", "avbryt det", "avbryt likevel", "stopp", "stopp det",
+    "stopp likevel", "cancel", "cancel it", "cancel that", "stop",
+    "stop it", "stop that",
+)
+TRAILING_CANCELLATION_MARKERS = frozenset({
+    "men", "but", "however", "likevel", "derimot", "nei", "no",
+    "vent", "wait", "egentlig", "actually",
+})
+TRAILING_CANCELLATION_LOOKBACK = 12
 
 
 def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
@@ -102,6 +121,53 @@ def _token_starts(tokens: tuple[str, ...], needle: tuple[str, ...]):
     for index in range(0, len(tokens) - width + 1):
         if tokens[index:index + width] == needle:
             yield index
+
+
+def _terminal_cancellation(
+    tokens: tuple[str, ...],
+) -> tuple[int, tuple[str, ...]] | None:
+    matches = sorted(
+        (_term_tokens(phrase) for phrase in TRAILING_CANCELLATIONS),
+        key=len,
+        reverse=True,
+    )
+    for needle in matches:
+        if needle and tokens[-len(needle):] == needle:
+            return len(tokens) - len(needle), needle
+    return None
+
+
+def _has_hard_clause_boundary(
+    text: str,
+    cancellation: tuple[str, ...],
+) -> bool:
+    without_terminal_punctuation = re.sub(r"[.!?]+$", "", text).rstrip()
+    clauses = re.split(r"[.!?;]+", without_terminal_punctuation)
+    return (
+        len(clauses) > 1
+        and _term_tokens(clauses[-1]) == cancellation
+    )
+
+
+def _has_trailing_action_cancellation(
+    utterance: NormalizedUtterance,
+    *,
+    action_end: int,
+) -> bool:
+    terminal = _terminal_cancellation(utterance.tokens)
+    if terminal is None:
+        return False
+    cancellation_start, cancellation = terminal
+    if action_end > cancellation_start:
+        return False
+    boundary_window = utterance.tokens[
+        max(action_end, cancellation_start - TRAILING_CANCELLATION_LOOKBACK):
+        cancellation_start
+    ]
+    return (
+        any(token in TRAILING_CANCELLATION_MARKERS for token in boundary_window)
+        or _has_hard_clause_boundary(utterance.control_text, cancellation)
+    )
 
 
 def is_negated_action(
@@ -130,6 +196,11 @@ def is_negated_action(
                 if tokens[offset] in NEGATIONS
             }
             if negated_indices - ignored_negations:
+                return True
+            if _has_trailing_action_cancellation(
+                utterance,
+                action_end=index + len(needle),
+            ):
                 return True
     return False
 

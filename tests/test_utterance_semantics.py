@@ -75,6 +75,63 @@ def test_second_negation_is_not_erased_by_positive_forget(text):
 @pytest.mark.parametrize(
     "text",
     [
+        (
+            "slett poll 1 fordi den er gammel og ingen har stemt på den "
+            "på flere uker, men ikke gjør det"
+        ),
+        (
+            "slett sitat 2 fordi det ikkje lenger er relevant for nokon i "
+            "kanalen, men ikkje gjer det"
+        ),
+        (
+            "delete quote 2 because it has been obsolete for everyone here "
+            "for several weeks, but do not do it"
+        ),
+        (
+            "legg til Interstellar på watchlisten for helgen sammen med de "
+            "andre filmene, men avbryt"
+        ),
+        (
+            "husk å kjøpe melk etter jobb når butikken fortsatt er åpen "
+            "og jeg er på vei hjem, men stopp"
+        ),
+        (
+            "add Dune Part Two to the watchlist for the weekend with the "
+            "rest of the films, but cancel it"
+        ),
+        (
+            "opprett møte med Eva i morgen klokken 14 for å gå gjennom "
+            "hele planen. Avbryt."
+        ),
+    ],
+)
+def test_distant_trailing_cancellation_disallows_mutation(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is False
+    assert "negated_action" in semantics.reasons
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ikke glem å kjøpe melk på dager der jeg ikke gjør det ofte",
+        "ikkje gløym å kjøpe mjølk på dagar der eg ikkje gjer det ofte",
+        "don't forget to buy milk on days when I do not do it often",
+        "legg til filmen Cancel på watchlisten",
+        "husk å si stopp",
+        "opprett et møte om hvordan Per ikke gjør det",
+    ],
+)
+def test_payload_words_and_distant_negation_are_not_cancellation(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "Hvorfor slettet du kalenderen?",
         "Kan man slette kalenderen?",
         "Er det mulig å slette kalenderen?",
