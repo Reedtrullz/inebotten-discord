@@ -4809,7 +4809,7 @@ Pending-control payloads are exact:
 {"pending": {"action_id": action_id, "correction_text": utterance.text}}
 ~~~
 
-- [ ] **Step 1: Write failing router-first pending tests (5 minutes)**
+- [x] **Step 1: Write failing router-first pending tests (5 minutes)**
 
 Add to tests/test_intent_router.py:
 
@@ -4908,7 +4908,7 @@ Run:
 
 Expected: FAIL because IntentRouter does not consult PendingActionStore.
 
-- [ ] **Step 2: Inject the monitor-owned store without breaking legacy construction (5 minutes)**
+- [x] **Step 2: Inject the monitor-owned store without breaking legacy construction (5 minutes)**
 
 Change IntentRouter.__init__() to:
 
@@ -4964,7 +4964,7 @@ def route(
 
 The wrapper normalization exists for legacy callers only. MessageMonitor passes its already-normalized object directly to route_utterance().
 
-- [ ] **Step 3: Add exact pending resolution conversion (5 minutes)**
+- [x] **Step 3: Add exact pending resolution conversion (5 minutes)**
 
 Add:
 
@@ -5055,7 +5055,7 @@ Run:
 
 Expected: PASS for pending control routes, isolation, and unrelated-message fallthrough.
 
-- [ ] **Step 4: Remove global conversation scraping (5 minutes)**
+- [x] **Step 4: Remove global conversation scraping (5 minutes)**
 
 Delete IntentRouter._infer_recent_reminder_topic() and every fallback that iterates self.monitor.conversation.threads. Delete the prose-based recent reminder offer extraction path from _resolve_calendar_followup(); typed pending state is now the only cross-turn mutation context.
 
@@ -5078,7 +5078,7 @@ Run:
 
 Expected: PASS. Existing same-turn deterministic reminder parsing remains; only prose scraping is removed.
 
-- [ ] **Step 5: Commit pending routing (5 minutes)**
+- [x] **Step 5: Commit pending routing (5 minutes)**
 
 ~~~bash
 git add core/intent_router.py tests/test_intent_router.py \

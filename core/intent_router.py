@@ -30,8 +30,16 @@ from core.intent_payloads import (
     PayloadValidationError,
     validate_intent_payload,
 )
-from core.message_context import RoutingContext, domain_scope_id
+from core.message_context import (
+    ConversationKey,
+    RoutingContext,
+    domain_scope_id,
+)
 from core.nlu_metrics import NLUMetrics
+from core.pending_actions import (
+    PendingActionStore,
+    PendingResolutionKind,
+)
 from core.utterance import NormalizedUtterance, normalize_utterance
 from core.utterance_semantics import UtteranceSemantics, analyze_utterance
 
@@ -270,6 +278,35 @@ def _phrase_present(text: str, phrase: str) -> bool:
 def _present_terms(text: str, terms) -> tuple[str, ...]:
     return tuple(term for term in terms if _phrase_present(text, term))
 
+
+def _pending_key(
+    *,
+    guild_id: int | None,
+    channel_id: int | None,
+    user_id: int | None,
+    routing_context: RoutingContext | None,
+) -> ConversationKey | None:
+    if routing_context is not None:
+        return routing_context.key
+    if (
+        channel_id is None
+        or user_id is None
+        or isinstance(channel_id, bool)
+        or not isinstance(channel_id, int)
+        or isinstance(user_id, bool)
+        or not isinstance(user_id, int)
+        or (
+            guild_id is not None
+            and (
+                isinstance(guild_id, bool)
+                or not isinstance(guild_id, int)
+            )
+        )
+    ):
+        return None
+    return ConversationKey(guild_id, channel_id, user_id)
+
+
 class IntentRouter:
     """Routes cleaned, authorized message text to one concrete bot intent."""
 
@@ -277,12 +314,14 @@ class IntentRouter:
         self,
         monitor,
         metrics: NLUMetrics | None = None,
+        pending_actions: PendingActionStore | None = None,
         *,
         temporal_resolver: TemporalResolver | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ):
         self.monitor = monitor
-        self.metrics = metrics or NLUMetrics()
+        self.metrics = metrics if metrics is not None else NLUMetrics()
+        self.pending_actions = pending_actions
         inherited_resolver = getattr(
             getattr(monitor, "nlp_parser", None),
             "temporal_resolver",
@@ -376,6 +415,18 @@ class IntentRouter:
             channel_id = key.channel_id
             user_id = key.user_id
 
+        pending = self._pending_result(
+            utterance,
+            _pending_key(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                user_id=user_id,
+                routing_context=routing_context,
+            ),
+        )
+        if pending is not None:
+            return RoutedIntent(pending)
+
         semantics = analyze_utterance(utterance)
         context = CollectorContext(
             utterance=utterance,
@@ -436,6 +487,61 @@ class IntentRouter:
                     )
                 ),
             ),
+        )
+
+    def _pending_result(
+        self,
+        utterance: NormalizedUtterance,
+        key: ConversationKey | None,
+    ) -> IntentResult | None:
+        if self.pending_actions is None or key is None:
+            return None
+        resolution = self.pending_actions.resolve(key, utterance.text)
+        if resolution.kind is PendingResolutionKind.NONE:
+            return None
+        if resolution.kind is PendingResolutionKind.EXPIRED:
+            return IntentResult(
+                BotIntent.CLARIFY,
+                1.0,
+                {
+                    "clarification": (
+                        "Den forrige bekreftelsen er utløpt. "
+                        "Be meg om handlingen på nytt."
+                    )
+                },
+                "pending_expired",
+                risk=IntentRisk.READ_ONLY,
+            )
+        if not isinstance(resolution.action_id, str):
+            return None
+
+        pending: dict[str, object] = {
+            "action_id": resolution.action_id,
+        }
+        mapping = {
+            PendingResolutionKind.CONFIRM: BotIntent.ACTION_CONFIRM,
+            PendingResolutionKind.CANCEL: BotIntent.ACTION_CANCEL,
+            PendingResolutionKind.SELECT: BotIntent.ACTION_SELECT,
+            PendingResolutionKind.CORRECT: BotIntent.ACTION_CORRECT,
+        }
+        intent = mapping.get(resolution.kind)
+        if intent is None:
+            return None
+        if resolution.kind is PendingResolutionKind.SELECT:
+            if (
+                isinstance(resolution.choice_index, bool)
+                or not isinstance(resolution.choice_index, int)
+            ):
+                return None
+            pending["choice_index"] = resolution.choice_index
+        if resolution.kind is PendingResolutionKind.CORRECT:
+            pending["correction_text"] = utterance.text
+        return IntentResult(
+            intent,
+            1.0,
+            {"pending": pending},
+            f"pending_{resolution.kind.value}",
+            risk=IntentRisk.READ_ONLY,
         )
 
     def _validate_action_candidates(
@@ -916,22 +1022,6 @@ class IntentRouter:
             )
 
         if isinstance(parsed_reminder, dict):
-            if (
-                parsed_reminder.get("action") == "add"
-                and isinstance(parsed_reminder.get("text"), str)
-                and re.fullmatch(
-                    r"(?:det|that|dette|den|it)(?:\s+.*)?",
-                    parsed_reminder["text"].strip(),
-                    re.I,
-                )
-            ):
-                topic = self._infer_recent_reminder_topic(
-                    channel_id=context.channel_id,
-                    user_id=context.user_id,
-                )
-                if topic:
-                    parsed_reminder = dict(parsed_reminder)
-                    parsed_reminder["text"] = topic[0].upper() + topic[1:]
             action = parsed_reminder.get("action")
             payload = {"reminder": dict(parsed_reminder)}
             action_terms = _present_terms(
@@ -1746,12 +1836,6 @@ class IntentRouter:
                 )
 
         if isinstance(calendar_item, dict):
-            calendar_item = self._resolve_calendar_followup(
-                text,
-                calendar_item,
-                channel_id=context.channel_id,
-                user_id=context.user_id,
-            )
             calendar_item = {
                 key: calendar_item[key]
                 for key in _CANONICAL_CALENDAR_CREATE_FIELDS
@@ -3296,72 +3380,6 @@ class IntentRouter:
                 if found_city:
                     return IntentResult(BotIntent.SET_LOCATION, 0.95, {"city": found_city}, "location_pattern")
         
-        return None
-
-    def _resolve_calendar_followup(
-        self,
-        content: str,
-        parsed: Dict[str, Any],
-        *,
-        channel_id: Optional[int],
-        user_id: Optional[int],
-    ) -> Dict[str, Any]:
-        """Replace vague follow-up titles like "det" with the recent offered reminder topic."""
-        title = str(parsed.get("title", "")).strip()
-        content_lower = content.lower()
-        vague_title = re.fullmatch(r"(det|that|dette|den|it)(?:\s+.*)?", title.lower() or "") is not None
-        reminder_followup = any(re.search(rf"\b{re.escape(phrase)}\b", content_lower) for phrase in ["minn meg", "påminn meg", "remind me"])
-
-        if not (vague_title and reminder_followup):
-            return parsed
-
-        topic = self._infer_recent_reminder_topic(
-            channel_id=channel_id,
-            user_id=user_id,
-        )
-        if topic:
-            parsed = dict(parsed)
-            parsed["title"] = topic[0].upper() + topic[1:]
-            parsed["type"] = "task"
-        return parsed
-
-    def _infer_recent_reminder_topic(
-        self,
-        *,
-        channel_id: Optional[int],
-        user_id: Optional[int],
-    ) -> Optional[str]:
-        conversation = getattr(self.monitor, "conversation", None)
-        threads = getattr(conversation, "threads", None)
-        if not threads or channel_id is None or user_id is None:
-            return None
-
-        recent_messages = list(threads.get(channel_id, [])[-6:])
-
-        recent_messages.sort(key=lambda msg: msg.get("timestamp"), reverse=True)
-        for msg in recent_messages:
-            if not msg.get("is_bot") or msg.get("user_id") != user_id:
-                continue
-            topic = self._extract_reminder_offer_topic(str(msg.get("content", "")))
-            if topic:
-                return topic
-        return None
-
-    def _extract_reminder_offer_topic(self, text: str) -> Optional[str]:
-        patterns = [
-            r"påminnelse\s+om\s+å\s+([^?!.:\n]+)",
-            r"minne\s+deg\s+på\s+å\s+([^?!.:\n]+)",
-            r"reminder\s+to\s+([^?!.:\n]+)",
-            r"remind\s+you\s+to\s+([^?!.:\n]+)",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if not match:
-                continue
-            topic = re.sub(r"\s+", " ", match.group(1)).strip(" -–—,")
-            topic = re.sub(r"\s+(eller|or)\s+.*$", "", topic, flags=re.IGNORECASE).strip(" -–—,")
-            if len(topic) >= 2:
-                return topic
         return None
 
     def _is_status_command(self, content_lower: str) -> bool:

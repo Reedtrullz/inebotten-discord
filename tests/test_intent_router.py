@@ -12,7 +12,13 @@ import pytest
 from cal_system.natural_language_parser import NaturalLanguageParser, NaturalParseResult
 from cal_system.temporal_resolver import DATE_ALIASES, OSLO, TemporalResolver
 from core.eval_fixtures import EvalFixture
-from core.intent_models import IntentCandidate, IntentRisk, IntentSource, RejectionCode
+from core.intent_models import (
+    IntentCandidate,
+    IntentResult,
+    IntentRisk,
+    IntentSource,
+    RejectionCode,
+)
 from core.intent_payloads import ENVELOPE_KEYS, validate_intent_payload
 from core.intent_router import (
     BotIntent,
@@ -30,6 +36,7 @@ from core.message_context import (
     routing_context_from_message,
 )
 from core.nlu_metrics import NLUMetrics
+from core.pending_actions import PendingActionStore
 from core.utterance import normalize_utterance
 from core.utterance_semantics import analyze_utterance
 from features.crypto_manager import parse_price_command
@@ -145,6 +152,306 @@ class DummyMonitor:
         return False, "default"
 
 
+def _semantic_reminder_route() -> IntentResult:
+    return IntentResult(
+        BotIntent.REMINDER_CREATE,
+        0.91,
+        {
+            "reminder": {
+                "action": "add",
+                "text": "ringe legen",
+                "due_at": "2026-07-15T09:00:00+02:00",
+            }
+        },
+        "semantic_action",
+        source=IntentSource.SEMANTIC,
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+
+
+def _present_confirmation(store, key, route=None):
+    draft = store.begin_confirmation(
+        key,
+        route or _semantic_reminder_route(),
+        "Ringe legen",
+    )
+    ready = store.activate_presentation(draft)
+    assert ready is not None
+    return ready
+
+
+def _present_choices(store, key):
+    draft = store.begin_choices(
+        key,
+        (
+            IntentResult(BotIntent.CALENDAR_LIST, 1.0),
+            IntentResult(BotIntent.REMINDER_LIST, 1.0),
+        ),
+        "Velg",
+        target_guards=(None, None),
+    )
+    ready = store.activate_presentation(draft)
+    assert ready is not None
+    return ready
+
+
+@pytest.fixture
+def pending_store():
+    return PendingActionStore(now_provider=lambda: NOW)
+
+
+@pytest.fixture
+def pending_router(pending_store):
+    return IntentRouter(
+        DummyMonitor(),
+        pending_actions=pending_store,
+        now_provider=lambda: NOW,
+    )
+
+
+def test_matching_confirmation_routes_before_collectors(
+    pending_router,
+    pending_store,
+):
+    pending = _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    route = pending_router.route(
+        "ja",
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert route.intent is BotIntent.ACTION_CONFIRM
+    assert route.payload == {
+        "pending": {"action_id": pending.action_id}
+    }
+    assert route.risk is IntentRisk.READ_ONLY
+
+
+def test_pending_cancel_correction_and_selection_payloads_are_inert_ids(
+    pending_router,
+    pending_store,
+):
+    key_value = ConversationKey(1, 10, 7)
+    confirmation = _present_confirmation(pending_store, key_value)
+    canceled = pending_router.route(
+        "nei", guild_id=1, channel_id=10, user_id=7
+    )
+    assert canceled.intent is BotIntent.ACTION_CANCEL
+    assert canceled.payload == {
+        "pending": {"action_id": confirmation.action_id}
+    }
+
+    corrected = pending_router.route(
+        "i morgen kl 14",
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert corrected.intent is BotIntent.ACTION_CORRECT
+    assert corrected.payload == {
+        "pending": {
+            "action_id": confirmation.action_id,
+            "correction_text": "i morgen kl 14",
+        }
+    }
+
+    choices = _present_choices(pending_store, key_value)
+    selected = pending_router.route(
+        "den andre",
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert selected.intent is BotIntent.ACTION_SELECT
+    assert selected.payload == {
+        "pending": {
+            "action_id": choices.action_id,
+            "choice_index": 1,
+        }
+    }
+    assert "route" not in selected.payload["pending"]
+
+
+def test_other_scope_confirmation_is_ordinary_chat(
+    pending_router,
+    pending_store,
+):
+    _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    for route in (
+        pending_router.route(
+            "ja", guild_id=1, channel_id=10, user_id=8
+        ),
+        pending_router.route(
+            "ja", guild_id=1, channel_id=11, user_id=7
+        ),
+        pending_router.route(
+            "ja", guild_id=2, channel_id=10, user_id=7
+        ),
+    ):
+        assert route.intent is BotIntent.AI_CHAT
+
+
+def test_quoted_and_meta_confirmation_words_do_not_consume_pending(
+    pending_router,
+    pending_store,
+):
+    _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    for text in ('"ja"', "jeg sa ja", "ordet «ja»"):
+        route = pending_router.route(
+            text,
+            guild_id=1,
+            channel_id=10,
+            user_id=7,
+        )
+        assert route.intent is BotIntent.AI_CHAT
+
+    confirmed = pending_router.route(
+        "ja",
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert confirmed.intent is BotIntent.ACTION_CONFIRM
+
+
+def test_dm_confirmation_requires_exact_channel_and_user(
+    pending_router,
+    pending_store,
+):
+    pending = _present_confirmation(
+        pending_store,
+        ConversationKey(None, 300, 7),
+    )
+    assert pending_router.route(
+        "ja", guild_id=None, channel_id=301, user_id=7
+    ).intent is BotIntent.AI_CHAT
+    assert pending_router.route(
+        "ja", guild_id=None, channel_id=300, user_id=8
+    ).intent is BotIntent.AI_CHAT
+
+    matched = pending_router.route(
+        "ja", guild_id=None, channel_id=300, user_id=7
+    )
+    assert matched.intent is BotIntent.ACTION_CONFIRM
+    assert matched.payload == {
+        "pending": {"action_id": pending.action_id}
+    }
+
+
+def test_unrelated_pending_message_continues_normal_routing(
+    pending_router,
+    pending_store,
+):
+    _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    route = pending_router.route(
+        "hjelp",
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert route.intent is BotIntent.HELP
+
+
+def test_incomplete_legacy_route_call_skips_pending_lookup(
+    pending_router,
+):
+    assert pending_router.route("ja", guild_id=1).intent is BotIntent.AI_CHAT
+
+
+def test_routing_context_mismatch_never_resolves_pending(
+    pending_router,
+    pending_store,
+):
+    key_value = ConversationKey(1, 10, 7)
+    _present_confirmation(pending_store, key_value)
+    context = RoutingContext(
+        key=key_value,
+        author=ResolvedMention(7, "Ola"),
+    )
+
+    mismatched = pending_router.route(
+        "ja",
+        guild_id=2,
+        routing_context=context,
+    )
+    assert mismatched.intent is BotIntent.AI_CHAT
+    assert mismatched.reason == "invalid_context"
+    matched = pending_router.route("ja", routing_context=context)
+    assert matched.intent is BotIntent.ACTION_CONFIRM
+
+
+def test_evaluate_utterance_resolves_pending_exactly_once(
+    pending_router,
+    pending_store,
+):
+    _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    pending_store.resolve = Mock(wraps=pending_store.resolve)
+
+    routed = pending_router.evaluate_utterance(
+        normalize_utterance("ja"),
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert routed.result.intent is BotIntent.ACTION_CONFIRM
+    pending_store.resolve.assert_called_once()
+
+
+def test_expired_pending_action_becomes_fixed_clarification():
+    current = [NOW]
+    store = PendingActionStore(
+        now_provider=lambda: current[0],
+        ttl=timedelta(minutes=1),
+    )
+    router = IntentRouter(
+        DummyMonitor(),
+        pending_actions=store,
+        now_provider=lambda: current[0],
+    )
+    _present_confirmation(store, ConversationKey(1, 10, 7))
+    current[0] += timedelta(minutes=1)
+
+    route = router.route(
+        "ja", guild_id=1, channel_id=10, user_id=7
+    )
+    assert route.intent is BotIntent.CLARIFY
+    assert route.reason == "pending_expired"
+    assert route.payload == {
+        "clarification": (
+            "Den forrige bekreftelsen er utløpt. "
+            "Be meg om handlingen på nytt."
+        )
+    }
+
+
+def test_pending_router_preserves_injected_metrics_identity(pending_store):
+    metrics = NLUMetrics()
+    router = IntentRouter(
+        DummyMonitor(),
+        metrics=metrics,
+        pending_actions=pending_store,
+        now_provider=lambda: NOW,
+    )
+    assert router.metrics is metrics
+    assert router.pending_actions is pending_store
+
+
 class IntentRouterTests(unittest.TestCase):
     def route(
         self,
@@ -192,7 +499,7 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.payload["calendar_item"]["time"], "15:00")
         self.assertEqual(result.payload["calendar_item"]["title"], "Meeting")
 
-    def test_contextual_reminder_followup_uses_recent_offer(self):
+    def test_vague_reminder_followup_never_scrapes_recent_bot_prose(self):
         monitor = DummyMonitor()
         monitor.conversation.threads[456] = [
             {
@@ -206,17 +513,17 @@ class IntentRouterTests(unittest.TestCase):
         ]
 
         result = self.route(
-            "minn meg på det imorgen kveld :Pog:",
+            "minn meg på det imorgen kveld",
             monitor=monitor,
             channel_id=456,
             user_id=7,
         )
 
         self.assertEqual(result.intent, BotIntent.REMINDER_CREATE)
-        self.assertEqual(result.payload["reminder"]["text"], "Bestille billettene")
+        self.assertEqual(result.payload["reminder"]["text"], "det")
         self.assertEqual(result.payload["reminder"]["time"], "19:00")
 
-    def test_contextual_reminder_followup_is_channel_and_user_scoped(self):
+    def test_vague_reminder_followup_is_not_filled_from_any_scope(self):
         monitor = DummyMonitor()
         monitor.conversation.threads[456] = [
             {
@@ -257,9 +564,7 @@ class IntentRouterTests(unittest.TestCase):
             user_id=9,
         )
 
-        self.assertEqual(
-            matching.payload["reminder"]["text"], "Bestille billetter"
-        )
+        self.assertEqual(matching.payload["reminder"]["text"], "det")
         self.assertEqual(other_user.payload["reminder"]["text"], "det")
 
     def test_vague_hva_skjer_stays_ai_chat(self):

@@ -388,7 +388,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             [100, 100],
         )
 
-    async def test_real_conversation_followup_is_scoped_by_channel_and_user(self):
+    async def test_real_conversation_followup_does_not_scrape_prior_bot_prose(self):
         monitor = self.make_monitor()
         monitor.conversation = ConversationContext(max_history=20)
         monitor.intent_router = IntentRouter(monitor)
@@ -434,14 +434,14 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(followup)
 
         self.assertEqual(len(created), 1)
-        self.assertEqual(created[0][0]["text"], "Kjøpe melk")
+        self.assertEqual(created[0][0]["text"], "det")
         self.assertNotIn("helsejournal", created[0][0]["text"].casefold())
         self.assertNotIn("lønnsslipp", created[0][0]["text"].casefold())
         self.assertIs(created[0][1], NOW)
         self.assertEqual(set(monitor.conversation.threads), {100, 200})
         self.assertNotIn(999, monitor.conversation.threads)
 
-    async def test_real_conversation_dm_followup_uses_exact_dm_and_user(self):
+    async def test_real_conversation_dm_followup_does_not_scrape_prior_bot_prose(self):
         monitor = self.make_monitor()
         monitor.conversation = ConversationContext(max_history=20)
         monitor.intent_router = IntentRouter(monitor)
@@ -477,7 +477,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(followup)
 
         self.assertEqual(len(created), 1)
-        self.assertEqual(created[0][0]["text"], "Kjøpe melk")
+        self.assertEqual(created[0][0]["text"], "det")
         self.assertNotIn("helsejournal", created[0][0]["text"].casefold())
         self.assertIs(created[0][1], NOW)
         self.assertEqual(set(monitor.conversation.threads), {300, 301})
