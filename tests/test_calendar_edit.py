@@ -116,6 +116,27 @@ class CalendarManagerEditSearchTests(unittest.TestCase):
         self.assertEqual(before, [])
         self.assertEqual([item["title"] for item in after], ["Midnight boundary"])
 
+    def test_upcoming_read_converts_utc_across_oslo_midnight(self):
+        self._add_item("UTC boundary", "15.07.2026")
+
+        before = self.manager.get_upcoming(
+            "123",
+            days=0,
+            reference_time=datetime(
+                2026, 7, 14, 21, 59, tzinfo=timezone.utc
+            ),
+        )
+        after = self.manager.get_upcoming(
+            "123",
+            days=0,
+            reference_time=datetime(
+                2026, 7, 14, 22, 1, tzinfo=timezone.utc
+            ),
+        )
+
+        self.assertEqual(before, [])
+        self.assertEqual([item["title"] for item in after], ["UTC boundary"])
+
     def test_upcoming_read_rejects_naive_reference_time(self):
         with self.assertRaisesRegex(ValueError, "reference_time_must_be_aware"):
             self.manager.get_upcoming(

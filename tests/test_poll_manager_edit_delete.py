@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from zoneinfo import ZoneInfo
@@ -114,22 +114,54 @@ class PollManagerEditDeleteTests(unittest.TestCase):
         self.assertIn("created_by_id", poll)
         self.assertIsNone(poll["created_by_id"])
 
-    def test_active_poll_read_uses_explicit_reference_time(self):
+    def test_active_poll_read_handles_all_expiry_time_formats(self):
         poll = self.pm.create_poll("123", "Q?", ["A", "B"], "Alice")
-        poll["expires_at"] = "2026-07-15T00:00:00"
-        oslo = ZoneInfo("Europe/Oslo")
-
-        before = self.pm.get_active_polls(
-            "123",
-            reference_time=datetime(2026, 7, 14, 23, 59, tzinfo=oslo),
+        before = datetime(2026, 7, 14, 21, 59, tzinfo=timezone.utc)
+        exact = datetime(
+            2026,
+            7,
+            14,
+            18,
+            0,
+            tzinfo=ZoneInfo("America/New_York"),
         )
-        after = self.pm.get_active_polls(
-            "123",
-            reference_time=datetime(2026, 7, 15, 0, 1, tzinfo=oslo),
-        )
+        after = datetime(2026, 7, 14, 22, 1, tzinfo=timezone.utc)
 
-        self.assertEqual(before, [poll])
-        self.assertEqual(after, [])
+        for expires_at in (
+            "2026-07-15T00:00:00",
+            "2026-07-15T00:00:00+02:00",
+            "2026-07-14T22:00:00Z",
+        ):
+            with self.subTest(expires_at=expires_at):
+                poll["expires_at"] = expires_at
+                self.assertEqual(
+                    self.pm.get_active_polls(
+                        "123", reference_time=before
+                    ),
+                    [poll],
+                )
+                self.assertEqual(
+                    self.pm.get_active_polls(
+                        "123", reference_time=exact
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    self.pm.get_active_polls(
+                        "123", reference_time=after
+                    ),
+                    [],
+                )
+
+    def test_active_poll_read_preserves_legacy_no_reference_call(self):
+        poll = self.pm.create_poll("123", "Q?", ["A", "B"], "Alice")
+
+        self.assertEqual(self.pm.get_active_polls("123"), [poll])
+
+        poll["expires_at"] = (
+            datetime.now(timezone.utc) + timedelta(days=7)
+        ).isoformat()
+        self.assertEqual(self.pm.get_active_polls("123"), [poll])
 
     def test_active_poll_read_rejects_naive_reference_time(self):
         with self.assertRaisesRegex(ValueError, "reference_time_must_be_aware"):
