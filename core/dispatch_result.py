@@ -151,8 +151,16 @@ class ManagerMutationCancelled(asyncio.CancelledError):
 
 
 class DispatchCancelled(asyncio.CancelledError):
-    def __init__(self, outcome: DispatchOutcome) -> None:
+    def __init__(
+        self,
+        outcome: DispatchOutcome,
+        *,
+        decision_route: object | None = None,
+        decision_outcome: str | None = None,
+    ) -> None:
         self.outcome = outcome
+        self.decision_route = decision_route
+        self.decision_outcome = decision_outcome
         super().__init__(outcome.error_code or "dispatch_cancelled")
 
 

@@ -598,11 +598,22 @@ class ReminderManager:
 
     def snapshot_pending_items(self, scope_id):
         """Return detached active reminders in display/target order."""
-        return tuple(
-            copy.deepcopy(
-                self._active_reminders_in(self.reminders, scope_id)
-            )
+        bucket = self.reminders.get(str(scope_id), ())
+        if not isinstance(bucket, (list, tuple)):
+            raise ValueError("invalid_target_state")
+        rows = []
+        for position, reminder in enumerate(bucket):
+            if not isinstance(reminder, dict):
+                raise ValueError("invalid_target_state")
+            completed = reminder.get("completed", False)
+            if type(completed) is not bool:
+                raise ValueError("invalid_target_state")
+            if completed is False:
+                rows.append((position, reminder))
+        rows.sort(
+            key=lambda row: (str(row[1].get("created_at", "")), row[0])
         )
+        return tuple(copy.deepcopy(row) for _, row in rows)
 
     @classmethod
     def _canonical_delivery_due_at(cls, reminder, reference_time):

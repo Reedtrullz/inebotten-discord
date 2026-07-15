@@ -1841,6 +1841,16 @@ class CalendarManager:
         reference_time: datetime,
     ) -> tuple[dict[str, object], ...]:
         reference_time = self._require_aware(reference_time)
+        bucket = self.items.get(self.SHARED_KEY, [])
+        if not isinstance(bucket, list):
+            raise ValueError("invalid_target_state")
+        for item in bucket:
+            if not isinstance(item, dict):
+                raise ValueError("invalid_target_state")
+            if type(item.get("completed", False)) is not bool:
+                raise ValueError("invalid_target_state")
+            if type(item.get("delete_pending", False)) is not bool:
+                raise ValueError("invalid_target_state")
         return tuple(
             deepcopy(
                 self.get_upcoming(
@@ -2025,9 +2035,19 @@ class CalendarManager:
     def snapshot_all_item_ids(self) -> tuple[str, ...]:
         ids: list[str] = []
         seen: set[str] = set()
-        for item in self.items.get(self.SHARED_KEY, []):
+        bucket = self.items.get(self.SHARED_KEY, [])
+        if not isinstance(bucket, list):
+            raise ValueError("invalid_target_state")
+        for item in bucket:
+            if not isinstance(item, dict):
+                raise ValueError("invalid_target_state")
             item_id = item.get("id")
-            if not isinstance(item_id, str) or not item_id.strip() or item_id in seen:
+            if (
+                not isinstance(item_id, str)
+                or not item_id.strip()
+                or item_id != item_id.strip()
+                or item_id in seen
+            ):
                 raise ValueError("invalid_target_state")
             seen.add(item_id)
             ids.append(item_id)

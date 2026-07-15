@@ -7424,7 +7424,7 @@ Create `tests/test_pending_targets.py` with one fixed in-memory manager fixture 
 - while a confirmation preview send is blocked, enqueue raw authorized guild/DM `<@bot> ja`; routing waits rather than falling through to AI chat, then confirms only after successful activation. On definite/unknown preview failure it observes no READY action. A bare untagged DM `ja` is ignored before normalization.
 - present two competing prompts and force their underlying send delays to invert; the per-key FIFO scope preserves accepted turn order. Different ConversationKeys remain concurrent.
 
-- [ ] **Step 1: Write failing end-to-end action-flow tests (5 minutes)**
+- [x] **Step 1: Write failing end-to-end action-flow tests (5 minutes)**
 
 Create tests/test_ai_action_flow.py:
 
@@ -7883,7 +7883,7 @@ Run:
 
 Expected: FAIL because MessageMonitor still parses legacy actions inline and has no pending/action handler.
 
-- [ ] **Step 2: Instantiate the store, router, and handler in ownership order (5 minutes)**
+- [x] **Step 2: Instantiate the store, router, and handler in ownership order (5 minutes)**
 
 In MessageMonitor.__init__(), after managers/handlers exist and before IntentRouter construction:
 
@@ -7934,7 +7934,7 @@ Run:
 
 Expected: existing fixture failures identify every monitor double that needs the three owned objects; after fixture updates, PASS.
 
-- [ ] **Step 3: Add one threshold gate and claimed-dispatch proof (5 minutes)**
+- [x] **Step 3: Add one threshold gate and claimed-dispatch proof (5 minutes)**
 
 Add:
 
@@ -8214,7 +8214,7 @@ Run:
 
 Expected: threshold/claim tests PASS; end-to-end orchestration tests remain red.
 
-- [ ] **Step 4: Implement the central route processor with mandatory stage-and-return (5 minutes)**
+- [x] **Step 4: Implement the central route processor with mandatory stage-and-return (5 minutes)**
 
 Import the typed lane prerequisite `DeliveryState` and `MessageSendResult` from `core.dispatch_result`; do not define a model-lane duplicate. Then add:
 
@@ -8765,7 +8765,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Normalize once and pass explicit context through handle_message() (5 minutes)**
+- [x] **Step 5: Normalize once and pass explicit context through handle_message() (5 minutes)**
 
 After authorization, duplicate suppression, and rate-limit acceptance in handle_message(), consume the exact raw authorized content rather than the proxy's legacy cleaned `content`. In `core/message_monitor.py`, preserve `AuthorizedMessage.raw_content` byte-for-byte from the Discord message and stop `clean_authorized_content()` from removing later bot mentions or collapsing whitespace for the routing path. Authorization may inspect mention metadata but never rewrite the content that enters normalization. Keep any one-release cleaned compatibility property out of the canonical routing path; `MessageMonitor` reads `message.raw_content` and strips only one leading invocation:
 
@@ -8863,7 +8863,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Replace current-response inline execution (5 minutes)**
+- [x] **Step 6: Replace current-response inline execution (5 minutes)**
 
 Change _send_ai_response() to the required keyword-only context:
 
@@ -8992,7 +8992,7 @@ Run:
 
 Expected: PASS. The direct wrapper migration tests still see cleaned prose, but zero managers or sends.
 
-- [ ] **Step 7: Return delivery certainty and mark the task-local receipt (5 minutes)**
+- [x] **Step 7: Return delivery certainty and mark the task-local receipt (5 minutes)**
 
 Consume the typed lane's already-implemented `DiscordSendCoordinator`, `DeliveryState`, finite `SEND_ERROR_CODES`, immutable `MessageSendResult`, task-local `record_send_result`, and canonical monitor/BaseHandler result methods. Do not redefine any of them here. The dependency gate and `tests/test_message_send_result.py` must prove empty/quota/Forbidden are definite `NOT_DELIVERED`, normal return is `DELIVERED`, started HTTP/timeout/transport is `UNKNOWN`, every error is finite, cancellation settles one owned send, and all typed handlers finalize through `with_delivery()`. This model lane adds only bounded multi-chunk monitor output and pending-presentation settlement. Conversation recording is added in Task 8.
 
@@ -9076,7 +9076,7 @@ Run:
 
 Expected: PASS with no route staged below threshold, no stage followed by dispatch, and no duplicate send.
 
-- [ ] **Step 8: Commit the monitor action flow (5 minutes)**
+- [x] **Step 8: Commit the monitor action flow (5 minutes)**
 
 ~~~bash
 git add core/message_monitor.py core/intent_router.py core/pending_targets.py \

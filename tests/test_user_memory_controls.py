@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from memory.user_memory import UserMemory
 
 
@@ -25,7 +27,8 @@ def test_format_user_memory_for_user_shows_stored_fields():
     assert "Dette husker jeg om deg" in text
     assert "Trondheim" in text
     assert "RBK" in text
-    assert "slett minnet mitt bekreft" in text
+    assert "slett minnet mitt" in text
+    assert "slett minnet mitt bekreft" not in text
 
 
 def test_export_user_memory_does_not_create_missing_user():
@@ -54,3 +57,14 @@ def test_delete_user_memory_persists_and_does_not_touch_other_users():
     assert deleted is True
     assert "u1" not in stored
     assert stored["u2"]["location"] == "Oslo"
+
+
+def test_pending_snapshot_distinguishes_missing_from_corrupt_record():
+    with TemporaryDirectory() as tmp:
+        memory = UserMemory(storage_path=Path(tmp) / "memory.json")
+        memory.memory["30"] = ["private but malformed"]
+
+        with pytest.raises(ValueError, match="invalid_target_state"):
+            memory.snapshot_pending_user(30)
+
+        assert memory.snapshot_pending_user(31) is None

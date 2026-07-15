@@ -79,6 +79,23 @@ def test_constructor_injection_is_additive_for_manager_and_checker(tmp_path):
     assert checker.mutation_coordinator is coordinator
 
 
+@pytest.mark.parametrize(
+    "bucket",
+    [
+        "malformed",
+        ["malformed"],
+        [{"id": "rem-1", "text": "Bad", "completed": ""}],
+        [{"id": "rem-1", "text": "Bad", "completed": 0}],
+    ],
+)
+def test_pending_snapshot_rejects_corrupt_reminder_state(tmp_path, bucket):
+    manager = ReminderManager(tmp_path / "reminders.json")
+    manager.reminders = {"1": bucket}
+
+    with pytest.raises(ValueError, match="invalid_target_state"):
+        manager.snapshot_pending_items(1)
+
+
 @pytest.mark.asyncio
 async def test_result_apis_require_an_aware_reference_before_mutation(tmp_path):
     manager = ReminderManager(tmp_path / "reminders.json")

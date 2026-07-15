@@ -288,11 +288,14 @@ _AUTH_SECRET_KEYS = frozenset(
 def _has_auth_secret(value: object) -> bool:
     if not isinstance(value, Mapping):
         return False
-    return any(
-        (isinstance(key, str) and key.casefold() in _AUTH_SECRET_KEYS)
-        or _has_auth_secret(nested)
-        for key, nested in value.items()
-    )
+    for key, nested in value.items():
+        if isinstance(key, str) and key.casefold() in _AUTH_SECRET_KEYS:
+            if isinstance(nested, str) and nested.strip():
+                return True
+            continue
+        if _has_auth_secret(nested):
+            return True
+    return False
 
 
 def _render_material_fields(value: object) -> list[str]:
@@ -815,11 +818,6 @@ class AIActionHandler:
                 summary="Velg ett alternativ",
                 messages=(text,),
             ),
-            decision_route=IntentResult(
-                BotIntent.CLARIFY,
-                1.0,
-                risk=IntentRisk.READ_ONLY,
-            ),
             decision_outcome="clarified",
         )
 
@@ -848,10 +846,24 @@ class AIActionHandler:
         except DispatchCancelled as exc:
             outcome = exc.outcome
             self._settle_dispatch(key, action_id, outcome)
-            raise
-        except asyncio.CancelledError:
+            raise DispatchCancelled(
+                outcome,
+                decision_route=route,
+                decision_outcome=(
+                    "executed" if outcome.ok else "failed"
+                ),
+            ) from exc
+        except asyncio.CancelledError as exc:
             self.store.fail_terminal(key, action_id)
-            raise
+            raise DispatchCancelled(
+                DispatchOutcome.failure(
+                    "cancelled",
+                    retryable=False,
+                    commit_unknown=(route.risk is not IntentRisk.READ_ONLY),
+                ),
+                decision_route=route,
+                decision_outcome="failed",
+            ) from exc
         except Exception:
             self.store.fail_terminal(key, action_id)
             return ActionFlowOutcome(

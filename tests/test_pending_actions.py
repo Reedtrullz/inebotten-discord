@@ -358,7 +358,7 @@ def test_unknown_or_partial_delivery_abort_invalidates_old_and_new_actions():
     assert failed.status is PendingStatus.FAILED
     assert failed.action_id != previous.action_id
     assert failed.routes == ()
-    assert store.resolve(key(), "ja").kind is PendingResolutionKind.NONE
+    assert store.resolve(key(), "ja").kind is PendingResolutionKind.CONFIRM
 
 
 def test_failed_correction_presentation_never_restores_old_action():
@@ -375,7 +375,7 @@ def test_failed_correction_presentation_never_restores_old_action():
 
     assert store.abort_presentation(draft, safe_to_restore_previous=True)
     assert store.peek(key()).status is PendingStatus.FAILED
-    assert store.resolve(key(), "ja").kind is PendingResolutionKind.NONE
+    assert store.resolve(key(), "ja").kind is PendingResolutionKind.CONFIRM
 
 
 def test_stale_presentation_tokens_cannot_activate_or_abort_new_state():
@@ -467,6 +467,19 @@ def test_terminal_failure_never_reauthorizes_action():
     assert store.claim(key(), pending.action_id) is None
 
 
+def test_duplicate_confirmation_stays_on_bounded_control_path():
+    store = PendingActionStore(now_provider=Clock())
+    pending = ready_confirmation(store, key(), reminder_route())
+    assert store.claim(key(), pending.action_id) is not None
+    assert store.complete(key(), pending.action_id)
+
+    duplicate = store.resolve(key(), "ja")
+
+    assert duplicate.kind is PendingResolutionKind.CONFIRM
+    assert duplicate.action_id == pending.action_id
+    assert store.claim(key(), pending.action_id) is None
+
+
 def test_expiry_is_reported_once_and_removed():
     clock = Clock()
     metrics = NLUMetrics()
@@ -501,6 +514,7 @@ def test_executing_claim_does_not_expire_while_manager_is_awaited():
         key(),
         claimed.action_id,
         BotIntent.REMINDER_CREATE,
+        claim_id=claimed.claim_id,
     )
     assert store.resolve(key(), "ja").kind is PendingResolutionKind.NONE
     with pytest.raises(PendingBusyError):
@@ -593,6 +607,38 @@ def test_pending_metrics_record_only_bounded_transition_events():
         "dispatch_failed": 1,
         "staged": 1,
     }
+
+
+def test_retry_reclaim_rotates_attempt_capability():
+    store = PendingActionStore(now_provider=Clock())
+    pending = ready_confirmation(store, key(), reminder_route())
+    first = store.claim(key(), pending.action_id)
+    assert first is not None and first.claim_id
+    assert store.release_retryable(
+        key(),
+        first.action_id,
+        DispatchOutcome.failure("storage_write_failed", retryable=True),
+    )
+    ready = store.peek(key())
+    assert ready is not None
+    assert ready.status is PendingStatus.READY
+    assert ready.claim_id is None
+
+    second = store.claim(key(), first.action_id)
+    assert second is not None and second.claim_id
+    assert second.claim_id != first.claim_id
+    assert not store.is_action_executing(
+        key(),
+        first.action_id,
+        BotIntent.REMINDER_CREATE,
+        claim_id=first.claim_id,
+    )
+    assert store.is_action_executing(
+        key(),
+        second.action_id,
+        BotIntent.REMINDER_CREATE,
+        claim_id=second.claim_id,
+    )
 
 
 @pytest.mark.parametrize(

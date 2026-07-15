@@ -87,6 +87,19 @@ def sanitize_pending_detail(value: object, *, fallback: str) -> str:
     return detail or fallback
 
 
+def sanitize_pending_summary(value: object, *, fallback: str) -> str:
+    """Return bounded inert bookkeeping without constraining the preview."""
+
+    # The lossless confirmation messages are the authoritative user-visible
+    # proposition.  PendingAction.summary is only bounded bookkeeping, so cap
+    # before markdown escaping can expand schema-maximum material values.
+    bounded_input = str(value)[:1_000]
+    bounded = _without_discord_control_surface(bounded_input)[:500].rstrip(
+        "\\"
+    )
+    return bounded or fallback
+
+
 def _optional_nonblank_string(value: object, *, code: str) -> str | None:
     if value is None:
         return None
@@ -105,6 +118,7 @@ class PendingTargetGuard:
     revision: str | None
     label: str
     display_detail: str = ""
+    proposition_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.family, PendingTargetFamily):
@@ -120,6 +134,10 @@ class PendingTargetGuard:
         revision = _optional_nonblank_string(
             self.revision,
             code="invalid_revision",
+        )
+        proposition_hash = _optional_nonblank_string(
+            self.proposition_hash,
+            code="invalid_proposition_hash",
         )
         if int(stable_id is not None) + int(fingerprint is not None) != 1:
             raise ValueError("exactly_one_target_identity")
@@ -139,6 +157,7 @@ class PendingTargetGuard:
         object.__setattr__(self, "stable_id", stable_id)
         object.__setattr__(self, "fingerprint", fingerprint)
         object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "proposition_hash", proposition_hash)
         object.__setattr__(self, "label", safe_label)
         object.__setattr__(
             self,
@@ -160,6 +179,7 @@ class PendingAction:
     created_at: datetime
     expires_at: datetime
     status: PendingStatus = PendingStatus.PRESENTING
+    claim_id: str | None = None
     target_guards: tuple[PendingTargetGuard | None, ...] = ()
     settled_at: datetime | None = None
 
@@ -172,6 +192,14 @@ class PendingAction:
             raise ValueError("invalid_pending_kind")
         if not isinstance(self.status, PendingStatus):
             raise ValueError("invalid_pending_status")
+        if self.claim_id is not None and (
+            not isinstance(self.claim_id, str) or not self.claim_id.strip()
+        ):
+            raise ValueError("invalid_claim_id")
+        if (self.status is PendingStatus.EXECUTING) != (
+            self.claim_id is not None
+        ):
+            raise ValueError("claim_id_status_mismatch")
         if not isinstance(self.routes, tuple) or any(
             not isinstance(route, IntentResult) for route in self.routes
         ):
@@ -371,6 +399,10 @@ class PendingActionStore:
             raise ValueError("pending_clock_must_be_aware")
         return now
 
+    @property
+    def now_provider(self) -> Callable[[], datetime]:
+        return self._now_provider
+
     def _prune_terminal(self, now: datetime | None = None) -> None:
         reference = now if now is not None else self._now()
         terminal = self._terminal_items()
@@ -413,6 +445,7 @@ class PendingActionStore:
             summary="",
             target_guards=(),
             status=status,
+            claim_id=None,
             settled_at=now,
         )
         self._items[pending.key] = tombstone
@@ -461,10 +494,10 @@ class PendingActionStore:
             raise ValueError("invalid_target_guard")
         if len(routes) != len(target_guards):
             raise ValueError("guard_count_mismatch")
-        safe_summary = sanitize_pending_detail(
+        safe_summary = sanitize_pending_summary(
             summary,
             fallback="ventende handling",
-        )[:500].rstrip("\\") or "ventende handling"
+        )
 
         current, _ = self._read(key)
         if current is not None and current.status in {
@@ -644,11 +677,27 @@ class PendingActionStore:
             )
         if (
             pending is None
-            or pending.status is not PendingStatus.READY
             or not isinstance(text, str)
         ):
             return PendingResolution(PendingResolutionKind.NONE)
         normalized = _normalize_reply(text)
+        if pending.status in {
+            PendingStatus.COMPLETED,
+            PendingStatus.FAILED,
+        }:
+            if normalized in _CONFIRM:
+                return PendingResolution(
+                    PendingResolutionKind.CONFIRM,
+                    action_id=pending.action_id,
+                )
+            if normalized in _CANCEL:
+                return PendingResolution(
+                    PendingResolutionKind.CANCEL,
+                    action_id=pending.action_id,
+                )
+            return PendingResolution(PendingResolutionKind.NONE)
+        if pending.status is not PendingStatus.READY:
+            return PendingResolution(PendingResolutionKind.NONE)
         if normalized in _CANCEL:
             return PendingResolution(
                 PendingResolutionKind.CANCEL,
@@ -725,7 +774,11 @@ class PendingActionStore:
         ):
             self.metrics.record_pending("claim_failed")
             return None
-        executing = replace(pending, status=PendingStatus.EXECUTING)
+        executing = replace(
+            pending,
+            status=PendingStatus.EXECUTING,
+            claim_id=uuid.uuid4().hex,
+        )
         self._items[key] = executing
         self.metrics.record_pending("confirmed")
         return _clone_pending(executing)
@@ -748,11 +801,14 @@ class PendingActionStore:
         key: ConversationKey,
         action_id: str,
         expected_intent: BotIntent,
+        *,
+        claim_id: str,
     ) -> bool:
         pending, _ = self._read(key)
         return bool(
             pending is not None
             and pending.action_id == action_id
+            and pending.claim_id == claim_id
             and pending.status is PendingStatus.EXECUTING
             and len(pending.routes) == 1
             and pending.routes[0].intent is expected_intent
@@ -817,6 +873,7 @@ class PendingActionStore:
         self._items[key] = replace(
             pending,
             status=PendingStatus.READY,
+            claim_id=None,
             settled_at=None,
         )
         self.metrics.record_pending("dispatch_failed")

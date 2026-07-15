@@ -205,9 +205,13 @@ def arbitrate_candidates(
         )
 
     selected = ordered[0]
-    confirmation = selected.risk is IntentRisk.DESTRUCTIVE or (
-        selected.source is IntentSource.SEMANTIC
-        and selected.risk in _WRITE_RISKS
+    confirmation = (
+        selected.intent is BotIntent.CALENDAR_AUTH
+        or selected.risk is IntentRisk.DESTRUCTIVE
+        or (
+            selected.source is IntentSource.SEMANTIC
+            and selected.risk in _WRITE_RISKS
+        )
     )
     return ArbitrationDecision(
         replace(selected, requires_confirmation=confirmation),

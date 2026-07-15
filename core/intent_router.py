@@ -171,7 +171,8 @@ _CALENDAR_ITEM_FAMILY = (
     r"meeting|event|eventet"
 )
 _CALENDAR_MUTATION_FAMILY = (
-    rf"{_CALENDAR_FAMILY}|arrangement|meeting"
+    rf"{_CALENDAR_FAMILY}|arrangement|meeting|"
+    r"kalenderoppføring(?:en|a|er|ene)?|calendar\s+(?:entry|item)"
 )
 _RESERVED_CALENDAR_AUTH_CODES = frozenset(
     {
@@ -266,6 +267,9 @@ _PAYLOAD_METRIC_FAMILY = {
     BotIntent.BIRTHDAY_CREATE: "birthday",
     BotIntent.BIRTHDAY_LIST: "birthday",
     BotIntent.BIRTHDAY_EDIT: "birthday",
+    BotIntent.MEMORY_VIEW: "other",
+    BotIntent.MEMORY_EXPORT: "other",
+    BotIntent.MEMORY_DELETE: "other",
 }
 
 
@@ -464,7 +468,28 @@ class IntentRouter:
             self.metrics.record_rejection(rejection.code)
 
         if decision.selected is not None:
-            result = decision.selected.to_result()
+            if (
+                decision.selected.intent is BotIntent.CLARIFY
+                and decision.alternatives
+            ):
+                result = IntentResult(
+                    BotIntent.CLARIFY,
+                    decision.selected.confidence,
+                    {
+                        "clarification": (
+                            "Jeg ser to mulige tolkninger. Hvilken mener du?"
+                        ),
+                        "choices": tuple(
+                            candidate.to_result()
+                            for candidate in decision.alternatives
+                        ),
+                    },
+                    decision.selected.reason,
+                    source=decision.selected.source,
+                    risk=IntentRisk.READ_ONLY,
+                )
+            else:
+                result = decision.selected.to_result()
         else:
             result = IntentResult(
                 BotIntent.AI_CHAT,
@@ -488,6 +513,10 @@ class IntentRouter:
                 ),
             ),
         )
+
+    @property
+    def now_provider(self) -> Callable[[], datetime]:
+        return self._now_provider
 
     def _pending_result(
         self,
@@ -1280,7 +1309,11 @@ class IntentRouter:
             result = IntentResult(
                 BotIntent.CALENDAR_AUTH,
                 0.99,
-                {"auth_code": auth_code},
+                (
+                    {"auth_code": auth_code}
+                    if auth_code is not None
+                    else {}
+                ),
                 "calendar_auth_keyword",
             )
             candidates.append(
@@ -3264,7 +3297,7 @@ class IntentRouter:
             return IntentResult(
                 BotIntent.MEMORY_DELETE,
                 0.99,
-                {"memory": {"action": "delete", "confirmed": lower in confirmed_delete_commands}},
+                {"memory": {"action": "delete"}},
                 "memory_delete_keyword",
             )
         if any(phrase in lower for phrase in ("eksporter minnet mitt", "export my memory", "eksporter brukerminne")):

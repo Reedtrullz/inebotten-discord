@@ -5,6 +5,7 @@ Supports both Norwegian (no) and English (en)
 """
 
 import re
+from contextvars import ContextVar
 from datetime import datetime
 
 class Localization:
@@ -14,9 +15,21 @@ class Localization:
     
     def __init__(self, default_lang='no'):
         self.default_lang = default_lang
-        self.current_lang = default_lang
+        self._current_lang = ContextVar(
+            f"localization_language_{id(self)}",
+            default=default_lang,
+        )
         self.setup_translations()
         self.setup_language_patterns()
+
+    @property
+    def current_lang(self):
+        """Return the language scoped to the current async task."""
+        return self._current_lang.get()
+
+    @current_lang.setter
+    def current_lang(self, lang):
+        self._current_lang.set(lang)
     
     def setup_translations(self):
         """Setup all translations"""

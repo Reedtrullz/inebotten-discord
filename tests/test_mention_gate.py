@@ -32,7 +32,13 @@ except ModuleNotFoundError:
 from core.message_monitor import MessageMonitor
 from core.intent_router import IntentRouter
 from cal_system.reminder_clock import SystemReminderClock
+from cal_system.temporal_resolver import TemporalResolver
+from core.mutation_coordinator import MutationCoordinator
+from core.nlu_metrics import NLUMetrics
+from core.pending_actions import PendingActionStore
+from core.pending_targets import PendingTargetResolver
 from core.send_receipt import DiscordSendCoordinator
+from features.ai_action_handler import AIActionHandler
 
 
 class FakeRateLimiter:
@@ -100,6 +106,10 @@ class MentionGateTests(unittest.IsolatedAsyncioTestCase):
         monitor.rate_limiter = FakeRateLimiter()
         monitor.discord_sender = DiscordSendCoordinator(monitor.rate_limiter)
         monitor.reminder_clock = SystemReminderClock()
+        monitor._reference_time_now = monitor.reminder_clock.now
+        monitor.mutation_coordinator = MutationCoordinator()
+        monitor.nlu_metrics = NLUMetrics()
+        monitor.temporal_resolver = TemporalResolver()
         monitor.loc = FakeLocalization()
         monitor.nlp_parser = FakeParser()
         monitor.handlers = {"help": RecordingHelpHandler()}
@@ -114,13 +124,47 @@ class MentionGateTests(unittest.IsolatedAsyncioTestCase):
         monitor.parse_calculator_command = lambda content: None
         monitor.parse_shorten_command = lambda content: None
         monitor.poll = SimpleNamespace(
-            get_active_polls=lambda guild_id, reference_time=None: []
+            get_active_polls=lambda guild_id, reference_time=None: [],
+            snapshot_pending_items=lambda scope_id, reference_time=None: (),
+        )
+        monitor.calendar = SimpleNamespace(
+            snapshot_pending_items=lambda *, reference_time: (),
+            snapshot_all_item_ids=lambda: (),
+        )
+        monitor.reminders = SimpleNamespace(snapshot_pending_items=lambda scope_id: ())
+        monitor.watchlist = SimpleNamespace(snapshot_pending_items=lambda scope_id: ())
+        monitor.quote = SimpleNamespace(snapshot_pending_items=lambda scope_id: ())
+        monitor.birthdays = SimpleNamespace(
+            snapshot_pending_user=lambda scope_id, user_id: None
+        )
+        monitor.user_memory = SimpleNamespace(
+            snapshot_pending_user=lambda user_id: None
         )
         monitor.detect_search_intent = lambda content: None
         monitor.conversation = SimpleNamespace(
             should_show_dashboard=lambda content, guild_id: (False, "test")
         )
-        monitor.intent_router = IntentRouter(monitor)
+        monitor.pending_actions = PendingActionStore(
+            metrics=monitor.nlu_metrics,
+            now_provider=monitor._reference_time_now,
+        )
+        monitor.pending_targets = PendingTargetResolver(
+            monitor,
+            coordinator=monitor.mutation_coordinator,
+        )
+        monitor.intent_router = IntentRouter(
+            monitor,
+            metrics=monitor.nlu_metrics,
+            pending_actions=monitor.pending_actions,
+            temporal_resolver=monitor.temporal_resolver,
+            now_provider=monitor._reference_time_now,
+        )
+        monitor.ai_action_handler = AIActionHandler(
+            store=monitor.pending_actions,
+            dispatch_claimed=monitor._dispatch_claimed_intent,
+            metrics=monitor.nlu_metrics,
+            temporal_resolver=monitor.temporal_resolver,
+        )
         return monitor
 
     def make_message(self, content, mentions=None, message_id=1):

@@ -5,6 +5,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+import copy
 import inspect
 import os
 import re
@@ -13,10 +14,12 @@ import subprocess
 import sys
 from collections import defaultdict, deque
 from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 import discord
 
+from cal_system.temporal_resolver import TemporalResolver
 from cal_system.reminder_checker import ReminderChecker
 from cal_system.reminder_clock import SystemReminderClock
 from core.dispatch_result import (
@@ -29,6 +32,11 @@ from core.dispatch_result import (
     MessageSendCancelled,
     MessageSendResult,
 )
+from core.action_authorization import (
+    ClaimedActionAuthorization,
+    issue_claimed_action_authorization,
+)
+from core.intent_models import IntentResult, IntentRisk, IntentSource
 from core.intent_router import BotIntent, IntentRouter
 from core.intent_payloads import (
     ENVELOPE_KEYS,
@@ -45,12 +53,41 @@ from core.intent_keywords import (
     LIST_KEYWORDS,
     STATUS_KEYWORDS,
 )
-from core.message_context import routing_context_from_message
+from core.message_context import (
+    RoutingContext,
+    conversation_key_from_message,
+    domain_scope_id,
+    routing_context_from_message,
+    strip_leading_bot_invocation,
+)
 from core.mutation_coordinator import MEMORY_STORE_SCOPE, MutationCoordinator
+from core.nlu_metrics import NLUMetrics
+from core.pending_actions import (
+    PendingAction,
+    PendingActionStore,
+    PendingBusyError,
+    PendingKind,
+)
+from core.pending_targets import (
+    FrozenPendingRoute,
+    PendingTargetError,
+    PendingTargetResolver,
+    conversation_turn_scope,
+)
 from core.send_receipt import (
     DiscordSendCoordinator,
     _settle_owned_send,
     capture_send_receipt,
+    current_send_receipt,
+)
+from core.utterance import NormalizedUtterance, normalize_utterance
+from features.ai_action_handler import (
+    AIActionHandler,
+    ActionFlowOutcome,
+    ConfirmationPreviewTooLarge,
+    ModelDisposition,
+    PendingPresentationSpec,
+    UnsupportedConfirmationSummary,
 )
 from web_console.server import ConsoleServer
 
@@ -88,6 +125,35 @@ COMMAND_REGISTRY = [
 
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
 _NO_TYPED_ENVELOPE = object()
+_TRUNCATION_MARKER = "\n\n[svaret er forkortet]"
+
+
+@dataclass(frozen=True, slots=True)
+class RouteProcessOutcome:
+    dispatch: DispatchOutcome
+    decision_route: IntentResult
+    decision_outcome: str
+
+
+def bounded_discord_text_chunks(
+    text: str,
+    *,
+    max_messages: int = 5,
+    max_chars: int = 2000,
+) -> tuple[str, ...]:
+    """Bound ordinary provider prose to one finite Discord send sequence."""
+
+    if not isinstance(text, str):
+        text = str(text)
+    if max_messages < 1 or max_chars < 1:
+        raise ValueError("invalid_discord_text_bounds")
+    total = max_messages * max_chars
+    if len(text) > total:
+        text = text[: total - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+    return tuple(
+        text[index : index + max_chars]
+        for index in range(0, len(text), max_chars)
+    ) or ("",)
 
 
 def _counter_stats_delta(current, previous):
@@ -187,6 +253,10 @@ class MessageMonitor:
         self.reminder_clock = (
             reminder_clock or injected_clock or SystemReminderClock()
         )
+        self.nlu_metrics = NLUMetrics()
+        self.temporal_resolver = TemporalResolver()
+        clock_now = self.reminder_clock.now
+        self._reference_time_now = clock_now
         self.discord_sender = DiscordSendCoordinator(self.rate_limiter)
 
         # Initialize unified calendar manager
@@ -207,7 +277,10 @@ class MessageMonitor:
             clock=self.reminder_clock,
             mutation_coordinator=self.mutation_coordinator,
         )
-        self.nlp_parser = NaturalLanguageParser()
+        self.nlp_parser = NaturalLanguageParser(
+            now_provider=clock_now,
+            temporal_resolver=self.temporal_resolver,
+        )
 
         from cal_system.reminder_manager import ReminderManager
         if reminder_manager is None:
@@ -335,8 +408,27 @@ class MessageMonitor:
 
         self.handlers = {}
         self._register_handlers()
-        self.intent_router = IntentRouter(self)
-        self.nlu_metrics = self.intent_router.metrics
+        self.pending_actions = PendingActionStore(
+            metrics=self.nlu_metrics,
+            now_provider=clock_now,
+        )
+        self.pending_targets = PendingTargetResolver(
+            self,
+            coordinator=self.mutation_coordinator,
+        )
+        self.intent_router = IntentRouter(
+            self,
+            metrics=self.nlu_metrics,
+            pending_actions=self.pending_actions,
+            temporal_resolver=self.temporal_resolver,
+            now_provider=clock_now,
+        )
+        self.ai_action_handler = AIActionHandler(
+            store=self.pending_actions,
+            dispatch_claimed=self._dispatch_claimed_intent,
+            metrics=self.nlu_metrics,
+            temporal_resolver=self.temporal_resolver,
+        )
 
     def _track_background_task(self, coro, name):
         if not hasattr(self, "_tasks_by_name"):
@@ -585,23 +677,17 @@ class MessageMonitor:
         return AuthorizedMessage(message, self.clean_authorized_content(message))
 
     async def handle_message(self, message):
-        """Process an incoming message"""
-        # Skip own messages
+        """Process one authorized input through the single routing owner."""
         if message.author.id == self.client.user.id:
             return
 
-        # Security & Privacy Gate: Only respond to authorized users
-        # This is a selfbot, so we should be very strict about who can trigger AI/actions.
-        allowed_users = getattr(self.client.config, 'ALLOWED_USERS', [])
+        allowed_users = getattr(self.client.config, "ALLOWED_USERS", [])
         if allowed_users and message.author.id not in allowed_users:
             return
 
-        # Optional: Channel restriction for non-DM channels
-        allowed_channels = getattr(self.client.config, 'ALLOWED_CHANNELS', [])
+        allowed_channels = getattr(self.client.config, "ALLOWED_CHANNELS", [])
         if allowed_channels and not isinstance(message.channel, discord.DMChannel):
             if message.channel.id not in allowed_channels:
-                # If it's a group DM, we might still want to allow it, 
-                # but the user specifically pointed to one channel.
                 if not isinstance(message.channel, discord.GroupChannel):
                     return
 
@@ -609,63 +695,181 @@ class MessageMonitor:
         if not authorized_message:
             return
 
-        # Skip already processed after the mention gate so untagged messages are not tracked.
         msg_id = f"{message.channel.id}:{message.id}"
         if msg_id in self.processed_messages:
             return
         self.processed_messages.append(msg_id)
 
         message = authorized_message
-        reference_time = self.reminder_clock.now()
+        can_send = getattr(self.rate_limiter, "can_send", None)
+        try:
+            admission = can_send() if callable(can_send) else None
+        except Exception:
+            admission = None
+        if (
+            not isinstance(admission, tuple)
+            or len(admission) != 2
+            or admission[0] is not True
+        ):
+            record_dropped = getattr(
+                self.rate_limiter,
+                "record_dropped",
+                None,
+            )
+            if callable(record_dropped):
+                record_dropped()
+            reason = (
+                admission[1]
+                if isinstance(admission, tuple) and len(admission) == 2
+                else "rate_limiter_unavailable"
+            )
+            print(f"[MONITOR] Turn rejected before routing: {reason}")
+            return
         routing_context = routing_context_from_message(
             message,
             bot_user_id=self.client.user.id,
         )
+        key = routing_context.key
         self.mention_count += 1
         print(
             f"[MONITOR] Mention detected from {message.author.name} "
             f"in {self._get_channel_type(message.channel)}"
         )
 
-        # Detect language from message
-        lang = self.loc.detect_language(message.content)
-        self.loc.set_language(lang)
-        print(f"[MONITOR] Detected language: {lang}")
-
-        guild_id = routing_context.key.guild_id
-        route = None
-        try:
-            route = self.intent_router.route(
-                message.content,
-                guild_id=guild_id,
-                channel_id=message.channel.id,
-                user_id=message.author.id,
-                routing_context=routing_context,
-                reference_time=reference_time,
-            )
-            self._last_routed_intent = route.intent
-            print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
-            await self._handle_intent(
-                message,
-                route,
-                reference_time=reference_time,
-            )
-            self.intent_stats[route.intent.value]["count"] += 1
-        except Exception as exc:
-            import traceback
-
-            route_name = route.intent.value if route else "unknown"
-            print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
-            traceback.print_exc()
-            self.error_count += 1
-            self.intent_stats[route_name]["errors"] += 1
-            try:
-                await self._send_ai_response(
-                    message,
-                    reference_time=reference_time,
-                )
-            except Exception as ai_exc:
-                print(f"[MONITOR] AI fallback also failed: {ai_exc}")
+        async with self.mutation_coordinator.hold(
+            conversation_turn_scope(key)
+        ):
+            route: IntentResult | None = None
+            decision_recorded = False
+            with capture_send_receipt() as receipt:
+                try:
+                    lang = self.loc.detect_language(message.content)
+                    self.loc.set_language(lang)
+                    print(f"[MONITOR] Detected language: {lang}")
+                    reference_time = self._reference_time_now()
+                    visible_content = strip_leading_bot_invocation(
+                        message.raw_content,
+                        bot_user_id=self.client.user.id,
+                    )
+                    utterance = normalize_utterance(visible_content)
+                    route = self.intent_router.route_utterance(
+                        utterance,
+                        guild_id=key.guild_id,
+                        channel_id=key.channel_id,
+                        user_id=key.user_id,
+                        routing_context=routing_context,
+                        reference_time=reference_time,
+                    )
+                    print(
+                        f"[MONITOR] Intent matched: {route.intent.value} "
+                        f"({route.reason}, {route.confidence:.2f})"
+                    )
+                    processed = await self._process_route(
+                        message,
+                        utterance=utterance,
+                        routing_context=routing_context,
+                        route=route,
+                        reference_time=reference_time,
+                    )
+                    self.nlu_metrics.record_decision(
+                        intent=processed.decision_route.intent,
+                        source=processed.decision_route.source,
+                        outcome=processed.decision_outcome,
+                    )
+                    decision_recorded = True
+                    self.intent_stats[
+                        processed.decision_route.intent.value
+                    ]["count"] += 1
+                    return processed.dispatch
+                except DispatchCancelled as exc:
+                    if not decision_recorded:
+                        cancelled_route = (
+                            exc.decision_route
+                            if isinstance(exc.decision_route, IntentResult)
+                            else (
+                                route
+                                if isinstance(route, IntentResult)
+                                else None
+                            )
+                        )
+                        cancelled_outcome = (
+                            exc.decision_outcome
+                            if isinstance(exc.decision_outcome, str)
+                            and exc.decision_outcome
+                            else (
+                                "executed" if exc.outcome.ok else "failed"
+                            )
+                        )
+                    else:
+                        cancelled_route = None
+                        cancelled_outcome = "failed"
+                    if cancelled_route is not None:
+                        self.nlu_metrics.record_decision(
+                            intent=cancelled_route.intent,
+                            source=cancelled_route.source,
+                            outcome=cancelled_outcome,
+                        )
+                    raise
+                except asyncio.CancelledError:
+                    if (
+                        isinstance(route, IntentResult)
+                        and not decision_recorded
+                    ):
+                        self.nlu_metrics.record_decision(
+                            intent=route.intent,
+                            source=route.source,
+                            outcome="failed",
+                        )
+                    raise
+                except Exception as exc:
+                    valid_route = (
+                        route if isinstance(route, IntentResult) else None
+                    )
+                    route_name = (
+                        valid_route.intent.value
+                        if valid_route is not None
+                        else "unknown"
+                    )
+                    print(
+                        f"[MONITOR] ERROR handling intent {route_name}: "
+                        f"{type(exc).__name__}"
+                    )
+                    self.error_count += 1
+                    self.intent_stats[route_name]["errors"] += 1
+                    decision_route = valid_route or IntentResult(
+                        BotIntent.AI_CHAT,
+                        0.0,
+                        reason="turn_exception",
+                    )
+                    if not decision_recorded:
+                        self.nlu_metrics.record_decision(
+                            intent=decision_route.intent,
+                            source=decision_route.source,
+                            outcome="failed",
+                        )
+                    base = DispatchOutcome.failure(
+                        "turn_exception",
+                        retryable=False,
+                        commit_unknown=(
+                            valid_route is not None
+                            and valid_route.risk is not IntentRisk.READ_ONLY
+                        ),
+                    )
+                    if receipt.result is not None:
+                        return base.with_delivery(receipt.result)
+                    try:
+                        send = await self._send_text_sequence_result(
+                            message,
+                            "Beklager, noe gikk galt. Jeg prøver ikke "
+                            "handlingen automatisk på nytt.",
+                        )
+                    except MessageSendCancelled as cancelled:
+                        raise DispatchCancelled(
+                            base.with_delivery(cancelled.result),
+                            decision_route=decision_route,
+                            decision_outcome="failed",
+                        ) from cancelled
+                    return base.with_delivery(send)
 
     def _typed_inner_payload(self, route):
         """Return one validated canonical inner payload or compatibility absence."""
@@ -715,8 +919,967 @@ class MessageMonitor:
             else base.with_delivery(receipt.result)
         )
 
-    async def _handle_intent(self, message, route, *, reference_time: datetime):
-        """Execute one routed intent from its already parsed payload."""
+    async def _send_presentation_chunk(
+        self,
+        message,
+        text: str,
+    ) -> tuple[MessageSendResult, asyncio.CancelledError | None]:
+        task = asyncio.create_task(self._send_response_result(message, text))
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as cancelled:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    cancellation = cancellation or cancelled
+                    current.uncancel()
+                if task.done():
+                    try:
+                        result = task.result()
+                    except asyncio.CancelledError:
+                        result = MessageSendResult(
+                            DeliveryState.UNKNOWN,
+                            "send_task_cancelled",
+                        )
+                    except Exception:
+                        result = MessageSendResult(
+                            DeliveryState.UNKNOWN,
+                            "send_task_exception",
+                        )
+                    break
+                cancellation = cancellation or cancelled
+                continue
+            except Exception:
+                result = MessageSendResult(
+                    DeliveryState.UNKNOWN,
+                    "send_task_exception",
+                )
+                break
+        assert task.done()
+        return result, cancellation
+
+    async def _present_pending(
+        self,
+        message,
+        spec: PendingPresentationSpec,
+        *,
+        cancellation_route: IntentResult,
+        cancellation_success_outcome: str,
+    ) -> RouteProcessOutcome:
+        key = conversation_key_from_message(message)
+        async with self.mutation_coordinator.hold(conversation_turn_scope(key)):
+            try:
+                if spec.correction_action_id is not None:
+                    token = self.pending_actions.begin_correction(
+                        key,
+                        spec.correction_action_id,
+                        spec.routes[0],
+                        spec.summary,
+                        target_guard=spec.target_guards[0],
+                    )
+                    if token is None:
+                        return RouteProcessOutcome(
+                            DispatchOutcome.failure("stale_correction"),
+                            cancellation_route,
+                            "failed",
+                        )
+                elif spec.kind is PendingKind.CHOICE:
+                    token = self.pending_actions.begin_choices(
+                        key,
+                        spec.routes,
+                        spec.summary,
+                        target_guards=spec.target_guards,
+                    )
+                else:
+                    token = self.pending_actions.begin_confirmation(
+                        key,
+                        spec.routes[0],
+                        spec.summary,
+                        target_guard=spec.target_guards[0],
+                    )
+            except PendingBusyError:
+                return RouteProcessOutcome(
+                    DispatchOutcome.failure("pending_action_busy"),
+                    cancellation_route,
+                    "failed",
+                )
+
+            delivered = 0
+            activated = None
+            final_result = MessageSendResult(
+                DeliveryState.NOT_DELIVERED,
+                "empty",
+            )
+            cancellation: asyncio.CancelledError | None = None
+            for chunk in spec.messages:
+                final_result, cancellation = (
+                    await self._send_presentation_chunk(message, chunk)
+                )
+                if final_result.state is DeliveryState.DELIVERED:
+                    delivered += 1
+                if (
+                    final_result.state is not DeliveryState.DELIVERED
+                    or cancellation is not None
+                ):
+                    break
+
+            if delivered == len(spec.messages):
+                activated = self.pending_actions.activate_presentation(token)
+                if activated is None:
+                    final_result = MessageSendResult(
+                        DeliveryState.UNKNOWN,
+                        "partial_send",
+                    )
+                    self.pending_actions.abort_presentation(
+                        token,
+                        safe_to_restore_previous=False,
+                    )
+            else:
+                self.pending_actions.abort_presentation(
+                    token,
+                    safe_to_restore_previous=(
+                        delivered == 0
+                        and final_result.state is DeliveryState.NOT_DELIVERED
+                    ),
+                )
+
+            if cancellation is not None:
+                cancellation_result = (
+                    final_result
+                    if activated is not None
+                    else (
+                        MessageSendResult(DeliveryState.UNKNOWN, "partial_send")
+                        if delivered > 0
+                        else final_result
+                    )
+                )
+                cancellation_base = (
+                    DispatchOutcome.success()
+                    if activated is not None
+                    else DispatchOutcome.failure(
+                        "presentation_cancelled",
+                        retryable=False,
+                    )
+                )
+                raise DispatchCancelled(
+                    cancellation_base.with_delivery(cancellation_result),
+                    decision_route=cancellation_route,
+                    decision_outcome=(
+                        cancellation_success_outcome
+                        if activated is not None
+                        else "failed"
+                    ),
+                ) from cancellation
+            if delivered == len(spec.messages) and activated is not None:
+                return RouteProcessOutcome(
+                    DispatchOutcome.success().with_delivery(final_result),
+                    cancellation_route,
+                    cancellation_success_outcome,
+                )
+            code = (
+                "confirmation_delivery_unknown"
+                if final_result.state is DeliveryState.UNKNOWN
+                else (
+                    "partial_confirmation_preview"
+                    if delivered
+                    else "confirmation_send_failed"
+                )
+            )
+            sequence_result = (
+                MessageSendResult(DeliveryState.UNKNOWN, "partial_send")
+                if delivered > 0
+                else final_result
+            )
+            return RouteProcessOutcome(
+                DispatchOutcome.failure(
+                    code,
+                    retryable=False,
+                ).with_delivery(sequence_result),
+                cancellation_route,
+                "failed",
+            )
+
+    async def _send_flow_outcome(
+        self,
+        message,
+        outcome: ActionFlowOutcome,
+        *,
+        fallback_route: IntentResult,
+        fallback_outcome: str = "failed",
+    ) -> RouteProcessOutcome:
+        if outcome.presentation is not None:
+            presented = await self._present_pending(
+                message,
+                outcome.presentation,
+                cancellation_route=(
+                    outcome.decision_route
+                    or fallback_route
+                ),
+                cancellation_success_outcome=(
+                    outcome.decision_outcome or "staged"
+                ),
+            )
+            return presented
+        if (
+            outcome.dispatch is not None
+            and outcome.dispatch.delivery_result is not None
+        ):
+            dispatch = outcome.dispatch
+        elif outcome.text:
+            try:
+                send = await self._send_text_sequence_result(
+                    message,
+                    outcome.text,
+                )
+            except MessageSendCancelled as exc:
+                if outcome.dispatch is not None:
+                    cancellation_base = outcome.dispatch
+                elif exc.result.state is DeliveryState.DELIVERED:
+                    cancellation_base = DispatchOutcome.success()
+                else:
+                    cancellation_base = DispatchOutcome.failure(
+                        "response_delivery_unknown"
+                        if exc.result.state is DeliveryState.UNKNOWN
+                        else "response_send_failed",
+                        retryable=False,
+                    )
+                cancellation_dispatch = cancellation_base.with_delivery(
+                    exc.result
+                )
+                decision_outcome = outcome.decision_outcome
+                if not decision_outcome:
+                    decision_outcome = (
+                        fallback_outcome
+                        if fallback_outcome != "failed"
+                        or not cancellation_dispatch.ok
+                        else "executed"
+                    )
+                raise DispatchCancelled(
+                    cancellation_dispatch,
+                    decision_route=(
+                        outcome.decision_route or fallback_route
+                    ),
+                    decision_outcome=decision_outcome,
+                ) from exc
+            if outcome.dispatch is not None:
+                dispatch = outcome.dispatch.with_delivery(send)
+            elif send.state is DeliveryState.DELIVERED:
+                dispatch = DispatchOutcome.success().with_delivery(send)
+            else:
+                dispatch = DispatchOutcome.failure(
+                    "response_delivery_unknown"
+                    if send.state is DeliveryState.UNKNOWN
+                    else "response_send_failed",
+                    retryable=False,
+                ).with_delivery(send)
+        else:
+            dispatch = outcome.dispatch or DispatchOutcome.failure(
+                "empty_action_outcome",
+                retryable=False,
+            )
+        return RouteProcessOutcome(
+            dispatch=dispatch,
+            decision_route=outcome.decision_route or fallback_route,
+            decision_outcome=outcome.decision_outcome or fallback_outcome,
+        )
+
+    async def _send_route_text(
+        self,
+        message,
+        text: str,
+        route: IntentResult,
+        success_outcome: str,
+    ) -> RouteProcessOutcome:
+        try:
+            send = await self._send_text_sequence_result(message, text)
+        except MessageSendCancelled as exc:
+            if exc.result.state is DeliveryState.DELIVERED:
+                base = DispatchOutcome.success()
+                decision_outcome = success_outcome
+            else:
+                base = DispatchOutcome.failure(
+                    "response_delivery_unknown"
+                    if exc.result.state is DeliveryState.UNKNOWN
+                    else "response_send_failed",
+                    retryable=False,
+                )
+                decision_outcome = "failed"
+            raise DispatchCancelled(
+                base.with_delivery(exc.result),
+                decision_route=route,
+                decision_outcome=decision_outcome,
+            ) from exc
+        if send.state is DeliveryState.DELIVERED:
+            return RouteProcessOutcome(
+                DispatchOutcome.success().with_delivery(send),
+                route,
+                success_outcome,
+            )
+        return RouteProcessOutcome(
+            DispatchOutcome.failure(
+                "response_delivery_unknown"
+                if send.state is DeliveryState.UNKNOWN
+                else "response_send_failed",
+                retryable=False,
+            ).with_delivery(send),
+            route,
+            "failed",
+        )
+
+    async def _process_route(
+        self,
+        message,
+        *,
+        utterance: NormalizedUtterance,
+        routing_context: RoutingContext,
+        route: IntentResult,
+        reference_time: datetime,
+        visible_text: str = "",
+        model_origin: bool = False,
+        pre_frozen: FrozenPendingRoute | None = None,
+        selected_interpretation: bool = False,
+    ) -> RouteProcessOutcome:
+        """Keep cancellation and failure bound to the effective inner route."""
+
+        receipt = current_send_receipt()
+        if receipt is None:
+            # Production turns already own a task-local receipt.  Keep direct
+            # internal calls equally safe without forcing every caller to know
+            # about delivery bookkeeping.
+            with capture_send_receipt():
+                return await self._process_route(
+                    message,
+                    utterance=utterance,
+                    routing_context=routing_context,
+                    route=route,
+                    reference_time=reference_time,
+                    visible_text=visible_text,
+                    model_origin=model_origin,
+                    pre_frozen=pre_frozen,
+                    selected_interpretation=selected_interpretation,
+                )
+
+        try:
+            return await self._process_route_impl(
+                message,
+                utterance=utterance,
+                routing_context=routing_context,
+                route=route,
+                reference_time=reference_time,
+                visible_text=visible_text,
+                model_origin=model_origin,
+                pre_frozen=pre_frozen,
+                selected_interpretation=selected_interpretation,
+            )
+        except DispatchCancelled as exc:
+            raise DispatchCancelled(
+                exc.outcome,
+                decision_route=(
+                    exc.decision_route
+                    if isinstance(exc.decision_route, IntentResult)
+                    else route
+                ),
+                decision_outcome=(
+                    exc.decision_outcome
+                    if isinstance(exc.decision_outcome, str)
+                    and exc.decision_outcome
+                    else ("executed" if exc.outcome.ok else "failed")
+                ),
+            ) from exc
+        except MessageSendCancelled as exc:
+            base = DispatchOutcome.failure(
+                "response_delivery_unknown"
+                if exc.result.state is DeliveryState.UNKNOWN
+                else "response_send_failed",
+                retryable=False,
+                commit_unknown=(
+                    route.risk is not IntentRisk.READ_ONLY
+                    and not route.requires_confirmation
+                ),
+            ).with_delivery(exc.result)
+            raise DispatchCancelled(
+                base,
+                decision_route=route,
+                decision_outcome="failed",
+            ) from exc
+        except asyncio.CancelledError as exc:
+            raise DispatchCancelled(
+                DispatchOutcome.failure(
+                    "cancelled",
+                    retryable=False,
+                    commit_unknown=(
+                        route.risk is not IntentRisk.READ_ONLY
+                        and not route.requires_confirmation
+                    ),
+                ),
+                decision_route=route,
+                decision_outcome="failed",
+            ) from exc
+        except Exception as exc:
+            print(
+                f"[MONITOR] ERROR processing effective route "
+                f"{route.intent.value}: {type(exc).__name__}"
+            )
+            self.error_count += 1
+            self.intent_stats[route.intent.value]["errors"] += 1
+            base = DispatchOutcome.failure(
+                "turn_exception",
+                retryable=False,
+                commit_unknown=(
+                    route.risk is not IntentRisk.READ_ONLY
+                    and not route.requires_confirmation
+                ),
+            )
+            if receipt.result is not None:
+                # A handler may fail after its one Discord attempt.  Preserve
+                # that terminal delivery truth; never replay an apology after
+                # DELIVERED or UNKNOWN.
+                return RouteProcessOutcome(
+                    base.with_delivery(receipt.result),
+                    route,
+                    "failed",
+                )
+            try:
+                send = await self._send_text_sequence_result(
+                    message,
+                    "Beklager, noe gikk galt. Jeg prøver ikke handlingen "
+                    "automatisk på nytt.",
+                )
+            except MessageSendCancelled as cancelled:
+                raise DispatchCancelled(
+                    base.with_delivery(cancelled.result),
+                    decision_route=route,
+                    decision_outcome="failed",
+                ) from cancelled
+            return RouteProcessOutcome(
+                base.with_delivery(send),
+                route,
+                "failed",
+            )
+
+    async def _process_route_impl(
+        self,
+        message,
+        *,
+        utterance: NormalizedUtterance,
+        routing_context: RoutingContext,
+        route: IntentResult,
+        reference_time: datetime,
+        visible_text: str = "",
+        model_origin: bool = False,
+        pre_frozen: FrozenPendingRoute | None = None,
+        selected_interpretation: bool = False,
+    ) -> RouteProcessOutcome:
+        if selected_interpretation:
+            if pre_frozen is None or pre_frozen.route != route:
+                return RouteProcessOutcome(
+                    DispatchOutcome.failure(
+                        "missing_frozen_choice",
+                        retryable=False,
+                    ),
+                    route,
+                    "failed",
+                )
+            route = replace(
+                route,
+                reason=f"user_selected:{route.reason}",
+                requires_confirmation=(
+                    route.requires_confirmation
+                    or route.risk is not IntentRisk.READ_ONLY
+                ),
+            )
+            pre_frozen = FrozenPendingRoute(route, pre_frozen.guard)
+
+        if (
+            not selected_interpretation
+            and not self._passes_intent_threshold(route)
+        ):
+            if model_origin:
+                text = visible_text or (
+                    "Jeg er ikke sikker nok til å foreslå handlingen."
+                )
+                return await self._send_route_text(
+                    message,
+                    text,
+                    route,
+                    "low_confidence",
+                )
+            return await self._send_ai_response(
+                message,
+                utterance=utterance,
+                routing_context=routing_context,
+                routed_intent=route,
+                reference_time=reference_time,
+                semantic_action_allowed=True,
+            )
+
+        if route.requires_confirmation:
+            try:
+                if pre_frozen is None:
+                    async with self.pending_targets.mutation_context(
+                        route,
+                        routing_context.key,
+                    ):
+                        frozen = self.pending_targets.freeze(
+                            route,
+                            routing_context,
+                            reference_time=reference_time,
+                        )
+                else:
+                    frozen = pre_frozen
+                staged = self.ai_action_handler.prepare_confirmation(
+                    message,
+                    frozen.route,
+                    prefix=visible_text,
+                    target_guard=frozen.guard,
+                )
+            except (
+                PendingTargetError,
+                UnsupportedConfirmationSummary,
+                ConfirmationPreviewTooLarge,
+            ) as exc:
+                code = getattr(
+                    exc,
+                    "code",
+                    "unsupported_confirmation_summary",
+                )
+                base = DispatchOutcome.failure(
+                    code,
+                    retryable=False,
+                )
+                try:
+                    send = await self._send_text_sequence_result(
+                        message,
+                        "Jeg kan ikke vise en full og entydig "
+                        "bekreftelse. Kort ned eller presiser handlingen.",
+                    )
+                except MessageSendCancelled as cancelled:
+                    raise DispatchCancelled(
+                        base.with_delivery(cancelled.result),
+                        decision_route=route,
+                        decision_outcome="failed",
+                    ) from cancelled
+                return RouteProcessOutcome(
+                    base.with_delivery(send),
+                    route,
+                    "failed",
+                )
+            return await self._send_flow_outcome(
+                message,
+                staged,
+                fallback_route=frozen.route,
+            )
+
+        if (
+            route.intent is BotIntent.AI_CHAT
+            and route.reason == "unsafe_mutation_blocked"
+        ):
+            return await self._send_route_text(
+                message,
+                "Jeg utfører ikke en negert, sitert eller hypotetisk handling.",
+                route,
+                "blocked",
+            )
+        if route.intent is BotIntent.AI_CHAT:
+            return await self._send_ai_response(
+                message,
+                utterance=utterance,
+                routing_context=routing_context,
+                routed_intent=route,
+                reference_time=reference_time,
+                semantic_action_allowed=True,
+            )
+        if route.intent is BotIntent.SEARCH:
+            return await self._send_ai_response(
+                message,
+                utterance=utterance,
+                routing_context=routing_context,
+                routed_intent=route,
+                reference_time=reference_time,
+                semantic_action_allowed=False,
+                forced_search_info=route.payload.get("search"),
+            )
+
+        if route.intent is BotIntent.CLARIFY:
+            choices = route.payload.get("choices", ())
+            if choices:
+                frozen_choices: list[FrozenPendingRoute] = []
+                try:
+                    for choice in choices:
+                        if not isinstance(choice, IntentResult):
+                            raise ValueError("invalid_choice")
+                        if choice.risk is IntentRisk.READ_ONLY:
+                            frozen_choices.append(
+                                FrozenPendingRoute(
+                                    copy.deepcopy(choice),
+                                    None,
+                                )
+                            )
+                            continue
+                        async with self.pending_targets.mutation_context(
+                            choice,
+                            routing_context.key,
+                        ):
+                            frozen_choices.append(
+                                self.pending_targets.freeze(
+                                    choice,
+                                    routing_context,
+                                    reference_time=reference_time,
+                                )
+                            )
+                    prepared = self.ai_action_handler.prepare_choices(
+                        message,
+                        tuple(item.route for item in frozen_choices),
+                        tuple(item.guard for item in frozen_choices),
+                        route.payload.get(
+                            "clarification",
+                            "Velg ett alternativ.",
+                        ),
+                    )
+                except (
+                    PendingTargetError,
+                    ConfirmationPreviewTooLarge,
+                    ValueError,
+                ) as exc:
+                    base = DispatchOutcome.failure(
+                        getattr(exc, "code", "ambiguous_choice"),
+                        retryable=False,
+                    )
+                    try:
+                        send = await self._send_text_sequence_result(
+                            message,
+                            "Jeg kan ikke fryse alle alternativene "
+                            "entydig. Beskriv ønsket handling på nytt.",
+                        )
+                    except MessageSendCancelled as cancelled:
+                        raise DispatchCancelled(
+                            base.with_delivery(cancelled.result),
+                            decision_route=route,
+                            decision_outcome="failed",
+                        ) from cancelled
+                    return RouteProcessOutcome(
+                        base.with_delivery(send),
+                        route,
+                        "failed",
+                    )
+                return await self._send_flow_outcome(
+                    message,
+                    prepared,
+                    fallback_route=route,
+                    fallback_outcome="clarified",
+                )
+            return await self._send_route_text(
+                message,
+                route.payload.get(
+                    "clarification",
+                    visible_text or "Kan du presisere?",
+                ),
+                route,
+                "clarified",
+            )
+
+        pending = route.payload.get("pending", {})
+        if route.intent is BotIntent.ACTION_CONFIRM:
+            outcome = await self.ai_action_handler.confirm(
+                message,
+                str(pending["action_id"]),
+                reference_time=reference_time,
+            )
+            return await self._send_flow_outcome(
+                message,
+                outcome,
+                fallback_route=route,
+            )
+        if route.intent is BotIntent.ACTION_CANCEL:
+            outcome = await self.ai_action_handler.cancel(
+                message,
+                str(pending["action_id"]),
+            )
+            return await self._send_flow_outcome(
+                message,
+                outcome,
+                fallback_route=route,
+            )
+        if route.intent is BotIntent.ACTION_SELECT:
+            outcome = await self.ai_action_handler.select(
+                message,
+                str(pending["action_id"]),
+                int(pending["choice_index"]),
+            )
+            if outcome.route is not None:
+                return await self._process_route(
+                    message,
+                    utterance=utterance,
+                    routing_context=routing_context,
+                    route=outcome.route,
+                    reference_time=reference_time,
+                    pre_frozen=FrozenPendingRoute(
+                        outcome.route,
+                        outcome.target_guard,
+                    ),
+                    selected_interpretation=True,
+                )
+            return await self._send_flow_outcome(
+                message,
+                outcome,
+                fallback_route=route,
+            )
+        if route.intent is BotIntent.ACTION_CORRECT:
+            correction_pending = self.pending_actions.peek(
+                routing_context.key
+            )
+            outcome = await self.ai_action_handler.correct(
+                message,
+                str(pending["action_id"]),
+                utterance,
+                reference_time=reference_time,
+            )
+            if (
+                outcome.presentation is not None
+                and correction_pending is not None
+                and len(correction_pending.routes) == 1
+                and len(outcome.presentation.routes) == 1
+                and outcome.presentation.target_guards[0] is not None
+            ):
+                try:
+                    rebound_guard = self.pending_targets.rebind_corrected(
+                        correction_pending.routes[0],
+                        outcome.presentation.routes[0],
+                        outcome.presentation.target_guards[0],
+                    )
+                except PendingTargetError:
+                    outcome = ActionFlowOutcome(
+                        text=(
+                            "Jeg kunne ikke bevare det valgte målet trygt. "
+                            "Be om handlingen på nytt."
+                        ),
+                        decision_route=correction_pending.routes[0],
+                        decision_outcome="failed",
+                    )
+                else:
+                    outcome = replace(
+                        outcome,
+                        presentation=replace(
+                            outcome.presentation,
+                            target_guards=(rebound_guard,),
+                        ),
+                    )
+            return await self._send_flow_outcome(
+                message,
+                outcome,
+                fallback_route=route,
+            )
+
+        try:
+            dispatch = await self._handle_intent(
+                message,
+                route,
+                reference_time=reference_time,
+            )
+        except DispatchCancelled as exc:
+            raise DispatchCancelled(
+                exc.outcome,
+                decision_route=(
+                    exc.decision_route
+                    if isinstance(exc.decision_route, IntentResult)
+                    else route
+                ),
+                decision_outcome=(
+                    exc.decision_outcome
+                    if isinstance(exc.decision_outcome, str)
+                    and exc.decision_outcome
+                    else ("executed" if exc.outcome.ok else "failed")
+                ),
+            ) from exc
+        except MessageSendCancelled as exc:
+            if route.risk is IntentRisk.READ_ONLY:
+                if exc.result.state is DeliveryState.DELIVERED:
+                    cancellation_dispatch = DispatchOutcome.success()
+                else:
+                    cancellation_dispatch = DispatchOutcome.failure(
+                        "response_delivery_unknown"
+                        if exc.result.state is DeliveryState.UNKNOWN
+                        else "response_send_failed",
+                        retryable=False,
+                    )
+            else:
+                cancellation_dispatch = DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    retryable=False,
+                    commit_unknown=True,
+                )
+            cancellation_dispatch = cancellation_dispatch.with_delivery(
+                exc.result
+            )
+            raise DispatchCancelled(
+                cancellation_dispatch,
+                decision_route=route,
+                decision_outcome=(
+                    "executed" if cancellation_dispatch.ok else "failed"
+                ),
+            ) from exc
+        if dispatch.delivery_result is None:
+            if dispatch.ok:
+                fallback = "Handlingen ble utført."
+            elif dispatch.mutated or dispatch.commit_unknown:
+                fallback = (
+                    "Utfallet er usikkert etter at data kan ha blitt endret. "
+                    "Jeg prøver ikke automatisk igjen."
+                )
+            else:
+                fallback = "Handlingen kunne ikke utføres."
+            try:
+                send = await self._send_text_sequence_result(
+                    message,
+                    fallback,
+                )
+            except MessageSendCancelled as exc:
+                cancellation_dispatch = dispatch.with_delivery(exc.result)
+                raise DispatchCancelled(
+                    cancellation_dispatch,
+                    decision_route=route,
+                    decision_outcome=(
+                        "executed" if dispatch.ok else "failed"
+                    ),
+                ) from exc
+            dispatch = dispatch.with_delivery(send)
+        final = "executed" if dispatch.ok else "failed"
+        return RouteProcessOutcome(dispatch, route, final)
+
+    def _passes_intent_threshold(self, route: IntentResult) -> bool:
+        threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
+        if route.confidence >= threshold:
+            return True
+        self.intent_stats[route.intent.value]["low_confidence"] += 1
+        return False
+
+    async def _dispatch_claimed_intent(
+        self,
+        message,
+        pending: PendingAction,
+        reference_time: datetime,
+    ) -> DispatchOutcome:
+        key = conversation_key_from_message(message)
+        if not self.pending_actions.is_executing(key, pending):
+            return DispatchOutcome.failure(
+                "invalid_pending_claim",
+                retryable=False,
+            )
+        route = pending.routes[0]
+        try:
+            mutation_context = self.pending_targets.mutation_context(
+                route,
+                key,
+            )
+        except PendingTargetError as exc:
+            return DispatchOutcome.failure(exc.code, retryable=False)
+        except ValueError:
+            return DispatchOutcome.failure(
+                "invalid_pending_claim",
+                retryable=False,
+            )
+
+        async with mutation_context:
+            if not self.pending_actions.is_executing(key, pending):
+                return DispatchOutcome.failure(
+                    "invalid_pending_claim",
+                    retryable=False,
+                )
+            try:
+                rebound = self.pending_targets.revalidate(
+                    route,
+                    pending.target_guards[0],
+                    routing_context_from_message(
+                        message,
+                        bot_user_id=self.client.user.id,
+                    ),
+                    reference_time=reference_time,
+                )
+                confirmed = replace(
+                    rebound,
+                    requires_confirmation=False,
+                )
+                authorization = (
+                    issue_claimed_action_authorization(
+                        key=key,
+                        action_id=pending.action_id,
+                        claim_id=pending.claim_id,
+                        pending_actions=self.pending_actions,
+                    )
+                    if confirmed.intent is BotIntent.MEMORY_DELETE
+                    else None
+                )
+            except PendingTargetError as exc:
+                return DispatchOutcome.failure(exc.code, retryable=False)
+            except ValueError:
+                return DispatchOutcome.failure(
+                    "invalid_pending_claim",
+                    retryable=False,
+                )
+            return await self._dispatch_intent_body(
+                message,
+                confirmed,
+                authorization=authorization,
+                reference_time=reference_time,
+            )
+
+    async def _handle_intent(
+        self,
+        message,
+        route: IntentResult,
+        *,
+        reference_time: datetime,
+    ) -> DispatchOutcome:
+        """Dispatch an accepted route under its backing-store scope."""
+
+        if route.requires_confirmation:
+            return DispatchOutcome.failure(
+                "confirmation_required",
+                retryable=False,
+            )
+        if route.risk is IntentRisk.READ_ONLY:
+            return await self._dispatch_intent_body(
+                message,
+                route,
+                reference_time=reference_time,
+            )
+        key = conversation_key_from_message(message)
+        routing = routing_context_from_message(
+            message,
+            bot_user_id=self.client.user.id,
+        )
+        try:
+            frozen = self.pending_targets.freeze(
+                route,
+                routing,
+                reference_time=reference_time,
+            )
+            async with self.pending_targets.mutation_context(frozen.route, key):
+                rebound = self.pending_targets.revalidate(
+                    frozen.route,
+                    frozen.guard,
+                    routing,
+                    reference_time=reference_time,
+                )
+                return await self._dispatch_intent_body(
+                    message,
+                    rebound,
+                    reference_time=reference_time,
+                )
+        except PendingTargetError as exc:
+            return DispatchOutcome.failure(exc.code, retryable=False)
+
+    async def _dispatch_intent_body(
+        self,
+        message,
+        route: IntentResult,
+        *,
+        reference_time: datetime,
+        authorization: ClaimedActionAuthorization | None = None,
+    ) -> DispatchOutcome:
+        """Execute one validated route without routing or confirmation logic."""
         raw_payload = getattr(route, "payload", None)
         payload = raw_payload if isinstance(raw_payload, Mapping) else {}
 
@@ -735,43 +1898,13 @@ class MessageMonitor:
                 "invalid_payload",
             ).with_delivery(send)
 
-        if getattr(route, "requires_confirmation", False):
-            send = await self._send_response_result(
-                message,
-                "Jeg kan ikke bekrefte denne handlingen trygt ennå. "
-                "Ingenting ble endret.",
-            )
-            return DispatchOutcome.failure(
-                "confirmation_unavailable",
-                retryable=False,
-            ).with_delivery(send)
-
-        threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
-        if route.confidence < threshold:
-            print(
-                f"[MONITOR] Intent {route.intent.value} rejected: confidence {route.confidence:.2f} < threshold {threshold}"
-            )
-            self.intent_stats[route.intent.value]["low_confidence"] += 1
-            fallback = await self._invoke_legacy_read(
-                lambda: self._send_ai_response(
-                    message,
-                    reference_time=reference_time,
-                )
-            )
-            base = DispatchOutcome.failure("low_confidence")
-            return (
-                base
-                if fallback.delivery_result is None
-                else base.with_delivery(fallback.delivery_result)
-            )
-
         if route.intent == BotIntent.HELP:
             return await self._invoke_legacy_read(
                 lambda: self.handlers["help"].handle_help(message)
             )
         elif route.intent == BotIntent.CALENDAR_HELP:
             return await self._invoke_legacy_read(
-                lambda: self._send_response(
+                lambda: self._send_text_sequence_result(
                     message,
                     self.conv_gen.get_calendar_help(),
                 )
@@ -781,17 +1914,11 @@ class MessageMonitor:
                 lambda: self._send_status_response(message)
             )
         elif route.intent == BotIntent.PROFILE:
-            async def handle_profile_or_chat():
-                handled = await self.handlers["profile"].handle_profile_command(
+            return await self._invoke_legacy_read(
+                lambda: self.handlers["profile"].handle_profile_command(
                     message
                 )
-                if not handled:
-                    await self._send_ai_response(
-                        message,
-                        reference_time=reference_time,
-                    )
-
-            return await self._invoke_legacy_read(handle_profile_or_chat)
+            )
         elif route.intent == BotIntent.CALENDAR_LIST:
             return await self.handlers["calendar"].handle_list(
                 message,
@@ -1025,20 +2152,15 @@ class MessageMonitor:
                 payload.get("city"),
                 reference_time=reference_time,
             )
-        elif route.intent in (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_EXPORT, BotIntent.MEMORY_DELETE):
-            return await self._invoke_legacy_read(
-                lambda: self.handlers["memory"].handle_memory(
-                    message,
-                    payload.get("memory", {}),
-                )
-            )
-        elif route.intent == BotIntent.SEARCH:
-            return await self._invoke_legacy_read(
-                lambda: self._send_ai_response(
-                    message,
-                    forced_search_info=payload.get("search"),
-                    reference_time=reference_time,
-                )
+        elif route.intent in (
+            BotIntent.MEMORY_VIEW,
+            BotIntent.MEMORY_EXPORT,
+            BotIntent.MEMORY_DELETE,
+        ):
+            return await self.handlers["memory"].handle_memory(
+                message,
+                typed_payload,
+                authorization=authorization,
             )
         elif route.intent == BotIntent.DASHBOARD:
             return await self._invoke_legacy_read(
@@ -1047,13 +2169,10 @@ class MessageMonitor:
                     reference_time=reference_time,
                 )
             )
-        else:
-            return await self._invoke_legacy_read(
-                lambda: self._send_ai_response(
-                    message,
-                    reference_time=reference_time,
-                )
-            )
+        return DispatchOutcome.failure(
+            "unsupported_dispatch_intent",
+            retryable=False,
+        )
 
     async def _send_dashboard_response(
         self,
@@ -1076,300 +2195,224 @@ class MessageMonitor:
             user_id=message.author.id,
             reference_time=reference_time,
         )
-        await self._send_response(message, response_text)
+        await self._send_text_sequence_result(message, response_text)
 
     async def _send_ai_response(
         self,
         message,
-        forced_search_info=None,
         *,
+        utterance: NormalizedUtterance,
+        routing_context: RoutingContext,
+        routed_intent: IntentResult,
         reference_time: datetime,
-    ):
-        """
-        Generate and send an AI response to a mention.
-        Uses Hermes AI with personality system.
-        """
-        print(f"[MONITOR] _send_ai_response called for message: {message.content[:50]}...")
+        semantic_action_allowed: bool,
+        forced_search_info: dict[str, str] | None = None,
+    ) -> RouteProcessOutcome:
+        """Generate prose or one typed proposal without inline execution."""
 
+        print(
+            "[MONITOR] _send_ai_response called for message: "
+            f"{utterance.text[:50]}..."
+        )
         channel_type = self._get_channel_type(message.channel)
-        print(f"[MONITOR] Channel type: {channel_type}")
-        guild_id = message.guild.id if message.guild else message.channel.id
-        channel_id = message.channel.id
-        content_lower = message.content.lower()
-        wants_dashboard, dashboard_reason = self.conversation.should_show_dashboard(
-            message.content, channel_id
-        )
-        print(f"[MONITOR] AI fallback mode: dashboard={wants_dashboard} ({dashboard_reason})")
+        search_context = ""
+        search_was_requested = forced_search_info is not None
 
-        # AI Router Mode: We default to chat and let the AI decide if a dashboard/action is needed.
-        # But we still check for explicit city names if the user MIGHT want weather.
-        city_name = None
-        from features.weather_api import extract_city
-        city_name = extract_city(message.content)
-        if city_name:
-            print(f"[MONITOR] Specific city detected for context: {city_name}")
-        
-        show_navnedag = any(re.search(rf"\b{re.escape(word)}\b", content_lower) for word in ['navnedag', 'oppsummering', 'brief', 'status'])
+        if forced_search_info is not None:
+            query = forced_search_info.get("query", "")
+            search_type = forced_search_info.get("type", "web")
+            try:
+                if search_type == "news":
+                    search_results = await self.search_manager.get_news(query)
+                else:
+                    search_results = await self.search_manager.search(query)
+                if search_results:
+                    search_context = self.search_manager.format_results_for_ai(
+                        search_results
+                    )
+                    has_deep_content = any(
+                        len(result.get("body", "")) > 500
+                        for result in search_results
+                    )
+                    if (
+                        not has_deep_content
+                        and self.browser_manager.is_configured()
+                    ):
+                        top_url = search_results[0].get(
+                            "href"
+                        ) or search_results[0].get("url")
+                        if top_url:
+                            page_content = (
+                                await self.browser_manager.fetch_page_content(
+                                    top_url
+                                )
+                            )
+                            if page_content:
+                                search_context += (
+                                    "\n\nDETALJERT INFORMASJON FRA KILDEN "
+                                    f"({top_url}):\n{page_content}\n"
+                                )
+            except Exception as exc:
+                print(
+                    "[MONITOR] Search context degraded: "
+                    f"{type(exc).__name__}"
+                )
 
+        from ai.personality_config import get_fallback_response
 
-        # Update conversation history
-        self.conversation.add_message(
-            channel_id=channel_id,
-            user_id=message.author.id,
-            username=message.author.name,
-            content=message.content,
-            is_bot=False,
-        )
+        if not self.hermes:
+            return await self._send_route_text(
+                message,
+                get_fallback_response("general"),
+                routed_intent,
+                "failed",
+            )
 
-        # Conversation persistence is helpful context, but a local memory
-        # write failure must not turn an otherwise valid chat turn into
-        # command-style silence.  Cancellation still propagates separately.
         try:
-            await self.user_memory.update_last_interaction_result(
+            user_context = await self.user_memory.format_context_for_prompt(
                 message.author.id,
-                reference_time=reference_time,
-                topic=self.conversation.get_conversation_summary(channel_id),
-                username=message.author.name,
+                message.author.name,
             )
-        except ManagerMutationError as exc:
-            code = (
-                exc.code
-                if exc.code in {"storage_write_failed", "commit_state_unknown"}
-                else "commit_state_unknown"
+        except Exception:
+            user_context = ""
+        try:
+            conversation_context = self.conversation.get_context(
+                message.channel.id,
+                limit=5,
             )
-            print(f"[MONITOR] User-memory update degraded: {code}")
+        except Exception:
+            conversation_context = []
+
+        system_prompt = self.get_system_prompt(
+            user_context=user_context,
+            conversation_context=conversation_context,
+            style=self.ResponseStyle.CASUAL,
+            routed_intent=routed_intent.intent,
+            reference_time=reference_time,
+        )
+        if search_context:
+            system_prompt += (
+                "\n\nSØKERESULTATER FRA NETTET:\n"
+                f"{search_context}\n\n"
+                "Bruk bare kildene over for oppdaterte påstander. "
+                "Oppgi kilde og vær tydelig på svak eller manglende dokumentasjon."
+            )
+        elif search_was_requested:
+            system_prompt += (
+                "\n\nSØK: Ingen kilder ble funnet. Ikke presenter svaret som "
+                "live-sjekket eller verifisert på nettet."
+            )
+
+        try:
+            success, ai_response = await self.hermes.generate_response(
+                message_content=utterance.raw,
+                author_name=message.author.name,
+                channel_type=channel_type,
+                is_mention=True,
+                system_prompt=system_prompt,
+            )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             print(
-                "[MONITOR] User-memory update degraded: "
+                "[MONITOR] Personalized AI failed: "
                 f"{type(exc).__name__}"
             )
+            success, ai_response = False, ""
 
-        response_text = None
-
-        # If it's small talk, don't show dashboard - use AI conversation
-        if not wants_dashboard:
-            # Check for Norwegian dialect expressions first (fast path)
-            from ai.personality import get_personality
-            dialect_response = get_personality().respond_to_dialect(message.content)
-            if dialect_response:
-                response_text = dialect_response
-                print(f"[MONITOR] Using dialect response for: {message.content[:50]}")
-            
-            # Fall back to AI if no dialect match and hermes is available
-            if not response_text and self.hermes:
-                try:
-                    user_context = await self.user_memory.format_context_for_prompt(
-                        message.author.id, message.author.name
-                    )
-                    conversation_context = self.conversation.get_context(
-                        channel_id, limit=5
-                    )
-
-                    # Check for search intent
-                    search_info = forced_search_info or self.detect_search_intent(message.content)
-                    search_context = ""
-                    search_was_requested = False
-                    if search_info:
-                        search_was_requested = True
-                        query = search_info["query"]
-                        search_type = search_info["type"]
-                        print(f"[MONITOR] Web search ({search_type}) triggered for: {query}")
-                        
-                        if search_type == "news":
-                            search_results = await self.search_manager.get_news(query)
-                        else:
-                            search_results = await self.search_manager.search(query)
-                            
-                        if search_results:
-                            search_context = self.search_manager.format_results_for_ai(search_results)
-                            print(f"[MONITOR] Found {len(search_results)} search results")
-                            
-                            # WEB LOOKUP: Only use Browserbase if we don't have deep content yet
-                            has_deep_content = any(len(res.get('body', '')) > 500 for res in search_results)
-                            
-                            if not has_deep_content and self.browser_manager.is_configured() and len(search_results) > 0:
-                                top_url = search_results[0].get('href') or search_results[0].get('url')
-                                if top_url:
-                                    print(f"[MONITOR] Web Lookup: Tavily content was shallow. Using Browserbase fallback for: {top_url}")
-                                    page_content = await self.browser_manager.fetch_page_content(top_url)
-                                    if page_content:
-                                        search_context += f"\n\nDETALJERT INFORMASJON FRA KILDEN ({top_url}):\n{page_content}\n"
-                                        print("[MONITOR] Web Lookup: Browserbase fallback successful")
-                            elif has_deep_content:
-                                print("[MONITOR] Web Lookup: Tavily provided deep content. Skipping Browserbase.")
-                        else:
-                            response_text = (
-                                "Jeg fant ingen ferske kilder akkurat nå, så jeg vil ikke late som jeg "
-                                "har sjekket dette. Jeg kan svare generelt hvis du vil, men da bør vi "
-                                "merke det som ikke-verifisert."
-                            )
-
-                    if not response_text:
-                        system_prompt = self.get_system_prompt(
-                            user_context=user_context,
-                            conversation_context=conversation_context,
-                            style=self.ResponseStyle.CASUAL,
-                            routed_intent=getattr(self, '_last_routed_intent', None),
-                        )
-
-                        # Inject search results into system prompt if available
-                        if search_context:
-                            system_prompt += f"\n\nSØKERESULTATER FRA NETTET:\n{search_context}\n"
-                            system_prompt += (
-                                "\nVIKTIG: Bruk bare kildene over for oppdaterte påstander. "
-                                "Oppgi kilde med tittel eller URL. Ikke kall noe ferskt bare fordi "
-                                "det ble hentet nå. Hvis publiseringsdato mangler, si at "
-                                "publiseringsdato ikke var tilgjengelig. Hvis kildene spriker eller "
-                                "er svake, si det tydelig."
-                            )
-                        elif search_was_requested:
-                            system_prompt += (
-                                "\n\nSØK: Ingen kilder ble funnet. Ikke presenter svaret som live-sjekket "
-                                "eller verifisert på nettet."
-                            )
-
-                        print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
-
-                        success, ai_response = await self.hermes.generate_response(
-                            message_content=message.content,
-                            author_name=message.author.name,
-                            channel_type=channel_type,
-                            is_mention=True,
-                            system_prompt=system_prompt,
-                        )
-
-                        if success and ai_response:
-                            print("[MONITOR] Using personalized AI response")
-                            # Parse and execute actions before sending
-                            response_text = await self._parse_and_execute_actions(
-                                ai_response,
-                                message,
-                                reference_time=reference_time,
-                            )
-                except Exception as e:
-                    print(f"[MONITOR] Personalized AI failed: {e}")
-
-        # Fallback: dashboard or basic response
-        if not response_text:
-            if wants_dashboard:
-                response_text = await self._generate_dashboard(
-                    guild_id, 
-                    city_name=city_name, 
-                    show_navnedag=show_navnedag,
-                    user_id=message.author.id,
-                    reference_time=reference_time,
-                )
-            else:
-                from ai.personality_config import get_fallback_response
-                response_text = get_fallback_response("general")
-
-        # Send the response
-        await self._send_response(message, response_text)
-
-    async def _parse_and_execute_actions(
-        self,
-        response_text,
-        message,
-        *,
-        reference_time: datetime | None = None,
-    ):
-        """
-        Parses AI response for [ACTION] tags and executes them.
-        Returns the cleaned response text.
-        """
-        cleaned_text = response_text
-        import json
-
-        # 0. Try JSON format first
-        for line in cleaned_text.split('\n'):
-            line = line.strip()
-            if line.startswith('{') and line.endswith('}'):
-                try:
-                    action_data = json.loads(line)
-                    action_type = action_data.get('action')
-                    if action_type == 'SAVE_EVENT':
-                        title = action_data.get('title', '')
-                        date = action_data.get('date', '')
-                        time = action_data.get('time', '')
-                        print(f"[ROUTER] Drafted SAVE_EVENT action (JSON), waiting for user confirmation: {title} on {date} at {time}")
-                        cleaned_text = cleaned_text.replace(line, '').strip()
-                        cleaned_text = self._append_calendar_draft_confirmation(
-                            cleaned_text, title, date, time
-                        )
-                    elif action_type == 'SHOW_DASHBOARD':
-                        print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
-                        try:
-                            guild_id = message.guild.id if message.guild else message.channel.id
-                            user_mem = (
-                                self.user_memory.snapshot_user(message.author.id)
-                                or {}
-                            )
-                            city_name = user_mem.get("location", "Oslo")
-
-                            dashboard_text = await self._generate_dashboard(
-                                guild_id,
-                                city_name=city_name,
-                                reference_time=reference_time,
-                            )
-                            await self._send_response(message, dashboard_text)
-                        except Exception as e:
-                            print(f"[ROUTER] Failed to show dashboard: {e}")
-
-                        cleaned_text = cleaned_text.replace(line, '').strip()
-                except json.JSONDecodeError:
-                    pass
-
-        # 1. Handle [SAVE_EVENT: Title | Date | Time]
-        event_match = re.search(r'\[SAVE_EVENT:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]', cleaned_text)
-        if event_match:
-            title, date, time = event_match.groups()
-            print(f"[ROUTER] Drafted SAVE_EVENT action, waiting for user confirmation: {title} on {date} at {time}")
-            
-            cleaned_text = cleaned_text.replace(event_match.group(0), "").strip()
-            cleaned_text = self._append_calendar_draft_confirmation(
-                cleaned_text, title, date, time
+        if not success or not ai_response:
+            return await self._send_route_text(
+                message,
+                get_fallback_response("general"),
+                routed_intent,
+                "failed",
             )
 
-        # 2. Handle [SHOW_DASHBOARD]
-        if '[SHOW_DASHBOARD]' in cleaned_text:
-            print("[ROUTER] Detected SHOW_DASHBOARD action")
-            try:
-                guild_id = message.guild.id if message.guild else message.channel.id
-                # Get location from user memory
-                user_mem = self.user_memory.snapshot_user(message.author.id) or {}
-                city_name = user_mem.get("location", "Oslo")
-                
-                dashboard_text = await self._generate_dashboard(
-                    guild_id,
-                    city_name=city_name,
-                    reference_time=reference_time,
-                )
-                await self._send_response(message, dashboard_text)
-            except Exception as e:
-                print(f"[ROUTER] Failed to show dashboard: {e}")
-            
-            cleaned_text = cleaned_text.replace('[SHOW_DASHBOARD]', "").strip()
-            
-        return cleaned_text
-
-    def _append_calendar_draft_confirmation(self, text, title, date, time):
-        """Ask the user to confirm model-suggested calendar writes explicitly."""
-        title = str(title or "").strip() or "Uten tittel"
-        date = str(date or "").strip()
-        time = str(time or "").strip()
-        command = f'@inebotten legg til "{title}"'
-        if date:
-            command += f" {date}"
-        if time:
-            command += f" kl {time}"
-        draft = (
-            f"📅 Jeg kan legge dette i kalenderen, men jeg lagrer det ikke uten bekreftelse:\n"
-            f"**{title}**"
-            f"{f' — {date}' if date else ''}"
-            f"{f' kl. {time}' if time else ''}\n\n"
-            f"Skriv `{command}` hvis det skal lagres."
+        try:
+            active_polls = self.poll.snapshot_pending_items(
+                domain_scope_id(routing_context.key),
+                reference_time=reference_time,
+            )
+        except (TypeError, ValueError):
+            active_polls = ()
+        active_poll_id = (
+            str(active_polls[0]["poll_id"])
+            if len(active_polls) == 1
+            and isinstance(active_polls[0], Mapping)
+            and active_polls[0].get("poll_id") is not None
+            else None
         )
-        return f"{text}\n\n{draft}".strip() if text else draft
+        model_outcome = await self.ai_action_handler.handle_model_response(
+            raw=ai_response,
+            utterance=utterance,
+            routing=routing_context,
+            reference_time=reference_time,
+            deterministic_route=routed_intent,
+            active_poll_count=len(active_polls),
+            active_poll_id=active_poll_id,
+            semantic_action_allowed=semantic_action_allowed,
+        )
+        if model_outcome.route is None:
+            text = model_outcome.visible_text or get_fallback_response("general")
+            if (
+                routed_intent.intent is BotIntent.SEARCH
+                and model_outcome.disposition is ModelDisposition.ORDINARY
+            ):
+                decision_route = routed_intent
+                decision_outcome = "executed"
+            else:
+                decision_route = IntentResult(
+                    BotIntent.AI_CHAT,
+                    1.0,
+                    {},
+                    (
+                        "model_prose"
+                        if not model_outcome.parser_errors
+                        else "model_action_invalid"
+                    ),
+                    source=IntentSource.SEMANTIC,
+                    risk=IntentRisk.READ_ONLY,
+                )
+                decision_outcome = {
+                    ModelDisposition.BLOCKED: "blocked",
+                    ModelDisposition.INVALID: "failed",
+                    ModelDisposition.ORDINARY: "routed",
+                }.get(model_outcome.disposition, "failed")
+            return await self._send_route_text(
+                message,
+                text,
+                decision_route,
+                decision_outcome,
+            )
+        return await self._process_route(
+            message,
+            utterance=utterance,
+            routing_context=routing_context,
+            route=model_outcome.route,
+            reference_time=reference_time,
+            visible_text=model_outcome.visible_text,
+            model_origin=True,
+        )
+
+    async def _parse_and_execute_actions(self, response_text, message):
+        """Compatibility cleaner; model proposals remain inert on this path."""
+
+        utterance = normalize_utterance(message.content)
+        routing = routing_context_from_message(
+            message,
+            bot_user_id=self.client.user.id,
+        )
+        outcome = await self.ai_action_handler.handle_model_response(
+            raw=response_text,
+            utterance=utterance,
+            routing=routing,
+            reference_time=self._reference_time_now(),
+            deterministic_route=None,
+            active_poll_count=None,
+            active_poll_id=None,
+            semantic_action_allowed=True,
+        )
+        return outcome.visible_text
 
     async def _handle_set_location(
         self,
@@ -1529,7 +2572,7 @@ class MessageMonitor:
             )
         if intent_stats_lines:
             response_text += "\nIntent stats:\n" + "\n".join(intent_stats_lines)
-        await self._send_response(message, response_text)
+        await self._send_text_sequence_result(message, response_text)
 
     async def _generate_dashboard(
         self,
@@ -1647,10 +2690,46 @@ class MessageMonitor:
         self._record_monitor_delivery(message, response_text, result)
         return result
 
-    async def _send_response(self, message, response_text):
+    async def _send_text_sequence_result(
+        self,
+        message,
+        text: str,
+    ) -> MessageSendResult:
+        """Send at most five ordered chunks without replaying a prefix."""
+
+        delivered = 0
+        chunks = bounded_discord_text_chunks(text)
+        for chunk in chunks:
+            try:
+                result = await self._send_response_result(message, chunk)
+            except MessageSendCancelled as exc:
+                if exc.result.state is DeliveryState.DELIVERED:
+                    delivered += 1
+                if delivered == len(chunks):
+                    aggregate = MessageSendResult(DeliveryState.DELIVERED)
+                elif delivered:
+                    aggregate = MessageSendResult(
+                        DeliveryState.UNKNOWN,
+                        "partial_send",
+                    )
+                else:
+                    aggregate = exc.result
+                raise MessageSendCancelled(aggregate) from exc
+            if result.state is DeliveryState.DELIVERED:
+                delivered += 1
+                continue
+            if delivered:
+                return MessageSendResult(
+                    DeliveryState.UNKNOWN,
+                    "partial_send",
+                )
+            return result
+        return MessageSendResult(DeliveryState.DELIVERED)
+
+    async def _send_response(self, message, response_text) -> bool:
         """One-release projection over tri-state monitor delivery truth."""
         result = await self._send_response_result(message, response_text)
-        return True if result.state is DeliveryState.DELIVERED else None
+        return result.state is DeliveryState.DELIVERED
 
     def _get_channel_type(self, channel):
         """Get string representation of channel type"""

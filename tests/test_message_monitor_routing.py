@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
+from cal_system.temporal_resolver import TemporalResolver
 from core.dispatch_result import (
     DeliveryState,
     DispatchOutcome,
@@ -21,9 +22,15 @@ from core.dispatch_result import (
 from core.intent_models import IntentResult, IntentSource
 from core.intent_payloads import PayloadValidationError
 from core.intent_router import BotIntent, IntentRouter
-from core.message_monitor import MessageMonitor
+from core.message_context import routing_context_from_message
+from core.message_monitor import MessageMonitor, RouteProcessOutcome
 from core.mutation_coordinator import MutationCoordinator
+from core.nlu_metrics import NLUMetrics
+from core.pending_actions import PendingActionStore
+from core.pending_targets import PendingTargetResolver
 from core.send_receipt import DiscordSendCoordinator
+from core.utterance import normalize_utterance
+from features.ai_action_handler import AIActionHandler
 from features.quote_manager import parse_quote_command
 from features.watchlist_manager import parse_watchlist_command
 from memory.conversation_context import ConversationContext
@@ -127,6 +134,18 @@ class FakeUserMemory:
     def snapshot_user(self, *args, **kwargs):
         return None
 
+    def snapshot_pending_user(self, *args, **kwargs):
+        return None
+
+    async def format_user_memory_for_user(self, *args, **kwargs):
+        return "Jeg har ikke lagret noe brukerminne om deg ennå."
+
+    async def export_user_memory(self, *args, **kwargs):
+        return {}
+
+    async def delete_user_memory_result(self, *args, **kwargs):
+        return False
+
 
 class RecordingMessage:
     _next_id = 1
@@ -176,6 +195,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.mutation_coordinator = MutationCoordinator()
         monitor.discord_sender = DiscordSendCoordinator(monitor.rate_limiter)
         monitor.reminder_clock = SimpleNamespace(now=Mock(return_value=NOW))
+        clock_now = monitor.reminder_clock.now
+        monitor._reference_time_now = clock_now
+        monitor.nlu_metrics = NLUMetrics()
+        monitor.temporal_resolver = TemporalResolver()
         monitor.loc = SimpleNamespace(detect_language=lambda content: "no", set_language=lambda lang: None)
         monitor.nlp_parser = SimpleNamespace(
             parse_task_with_recurrence=lambda content: None,
@@ -190,7 +213,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.browser_manager = SimpleNamespace(is_configured=lambda: False)
         monitor.detect_search_intent = lambda content: None
         monitor.calendar = SimpleNamespace(
-            get_upcoming=lambda guild_id, days=7, reference_time=None: []
+            get_upcoming=lambda guild_id, days=7, reference_time=None: [],
+            snapshot_pending_items=lambda *, reference_time: (),
+            snapshot_all_item_ids=lambda: (),
         )
         monitor.conv_gen = SimpleNamespace(generate_dashboard=lambda **kwargs: "dashboard")
 
@@ -198,10 +223,47 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.poll = SimpleNamespace(
             get_active_polls=lambda guild_id, reference_time=None: (
                 [{"id": "poll1"}] if active_polls else []
-            )
+            ),
+            snapshot_pending_items=lambda scope_id, reference_time=None: (
+                (
+                    {
+                        "poll_id": "poll1",
+                        "question": "Test?",
+                        "options": [
+                            {"text": "Ja", "votes": []},
+                            {"text": "Nei", "votes": []},
+                        ],
+                        "status": "active",
+                    },
+                )
+                if active_polls
+                else ()
+            ),
         )
         monitor.reminders = SimpleNamespace(
-            get_active_reminders=lambda guild_id: [{"id": "rem1"}] if active_reminders else []
+            get_active_reminders=lambda guild_id: [{"id": "rem1"}] if active_reminders else [],
+            snapshot_pending_items=lambda scope_id: (
+                (
+                    {
+                        "id": "rem1",
+                        "text": "Testpåminnelse",
+                        "due_at": "2026-07-16T09:30:00+02:00",
+                        "due_date": "16.07.2026",
+                        "time": "09:30",
+                        "timezone": "Europe/Oslo",
+                        "recurrence": None,
+                        "recurrence_sequence": 0,
+                        "completed": False,
+                    },
+                )
+                if active_reminders
+                else ()
+            ),
+        )
+        monitor.watchlist = SimpleNamespace(snapshot_pending_items=lambda scope_id: ())
+        monitor.quote = SimpleNamespace(snapshot_pending_items=lambda scope_id: ())
+        monitor.birthdays = SimpleNamespace(
+            snapshot_pending_user=lambda scope_id, user_id: None
         )
         monitor.parse_poll_command = lambda content: None
         monitor.parse_vote = lambda content: int(content) if content.strip().isdigit() else None
@@ -242,8 +304,27 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             "birthdays": SimpleNamespace(handle_birthday_edit=noop),
             "calendar": SimpleNamespace(handle_search=noop, handle_delete=noop),
         }
-        monitor.intent_router = IntentRouter(monitor)
-        monitor.nlu_metrics = monitor.intent_router.metrics
+        monitor.pending_actions = PendingActionStore(
+            metrics=monitor.nlu_metrics,
+            now_provider=clock_now,
+        )
+        monitor.pending_targets = PendingTargetResolver(
+            monitor,
+            coordinator=monitor.mutation_coordinator,
+        )
+        monitor.intent_router = IntentRouter(
+            monitor,
+            metrics=monitor.nlu_metrics,
+            pending_actions=monitor.pending_actions,
+            temporal_resolver=monitor.temporal_resolver,
+            now_provider=clock_now,
+        )
+        monitor.ai_action_handler = AIActionHandler(
+            store=monitor.pending_actions,
+            dispatch_claimed=monitor._dispatch_claimed_intent,
+            metrics=monitor.nlu_metrics,
+            temporal_resolver=monitor.temporal_resolver,
+        )
         monitor.recording_polls = polls
         return monitor
 
@@ -265,9 +346,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         routed = []
 
         class RecordingRouter:
-            def route(
+            def route_utterance(
                 self,
-                content,
+                utterance,
                 guild_id=None,
                 *,
                 channel_id=None,
@@ -277,7 +358,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             ):
                 routed.append(
                     {
-                        "content": content,
+                        "content": utterance.raw,
                         "guild_id": guild_id,
                         "channel_id": channel_id,
                         "user_id": user_id,
@@ -285,21 +366,31 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                         "reference_time": reference_time,
                     }
                 )
-                return SimpleNamespace(
-                    intent=BotIntent.AI_CHAT,
-                    confidence=1.0,
-                    payload={},
+                return IntentResult(
+                    BotIntent.HELP,
+                    1.0,
                     reason="recording_router",
                 )
 
         handled = []
 
-        async def noop_handle_intent(message, route, *, reference_time):
+        async def noop_process_route(
+            message,
+            *,
+            utterance,
+            routing_context,
+            route,
+            reference_time,
+        ):
             handled.append(reference_time)
-            return None
+            return RouteProcessOutcome(
+                DispatchOutcome.success(),
+                route,
+                "routed",
+            )
 
         monitor.intent_router = RecordingRouter()
-        monitor._handle_intent = noop_handle_intent
+        monitor._process_route = noop_process_route
         message = RecordingMessage("@inebotten hjelp")
         message.guild = SimpleNamespace(id=321)
         message.channel = SimpleNamespace(id=654)
@@ -342,20 +433,20 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
-        self.assertEqual(monitor.conversation.dashboard_channels, [100])
-        self.assertEqual(monitor.conversation.summary_channels, [100])
+        self.assertEqual(monitor.conversation.dashboard_channels, [])
+        self.assertEqual(monitor.conversation.summary_channels, [])
         self.assertEqual(monitor.conversation.context_channels, [100])
         self.assertEqual(
             [entry["channel_id"] for entry in monitor.conversation.messages],
-            [100, 100],
+            [100],
         )
         self.assertEqual(
             [entry["user_id"] for entry in monitor.conversation.messages],
-            [7, 7],
+            [7],
         )
         self.assertEqual(
             [entry["is_bot"] for entry in monitor.conversation.messages],
-            [False, True],
+            [True],
         )
 
     async def test_dashboard_generation_keeps_guild_domain_scope(self):
@@ -381,11 +472,11 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         await monitor.handle_message(message)
 
-        self.assertEqual(monitor.conversation.dashboard_channels, [100])
-        self.assertEqual(generated, [(999, 7)])
+        self.assertEqual(monitor.conversation.dashboard_channels, [])
+        self.assertEqual(generated, [])
         self.assertEqual(
             [entry["channel_id"] for entry in monitor.conversation.messages],
-            [100, 100],
+            [100],
         )
 
     async def test_real_conversation_followup_does_not_scrape_prior_bot_prose(self):
@@ -513,23 +604,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_low_confidence_rejection_is_tracked(self):
         monitor = self.make_monitor()
+        route = IntentResult(BotIntent.SEARCH, 0.0)
 
-        async def fake_ai_response(message, *, reference_time):
-            return None
-
-        monitor._send_ai_response = fake_ai_response
-        route = SimpleNamespace(intent=BotIntent.SEARCH, confidence=0.0, payload=None)
-
-        outcome = await monitor._handle_intent(
-            RecordingMessage("@inebotten hjelp"),
-            route,
-            reference_time=NOW,
-        )
-
+        self.assertFalse(monitor._passes_intent_threshold(route))
         self.assertEqual(monitor.intent_stats[BotIntent.SEARCH.value]["low_confidence"], 1)
-        self.assertFalse(outcome.ok)
-        self.assertFalse(outcome.mutated)
-        self.assertEqual(outcome.error_code, "low_confidence")
 
     async def test_confirmation_required_fails_closed_before_handler(self):
         monitor = self.make_monitor()
@@ -539,10 +617,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             calls.append(message)
 
         monitor.handlers["calendar"].handle_delete = destructive_handler
-        route = SimpleNamespace(
-            intent=BotIntent.CALENDAR_DELETE,
-            confidence=1.0,
-            payload={"calendar_target": {"target": "1"}},
+        route = IntentResult(
+            BotIntent.CALENDAR_DELETE,
+            1.0,
+            {"calendar_target": {"target": "1"}},
             requires_confirmation=True,
         )
 
@@ -555,8 +633,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [])
         self.assertFalse(outcome.ok)
         self.assertFalse(outcome.mutated)
-        self.assertEqual(outcome.error_code, "confirmation_unavailable")
-        self.assertIs(outcome.delivery_result.state, DeliveryState.DELIVERED)
+        self.assertEqual(outcome.error_code, "confirmation_required")
+        self.assertIsNone(outcome.delivery_result)
 
     async def test_malformed_action_envelope_precedes_confidence_and_confirmation(self):
         for requires_confirmation in (False, True):
@@ -581,14 +659,20 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
                     reference_time=NOW,
                 )
 
-                self.assertEqual(outcome.error_code, "invalid_payload")
+                self.assertEqual(
+                    outcome.error_code,
+                    (
+                        "confirmation_required"
+                        if requires_confirmation
+                        else "invalid_payload"
+                    ),
+                )
                 self.assertFalse(outcome.mutated)
                 monitor._send_ai_response.assert_not_awaited()
                 handler.assert_not_awaited()
 
-    async def test_valid_low_confidence_action_still_uses_ai_fallback_only(self):
+    async def test_valid_low_confidence_action_is_gated_before_dispatch(self):
         monitor = self.make_monitor()
-        monitor._send_ai_response = AsyncMock()
         handler = AsyncMock(return_value=DispatchOutcome.success(mutated=True))
         monitor.handlers["reminders"].handle_reminder_create = handler
         route = IntentResult(
@@ -598,14 +682,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             source=IntentSource.DETERMINISTIC,
         )
 
-        outcome = await monitor._handle_intent(
-            RecordingMessage("valid but uncertain"),
-            route,
-            reference_time=NOW,
-        )
-
-        self.assertEqual(outcome.error_code, "low_confidence")
-        monitor._send_ai_response.assert_awaited_once()
+        self.assertFalse(monitor._passes_intent_threshold(route))
         handler.assert_not_awaited()
 
     def test_typed_inner_payload_validates_present_and_distinguishes_absence(self):
@@ -1180,10 +1257,11 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def fake_send_response(message, response_text):
+        async def fake_send_sequence(message, response_text):
             captured["text"] = response_text
+            return MessageSendResult(DeliveryState.DELIVERED)
 
-        monitor._send_response = fake_send_response
+        monitor._send_text_sequence_result = fake_send_sequence
 
         await monitor._send_status_response(RecordingMessage("@inebotten status"))
 
@@ -1255,24 +1333,38 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_ai_response(
             message,
-            forced_search_info=None,
             *,
+            utterance,
+            routing_context,
+            routed_intent,
             reference_time,
+            semantic_action_allowed,
+            forced_search_info=None,
         ):
             captured["forced_search_info"] = forced_search_info
             captured["reference_time"] = reference_time
+            return RouteProcessOutcome(
+                DispatchOutcome.success(),
+                routed_intent,
+                "executed",
+            )
 
         monitor._send_ai_response = fake_ai_response
         search_payload = {"query": "dagens nyheter", "type": "web"}
-        route = SimpleNamespace(
-            intent=BotIntent.SEARCH,
-            confidence=0.9,
-            payload={"search": search_payload},
+        route = IntentResult(
+            BotIntent.SEARCH,
+            0.9,
+            {"search": search_payload},
         )
-
-        await monitor._handle_intent(
-            RecordingMessage("@inebotten søk på nett dagens nyheter"),
-            route,
+        message = RecordingMessage("@inebotten søk på nett dagens nyheter")
+        await monitor._process_route(
+            message,
+            utterance=normalize_utterance("søk på nett dagens nyheter"),
+            routing_context=routing_context_from_message(
+                message,
+                bot_user_id=42,
+            ),
+            route=route,
             reference_time=NOW,
         )
 
@@ -1288,7 +1380,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             captured["reference_time"] = reference_time
 
         monitor._send_dashboard_response = fake_dashboard
-        route = SimpleNamespace(intent=BotIntent.DASHBOARD, confidence=0.9, payload={})
+        route = IntentResult(BotIntent.DASHBOARD, 0.9)
         message = RecordingMessage("@inebotten dashboard")
 
         await monitor._handle_intent(message, route, reference_time=NOW)
@@ -1305,7 +1397,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor.mention_count, 1)
         self.assertEqual(len(message.replies), 1)
         self.assertEqual(monitor.response_count, 1)
-        self.assertEqual(monitor.rate_limiter.can_send_calls, 0)
+        self.assertEqual(monitor.rate_limiter.can_send_calls, 1)
         self.assertEqual(monitor.rate_limiter.wait_calls, 1)
 
     async def test_dashboard_fallback_has_defined_context(self):
@@ -1359,10 +1451,10 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             {"option": 1, "poll_id": "poll1"},
         )
         self.assertIs(monitor.recording_polls.votes[0][2], NOW)
-        self.assertEqual(message.replies, [])
+        self.assertEqual(message.replies, ["Handlingen ble utført."])
 
     async def test_incomplete_reminder_edit_falls_back_without_handler(self):
-        monitor = self.make_monitor()
+        monitor = self.make_monitor(active_reminders=True)
         calls = []
 
         async def fake_handle_reminder_edit(message, payload, *, reference_time):
@@ -1379,7 +1471,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(message.replies), 1)
 
     async def test_complete_reminder_edit_routes_to_handler(self):
-        monitor = self.make_monitor()
+        monitor = self.make_monitor(active_reminders=True)
         calls = []
 
         async def fake_handle_reminder_edit(message, payload, *, reference_time):
@@ -1398,7 +1490,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             calls[0][1],
             {
                 "action": "edit",
-                "number": 1,
+                "reminder_id": "rem1",
                 "changes": {"text": "Ring legen"},
             },
         )
@@ -1450,15 +1542,31 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call[0] for call in calls], ["create", "list", "complete"])
         self.assertEqual(calls[0][1]["action"], "add")
         self.assertEqual(calls[1][1], {"action": "list"})
-        self.assertEqual(calls[2][1], {"action": "complete", "number": 1})
+        self.assertEqual(
+            calls[2][1],
+            {"action": "complete", "reminder_id": "rem1"},
+        )
         self.assertTrue(all(call[2] is NOW for call in calls))
 
     async def test_bare_calendar_title_delete_fails_closed_until_confirmation(self):
         monitor = self.make_monitor()
+        row = {
+            "id": "calendar-1",
+            "title": "Send inn meldekort (Uke 25 - 26)",
+            "date": "29.06.2026",
+            "time": "12:00",
+            "type": "event",
+            "description": "",
+            "completed": False,
+            "recurrence": None,
+            "recurrence_sequence": 0,
+        }
         monitor.calendar = SimpleNamespace(
             get_upcoming=lambda guild_id, days=365, reference_time=None: [
-                {"title": "Send inn meldekort (Uke 25 - 26)", "date": "29.06.2026", "time": "12:00"}
-            ]
+                row
+            ],
+            snapshot_pending_items=lambda *, reference_time: (dict(row),),
+            snapshot_all_item_ids=lambda: ("calendar-1",),
         )
         monitor.intent_router = IntentRouter(monitor)
         calls = []
@@ -1473,7 +1581,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [])
         self.assertEqual(len(message.replies), 1)
-        self.assertIn("Ingenting ble endret", message.replies[0])
+        self.assertIn("Bekreftelsesdetaljer", message.replies[0])
+        self.assertEqual(monitor.pending_actions.counts()["ready"], 1)
         self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_DELETE.value]["count"], 1)
 
     async def test_reminder_search_routes_to_handler(self):
@@ -1549,12 +1658,21 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             return "✅ Fjernet Movie A"
 
         monitor.handlers["watchlist"].handle_watchlist_remove = fake_handle_watchlist_remove
+        monitor.watchlist.snapshot_pending_items = lambda scope_id: (
+            {
+                "title": "Movie A",
+                "type": "movie",
+                "genre": "drama",
+                "comment": "",
+            },
+        )
         message = RecordingMessage("@inebotten fjern watchlist 1")
 
         await monitor.handle_message(message)
 
         self.assertEqual(len(message.replies), 1)
-        self.assertIn("Ingenting ble endret", message.replies[0])
+        self.assertIn("Bekreftelsesdetaljer", message.replies[0])
+        self.assertEqual(monitor.pending_actions.counts()["ready"], 1)
         self.assertEqual(monitor.response_count, 1)
 
 

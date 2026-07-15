@@ -321,8 +321,13 @@ class UserMemory:
         return await self._transaction(mutate)
 
     def snapshot_pending_user(self, user_id: object) -> dict[str, Any] | None:
-        user = self.memory.get(str(user_id))
-        return copy.deepcopy(user) if isinstance(user, dict) else None
+        key = str(user_id)
+        if key not in self.memory:
+            return None
+        user = self.memory[key]
+        if not isinstance(user, dict):
+            raise ValueError("invalid_target_state")
+        return copy.deepcopy(user)
 
     def snapshot_user(self, user_id: object) -> dict[str, Any] | None:
         return self.snapshot_pending_user(user_id)
@@ -444,7 +449,7 @@ class UserMemory:
             f"Siste tema: {', '.join(map(str, topics[:5])) if topics else 'ingen lagret'}",
             "",
             "Skriv `@inebotten eksporter minnet mitt` for JSON, eller "
-            "`@inebotten slett minnet mitt bekreft` for å slette det.",
+            "`@inebotten slett minnet mitt` for å slette det.",
         ]
         return "\n".join(lines)
 

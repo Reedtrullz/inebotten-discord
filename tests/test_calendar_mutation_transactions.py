@@ -927,6 +927,56 @@ def test_calendar_snapshots_separate_visible_targets_from_clear_ids(tmp_path):
     assert manager.items[manager.SHARED_KEY][0]["title"] == "Active"
 
 
+@pytest.mark.parametrize(
+    "row",
+    [
+        "malformed",
+        {
+            "id": "bad-completed",
+            "title": "Bad",
+            "date": "16.07.2026",
+            "completed": "",
+        },
+        {
+            "id": "bad-delete",
+            "title": "Bad",
+            "date": "16.07.2026",
+            "delete_pending": 0,
+        },
+    ],
+)
+def test_calendar_pending_snapshot_rejects_corrupt_target_flags(
+    tmp_path,
+    row,
+):
+    manager = CalendarManager(tmp_path / "calendar.json", clock=FixedClock())
+    manager.items = {manager.SHARED_KEY: [row]}
+
+    with pytest.raises(ValueError, match="invalid_target_state"):
+        manager.snapshot_pending_items(reference_time=NOW)
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    [
+        "malformed",
+        ["malformed"],
+        [{"title": "Missing id"}],
+        [{"id": " duplicate "}],
+        [{"id": "same"}, {"id": "same"}],
+    ],
+)
+def test_calendar_clear_snapshot_rejects_corrupt_or_duplicate_ids(
+    tmp_path,
+    bucket,
+):
+    manager = CalendarManager(tmp_path / "calendar.json", clock=FixedClock())
+    manager.items = {manager.SHARED_KEY: bucket}
+
+    with pytest.raises(ValueError, match="invalid_target_state"):
+        manager.snapshot_all_item_ids()
+
+
 @pytest.mark.asyncio
 async def test_concurrent_calendar_writers_keep_both_updates(tmp_path):
     coordinator = MutationCoordinator()

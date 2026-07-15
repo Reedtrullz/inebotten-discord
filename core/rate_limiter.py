@@ -88,10 +88,10 @@ class RateLimiter:
                 return False
             
             if reason.startswith("in_backoff:"):
-                wait_secs = float(reason.split(":")[1])
+                wait_secs = float(reason.rsplit(":", 1)[1].removesuffix("s"))
                 await asyncio.sleep(min(wait_secs, 5))
             elif reason.startswith("rate_limited:"):
-                wait_secs = float(reason.split(":")[1])
+                wait_secs = float(reason.rsplit(":", 1)[1].removesuffix("s"))
                 await asyncio.sleep(max(0.1, wait_secs))
             else:
                 await asyncio.sleep(0.5)

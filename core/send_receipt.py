@@ -69,6 +69,12 @@ def record_send_result(result: MessageSendResult) -> None:
         receipt.observe(result)
 
 
+def current_send_receipt() -> SendReceipt | None:
+    """Return the receipt owned by the current dispatch task, if any."""
+
+    return _CURRENT_RECEIPT.get()
+
+
 async def _settle_owned_send(
     owned_send: asyncio.Task[MessageSendResult],
 ) -> MessageSendResult:

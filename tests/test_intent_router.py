@@ -774,11 +774,11 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.MEMORY_EXPORT)
         self.assertEqual(result.payload["memory"]["action"], "export")
 
-    def test_memory_delete_requires_payload_confirmation_flag(self):
+    def test_memory_delete_prose_confirmation_never_becomes_authorization(self):
         result = self.route("slett minnet mitt bekreft")
         self.assertEqual(result.intent, BotIntent.MEMORY_DELETE)
-        self.assertEqual(result.payload["memory"]["action"], "delete")
-        self.assertTrue(result.payload["memory"]["confirmed"])
+        self.assertEqual(result.payload, {"memory": {"action": "delete"}})
+        self.assertTrue(result.requires_confirmation)
 
     def test_quoted_memory_delete_confirmation_does_not_route(self):
         result = self.route('hva skjer hvis jeg skriver "slett minnet mitt bekreft"?')
@@ -1552,16 +1552,14 @@ class IntentRouterTests(unittest.TestCase):
                     normalize_utterance(text), guild_id=123
                 )
 
-    def test_exact_memory_forget_frame_is_preserved_but_inert_in_examples(self):
-        for text, confirmed in (
-            ("glem meg", False),
-            ("glem meg bekreft", True),
-        ):
+    def test_exact_memory_forget_frame_is_preserved_but_requires_capability(self):
+        for text in ("glem meg", "glem meg bekreft"):
             with self.subTest(text=text):
                 result = self.route(text)
                 self.assertEqual(result.intent, BotIntent.MEMORY_DELETE)
                 self.assertEqual(
-                    result.payload["memory"]["confirmed"], confirmed
+                    result.payload,
+                    {"memory": {"action": "delete"}},
                 )
                 self.assertTrue(result.requires_confirmation)
         for text in (
@@ -1746,8 +1744,13 @@ class IntentRouterTests(unittest.TestCase):
                 self.assertEqual(result.intent, expected)
         auth = self.route("kalender auth AbC_12")
         self.assertEqual(auth.payload["auth_code"], "AbC_12")
+        self.assertTrue(auth.requires_confirmation)
         compact_auth = self.route("kalenderkode AbC_12")
         self.assertEqual(compact_auth.payload["auth_code"], "AbC_12")
+        self.assertTrue(compact_auth.requires_confirmation)
+        auth_start = self.route("kalender auth")
+        self.assertEqual(auth_start.payload, {})
+        self.assertTrue(auth_start.requires_confirmation)
 
     def test_calendar_auth_rejects_cancellation_vocabulary_as_codes(self):
         for text in (
@@ -2128,6 +2131,24 @@ class IntentRouterTests(unittest.TestCase):
             BotIntent.QUOTE_DELETE,
             "quote",
             {"action": "delete", "index": 1, "lang": "no"},
+        ),
+        (
+            "vis minnet mitt",
+            BotIntent.MEMORY_VIEW,
+            "memory",
+            {"action": "view"},
+        ),
+        (
+            "eksporter minnet mitt",
+            BotIntent.MEMORY_EXPORT,
+            "memory",
+            {"action": "export"},
+        ),
+        (
+            "slett minnet mitt bekreft",
+            BotIntent.MEMORY_DELETE,
+            "memory",
+            {"action": "delete"},
         ),
     ],
 )

@@ -139,6 +139,10 @@ class QuotePayload(TypedDict):
     lang: NotRequired[Literal["no", "en"]]
 
 
+class MemoryPayload(TypedDict):
+    action: Literal["view", "export", "delete"]
+
+
 PayloadValue: TypeAlias = (
     CalendarCreatePayload
     | CalendarEditPayload
@@ -155,6 +159,7 @@ PayloadValue: TypeAlias = (
     | BirthdayListPayload
     | WatchlistPayload
     | QuotePayload
+    | MemoryPayload
 )
 
 
@@ -867,6 +872,28 @@ def _quote(
     return result
 
 
+def _memory(
+    intent: BotIntent,
+    raw: Mapping[str, Any],
+    *,
+    source: IntentSource,
+) -> dict[str, Any]:
+    del source
+    expected = {
+        BotIntent.MEMORY_VIEW: "view",
+        BotIntent.MEMORY_EXPORT: "export",
+        BotIntent.MEMORY_DELETE: "delete",
+    }[intent]
+    value = _mapping(raw, frozenset({"action", "confirmed"}))
+    if value.get("action") != expected:
+        _fail("wrong_action")
+    if "confirmed" in value and not isinstance(value["confirmed"], bool):
+        _fail("wrong_action")
+    # Confirmation is an opaque executing capability. The legacy prose flag
+    # is accepted for one release but deliberately discarded here.
+    return {"action": expected}
+
+
 Validator: TypeAlias = Callable[..., dict[str, Any]]
 
 
@@ -921,6 +948,15 @@ INTENT_VALIDATORS: dict[BotIntent, Validator] = {
     BotIntent.QUOTE_DELETE: lambda raw, *, source: _quote(
         BotIntent.QUOTE_DELETE, raw, source=source
     ),
+    BotIntent.MEMORY_VIEW: lambda raw, *, source: _memory(
+        BotIntent.MEMORY_VIEW, raw, source=source
+    ),
+    BotIntent.MEMORY_EXPORT: lambda raw, *, source: _memory(
+        BotIntent.MEMORY_EXPORT, raw, source=source
+    ),
+    BotIntent.MEMORY_DELETE: lambda raw, *, source: _memory(
+        BotIntent.MEMORY_DELETE, raw, source=source
+    ),
 }
 
 
@@ -949,6 +985,9 @@ ENVELOPE_KEYS: dict[BotIntent, str] = {
     BotIntent.QUOTE_LIST: "quote",
     BotIntent.QUOTE_EDIT: "quote",
     BotIntent.QUOTE_DELETE: "quote",
+    BotIntent.MEMORY_VIEW: "memory",
+    BotIntent.MEMORY_EXPORT: "memory",
+    BotIntent.MEMORY_DELETE: "memory",
 }
 
 
