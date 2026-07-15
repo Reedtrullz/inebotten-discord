@@ -30,7 +30,7 @@ from core.intent_payloads import (
     PayloadValidationError,
     validate_intent_payload,
 )
-from core.message_context import RoutingContext
+from core.message_context import RoutingContext, domain_scope_id
 from core.nlu_metrics import NLUMetrics
 from core.utterance import NormalizedUtterance, normalize_utterance
 from core.utterance_semantics import UtteranceSemantics, analyze_utterance
@@ -74,6 +74,12 @@ class CollectorContext:
     channel_id: int | None
     user_id: int | None
     reference_time: datetime
+
+    @property
+    def domain_scope_id(self) -> int | None:
+        if self.routing is not None:
+            return domain_scope_id(self.routing.key)
+        return self.guild_id if self.guild_id is not None else self.channel_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -1095,7 +1101,7 @@ class IntentRouter:
                 )
 
         if control.isdigit() and self._has_active_reminders(
-            context.guild_id
+            context.domain_scope_id
         ):
             number = int(control)
             if number > 0:
@@ -1124,7 +1130,7 @@ class IntentRouter:
             re.I,
         )
         if active_complete and self._has_active_reminders(
-            context.guild_id
+            context.domain_scope_id
         ):
             number = int(active_complete.group(1))
             candidates.append(
@@ -1337,7 +1343,7 @@ class IntentRouter:
                 )
                 if self._target_looks_like_calendar_item(
                     raw_target,
-                    context.guild_id,
+                    context.domain_scope_id,
                     context.reference_time,
                 ):
                     mutation_match = direct
@@ -1355,7 +1361,7 @@ class IntentRouter:
                 not target_is_quoted
                 or self._calendar_unique_title_match(
                     target,
-                    context.guild_id,
+                    context.domain_scope_id,
                     context.reference_time,
                 )
             )
@@ -1438,7 +1444,7 @@ class IntentRouter:
                 and (not target_is_quoted or quoted_family)
                 and self._calendar_unique_title_match(
                     bound_target,
-                    context.guild_id,
+                    context.domain_scope_id,
                     context.reference_time,
                 )
             )
@@ -1878,7 +1884,10 @@ class IntentRouter:
             )
         )
         active_polls = (
-            self._active_polls(context.guild_id, context.reference_time)
+            self._active_polls(
+                context.domain_scope_id,
+                context.reference_time,
+            )
             if poll_list_gate or control.isdigit() or poll_domain
             else ()
         )
@@ -3061,7 +3070,7 @@ class IntentRouter:
     def _target_looks_like_calendar_item(
         self,
         target: str,
-        guild_id: Optional[int],
+        scope_id: int | None,
         reference_time: datetime,
     ) -> bool:
         if self._is_reserved_delete_target(target):
@@ -3073,7 +3082,7 @@ class IntentRouter:
         if title_query.isdigit():
             return True
         return self._calendar_title_matches(
-            title_query, guild_id, reference_time
+            title_query, scope_id, reference_time
         )
 
     def _calendar_title_query(self, target: str) -> str:
@@ -3106,7 +3115,7 @@ class IntentRouter:
     def _calendar_title_matches(
         self,
         title_query: str,
-        guild_id: Optional[int],
+        scope_id: int | None,
         reference_time: datetime,
     ) -> bool:
         calendar = getattr(self.monitor, "calendar", None)
@@ -3116,7 +3125,7 @@ class IntentRouter:
         try:
             if hasattr(calendar, "get_upcoming"):
                 items = calendar.get_upcoming(
-                    guild_id,
+                    scope_id,
                     days=365,
                     reference_time=reference_time,
                 )
@@ -3131,7 +3140,7 @@ class IntentRouter:
     def _calendar_unique_title_match(
         self,
         title_query: str,
-        guild_id: Optional[int],
+        scope_id: int | None,
         reference_time: datetime,
     ) -> bool:
         calendar = getattr(self.monitor, "calendar", None)
@@ -3139,7 +3148,7 @@ class IntentRouter:
             return False
         try:
             items = calendar.get_upcoming(
-                guild_id,
+                scope_id,
                 days=365,
                 reference_time=reference_time,
             )
@@ -3258,12 +3267,12 @@ class IntentRouter:
 
         return None
 
-    def _has_active_reminders(self, guild_id: Optional[int]) -> bool:
+    def _has_active_reminders(self, scope_id: int | None) -> bool:
         reminders = getattr(self.monitor, "reminders", None)
         if not reminders or not hasattr(reminders, "get_active_reminders"):
             return False
         try:
-            return bool(reminders.get_active_reminders(guild_id))
+            return bool(reminders.get_active_reminders(scope_id))
         except Exception:
             return False
 
@@ -3408,14 +3417,14 @@ class IntentRouter:
 
     def _active_polls(
         self,
-        guild_id: Optional[int],
+        scope_id: int | None,
         reference_time: datetime,
     ) -> tuple[Mapping[str, Any], ...]:
-        if guild_id is None:
+        if scope_id is None:
             return ()
         try:
             rows = self.monitor.poll.get_active_polls(
-                guild_id,
+                scope_id,
                 reference_time=reference_time,
             )
         except Exception:
@@ -3426,10 +3435,10 @@ class IntentRouter:
 
     def _has_active_poll(
         self,
-        guild_id: Optional[int],
+        scope_id: int | None,
         reference_time: datetime,
     ) -> bool:
-        return bool(self._active_polls(guild_id, reference_time))
+        return bool(self._active_polls(scope_id, reference_time))
 
     @staticmethod
     def _single_poll_id(

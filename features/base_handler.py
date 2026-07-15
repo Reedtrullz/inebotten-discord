@@ -12,10 +12,17 @@ Provides shared utilities common to all handlers:
 This class should be inherited by all new handlers.
 """
 
+import asyncio
 import discord
-import inspect
 import re
-from typing import Optional, Union
+from typing import Optional
+
+from core.dispatch_result import (
+    DeliveryState,
+    MessageSendCancelled,
+    MessageSendResult,
+)
+from core.send_receipt import _settle_owned_send, record_send_result
 from utils.logger import LoggerMixin
 
 
@@ -45,60 +52,75 @@ to ensure consistent access to shared state like rate limiting and
         message: discord.Message,
         content: str,
         mention_author: bool = False
-    ) -> Optional[discord.Message]:
+    ) -> bool | None:
         """
-        Send a response to a message with proper channel type handling.
-
-        Handles DM, Group DM, and Guild channels consistently.
-        Also records rate limiter stats automatically.
+        Compatibility projection over the canonical tri-state sender.
 
         Args:
             message: The original message to respond to
             content: Response content to send
-            mention_author: Whether to mention the author (only for guild channels)
+            mention_author: Retained for one-release call compatibility.  The
+                canonical sender always disables author mentions.
 
         Returns:
-            The sent message object, or None if failed
+            True only when Discord delivery is definite, otherwise None.
         """
-        can_send, reason = self.rate_limiter.can_send()
-        if not can_send:
-            self.logger.warning("Rate limited: cannot send response (%s)", reason)
-            if hasattr(self.rate_limiter, "record_dropped"):
-                self.rate_limiter.record_dropped()
-            return None
+        del mention_author
+        result = await self.send_response_result(message, content)
+        return True if result.state is DeliveryState.DELIVERED else None
 
-        wait_result = self.rate_limiter.wait_if_needed()
-        if inspect.isawaitable(wait_result):
-            wait_result = await wait_result
-        if not wait_result:
-            self.logger.warning("Rate limited: wait_if_needed refused send")
-            if hasattr(self.rate_limiter, "record_dropped"):
-                self.rate_limiter.record_dropped()
-            return None
+    async def send_response_result(
+        self,
+        message: discord.Message,
+        content: str,
+    ) -> MessageSendResult:
+        """Delegate once to the monitor-owned sender and settle cancellation."""
+
+        sender = getattr(self.monitor, "discord_sender", None)
+        adapter = getattr(sender, "send_result", None)
+        if not callable(adapter):
+            result = MessageSendResult(
+                DeliveryState.NOT_DELIVERED,
+                "missing_adapter",
+            )
+            record_send_result(result)
+            return result
 
         try:
-            if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
-                sent = await message.channel.send(content)
-            else:
-                sent = await message.reply(content, mention_author=mention_author)
+            awaitable = adapter(message, content)
+        except Exception:
+            result = MessageSendResult(
+                DeliveryState.UNKNOWN,
+                "send_task_exception",
+            )
+            record_send_result(result)
+            return result
+        if not asyncio.iscoroutine(awaitable):
+            result = MessageSendResult(
+                DeliveryState.NOT_DELIVERED,
+                "missing_adapter",
+            )
+            record_send_result(result)
+            return result
 
-            # Record successful send
-            self.rate_limiter.record_sent()
-            if hasattr(self.monitor, 'response_count'):
-                self.monitor.response_count += 1
+        owned_send = asyncio.create_task(awaitable)
+        try:
+            result = await _settle_owned_send(owned_send)
+        except MessageSendCancelled as exc:
+            self._record_delivered_response(exc.result)
+            raise
+        self._record_delivered_response(result)
+        return result
 
-            return sent
-        except discord.errors.Forbidden:
-            self.logger.warning("Forbidden: Cannot send message in this channel")
-            self.rate_limiter.record_failure()
-        except discord.errors.HTTPException as e:
-            self.logger.error(f"HTTP error sending message: {e}")
-            self.rate_limiter.record_failure(is_rate_limit=(e.status == 429))
-        except Exception as e:
-            self.logger.error(f"Error sending response: {e}")
-            self.rate_limiter.record_failure()
-
-        return None
+    def _record_delivered_response(self, result: MessageSendResult) -> None:
+        if result.state is not DeliveryState.DELIVERED:
+            return
+        response_count = getattr(self.monitor, "response_count", None)
+        if isinstance(response_count, int) and not isinstance(
+            response_count,
+            bool,
+        ):
+            self.monitor.response_count = response_count + 1
 
     async def check_rate_limit(self) -> tuple[bool, Optional[str]]:
         """

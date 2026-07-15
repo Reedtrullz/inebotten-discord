@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -24,6 +25,9 @@ from core.message_context import (
     ConversationKey,
     ResolvedMention,
     RoutingContext,
+    conversation_key_from_message,
+    domain_scope_id,
+    routing_context_from_message,
 )
 from core.nlu_metrics import NLUMetrics
 from core.utterance import normalize_utterance
@@ -660,6 +664,165 @@ class IntentRouterTests(unittest.TestCase):
                     routed.diagnostics.rejection_counts,
                     {RejectionCode.INVALID_CONTEXT: 1},
                 )
+
+    def test_message_context_extracts_dm_identity_and_target_mentions(self):
+        bot = SimpleNamespace(
+            id=99,
+            display_name="Inebotten",
+            name="inebotten",
+        )
+        target = SimpleNamespace(
+            id=8,
+            display_name="Ola",
+            name="ola",
+        )
+        author = SimpleNamespace(
+            id=7,
+            display_name="Kari",
+            name="kari",
+        )
+        message = SimpleNamespace(
+            guild=None,
+            channel=SimpleNamespace(id=456),
+            author=author,
+            mentions=(bot, target, target),
+        )
+
+        key = conversation_key_from_message(message)
+        routing = routing_context_from_message(
+            message,
+            bot_user_id=99,
+        )
+
+        self.assertEqual(key, ConversationKey(None, 456, 7))
+        self.assertEqual(domain_scope_id(key), 456)
+        self.assertEqual(routing.key, key)
+        self.assertEqual(routing.author, ResolvedMention(7, "Kari"))
+        self.assertEqual(
+            routing.mentions,
+            (ResolvedMention(8, "Ola"),),
+        )
+
+    def test_message_context_uses_guild_scope_without_losing_channel(self):
+        message = SimpleNamespace(
+            guild=SimpleNamespace(id=123),
+            channel=SimpleNamespace(id=456),
+            author=SimpleNamespace(id=7, display_name=None, name="Kari"),
+            mentions=(),
+        )
+
+        routing = routing_context_from_message(message)
+
+        self.assertEqual(
+            routing.key,
+            ConversationKey(123, 456, 7),
+        )
+        self.assertEqual(domain_scope_id(routing.key), 123)
+        self.assertEqual(routing.author, ResolvedMention(7, "Kari"))
+
+    def test_dm_routing_keeps_identity_none_and_domain_scope_channel(self):
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+        seen = []
+
+        def capture(context):
+            seen.append(
+                (
+                    context.guild_id,
+                    context.channel_id,
+                    context.domain_scope_id,
+                )
+            )
+            return CollectorOutput()
+
+        for name in COLLECTOR_ORDER:
+            setattr(router, name, capture)
+        routing = RoutingContext(
+            ConversationKey(None, 456, 7),
+            ResolvedMention(7, "Kari"),
+        )
+
+        router.evaluate_utterance(
+            normalize_utterance("hei"),
+            routing_context=routing,
+        )
+
+        self.assertEqual(
+            seen,
+            [(None, 456, 456)] * len(COLLECTOR_ORDER),
+        )
+
+    def test_dm_domain_state_reads_use_bare_channel_scope(self):
+        monitor = DummyMonitor()
+        reminder_scopes = []
+        poll_scopes = []
+        calendar_scopes = []
+        monitor.reminders.get_active_reminders = lambda scope_id: (
+            reminder_scopes.append(scope_id) or [{"id": "rem1"}]
+        )
+        monitor.poll.get_active_polls = (
+            lambda scope_id, reference_time=None: (
+                poll_scopes.append(scope_id) or [{"id": "poll1"}]
+            )
+        )
+        monitor.calendar.get_upcoming = (
+            lambda scope_id, days=365, reference_time=None: (
+                calendar_scopes.append(scope_id)
+                or [{"title": "Styremøte"}]
+            )
+        )
+        router = IntentRouter(monitor, now_provider=lambda: NOW)
+        routing = RoutingContext(
+            ConversationKey(None, 456, 7),
+            ResolvedMention(7, "Kari"),
+        )
+
+        reminder = router.route("ferdig 1", routing_context=routing)
+        poll = router.route("vis poll", routing_context=routing)
+        calendar = router.route(
+            "slett Styremøte",
+            routing_context=routing,
+        )
+
+        self.assertEqual(reminder.intent, BotIntent.REMINDER_COMPLETE)
+        self.assertEqual(poll.intent, BotIntent.POLL_LIST)
+        self.assertEqual(calendar.intent, BotIntent.CALENDAR_DELETE)
+        self.assertTrue(reminder_scopes)
+        self.assertTrue(poll_scopes)
+        self.assertTrue(calendar_scopes)
+        self.assertEqual(set(reminder_scopes), {456})
+        self.assertEqual(set(poll_scopes), {456})
+        self.assertEqual(set(calendar_scopes), {456})
+
+    def test_invalid_dm_scalar_context_does_not_read_domain_state(self):
+        monitor = DummyMonitor()
+        monitor.reminders.get_active_reminders = Mock(
+            side_effect=AssertionError("must not read")
+        )
+        monitor.poll.get_active_polls = Mock(
+            side_effect=AssertionError("must not read")
+        )
+        monitor.calendar.get_upcoming = Mock(
+            side_effect=AssertionError("must not read")
+        )
+        routing = RoutingContext(
+            ConversationKey(None, 456, 7),
+            ResolvedMention(7, "Kari"),
+        )
+
+        routed = IntentRouter(
+            monitor,
+            now_provider=lambda: NOW,
+        ).evaluate_utterance(
+            normalize_utterance("ferdig 1"),
+            guild_id=999,
+            routing_context=routing,
+        )
+
+        self.assertEqual(routed.result.intent, BotIntent.AI_CHAT)
+        self.assertEqual(routed.result.reason, "invalid_context")
+        monitor.reminders.get_active_reminders.assert_not_called()
+        monitor.poll.get_active_polls.assert_not_called()
+        monitor.calendar.get_upcoming.assert_not_called()
 
     def test_supplied_scalar_identity_survives_only_on_collector_context(self):
         router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
