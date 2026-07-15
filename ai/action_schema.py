@@ -909,12 +909,25 @@ def _suspected_legacy_action_line(line: str) -> bool:
     return candidate.startswith("[SAVE_EVENT:") or candidate == "[SHOW_DASHBOARD]"
 
 
+def is_suspected_action_candidate_line(line: str) -> bool:
+    """Return whether a zero-indent line has model-action provenance.
+
+    This is deliberately broader than validity: malformed and truncated
+    protocol candidates must remain visible to the authoritative parser.
+    """
+
+    return (
+        _suspected_action_json_line(line)
+        or _suspected_legacy_action_line(line)
+    )
+
+
 def _near_column_protocol_line(line: str) -> bool:
     indent = len(line) - len(line.lstrip(" "))
     if not 1 <= indent <= 3:
         return False
     candidate = line[indent:]
-    return _suspected_action_json_line(candidate) or _suspected_legacy_action_line(candidate)
+    return is_suspected_action_candidate_line(candidate)
 
 
 def _near_column_json_fragment_line(line: str) -> bool:
@@ -959,8 +972,7 @@ def strip_suspected_protocol_lines(raw: str) -> str:
             continue
         if (
             _near_column_protocol_line(line)
-            or _suspected_action_json_line(line)
-            or _suspected_legacy_action_line(line)
+            or is_suspected_action_candidate_line(line)
         ):
             remove.add(index)
     return _visible_without_protocol(lines, remove)
@@ -1160,3 +1172,28 @@ ACTION_PROTOCOL_PROMPT = "\n".join(
         *[_render_action_spec(action, ACTION_SPECS[action]) for action in ActionName],
     ]
 )
+
+
+__all__ = [
+    "ACTION_PROTOCOL_PROMPT",
+    "ACTION_SPECS",
+    "MAX_JSON_INTEGER_DIGITS",
+    "MAX_JSON_NESTING",
+    "ActionName",
+    "ActionProposal",
+    "ActionSpec",
+    "ActionValidationError",
+    "JsonScalar",
+    "JsonValue",
+    "ParsedAIResponse",
+    "SlotRule",
+    "consume_inert_html",
+    "consume_reasoning_tags",
+    "is_complete_generic_html_tag",
+    "is_suspected_action_candidate_line",
+    "is_valid_standalone_action_line",
+    "parse_ai_response",
+    "parse_fence_line",
+    "strip_suspected_protocol_lines",
+    "validate_action_object",
+]

@@ -6,6 +6,7 @@ import math
 
 import pytest
 
+import ai.action_schema as action_schema
 from ai.action_schema import (
     ACTION_PROTOCOL_PROMPT,
     ACTION_SPECS,
@@ -13,6 +14,7 @@ from ai.action_schema import (
     ActionValidationError,
     SlotRule,
     _ATOM_FORMATS,
+    is_suspected_action_candidate_line,
     is_valid_standalone_action_line,
     parse_ai_response,
     validate_action_object,
@@ -855,3 +857,32 @@ def test_plain_prose_and_non_string_responses_never_propose_actions():
     assert parsed.text == ""
     assert parsed.proposal is None
     assert parsed.errors == ("invalid_response_type",)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            '{"action":"HELP","confidence":0.9,"slots":{},'
+            '"reply":"","clarification":null}',
+            True,
+        ),
+        ('{"action":"REMINDER_DELETE","confidence":', True),
+        ('{"action":"UNKNOWN"}', True),
+        ("[SAVE_EVENT: Møte | 15.07.2026 | 14:00]", True),
+        ("[SHOW_DASHBOARD]", True),
+        ('  {"action":"HELP"}', False),
+        ('{"not_action":"HELP"}', False),
+        ("```json", False),
+        ("Vanlig norsk prose om en actionfilm.", False),
+    ],
+)
+def test_public_candidate_predicate_preserves_protocol_provenance(
+    line,
+    expected,
+):
+    assert is_suspected_action_candidate_line(line) is expected
+
+
+def test_public_candidate_predicate_is_exported():
+    assert "is_suspected_action_candidate_line" in action_schema.__all__

@@ -2934,7 +2934,9 @@ Expected: one commit; no MessageMonitor integration yet.
 - Modify: ai/hermes_connector.py — build_hermes_payload(), HermesConnector.generate_response()
 - Modify: ai/hermes_bridge_server.py — build_bridge_request(), HermesBridgeServer._generate_ai_response(), HermesBridgeServer._handle_chat()
 - Replace: ai/response_cleaner.py — clean_thinking_response()
-- Create: tests/test_provider_prompt_contract.py
+- Create: tests/test_personality_prompt_contract.py
+- Create: tests/test_response_cleaner.py
+- Create: tests/test_hermes_bridge_contract.py
 - Create: tests/test_ai_connectors.py
 
 **Interfaces:**
@@ -2943,9 +2945,15 @@ Expected: one commit; no MessageMonitor integration yet.
 - Produces: pure request builders that can be tested without sockets or providers.
 - Compatibility: connector generate_response() positional arguments remain unchanged; history is added later as a final defaulted keyword.
 
-- [ ] **Step 1: Write failing prompt preservation and cleaner tests (5 minutes)**
+**Task-3 review amendment (2026-07-15):** this amendment is authoritative over older illustrative snippets in this task. This task adds only the separate bounded `context_prompt`; typed role history belongs to Task 9 and must not be added early. Provider connectors and the bridge preserve visible provider output byte-for-byte and call `clean_thinking_response()` zero times. The exactly-once cleaner/parser composition belongs to `AIActionHandler` in Task 6. `build_hermes_payload()` is pure and receives an injected timestamp; it never reads a clock. Every numeric bridge field is type-checked before conversion: booleans, strings, NaN, and infinities are rejected, and `max_tokens` is an exact non-boolean integer. Untrusted metadata/context values are budgeted before `json.dumps()` so serialized JSON remains structurally valid; serialized JSON is never sliced. `reasoning_content` is never copied, mined, or substituted for visible content. Missing/blank visible content returns fixed non-action copy. Tests use concrete username/profile/location/interests/history/message/context/response/exception canaries and no network. MessageMonitor still appends retrieved search text to its prompt before Task 6; therefore Task 3 may prove provider separation in isolation but must not claim end-to-end search prompt-injection closure until that caller is migrated to `context_prompt`.
 
-Create tests/test_provider_prompt_contract.py:
+- [x] **Step 1: Write failing prompt preservation and cleaner tests (5 minutes)**
+
+Create the focused split contract files
+`tests/test_personality_prompt_contract.py`,
+`tests/test_response_cleaner.py`, and
+`tests/test_hermes_bridge_contract.py` (the examples below are grouped only
+for readability):
 
 ~~~python
 import pytest
@@ -3160,13 +3168,15 @@ Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
-  tests/test_provider_prompt_contract.py \
+  tests/test_personality_prompt_contract.py \
+  tests/test_response_cleaner.py \
+  tests/test_hermes_bridge_contract.py \
   tests/test_ai_connectors.py -q
 ~~~
 
 Expected: FAIL because the pure builders do not exist and personality still embeds legacy action/history instructions.
 
-- [ ] **Step 2: Make personality use the generated protocol and never embed history (5 minutes)**
+- [x] **Step 2: Make personality use the generated protocol and never embed history (5 minutes)**
 
 In ai/personality_config.py, retain the existing get_system_prompt() signature for callers, but delete the SAVE_EVENT/SHOW_DASHBOARD tag examples and the block that serializes conversation_history/conversation_context. Import ACTION_PROTOCOL_PROMPT and append it exactly once:
 
@@ -3244,12 +3254,12 @@ Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
-  tests/test_provider_prompt_contract.py::test_personality_uses_generated_protocol_once -q
+  tests/test_personality_prompt_contract.py -q
 ~~~
 
 Expected: PASS.
 
-- [ ] **Step 3: Export a suspected-candidate predicate and consolidate the cleaner (5 minutes)**
+- [x] **Step 3: Export a suspected-candidate predicate and consolidate the cleaner (5 minutes)**
 
 In ai/action_schema.py, expose:
 
@@ -3323,13 +3333,13 @@ Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
-  tests/test_provider_prompt_contract.py::test_cleaner_preserves_all_action_candidate_lines_for_parser \
+  tests/test_response_cleaner.py \
   tests/test_action_schema.py -q
 ~~~
 
 Expected: PASS; cleaner-to-parser composition keeps fenced/indented/reasoning/HTML-container examples inert and cannot erase a truncated second proposal to make the first executable. Parameterize over normal, attribute-bearing, spaced, and 201-plus-character fence info tails. Pin four-backtick nesting, unmatched fences, indented JSON/legacy tags, duplicate top-level/nested keys, `<think>` and `<thinking>`, nested/mixed reasoning tags, unmatched reasoning to EOF, every finite CommonMark HTML-block family above, truncated/unmatched raw openers, and a separate valid final action after each defined close/blank terminator. Run the same raw-response cases through Hermes and OpenRouter monitor seams and assert the enclosed action never stages.
 
-- [ ] **Step 4: Extract and use pure OpenRouter/Hermes request builders (5 minutes)**
+- [x] **Step 4: Extract and use pure OpenRouter/Hermes request builders (5 minutes)**
 
 In ai/openrouter_connector.py add:
 
@@ -3370,13 +3380,14 @@ def build_hermes_payload(
     system_prompt: str | None,
     temperature: float,
     max_tokens: int,
+    timestamp: str,
     context_prompt: str = "",
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "message": message_content,
         "author_name": author_name,
         "channel_type": channel_type,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": timestamp,
         "is_mention": is_mention,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -3384,11 +3395,11 @@ def build_hermes_payload(
     if system_prompt:
         payload["system_prompt"] = system_prompt
     if context_prompt:
-        payload["context_prompt"] = context_prompt[:4000]
+        payload["context_prompt"] = context_prompt
     return payload
 ~~~
 
-Make `HermesConnector.generate_response()` resolve defaults first, then call this helper. Its final parameters are exactly `max_tokens`, `context_prompt=""`, `history=()` after the unchanged positional prefix. It must not truncate `system_prompt`. `context_prompt` is always a separately serialized untrusted field; it is never folded into `system_prompt`, `message`, or a synthetic instruction. Remove Hermes connector logs/prints of response data/snippets and exception bodies; retain only a bounded status/error enum.
+Make `HermesConnector.generate_response()` resolve defaults first, then call this helper. Its final parameters in Task 3 are exactly `max_tokens`, `context_prompt=""` after the unchanged positional prefix; Task 9 adds `history=()` after that. It must not truncate `system_prompt`. `context_prompt` is always a separately serialized untrusted field; it is never folded into `system_prompt`, `message`, or a synthetic instruction. Remove Hermes connector logs/prints of response data/snippets and exception bodies; retain only a bounded status/error enum.
 
 Run:
 
@@ -3398,7 +3409,7 @@ Run:
 
 Expected: PASS without network calls.
 
-- [ ] **Step 5: Extract bridge request construction and preserve caller values (5 minutes)**
+- [x] **Step 5: Extract bridge request construction and preserve caller values (5 minutes)**
 
 In ai/hermes_bridge_server.py add this module-level pure helper:
 
@@ -3413,25 +3424,22 @@ def build_bridge_request(
     model_config: Mapping[str, object],
     context_prompt: str = "",
 ) -> dict[str, object]:
-    selected_temperature = (
-        float(temperature)
-        if temperature is not None
-        else float(model_config["temperature"])
+    selected_temperature = _finite_number(
+        temperature if temperature is not None
+        else model_config.get("temperature"),
+        code="invalid_temperature",
+        minimum=0.0,
+        maximum=2.0,
     )
-    selected_max_tokens = (
-        int(max_tokens)
-        if max_tokens is not None
-        else int(model_config["max_tokens"])
+    selected_max_tokens = _bounded_max_tokens(
+        max_tokens if max_tokens is not None
+        else model_config.get("max_tokens")
     )
-    if not 0.0 <= selected_temperature <= 2.0:
-        raise ValueError("invalid_temperature")
-    if isinstance(max_tokens, bool) or not 1 <= selected_max_tokens <= 4096:
-        raise ValueError("invalid_max_tokens")
     messages = [{"role": "system", "content": system_prompt}]
     if context_prompt:
         messages.append({
             "role": "user",
-            "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt[:4000]}",
+            "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt}",
         })
     messages.append({"role": "user", "content": message_content})
     request: dict[str, object] = {
@@ -3439,9 +3447,24 @@ def build_bridge_request(
         "messages": messages,
         "temperature": selected_temperature,
         "max_tokens": selected_max_tokens,
-        "top_p": float(model_config["top_p"]),
-        "frequency_penalty": float(model_config.get("frequency_penalty", 0.0)),
-        "presence_penalty": float(model_config.get("presence_penalty", 0.0)),
+        "top_p": _finite_number(
+            model_config.get("top_p"),
+            code="invalid_top_p",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "frequency_penalty": _finite_number(
+            model_config.get("frequency_penalty", 0.0),
+            code="invalid_frequency_penalty",
+            minimum=-2.0,
+            maximum=2.0,
+        ),
+        "presence_penalty": _finite_number(
+            model_config.get("presence_penalty", 0.0),
+            code="invalid_presence_penalty",
+            minimum=-2.0,
+            maximum=2.0,
+        ),
         "stream": False,
     }
     for key in ("repeat_penalty", "stop"):
@@ -3473,25 +3496,23 @@ In _handle_chat(), read and validate:
 temperature = payload.get("temperature")
 max_tokens = payload.get("max_tokens")
 context_prompt = payload.get("context_prompt", "")
-if temperature is not None and (
-    isinstance(temperature, bool)
-    or not isinstance(temperature, (int, float))
-    or not 0.0 <= float(temperature) <= 2.0
-):
-    await self._send_response(writer, 400, {"error": "invalid_temperature"})
-    return
-if max_tokens is not None and (
-    isinstance(max_tokens, bool)
-    or not isinstance(max_tokens, int)
-    or not 1 <= max_tokens <= 4096
-):
-    await self._send_response(writer, 400, {"error": "invalid_max_tokens"})
-    return
-if (
-    not isinstance(context_prompt, str)
-    or len(context_prompt) > 4000
-):
-    await self._send_response(writer, 400, {"error": "invalid_context_prompt"})
+try:
+    if temperature is not None:
+        _finite_number(
+            temperature,
+            code="invalid_temperature",
+            minimum=0.0,
+            maximum=2.0,
+        )
+    if max_tokens is not None:
+        _bounded_max_tokens(max_tokens)
+    build_untrusted_context_data(
+        author_name=author_name,
+        channel_type=channel_type,
+        context_prompt=context_prompt,
+    )
+except BridgeContractError as exc:
+    await self._send_response(writer, 400, {"error": exc.code})
     return
 ~~~
 
@@ -3503,24 +3524,31 @@ Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
-  tests/test_provider_prompt_contract.py \
+  tests/test_personality_prompt_contract.py \
+  tests/test_response_cleaner.py \
+  tests/test_hermes_bridge_contract.py \
   tests/test_ai_connectors.py -q
 ~~~
 
 Expected: PASS; a 900-plus-character action prompt and explicit sampling values survive to the LM Studio request.
 
-- [ ] **Step 6: Run provider-adjacent regressions and commit (5 minutes)**
+- [x] **Step 6: Run provider-adjacent regressions and commit (5 minutes)**
 
 ~~~bash
 .venv312/bin/python -m pytest \
   tests/test_action_schema.py \
   tests/test_action_bridge.py \
-  tests/test_provider_prompt_contract.py \
+  tests/test_personality_prompt_contract.py \
+  tests/test_response_cleaner.py \
+  tests/test_hermes_bridge_contract.py \
   tests/test_ai_connectors.py \
   tests/test_advanced_dialect.py -q
 git add ai/action_schema.py ai/personality_config.py ai/openrouter_connector.py \
   ai/hermes_connector.py ai/hermes_bridge_server.py ai/response_cleaner.py \
-  tests/test_provider_prompt_contract.py tests/test_ai_connectors.py
+  tests/test_action_schema.py tests/test_personality_prompt_contract.py \
+  tests/test_response_cleaner.py tests/test_hermes_bridge_contract.py \
+  tests/test_ai_connectors.py \
+  docs/superpowers/plans/2026-07-14-model-actions-pending-context.md
 git commit -m "fix: preserve strict action prompts through providers"
 ~~~
 
@@ -9855,7 +9883,6 @@ Expected: one commit. Providers accept the new history keyword in the next task;
 - Modify: ai/hermes_bridge_server.py — parse_bridge_history(), build_bridge_request(), HermesBridgeServer._generate_ai_response(), HermesBridgeServer._handle_chat()
 - Create: tests/test_bridge_history.py
 - Modify: tests/test_ai_connectors.py
-- Modify: tests/test_provider_prompt_contract.py
 - Modify: tests/test_context_integration.py
 
 **Interfaces:**
@@ -9864,6 +9891,13 @@ Expected: one commit. Providers accept the new history keyword in the next task;
 - Produces: trusted prompt transport, then a separate `UNTRUSTED_CONTEXT_DATA` user message, then bounded historical user/assistant roles, then the current user message.
 - Gemma exception: transport only the trusted prompt as the first user message because OpenRouter Gemma rejects system roles; keep untrusted context as the second user message and preserve history order/roles after it. Never fold context into the trusted prompt.
 - Security boundary: bridge JSON accepts only exact role/content objects and rejects system, developer, tool, unknown keys, oversized input, and non-string content.
+
+**Task-9 consistency amendment (2026-07-15):** Task 9 extends the strict
+Task-3 builders; it does not replace their validation, injected timestamp,
+bounded pre-serialization context handling, raw-output provenance, or logging
+rules. Any older snippet below that uses `float()`/`int()` coercion, reads a
+clock inside a pure builder, slices serialized JSON/context, or names the
+superseded `tests/test_provider_prompt_contract.py` is non-authoritative.
 
 - [ ] **Step 1: Write failing provider order, bridge rejection, and inert-history tests (5 minutes)**
 
@@ -10039,7 +10073,7 @@ def build_openrouter_messages(
     if context_prompt:
         messages.append({
             "role": "user",
-            "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt[:4000]}",
+            "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt}",
         })
     messages.extend(history_messages)
     messages.append({"role": "user", "content": message_content})
@@ -10068,8 +10102,7 @@ Run:
 
 ~~~bash
 .venv312/bin/python -m pytest \
-  tests/test_ai_connectors.py \
-  tests/test_provider_prompt_contract.py -q
+  tests/test_ai_connectors.py -q
 ~~~
 
 Expected: PASS for both standard and Gemma transports.
@@ -10088,6 +10121,7 @@ def build_hermes_payload(
     system_prompt: str | None,
     temperature: float,
     max_tokens: int,
+    timestamp: str,
     context_prompt: str = "",
     history: Sequence[ChatTurn] = (),
 ) -> dict[str, object]:
@@ -10096,7 +10130,7 @@ def build_hermes_payload(
         "message": message_content,
         "author_name": author_name,
         "channel_type": channel_type,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": timestamp,
         "is_mention": is_mention,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -10108,11 +10142,11 @@ def build_hermes_payload(
     if system_prompt:
         payload["system_prompt"] = system_prompt
     if context_prompt:
-        payload["context_prompt"] = context_prompt[:4000]
+        payload["context_prompt"] = context_prompt
     return payload
 ~~~
 
-Keep `context_prompt: str = ""` and then `history: Sequence[ChatTurn] = ()` as the final two `HermesConnector.generate_response()` parameters and pass both through. Keep every older positional parameter/default unchanged.
+Keep `context_prompt: str = ""` and then `history: Sequence[ChatTurn] = ()` as the final two `HermesConnector.generate_response()` parameters and pass both through. Keep every older positional parameter/default unchanged. Capture the timestamp once in `generate_response()` and inject it into the pure builder exactly as established in Task 3.
 
 Run:
 
@@ -10162,26 +10196,25 @@ def build_bridge_request(
     model: str,
     model_config: Mapping[str, object],
 ) -> dict[str, object]:
-    selected_temperature = (
-        float(temperature)
+    selected_temperature = _finite_number(
+        temperature
         if temperature is not None
-        else float(model_config["temperature"])
+        else model_config.get("temperature"),
+        code="invalid_temperature",
+        minimum=0.0,
+        maximum=2.0,
     )
-    selected_max_tokens = (
-        int(max_tokens)
+    selected_max_tokens = _bounded_max_tokens(
+        max_tokens
         if max_tokens is not None
-        else int(model_config["max_tokens"])
+        else model_config.get("max_tokens")
     )
-    if not 0.0 <= selected_temperature <= 2.0:
-        raise ValueError("invalid_temperature")
-    if isinstance(max_tokens, bool) or not 1 <= selected_max_tokens <= 4096:
-        raise ValueError("invalid_max_tokens")
     prepared = prepare_history(history)
     messages = [{"role": "system", "content": system_prompt}]
     if context_prompt:
         messages.append({
             "role": "user",
-            "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt[:4000]}",
+            "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt}",
         })
     messages.extend(
         {"role": turn.role, "content": turn.content}
@@ -10193,9 +10226,24 @@ def build_bridge_request(
         "messages": messages,
         "temperature": selected_temperature,
         "max_tokens": selected_max_tokens,
-        "top_p": float(model_config["top_p"]),
-        "frequency_penalty": float(model_config.get("frequency_penalty", 0.0)),
-        "presence_penalty": float(model_config.get("presence_penalty", 0.0)),
+        "top_p": _finite_number(
+            model_config.get("top_p"),
+            code="invalid_top_p",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "frequency_penalty": _finite_number(
+            model_config.get("frequency_penalty", 0.0),
+            code="invalid_frequency_penalty",
+            minimum=-2.0,
+            maximum=2.0,
+        ),
+        "presence_penalty": _finite_number(
+            model_config.get("presence_penalty", 0.0),
+            code="invalid_presence_penalty",
+            minimum=-2.0,
+            maximum=2.0,
+        ),
         "stream": False,
     }
     for key in ("repeat_penalty", "stop"):
@@ -10291,14 +10339,12 @@ Expected: PASS.
   tests/test_context_integration.py \
   tests/test_conversation_context.py \
   tests/test_base_handler_rate_limit.py \
-  tests/test_provider_prompt_contract.py \
   tests/test_ai_connectors.py \
   tests/test_bridge_history.py \
   tests/test_ai_action_flow.py -q
 git add ai/openrouter_connector.py ai/hermes_connector.py \
   ai/hermes_bridge_server.py tests/test_bridge_history.py \
-  tests/test_ai_connectors.py tests/test_provider_prompt_contract.py \
-  tests/test_context_integration.py
+  tests/test_ai_connectors.py tests/test_context_integration.py
 git commit -m "fix: transport scoped role-correct AI history"
 ~~~
 
@@ -10348,7 +10394,7 @@ Expected: both commands exit 0 and flake8 reports zero selected errors.
 .venv312/bin/python -m pytest \
   tests/test_action_schema.py \
   tests/test_action_bridge.py \
-  tests/test_provider_prompt_contract.py \
+  tests/test_personality_prompt_contract.py \
   tests/test_ai_connectors.py \
   tests/test_bridge_history.py \
   tests/test_pending_actions.py \

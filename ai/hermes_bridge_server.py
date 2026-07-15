@@ -5,8 +5,10 @@ Connects to LM Studio on Windows host from WSL for AI responses
 """
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
+import math
 import os
 import sys
 import random
@@ -14,6 +16,8 @@ import signal
 import time
 from datetime import datetime, date
 from urllib.parse import unquote, urlparse, parse_qs
+
+from ai.response_cleaner import MAX_CLEANER_INPUT_BYTES
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +29,241 @@ logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 32 * 1024
 MAX_BODY_BYTES = 256 * 1024
+MAX_CONTEXT_CHARS = 4_000
+MAX_AUTHOR_NAME_CHARS = 200
+MAX_CHANNEL_TYPE_CHARS = 64
+REASONING_ONLY_FALLBACK = "(Modellen ga ikke et synlig svar.)"
+
+
+class BridgeContractError(ValueError):
+    """Bounded request/response contract failure."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def _utf8_size(value: str, *, code: str) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise BridgeContractError(code) from None
+
+
+def _finite_number(
+    value: object,
+    *,
+    code: str,
+    minimum: float,
+    maximum: float,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BridgeContractError(code)
+    try:
+        selected = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise BridgeContractError(code) from None
+    if not math.isfinite(selected) or not minimum <= selected <= maximum:
+        raise BridgeContractError(code)
+    return selected
+
+
+def _bounded_max_tokens(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= 4_096
+    ):
+        raise BridgeContractError("invalid_max_tokens")
+    return value
+
+
+def build_untrusted_context_data(
+    *,
+    author_name: str,
+    channel_type: str,
+    context_prompt: str,
+) -> str:
+    """Serialize bounded metadata as valid JSON data, never instructions."""
+
+    if (
+        not isinstance(author_name, str)
+        or len(author_name) > MAX_AUTHOR_NAME_CHARS
+    ):
+        raise BridgeContractError("invalid_author_name")
+    if (
+        not isinstance(channel_type, str)
+        or len(channel_type) > MAX_CHANNEL_TYPE_CHARS
+    ):
+        raise BridgeContractError("invalid_channel_type")
+    if (
+        not isinstance(context_prompt, str)
+        or len(context_prompt) > MAX_CONTEXT_CHARS
+    ):
+        raise BridgeContractError("invalid_context_prompt")
+    _utf8_size(author_name, code="invalid_author_name")
+    _utf8_size(channel_type, code="invalid_channel_type")
+    _utf8_size(context_prompt, code="invalid_context_prompt")
+
+    def serialize(value: str) -> str:
+        return json.dumps(
+            {
+                "author_name": author_name,
+                "channel_type": channel_type,
+                "context": value,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    serialized = serialize(context_prompt)
+    if len(serialized) <= MAX_CONTEXT_CHARS:
+        return serialized
+
+    low = 0
+    high = len(context_prompt)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(serialize(context_prompt[:middle])) <= MAX_CONTEXT_CHARS:
+            low = middle
+        else:
+            high = middle - 1
+    return serialize(context_prompt[:low])
+
+
+def build_bridge_request(
+    *,
+    message_content: str,
+    system_prompt: str,
+    temperature: float | None,
+    max_tokens: int | None,
+    model: str,
+    model_config: Mapping[str, object],
+    context_prompt: str = "",
+) -> dict[str, object]:
+    """Build one strict LM Studio request without reading clocks or I/O."""
+
+    if not isinstance(message_content, str):
+        raise BridgeContractError("invalid_message")
+    if not isinstance(system_prompt, str):
+        raise BridgeContractError("invalid_system_prompt")
+    if not isinstance(model, str) or not model.strip() or len(model) > 200:
+        raise BridgeContractError("invalid_model")
+    if not isinstance(model_config, Mapping):
+        raise BridgeContractError("invalid_model_config")
+    if (
+        not isinstance(context_prompt, str)
+        or len(context_prompt) > MAX_CONTEXT_CHARS
+    ):
+        raise BridgeContractError("invalid_context_prompt")
+    _utf8_size(message_content, code="invalid_message")
+    _utf8_size(system_prompt, code="invalid_system_prompt")
+    _utf8_size(model, code="invalid_model")
+    _utf8_size(context_prompt, code="invalid_context_prompt")
+
+    selected_temperature = _finite_number(
+        temperature
+        if temperature is not None
+        else model_config.get("temperature"),
+        code="invalid_temperature",
+        minimum=0.0,
+        maximum=2.0,
+    )
+    selected_max_tokens = _bounded_max_tokens(
+        max_tokens
+        if max_tokens is not None
+        else model_config.get("max_tokens")
+    )
+    top_p = _finite_number(
+        model_config.get("top_p"),
+        code="invalid_top_p",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    frequency_penalty = _finite_number(
+        model_config.get("frequency_penalty", 0.0),
+        code="invalid_frequency_penalty",
+        minimum=-2.0,
+        maximum=2.0,
+    )
+    presence_penalty = _finite_number(
+        model_config.get("presence_penalty", 0.0),
+        code="invalid_presence_penalty",
+        minimum=-2.0,
+        maximum=2.0,
+    )
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt}
+    ]
+    if context_prompt:
+        messages.append(
+            {
+                "role": "user",
+                "content": f"UNTRUSTED_CONTEXT_DATA\n{context_prompt}",
+            }
+        )
+    messages.append({"role": "user", "content": message_content})
+    request: dict[str, object] = {
+        "model": model,
+        "messages": messages,
+        "temperature": selected_temperature,
+        "max_tokens": selected_max_tokens,
+        "top_p": top_p,
+        "frequency_penalty": frequency_penalty,
+        "presence_penalty": presence_penalty,
+        "stream": False,
+    }
+    if "repeat_penalty" in model_config:
+        request["repeat_penalty"] = _finite_number(
+            model_config["repeat_penalty"],
+            code="invalid_repeat_penalty",
+            minimum=0.01,
+            maximum=10.0,
+        )
+    if "stop" in model_config:
+        stop = model_config["stop"]
+        if (
+            not isinstance(stop, (list, tuple))
+            or len(stop) > 32
+            or any(
+                not isinstance(item, str) or len(item) > 200
+                for item in stop
+            )
+        ):
+            raise BridgeContractError("invalid_stop")
+        for item in stop:
+            _utf8_size(item, code="invalid_stop")
+        request["stop"] = list(stop)
+    return request
+
+
+def extract_bridge_content(response_json: object) -> str:
+    """Return only visible provider content, byte-for-byte."""
+
+    if not isinstance(response_json, Mapping):
+        raise BridgeContractError("invalid_response_shape")
+    choices = response_json.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise BridgeContractError("invalid_response_shape")
+    first = choices[0]
+    if not isinstance(first, Mapping):
+        raise BridgeContractError("invalid_response_shape")
+    message = first.get("message")
+    if not isinstance(message, Mapping):
+        raise BridgeContractError("invalid_response_shape")
+    content = message.get("content")
+    if content is None:
+        return REASONING_ONLY_FALLBACK
+    if not isinstance(content, str):
+        raise BridgeContractError("invalid_response_content")
+    content_size = _utf8_size(content, code="invalid_response_encoding")
+    if content_size > MAX_CLEANER_INPUT_BYTES:
+        raise BridgeContractError("response_too_large")
+    if not content.strip():
+        return REASONING_ONLY_FALLBACK
+    return content
 
 # Configuration
 HOST = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1")
@@ -233,395 +472,116 @@ class HermesBridgeServer:
                 if self.lm_studio_available:
                     logger.info("✓ LM Studio connected!")
                 return self.lm_studio_available
-        except Exception as e:
-            logger.debug(f"LM Studio not available: {e}")
+        except Exception:
+            logger.debug("bridge_health code=provider_unavailable")
             self.lm_studio_available = False
             self.lm_studio_checked_at = now
             return False
 
     async def _generate_ai_response(
-        self, message, author_name, channel_type, custom_system_prompt=None
+        self,
+        message,
+        author_name,
+        channel_type,
+        custom_system_prompt=None,
+        temperature=None,
+        max_tokens=None,
+        context_prompt="",
     ):
-        """Generate response using LM Studio"""
+        """Generate one raw visible response through the strict bridge contract."""
+
         import aiohttp
 
-        session = await self._get_session()
-
-        from datetime import datetime
-
-        today = datetime.now().strftime("%d. %B %Y")
-        weekday = datetime.now().strftime("%A")
-
-        # Check which model we're using
-        is_small_model = (
-            "3.2" in LM_STUDIO_MODEL
-            or "3b" in LM_STUDIO_MODEL.lower()
-            or "4b" in LM_STUDIO_MODEL.lower()
-        )
-        # Qwen models (including Qwen 2.5 and Qwen3) handle Norwegian well
-        is_qwen = "qwen" in LM_STUDIO_MODEL.lower()
-        # Gemma 2 2B is small but works well
-        is_gemma_2b = (
-            "gemma-2" in LM_STUDIO_MODEL.lower() and "2b" in LM_STUDIO_MODEL.lower()
-        )
-        # Reasoning/thinking models need special handling
-        is_gemma_3 = "gemma-3" in LM_STUDIO_MODEL.lower()
-        is_reasoning_model = any(
-            x in LM_STUDIO_MODEL.lower()
-            for x in ["reasoning", "thinking", "opus", "claude"]
-        )
-
-        # Use custom system prompt if provided (but truncate for problematic small models)
-        # Note: Qwen, Gemma 2 2B, and Gemma 3 handle long prompts well even when small
-        needs_simplification = is_small_model and not is_qwen and not is_gemma_2b and not is_gemma_3
-
-        if custom_system_prompt:
-            if needs_simplification and len(custom_system_prompt) > 800:
-                # For problematic small models (like Llama 3.2), use simplified prompt
-                logger.info(
-                    f"Custom prompt too long ({len(custom_system_prompt)} chars), using simplified for small model"
-                )
-                system_prompt = (
-                    f"Du er Ine. Snakk norsk. "
-                    f"I dag er {today}. "
-                    f"Snakker med {author_name}. "
-                    "EKSEMPLER:\n"
-                    "Bruker: Hei!\n"
-                    "Deg: Hei! 👋 Hvordan går det?\n"
-                    "Bruker: Hvordan har du det?\n"
-                    "Deg: Det går bra! 😊 Hva med deg?\n"
-                    "REGLER:\n"
-                    "- ALLTID norsk (ikke engelsk)\n"
-                    "- Bruk 'deg' (ikke 'dig')\n"
-                    "- Bruk 'bra' (ikke 'godt')\n"
-                    "- Max 2 setninger\n"
-                    "- Vennlig tone"
-                )
-            else:
-                system_prompt = custom_system_prompt
-                logger.info(
-                    f"Using custom system prompt ({len(custom_system_prompt)} chars)"
-                )
-        else:
-            # Default prompt based on model
-            if is_reasoning_model:
-                # Reasoning models - ABSOLUTELY MINIMAL to prevent overthinking
-                system_prompt = (
-                    f"Du er Ine, en norsk Discord-venn. "
-                    f"Dato: {today}. "
-                    "Svar KUN på norsk. "
-                    "ALDRI analyser eller forklar. "
-                    "ALDRI start med 'The user', 'This is', 'My reasoning', 'I should'. "
-                    "BARE svar direkte. "
-                    "Max 2 setninger. "
-                    "Eksempel: Hei! → Hei! 👋 Hvordan går det?"
-                )
-            elif is_qwen:
-                # Qwen prompt - VERY direct, no thinking allowed
-                system_prompt = (
-                    f"Du er Ine. Svar på norsk. "
-                    f"Dato: {today}. "
-                    "\n"
-                    "VIKTIG: Bare svar direkte. Ikke forklar. Ikke tenk høyt.\n\n"
-                    "Hei! → Hei! 👋 Hvordan går det?\n"
-                    "Hvem er du? → Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅\n"
-                    "Hva kan du gjøre? → Jeg kan lagre arrangementer, minne deg på ting, eller prate! 😊\n"
-                    "Hvordan har du det? → Det går bra! 😊 Hva med deg?\n"
-                    "Fortell en vits → Hvorfor gikk kyllingen over veien? For å komme til den andre siden! 😄\n"
-                    "Takk! → Bare hyggelig! 😊\n"
-                    "\n"
-                    "REGLER:\n"
-                    "- Svar KUN med svaret, ingen forklaring\n"
-                    "- Aldri start med 'Looking at', 'The rules say', 'In the examples'\n"
-                    "- Vær vennlig og naturlig\n"
-                    "- Max 2 setninger"
-                )
-            elif is_gemma_2b:
-                # Gemma 2 2B works well for Norwegian
-                system_prompt = (
-                    f"Du er Ine, en norsk Discord-venn. "
-                    f"I dag er det {today}. "
-                    f"Snakker med {author_name}. "
-                    "Svar på norsk. Vær vennlig og hjelpsom. "
-                    "Hold det kort og naturlig."
-                )
-            elif "gemma-3" in LM_STUDIO_MODEL.lower():
-                # Gemma 3 - excellent multilingual model
-                system_prompt = (
-                    f"Du er Ine, en vennlig Discord-bot. "
-                    f"Dato: {today}. "
-                    f"Snakker med: {author_name}.\n\n"
-                    "Svar på norsk. Vær naturlig og hjelpsom. "
-                    "Svar direkte på spørsmålet.\n\n"
-                    "Eksempler:\n"
-                    "Bruker: Hei! → Hei! 👋 Hvordan går det?\n"
-                    "Bruker: Hvordan fungerer solen? → Solen er en stor stjerne som gir varme og lys! ☀️\n"
-                    "Bruker: Hva er 2+2? → 2+2 = 4 🧮"
-                )
-            elif is_small_model:
-                # SIMPLIFIED for problematic small models (Llama 3.2)
-                system_prompt = (
-                    f"Du er Ine. Snakk norsk. "
-                    f"I dag er {today}. "
-                    f"Snakker med {author_name}. "
-                    "EKSEMPLER:\n"
-                    "Bruker: Hei!\n"
-                    "Deg: Hei! 👋 Hvordan går det?\n"
-                    "Bruker: Hvordan har du det?\n"
-                    "Deg: Det går bra! 😊 Hva med deg?\n"
-                    "REGLER:\n"
-                    "- ALLTID norsk (ikke engelsk)\n"
-                    "- Bruk 'deg' (ikke 'dig')\n"
-                    "- Bruk 'bra' (ikke 'godt')\n"
-                    "- Max 2 setninger\n"
-                    "- Vennlig tone"
-                )
-            elif "llama3" in LM_STUDIO_MODEL.lower() or "llama-3" in LM_STUDIO_MODEL.lower():
-                # Llama 3 models - clean, direct prompt
-                system_prompt = (
-                    f"Du er Ine, en vennlig norsk Discord-bot. "
-                    f"Dato: {today}. "
-                    f"Snakker med: {author_name}.\n\n"
-                    "Svar på norsk. Vær kortfattet og naturlig. "
-                    "Ikke bruk engelsk. Ikke forklar hva du gjør.\n\n"
-                    "Eksempler:\n"
-                    "Bruker: Hei! → Hei! 👋 Hvordan går det?\n"
-                    "Bruker: Hvordan er livet? → Livet er bra! 😊 Hva med deg?\n"
-                    "Bruker: Hvordan fungerer solen? → Solen er en stor stjerne som gir varme og lys! ☀️"
-                )
-            else:
-                # More detailed for larger models
-                system_prompt = (
-                    f"Du er 'inebotten', ein vennleg Discord-kalenderbot. "
-                    f"I dag er det {weekday} {today}. "
-                    "Du svarar ALLTID på norsk (nynorsk eller bokmål). "
-                    "ALDRI svar på engelsk. "
-                    "Du hjelper til med vêr, høgtider, kalender og generelle spørsmål. "
-                    "Hald svara korte (under 300 ord) og vennlege. "
-                    f"Du pratar med {author_name}."
-                )
-
-        # Get model-specific settings
         config = MODEL_CONFIG.get(LM_STUDIO_MODEL)
-        if not config:
-            # Try with just the base name (without @q4_k_m)
-            base_name = LM_STUDIO_MODEL.split("@")[0]
-            config = MODEL_CONFIG.get(base_name)
-            logger.info(f"Using base config for {base_name}")
-
-        if not config:
+        if config is None:
+            config = MODEL_CONFIG.get(LM_STUDIO_MODEL.split("@", 1)[0])
+        if config is None:
             config = MODEL_CONFIG["llama-3.2-3b"]
-            logger.warning(f"No specific config for {LM_STUDIO_MODEL}, using defaults")
 
-        logger.info(
-            f"Using model config: temp={config.get('temperature')}, max_tokens={config.get('max_tokens')}"
-        )
-
-        payload = {
-            "model": LM_STUDIO_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message},
-            ],
-            "temperature": config["temperature"],
-            "max_tokens": config["max_tokens"],
-            "top_p": config["top_p"],
-            "frequency_penalty": config.get("frequency_penalty", 0.0),
-            "presence_penalty": config.get("presence_penalty", 0.0),
-            "stream": False,
-        }
-
-        # Add repeat penalty for small models (helps with language consistency)
-        if "repeat_penalty" in config:
-            payload["repeat_penalty"] = config["repeat_penalty"]
-
-        # Add stop sequences if defined
-        if "stop" in config:
-            payload["stop"] = config["stop"]
+        if custom_system_prompt is not None and not isinstance(
+            custom_system_prompt, str
+        ):
+            logger.warning(
+                "bridge_request_rejected code=invalid_system_prompt model=%s",
+                LM_STUDIO_MODEL,
+            )
+            return None
+        if custom_system_prompt and custom_system_prompt.strip():
+            system_prompt = custom_system_prompt
+        else:
+            today = datetime.now().strftime("%d.%m.%Y")
+            system_prompt = (
+                "Du er Ine, en vennlig norsk Discord-assistent. "
+                f"TRUSTED_DATE={today}. "
+                "Svar direkte, kort og naturlig på norsk. "
+                "Bruk aldri resonneringstekst som et synlig svar."
+            )
 
         try:
-            logger.info(
-                f"Sending request to LM Studio with {len(payload['messages'])} messages"
+            context_data = build_untrusted_context_data(
+                author_name=author_name,
+                channel_type=channel_type,
+                context_prompt=context_prompt,
             )
+            request = build_bridge_request(
+                message_content=message,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                model=LM_STUDIO_MODEL,
+                model_config=config,
+                context_prompt=context_data,
+            )
+        except BridgeContractError as exc:
+            logger.warning(
+                "bridge_request_rejected code=%s model=%s",
+                exc.code,
+                LM_STUDIO_MODEL,
+            )
+            return None
+
+        session = await self._get_session()
+        try:
             async with session.post(
                 f"{LM_STUDIO_URL}/chat/completions",
-                json=payload,
+                json=request,
                 timeout=aiohttp.ClientTimeout(total=60),
-            ) as resp:
-                logger.info(f"LM Studio response status: {resp.status}")
-                if resp.status == 200:
-                    self.lm_studio_available = True
-                    self.lm_studio_checked_at = time.monotonic()
-                    data = await resp.json()
-                    choices = data.get("choices", [])
-                    if choices:
-                        message = choices[0].get("message", {})
-                        # Standard content field
-                        content = message.get("content", "").strip()
-                        # Qwen3-Thinking uses reasoning_content field
-                        reasoning = message.get("reasoning_content", "").strip()
-
-                        # Use reasoning_content if content is empty (thinking models)
-                        if not content and reasoning:
-                            # Extract the actual response from reasoning
-                            lines = reasoning.strip().split("\n")
-                            for line in reversed(lines):
-                                line = line.strip()
-                                if (
-                                    line
-                                    and not line.startswith("Wait,")
-                                    and not line.startswith("Let me")
-                                ):
-                                    content = line
-                                    break
-                            if not content and lines:
-                                content = lines[-1].strip()
-
-                        # Clean up reasoning/thinking model outputs
-                        def clean_thinking_response(text):
-                            if not text:
-                                return ""
-
-                            # Remove thinking tags
-                            text = text.replace("</thinking>", "").replace(
-                                "<thinking>", ""
-                            )
-
-                            # Extended list of thinking patterns to filter
-                            thinking_patterns = [
-                                # Analysis patterns
-                                r"^The user is (asking|greeting|sharing|saying|giving|apologizing)",
-                                r"^This (is a|seems like|matches)",
-                                r"^My reasoning:",
-                                r"^I should",
-                                r"^I need to",
-                                r"^I think",
-                                r"^I will",
-                                r"^Let me",
-                                r"^Wait",
-                                r"^Hmm",
-                                r"^How about",
-                                r"^Looking at",
-                                r"^In the examples?",
-                                r"^According to",
-                                r"^Based on",
-                                r"^So I",
-                                r"^Alternatively",
-                                r"^This means",
-                                r"^The assistant",
-                                r"^Example Matching",
-                                r"^First,",
-                                r"^Then",
-                                r"^But",
-                                r"^Actually",
-                                r"^Maybe",
-                                r"^Perhaps",
-                                r"^Only answer",
-                                r"^I can see",
-                                r"^That means",
-                                r"^This is",
-                                r"^These are",
-                                r"^\d+\.\s+(Be|Use|Check|Only)",  # "1. Be friendly", "2. Use..."
-                                r"^K$",  # Just "K"
-                                r"^En nisse$",  # Incomplete
-                                r"^Fortell meg en vits!$",  # Echo
-                                r"^The question/task:",  # Question echo
-                                r"^@inebotten",  # Echoing mention
-                                r"^Hva kan du gjøre\?",  # Echo
-                                r"^Hvordan går det\?",  # Echo
-                            ]
-
-                            import re
-
-                            lines = text.split("\n")
-                            candidates = []
-
-                            for line in lines:
-                                line = line.strip()
-                                if not line:
-                                    continue
-
-                                # Skip if matches thinking pattern
-                                if any(
-                                    re.search(pattern, line, re.IGNORECASE)
-                                    for pattern in thinking_patterns
-                                ):
-                                    continue
-
-                                # Skip very short lines (less than 3 words) unless it contains a link
-                                if len(line.split()) < 3 and "[" not in line:
-                                    continue
-
-                                # Skip lines that are mostly punctuation
-                                if re.match(
-                                    r"^[\s*\-\d\.👋😊🎉💪🌟✨🤔💡🦴🌧️☕📅]+$", line
-                                ):
-                                    continue
-
-                                candidates.append(line)
-
-                            # Return the longest reasonable candidate (usually the actual response)
-                            if candidates:
-                                # Filter to reasonable length (10-200 chars)
-                                good_candidates = [
-                                    c for c in candidates if 10 <= len(c) <= 500
-                                ]
-                                if good_candidates:
-                                    return max(
-                                        good_candidates, key=len
-                                    )  # Longest good candidate
-                                return text[:500]  # Return first 500 chars as fallback
-
-                            return text[:500] if text else ""
-
-                        content = clean_thinking_response(content)
-
-                        # Check if response is still bad after cleaning
-                        bad_patterns = [
-                            "The user",
-                            "This is",
-                            "My reasoning",
-                            "I should",
-                            "The question",
-                            "@inebotten Hvem",
-                            "@inebotten Hva",
-                        ]
-                        is_still_bad = any(p in content for p in bad_patterns)
-
-                        if is_still_bad:
-                            logger.warning(
-                                f"Response still bad after cleaning: {content[:50]}..."
-                            )
-                            return "(Prøv å spørre på en annen måte)"
-
-                        logger.info(
-                            f"LM Studio generated {len(content)} chars (reasoning: {len(reasoning)} chars)"
-                        )
-                        if content:
-                            return content
-                        else:
-                            return "(Modellen tenkte men ga ikke svar)"
-                    logger.warning("LM Studio returned empty choices")
-                    return "(No response from AI)"
-                else:
-                    error = await resp.text()
-                    logger.error(f"LM Studio error {resp.status}: {error[:200]}")
+            ) as response:
+                if response.status != 200:
+                    logger.error(
+                        "bridge_provider_error code=http_status_%s model=%s",
+                        response.status,
+                        LM_STUDIO_MODEL,
+                    )
                     self.lm_studio_available = False
                     self.lm_studio_checked_at = time.monotonic()
                     return None
-        except asyncio.TimeoutError:
-            logger.error("LM Studio timeout")
-            self.lm_studio_available = False
-            self.lm_studio_checked_at = time.monotonic()
-            return None
-        except Exception as e:
-            logger.error(f"LM Studio error: {e}")
-            self.lm_studio_available = False
-            self.lm_studio_checked_at = time.monotonic()
-            import traceback
 
-            traceback.print_exc()
-            return None
+                self.lm_studio_available = True
+                self.lm_studio_checked_at = time.monotonic()
+                response_json = await response.json()
+                try:
+                    return extract_bridge_content(response_json)
+                except BridgeContractError as exc:
+                    logger.warning(
+                        "bridge_response_rejected code=%s model=%s",
+                        exc.code,
+                        LM_STUDIO_MODEL,
+                    )
+                    return None
+        except asyncio.TimeoutError:
+            logger.error(
+                "bridge_provider_error code=timeout model=%s",
+                LM_STUDIO_MODEL,
+            )
+        except Exception:
+            logger.error(
+                "bridge_provider_error code=provider_failure model=%s",
+                LM_STUDIO_MODEL,
+            )
+        self.lm_studio_available = False
+        self.lm_studio_checked_at = time.monotonic()
+        return None
 
     async def handle_request(self, reader, writer):
         self.request_count += 1
@@ -665,7 +625,13 @@ class HermesBridgeServer:
                     return
                 if content_length > 0:
                     body_data = await reader.readexactly(content_length)
-                    body = body_data.decode("utf-8", errors="ignore")
+                    try:
+                        body = body_data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        await self._send_response(
+                            writer, 400, {"error": "invalid_utf8_body"}
+                        )
+                        return
 
             parsed = urlparse(path)
             query = parse_qs(parsed.query)
@@ -701,10 +667,15 @@ class HermesBridgeServer:
             await self._send_response(writer, 400, {"error": "Incomplete request"})
         except asyncio.LimitOverrunError:
             await self._send_response(writer, 400, {"error": "Request headers too large"})
-        except Exception as e:
+        except Exception:
             self.error_count += 1
-            logger.error(f"[{request_id}] Error: {e}")
-            await self._send_response(writer, 500, {"error": str(e)})
+            logger.error(
+                "bridge_request_failed code=internal_error request=%s",
+                request_id,
+            )
+            await self._send_response(
+                writer, 500, {"error": "internal_error"}
+            )
         finally:
             try:
                 writer.close()
@@ -721,12 +692,14 @@ class HermesBridgeServer:
         return headers
 
     async def _handle_chat(self, writer, method, query, body):
-        payload = {}
+        payload: object = {}
         if method == "POST" and body:
             try:
                 payload = json.loads(body)
             except json.JSONDecodeError:
-                await self._send_response(writer, 400, {"error": "Invalid JSON body"})
+                await self._send_response(
+                    writer, 400, {"error": "invalid_json_body"}
+                )
                 return
         else:
             data_param = query.get("data", [""])[0]
@@ -734,17 +707,116 @@ class HermesBridgeServer:
                 try:
                     payload = json.loads(unquote(data_param))
                 except json.JSONDecodeError:
-                    await self._send_response(writer, 400, {"error": "Invalid data parameter"})
+                    await self._send_response(
+                        writer, 400, {"error": "invalid_data_parameter"}
+                    )
                     return
 
-        if not payload:
-            await self._send_response(writer, 400, {"error": "Missing payload"})
+        if not isinstance(payload, dict) or not payload:
+            await self._send_response(
+                writer, 400, {"error": "invalid_payload"}
+            )
+            return
+        allowed_keys = {
+            "message",
+            "author_name",
+            "channel_type",
+            "timestamp",
+            "is_mention",
+            "system_prompt",
+            "temperature",
+            "max_tokens",
+            "context_prompt",
+        }
+        if not set(payload).issubset(allowed_keys):
+            await self._send_response(
+                writer, 400, {"error": "invalid_payload"}
+            )
             return
 
-        message = payload.get("message", "")
+        message = payload.get("message")
         author_name = payload.get("author_name", "unknown")
         channel_type = payload.get("channel_type", "DM")
-        system_prompt = payload.get("system_prompt")  # Extract custom system prompt
+        system_prompt = payload.get("system_prompt")
+        temperature = payload.get("temperature")
+        max_tokens = payload.get("max_tokens")
+        context_prompt = payload.get("context_prompt", "")
+        timestamp = payload.get("timestamp")
+        is_mention = payload.get("is_mention", True)
+
+        if not isinstance(message, str) or not message:
+            await self._send_response(
+                writer, 400, {"error": "invalid_message"}
+            )
+            return
+        if (
+            not isinstance(author_name, str)
+            or len(author_name) > MAX_AUTHOR_NAME_CHARS
+        ):
+            await self._send_response(
+                writer, 400, {"error": "invalid_author_name"}
+            )
+            return
+        if (
+            not isinstance(channel_type, str)
+            or len(channel_type) > MAX_CHANNEL_TYPE_CHARS
+        ):
+            await self._send_response(
+                writer, 400, {"error": "invalid_channel_type"}
+            )
+            return
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            await self._send_response(
+                writer, 400, {"error": "invalid_system_prompt"}
+            )
+            return
+        if timestamp is not None and (
+            not isinstance(timestamp, str) or len(timestamp) > 64
+        ):
+            await self._send_response(
+                writer, 400, {"error": "invalid_timestamp"}
+            )
+            return
+        if not isinstance(is_mention, bool):
+            await self._send_response(
+                writer, 400, {"error": "invalid_is_mention"}
+            )
+            return
+        try:
+            if _utf8_size(message, code="invalid_message") > MAX_BODY_BYTES:
+                raise BridgeContractError("invalid_message")
+            if system_prompt is not None:
+                _utf8_size(
+                    system_prompt,
+                    code="invalid_system_prompt",
+                )
+            if timestamp is not None:
+                _utf8_size(timestamp, code="invalid_timestamp")
+            selected_temperature = (
+                None
+                if temperature is None
+                else _finite_number(
+                    temperature,
+                    code="invalid_temperature",
+                    minimum=0.0,
+                    maximum=2.0,
+                )
+            )
+            selected_max_tokens = (
+                None
+                if max_tokens is None
+                else _bounded_max_tokens(max_tokens)
+            )
+            build_untrusted_context_data(
+                author_name=author_name,
+                channel_type=channel_type,
+                context_prompt=context_prompt,
+            )
+        except BridgeContractError as exc:
+            await self._send_response(
+                writer, 400, {"error": exc.code}
+            )
+            return
 
         if message == "health_check":
             lm_available = await self._check_lm_studio()
@@ -760,31 +832,28 @@ class HermesBridgeServer:
             )
             return
 
-        logger.info(f"[{author_name}] {message[:60]}...")
-        if system_prompt:
-            logger.info(f"Received custom system prompt ({len(system_prompt)} chars)")
-
-        # Try LM Studio first, fallback to local
         response_text = None
         if await self._check_lm_studio():
-            logger.info("Calling LM Studio...")
             response_text = await self._generate_ai_response(
-                message, author_name, channel_type, system_prompt
+                message,
+                author_name,
+                channel_type,
+                system_prompt,
+                selected_temperature,
+                selected_max_tokens,
+                context_prompt,
             )
-            if response_text:
-                logger.info(f"LM Studio returned: {response_text[:80]}...")
-            else:
-                logger.warning("LM Studio returned None")
 
         if response_text is None:
-            logger.info("Using local fallback response")
             response_text = generate_local_response(message, author_name)
 
-        logger.info(f"Sending response: {response_text[:80]}...")
         await self._send_response(
             writer,
             200,
-            {"response": response_text, "timestamp": datetime.now().isoformat()},
+            {
+                "response": response_text,
+                "timestamp": datetime.now().isoformat(),
+            },
         )
 
     async def _send_response(self, writer, status_code, data):
@@ -810,8 +879,8 @@ class HermesBridgeServer:
         try:
             writer.write(header_bytes + body)
             await writer.drain()
-        except Exception as e:
-            print(f"[BRIDGE] Response write error: {e}")
+        except Exception:
+            logger.error("bridge_response_write code=write_failed")
 
     async def cleanup(self):
         if self.session and not self.session.closed:
