@@ -914,10 +914,18 @@ class PendingActionStore:
             BotIntent.ACTION_SELECT,
             BotIntent.ACTION_CORRECT,
         }
-        if not isinstance(route, IntentResult):
+        if not isinstance(key, ConversationKey) or not isinstance(
+            route,
+            IntentResult,
+        ):
             return None
         if route.intent not in control_intents:
-            return (_clone_route(route),)
+            try:
+                return (_clone_route(route),)
+            except Exception:
+                return None
+        if not isinstance(route.payload, Mapping):
+            return None
         pending_payload = route.payload.get("pending")
         if not isinstance(pending_payload, Mapping):
             return None
@@ -931,7 +939,14 @@ class PendingActionStore:
             or pending.action_id != action_id
         ):
             return None
-        return tuple(_clone_route(item) for item in pending.routes)
+        if not pending.routes or any(
+            not isinstance(item, IntentResult) for item in pending.routes
+        ):
+            return None
+        try:
+            return tuple(_clone_route(item) for item in pending.routes)
+        except Exception:
+            return None
 
     def peek(self, key: ConversationKey) -> PendingAction | None:
         pending, _ = self._read(key)

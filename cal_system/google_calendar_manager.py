@@ -584,6 +584,54 @@ class GoogleCalendarManager:
         value = result.value if isinstance(result.value, str) else "Kunne ikke starte pålogging."
         return result.ok, value
 
+    def has_active_auth_flow(
+        self,
+        requester_id,
+        channel_id,
+        *,
+        reference_time: datetime | None = None,
+    ) -> bool:
+        """Return whether one live OAuth flow matches this exact requester/channel."""
+
+        if reference_time is None:
+            reference_time = datetime.now(timezone.utc)
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            return False
+        with _CREDENTIAL_LOCK:
+            if getattr(self, "_auth_flow", None) is None:
+                return False
+            state = getattr(self, "_auth_flow_state", None)
+            if not isinstance(state, dict):
+                return False
+            expected_requester = state.get("requester_id")
+            expected_channel = state.get("channel_id")
+            expires_value = state.get("expires_at")
+            if (
+                not isinstance(expected_requester, str)
+                or not expected_requester
+                or not isinstance(expected_channel, str)
+                or not expected_channel
+                or not isinstance(expires_value, str)
+                or not expires_value
+            ):
+                return False
+            try:
+                expires_at = datetime.fromisoformat(expires_value)
+            except (TypeError, ValueError):
+                return False
+            if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                return False
+            return (
+                reference_time.astimezone(timezone.utc)
+                < expires_at.astimezone(timezone.utc)
+                and str(requester_id) == expected_requester
+                and str(channel_id) == expected_channel
+            )
+
     @staticmethod
     def _auth_error_message(error_code: str | None) -> str:
         messages = {

@@ -4,13 +4,16 @@
 
 import unittest
 import asyncio
+import io
 from collections import defaultdict
+from contextlib import redirect_stdout
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 from cal_system.temporal_resolver import TemporalResolver
+from ai.chat_contract import ChatTurn
 from core.dispatch_result import (
     DeliveryState,
     DispatchOutcome,
@@ -22,7 +25,7 @@ from core.dispatch_result import (
 from core.intent_models import IntentResult, IntentSource
 from core.intent_payloads import PayloadValidationError
 from core.intent_router import BotIntent, IntentRouter
-from core.message_context import routing_context_from_message
+from core.message_context import ConversationKey, routing_context_from_message
 from core.message_monitor import MessageMonitor, RouteProcessOutcome
 from core.mutation_coordinator import MutationCoordinator
 from core.nlu_metrics import NLUMetrics
@@ -108,6 +111,28 @@ class FakeConversation:
 
     def add_message(self, **kwargs):
         self.messages.append(kwargs)
+
+    def add_turn(self, key, turn):
+        self.threads.setdefault(key, []).append(turn)
+        self.messages.append({"key": key, "turn": turn})
+
+    def get_prompt_history(
+        self,
+        key,
+        *,
+        limit=10,
+        exclude_source_message_id=None,
+    ):
+        self.context_channels.append(key)
+        return tuple(
+            turn
+            for turn in self.threads.get(key, ())[-limit:]
+            if isinstance(turn, ChatTurn)
+            and (
+                exclude_source_message_id is None
+                or turn.source_message_id != exclude_source_message_id
+            )
+        )
 
     def get_conversation_summary(self, channel_id):
         self.summary_channels.append(channel_id)
@@ -434,19 +459,20 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(monitor.conversation.dashboard_channels, [])
-        self.assertEqual(monitor.conversation.summary_channels, [])
-        self.assertEqual(monitor.conversation.context_channels, [100])
+        key = ConversationKey(999, 100, 7)
+        self.assertEqual(monitor.conversation.summary_channels, [key])
+        self.assertEqual(monitor.conversation.context_channels, [key])
         self.assertEqual(
-            [entry["channel_id"] for entry in monitor.conversation.messages],
-            [100],
+            [entry["key"] for entry in monitor.conversation.messages],
+            [key, key],
         )
         self.assertEqual(
-            [entry["user_id"] for entry in monitor.conversation.messages],
-            [7],
+            [entry["turn"].role for entry in monitor.conversation.messages],
+            ["user", "assistant"],
         )
         self.assertEqual(
-            [entry["is_bot"] for entry in monitor.conversation.messages],
-            [True],
+            [entry["turn"].content for entry in monitor.conversation.messages],
+            ["fortell en historie om kaniner", "Et kaninsvar"],
         )
 
     async def test_dashboard_generation_keeps_guild_domain_scope(self):
@@ -475,8 +501,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor.conversation.dashboard_channels, [])
         self.assertEqual(generated, [])
         self.assertEqual(
-            [entry["channel_id"] for entry in monitor.conversation.messages],
-            [100],
+            [entry["turn"].role for entry in monitor.conversation.messages],
+            ["user", "assistant"],
         )
 
     async def test_real_conversation_followup_does_not_scrape_prior_bot_prose(self):
@@ -529,8 +555,14 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("helsejournal", created[0][0]["text"].casefold())
         self.assertNotIn("lønnsslipp", created[0][0]["text"].casefold())
         self.assertIs(created[0][1], NOW)
-        self.assertEqual(set(monitor.conversation.threads), {100, 200})
-        self.assertNotIn(999, monitor.conversation.threads)
+        self.assertEqual(
+            set(monitor.conversation.threads),
+            {
+                ConversationKey(999, 100, 7),
+                ConversationKey(999, 200, 7),
+                ConversationKey(999, 100, 8),
+            },
+        )
 
     async def test_real_conversation_dm_followup_does_not_scrape_prior_bot_prose(self):
         monitor = self.make_monitor()
@@ -571,7 +603,13 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created[0][0]["text"], "det")
         self.assertNotIn("helsejournal", created[0][0]["text"].casefold())
         self.assertIs(created[0][1], NOW)
-        self.assertEqual(set(monitor.conversation.threads), {300, 301})
+        self.assertEqual(
+            set(monitor.conversation.threads),
+            {
+                ConversationKey(None, 300, 7),
+                ConversationKey(None, 301, 7),
+            },
+        )
 
     async def test_untagged_contextual_followup_keeps_mention_gate(self):
         monitor = self.make_monitor()
@@ -1120,6 +1158,16 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(message.replies), 1)
         self.assertEqual(monitor.response_count, 1)
+        monitor.user_memory.update_last_interaction_result.assert_awaited_once_with(
+            7,
+            reference_time=NOW,
+            topic=None,
+            username="Tester",
+        )
+        self.assertEqual(
+            monitor.conversation.summary_channels,
+            [ConversationKey(None, 100, 7)],
+        )
 
     async def test_setup_initializes_gcal_before_frozen_background_sync(self):
         monitor = MessageMonitor.__new__(MessageMonitor)
@@ -1210,7 +1258,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delivered_reply_survives_conversation_recording_failure(self):
         monitor = self.make_monitor()
-        monitor.conversation.add_message = Mock(
+        monitor.conversation.add_turn = Mock(
             side_effect=RuntimeError("private storage detail")
         )
         message = RecordingMessage("@inebotten hei")
@@ -1220,7 +1268,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result.state, DeliveryState.DELIVERED)
         self.assertEqual(message.replies, ["Hei tilbake"])
         self.assertEqual(monitor.response_count, 1)
-        monitor.conversation.add_message.assert_called_once()
+        monitor.conversation.add_turn.assert_called_once()
 
     async def test_legacy_handler_exception_returns_bounded_outcome(self):
         monitor = self.make_monitor()
@@ -1295,17 +1343,26 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_background_task_is_visible_in_health(self):
         monitor = self.make_monitor()
+        canary = "BACKGROUND_SECRET_CANARY"
 
         async def boom():
-            raise RuntimeError("task failed")
+            raise RuntimeError(canary)
 
-        monitor._track_background_task(boom(), "boom-task")
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            monitor._track_background_task(boom(), "boom-task")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
 
         task_health = monitor.get_task_health()["boom-task"]
         self.assertEqual(task_health["state"], "failed")
-        self.assertIn("task failed", task_health["last_error"])
+        self.assertEqual(
+            task_health["last_error"],
+            "background_task_failed",
+        )
+        self.assertEqual(task_health["exception_type"], "RuntimeError")
+        self.assertNotIn(canary, output.getvalue())
+        self.assertNotIn(canary, repr(task_health))
 
     async def test_console_persistence_failure_does_not_advance_snapshot(self):
         monitor = self.make_monitor()

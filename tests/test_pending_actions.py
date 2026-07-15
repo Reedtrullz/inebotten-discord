@@ -75,6 +75,33 @@ def list_routes() -> tuple[IntentResult, IntentResult]:
     )
 
 
+def calendar_auth_route(*, auth_code: str = "4/SECRET-CODE") -> IntentResult:
+    return IntentResult(
+        BotIntent.CALENDAR_AUTH,
+        1.0,
+        {"calendar_auth": {"auth_code": auth_code}},
+        "calendar_auth_code",
+    )
+
+
+def control_route(
+    intent: BotIntent,
+    action_id: object,
+    **pending_fields: object,
+) -> IntentResult:
+    return IntentResult(
+        intent,
+        1.0,
+        {
+            "pending": {
+                "action_id": action_id,
+                **pending_fields,
+            }
+        },
+        f"pending_{intent.value}",
+    )
+
+
 def ready_confirmation(
     store: PendingActionStore,
     key_value: ConversationKey,
@@ -536,24 +563,236 @@ def test_cancel_and_choice_are_each_consumed_once():
     assert store.consume_choice(key(), choice.action_id, 1) is None
 
 
-def test_effective_control_routes_are_same_scope_id_and_deep_copied():
+@pytest.mark.parametrize(
+    ("intent", "pending_fields"),
+    [
+        (BotIntent.ACTION_CONFIRM, {}),
+        (BotIntent.ACTION_CANCEL, {}),
+        (
+            BotIntent.ACTION_CORRECT,
+            {"correction_text": "bruk den nye koden"},
+        ),
+    ],
+)
+def test_confirmation_controls_inherit_the_frozen_route_policy(
+    intent,
+    pending_fields,
+):
     store = PendingActionStore(now_provider=Clock())
-    pending = ready_choices(store, key(), list_routes())
-    control = IntentResult(
+    frozen = calendar_auth_route()
+    pending = ready_confirmation(store, key(), frozen)
+
+    routes = store.effective_routes_for_history(
+        key(),
+        control_route(intent, pending.action_id, **pending_fields),
+    )
+
+    assert routes == (frozen,)
+    assert routes[0] is not frozen
+    routes[0].payload["calendar_auth"]["auth_code"] = "POISONED"
+    assert (
+        store.peek(key()).routes[0].payload["calendar_auth"]["auth_code"]
+        == "4/SECRET-CODE"
+    )
+
+
+def test_selection_inherits_every_choice_even_when_selection_is_not_sensitive():
+    store = PendingActionStore(now_provider=Clock())
+    sensitive = calendar_auth_route()
+    non_sensitive = IntentResult(BotIntent.HELP, 1.0)
+    pending = ready_choices(
+        store,
+        key(),
+        (sensitive, non_sensitive),
+    )
+    control = control_route(
         BotIntent.ACTION_SELECT,
-        1.0,
-        {"pending": {"action_id": pending.action_id, "choice_index": 0}},
+        pending.action_id,
+        choice_index=1,
     )
 
     routes = store.effective_routes_for_history(key(), control)
-    assert routes is not None
-    assert [route.intent for route in routes] == [
-        BotIntent.CALENDAR_LIST,
-        BotIntent.REMINDER_LIST,
-    ]
+    assert routes == (sensitive, non_sensitive)
     routes[0].payload["poison"] = True
     assert "poison" not in store.peek(key()).routes[0].payload
-    assert store.effective_routes_for_history(key(user_id=8), control) is None
+
+
+@pytest.mark.parametrize(
+    "choice_index",
+    [None, True, -1, 99, "1"],
+)
+def test_malformed_choice_index_cannot_downgrade_a_sensitive_menu(
+    choice_index,
+):
+    store = PendingActionStore(now_provider=Clock())
+    sensitive = calendar_auth_route()
+    non_sensitive = IntentResult(BotIntent.HELP, 1.0)
+    pending = ready_choices(
+        store,
+        key(),
+        (sensitive, non_sensitive),
+    )
+    pending_fields = (
+        {} if choice_index is None else {"choice_index": choice_index}
+    )
+
+    routes = store.effective_routes_for_history(
+        key(),
+        control_route(
+            BotIntent.ACTION_SELECT,
+            pending.action_id,
+            **pending_fields,
+        ),
+    )
+
+    assert routes == (sensitive, non_sensitive)
+
+
+@pytest.mark.parametrize(
+    "other_key",
+    [
+        key(user_id=8),
+        key(channel_id=11),
+        key(guild_id=2),
+        key(guild_id=None),
+    ],
+)
+def test_effective_control_routes_require_the_exact_conversation_key(
+    other_key,
+):
+    store = PendingActionStore(now_provider=Clock())
+    pending = ready_confirmation(store, key(), calendar_auth_route())
+    control = control_route(BotIntent.ACTION_CONFIRM, pending.action_id)
+
+    assert store.effective_routes_for_history(other_key, control) is None
+
+
+def test_effective_control_routes_require_the_exact_current_action_id():
+    store = PendingActionStore(now_provider=Clock())
+    stale = ready_confirmation(store, key(), calendar_auth_route())
+    current = ready_confirmation(
+        store,
+        key(),
+        reminder_route(text="ny handling"),
+    )
+
+    assert current.action_id != stale.action_id
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, stale.action_id),
+    ) is None
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, current.action_id),
+    ) == current.routes
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        IntentResult(BotIntent.ACTION_CONFIRM, 1.0, {}),
+        IntentResult(
+            BotIntent.ACTION_CONFIRM,
+            1.0,
+            {"pending": None},
+        ),
+        IntentResult(
+            BotIntent.ACTION_CONFIRM,
+            1.0,
+            {"pending": {}},
+        ),
+        control_route(BotIntent.ACTION_CONFIRM, None),
+        control_route(BotIntent.ACTION_CONFIRM, ""),
+        control_route(BotIntent.ACTION_CONFIRM, True),
+        control_route(BotIntent.ACTION_CONFIRM, 123),
+    ],
+)
+def test_malformed_or_missing_control_identity_fails_closed(route):
+    store = PendingActionStore(now_provider=Clock())
+    ready_confirmation(store, key(), calendar_auth_route())
+
+    assert store.effective_routes_for_history(key(), route) is None
+
+
+def test_missing_pending_state_fails_closed():
+    store = PendingActionStore(now_provider=Clock())
+
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, "missing-action"),
+    ) is None
+
+
+def test_expired_pending_state_fails_closed_and_is_removed():
+    clock = Clock()
+    store = PendingActionStore(
+        now_provider=clock,
+        ttl=timedelta(seconds=1),
+    )
+    pending = ready_confirmation(store, key(), calendar_auth_route())
+    clock.advance(timedelta(seconds=1))
+
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, pending.action_id),
+    ) is None
+    assert store.peek(key()) is None
+
+
+@pytest.mark.parametrize("terminal", ["completed", "failed"])
+def test_terminal_pending_state_fails_closed(terminal):
+    store = PendingActionStore(now_provider=Clock())
+    pending = ready_confirmation(store, key(), calendar_auth_route())
+    assert store.claim(key(), pending.action_id) is not None
+    if terminal == "completed":
+        assert store.complete(key(), pending.action_id)
+    else:
+        assert store.fail_terminal(key(), pending.action_id)
+
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, pending.action_id),
+    ) is None
+
+
+@pytest.mark.parametrize("state", ["presenting", "executing"])
+def test_non_ready_pending_state_fails_closed(state):
+    store = PendingActionStore(now_provider=Clock())
+    presentation = store.begin_confirmation(
+        key(),
+        calendar_auth_route(),
+        "Kalenderautentisering",
+    )
+    if state == "presenting":
+        action_id = presentation.pending.action_id
+    else:
+        ready = store.activate_presentation(presentation)
+        assert ready is not None
+        claimed = store.claim(key(), ready.action_id)
+        assert claimed is not None
+        action_id = claimed.action_id
+
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, action_id),
+    ) is None
+
+
+@pytest.mark.parametrize("corruption", ["empty", "non_route"])
+def test_malformed_authoritative_pending_routes_fail_closed(corruption):
+    store = PendingActionStore(now_provider=Clock())
+    pending = ready_confirmation(store, key(), calendar_auth_route())
+    stored = store._items[key()]
+    object.__setattr__(
+        stored,
+        "routes",
+        () if corruption == "empty" else (object(),),
+    )
+
+    assert store.effective_routes_for_history(
+        key(),
+        control_route(BotIntent.ACTION_CONFIRM, pending.action_id),
+    ) is None
 
 
 def test_terminal_tombstone_drops_sensitive_payload_and_expires():

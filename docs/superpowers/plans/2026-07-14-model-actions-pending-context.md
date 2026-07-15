@@ -9115,7 +9115,7 @@ Expected: one commit with offline green action flow.
 - Migration: old integer-keyed threads and old dictionary turns remain readable only through legacy wrappers. They are never imported into a scoped provider history lookup.
 - Sensitive boundary: credential-bearing calendar-auth turns and their OAuth URL/state replies are represented only by a fixed redacted marker; raw codes, tokens, state, and authorization URLs never enter provider history.
 
-- [ ] **Step 1: Write failing sanitizer, isolation, migration, and duplication tests (5 minutes)**
+- [x] **Step 1: Write failing sanitizer, isolation, migration, and duplication tests (5 minutes)**
 
 Create tests/test_chat_contract.py:
 
@@ -9247,7 +9247,7 @@ Run:
 
 Expected: FAIL because ChatTurn and scoped ConversationContext APIs do not exist.
 
-- [ ] **Step 2: Define the role contract and newline-preserving sanitizer (5 minutes)**
+- [x] **Step 2: Define the role contract and newline-preserving sanitizer (5 minutes)**
 
 Create ai/chat_contract.py:
 
@@ -9438,7 +9438,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 3: Migrate ConversationContext internals without importing legacy threads into scoped history (5 minutes)**
+- [x] **Step 3: Migrate ConversationContext internals without importing legacy threads into scoped history (5 minutes)**
 
 In memory/conversation_context.py add:
 
@@ -9572,7 +9572,7 @@ def get_prompt_history(
 
 Do not read self.threads[key.channel_id] in get_prompt_history(). That would reintroduce cross-user/channel history.
 
-- [ ] **Step 4: Preserve exact legacy wrappers for one release (5 minutes)**
+- [x] **Step 4: Preserve exact legacy wrappers for one release (5 minutes)**
 
 Keep the public wrapper signatures and dictionary return shape:
 
@@ -9699,7 +9699,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Route first, then record one policy-safe inbound turn (5 minutes)**
+- [x] **Step 5: Route first, then record one policy-safe inbound turn (5 minutes)**
 
 In `handle_message()`, keep Task 7's conversation scope and route first. Immediately after the exact route is known—but before `_process_route()`—derive a task-local policy, add a full or fixed-redacted inbound turn, and keep the policy active through dispatch and every owned send task:
 
@@ -9763,7 +9763,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Centralize successful outbound recording (5 minutes)**
+- [x] **Step 6: Centralize successful outbound recording (5 minutes)**
 
 Add to MessageMonitor:
 
@@ -9859,7 +9859,7 @@ Run:
 
 Expected: PASS with one record per successful send and none for failed/dropped sends.
 
-- [ ] **Step 7: Commit scoped storage and recording (5 minutes)**
+- [x] **Step 7: Commit scoped storage and recording (5 minutes)**
 
 ~~~bash
 git add ai/chat_contract.py memory/conversation_context.py \

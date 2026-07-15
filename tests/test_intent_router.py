@@ -1766,6 +1766,113 @@ class IntentRouterTests(unittest.TestCase):
                     BotIntent.CALENDAR_AUTH,
                 )
 
+    def test_natural_calendar_auth_followups_require_exact_active_scope(self):
+        monitor = DummyMonitor()
+        checker = Mock(return_value=True)
+        monitor.calendar.gcal = SimpleNamespace(
+            has_active_auth_flow=checker
+        )
+        cases = {
+            "her er koden 4/0AbC_12-SECRET": "4/0AbC_12-SECRET",
+            (
+                "her er koden 4/0AbC_12-SECRET og takk"
+            ): "4/0AbC_12-SECRET",
+            "koden er AbC_12_SECRET": "AbC_12_SECRET",
+            (
+                "koden er AbC_12_SECRET håper den virker"
+            ): "AbC_12_SECRET",
+            (
+                "jeg fikk koden `4/0AbC_12-SECRET`, kan du bruke den?"
+            ): "4/0AbC_12-SECRET",
+            (
+                "min oauth-kode er 4/0AbC_12-SECRET"
+            ): "4/0AbC_12-SECRET",
+            "4/0Bare-CODE": "4/0Bare-CODE",
+            (
+                "http://localhost:8080/?code=4%2F0Redirect-CODE&scope=x"
+            ): "4/0Redirect-CODE",
+        }
+        for text, code in cases.items():
+            with self.subTest(text=text):
+                result = self.route(
+                    text,
+                    monitor=monitor,
+                    channel_id=10,
+                    user_id=7,
+                )
+                self.assertEqual(result.intent, BotIntent.CALENDAR_AUTH)
+                self.assertEqual(result.payload, {"auth_code": code})
+                self.assertEqual(
+                    result.reason,
+                    "calendar_auth_scoped_followup",
+                )
+                self.assertTrue(result.requires_confirmation)
+        checker.assert_called_with(7, 10, reference_time=NOW)
+
+    def test_explicit_calendar_auth_accepts_oauth_safe_code_characters(self):
+        cases = {
+            "kalender auth 4/0AbC.DEF": "4/0AbC.DEF",
+            "kalender auth 4/0AbC+DEF": "4/0AbC+DEF",
+            "kalenderkode 4%2F0AbC-DEF": "4/0AbC-DEF",
+            "gcal code 4/0AbC=DEF": "4/0AbC=DEF",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.CALENDAR_AUTH)
+                self.assertEqual(result.payload, {"auth_code": expected})
+                self.assertTrue(result.requires_confirmation)
+
+    def test_credential_shaped_followup_without_matching_flow_stays_local(self):
+        monitor = DummyMonitor()
+        monitor.calendar.gcal = SimpleNamespace(
+            has_active_auth_flow=Mock(return_value=False)
+        )
+        for text in (
+            "her er koden 4/0AbC_12-SECRET",
+            "her er koden 4/0AbC_12-SECRET og takk",
+            "koden er 4/0AbC_12-SECRET håper den virker",
+            "jeg fikk koden `4/0AbC_12-SECRET`, kan du bruke den?",
+            "min oauth-kode er 4/0AbC_12-SECRET",
+            "4/0Bare-CODE",
+        ):
+            with self.subTest(text=text):
+                result = self.route(
+                    text,
+                    monitor=monitor,
+                    channel_id=10,
+                    user_id=7,
+                )
+                self.assertEqual(result.intent, BotIntent.CLARIFY)
+                self.assertEqual(
+                    result.reason,
+                    "credential_shaped_input_blocked",
+                )
+                self.assertNotIn("SECRET", repr(result.payload))
+                self.assertNotIn("Bare-CODE", repr(result.payload))
+
+        ordinary = self.route(
+            "kan du forklare hva denne koden gjør?",
+            monitor=monitor,
+            channel_id=10,
+            user_id=7,
+        )
+        self.assertEqual(ordinary.intent, BotIntent.AI_CHAT)
+        for text in (
+            "koden er skrevet i Python",
+            "resultatet var 4/2026 i tabellen",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.route(
+                        text,
+                        monitor=monitor,
+                        channel_id=10,
+                        user_id=7,
+                    ).intent,
+                    BotIntent.AI_CHAT,
+                )
+
     def test_watchlist_suggestion_compatibility_is_typed_and_scoped(self):
         cases = {
             "anbefaling film": "movie",

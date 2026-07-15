@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -458,6 +458,39 @@ def test_auth_legacy_tuple_and_structured_token_storage_failure(tmp_path):
     assert manager.token_path.read_bytes() == old_token
     assert manager._auth_flow is None
     assert manager._auth_flow_state is None
+
+
+def test_active_auth_flow_probe_is_exact_read_only_and_expiry_aware(tmp_path):
+    manager = _manager(tmp_path)
+    now = datetime(2026, 7, 15, 8, 0, tzinfo=timezone.utc)
+    flow = object()
+    manager._auth_flow = flow
+    manager._auth_flow_state = {
+        "requester_id": "7",
+        "channel_id": "10",
+        "expires_at": (now + timedelta(minutes=5)).isoformat(),
+    }
+
+    assert manager.has_active_auth_flow(7, 10, reference_time=now) is True
+    assert manager.has_active_auth_flow(8, 10, reference_time=now) is False
+    assert manager.has_active_auth_flow(7, 11, reference_time=now) is False
+    assert (
+        manager.has_active_auth_flow(
+            7,
+            10,
+            reference_time=now + timedelta(minutes=5),
+        )
+        is False
+    )
+    assert manager._auth_flow is flow
+
+    manager._auth_flow_state = {
+        "requester_id": "7",
+        "channel_id": "10",
+        "expires_at": "not-a-timestamp",
+    }
+    assert manager.has_active_auth_flow(7, 10, reference_time=now) is False
+    assert manager._auth_flow is flow
 
 
 @pytest.mark.parametrize("failure", ["invalid_grant", "http_400"])

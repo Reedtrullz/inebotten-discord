@@ -19,6 +19,14 @@ from datetime import datetime, timedelta
 
 import discord
 
+from ai.chat_contract import (
+    ChatTurn,
+    HistoryPolicy,
+    build_context_prompt,
+    capture_history_policy,
+    history_policy_for_effective_routes,
+    history_safe_content,
+)
 from cal_system.temporal_resolver import TemporalResolver
 from cal_system.reminder_checker import ReminderChecker
 from cal_system.reminder_clock import SystemReminderClock
@@ -126,6 +134,7 @@ COMMAND_REGISTRY = [
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
 _NO_TYPED_ENVELOPE = object()
 _TRUNCATION_MARKER = "\n\n[svaret er forkortet]"
+_SEARCH_CONTEXT_FIELDS = ("title", "href", "url", "body", "snippet")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +142,32 @@ class RouteProcessOutcome:
     dispatch: DispatchOutcome
     decision_route: IntentResult
     decision_outcome: str
+
+
+def _validated_search_results(value: object) -> tuple[dict[str, str], ...]:
+    """Copy only bounded, display-only fields from search adapters."""
+
+    if not isinstance(value, (list, tuple)):
+        return ()
+    copied: list[dict[str, str]] = []
+    for candidate in value[:5]:
+        if not isinstance(candidate, Mapping):
+            continue
+        item = {
+            field: field_value
+            for field in _SEARCH_CONTEXT_FIELDS
+            if isinstance((field_value := candidate.get(field)), str)
+        }
+        if item:
+            copied.append(item)
+    return tuple(copied)
+
+
+def _bounded_exception_type(exc: BaseException) -> str:
+    name = type(exc).__name__
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+        return name
+    return "Exception"
 
 
 def bounded_discord_text_chunks(
@@ -461,8 +496,16 @@ class MessageMonitor:
             except Exception:
                 return
             if exc:
-                self._mark_task_error(name, exc, state="failed", finished_at=datetime.now().isoformat())
-                print(f"[MONITOR] Background task {name} failed: {exc}")
+                exception_type = self._mark_task_error(
+                    name,
+                    exc,
+                    state="failed",
+                    finished_at=datetime.now().isoformat(),
+                )
+                print(
+                    f"[MONITOR] Background task {name} failed: "
+                    f"{exception_type}"
+                )
             else:
                 self._set_task_health(
                     name,
@@ -489,14 +532,16 @@ class MessageMonitor:
         )
 
     def _mark_task_error(self, name, exc, *, state="degraded", **extra):
+        exception_type = _bounded_exception_type(exc)
         self._set_task_health(
             name,
             state=state,
-            last_error=str(exc),
-            exception_type=type(exc).__name__,
+            last_error="background_task_failed",
+            exception_type=exception_type,
             last_error_at=datetime.now().isoformat(),
             **extra,
         )
+        return exception_type
 
     def get_task_health(self):
         return {name: dict(values) for name, values in self._task_health.items()}
@@ -732,8 +777,8 @@ class MessageMonitor:
         key = routing_context.key
         self.mention_count += 1
         print(
-            f"[MONITOR] Mention detected from {message.author.name} "
-            f"in {self._get_channel_type(message.channel)}"
+            "[MONITOR] Authorized mention admitted in "
+            f"{self._get_channel_type(message.channel)}"
         )
 
         async with self.mutation_coordinator.hold(
@@ -741,6 +786,7 @@ class MessageMonitor:
         ):
             route: IntentResult | None = None
             decision_recorded = False
+            history_policy = HistoryPolicy.REDACT_AUTH
             with capture_send_receipt() as receipt:
                 try:
                     lang = self.loc.detect_language(message.content)
@@ -764,13 +810,46 @@ class MessageMonitor:
                         f"[MONITOR] Intent matched: {route.intent.value} "
                         f"({route.reason}, {route.confidence:.2f})"
                     )
-                    processed = await self._process_route(
-                        message,
-                        utterance=utterance,
-                        routing_context=routing_context,
-                        route=route,
-                        reference_time=reference_time,
+                    try:
+                        effective_routes = (
+                            self.pending_actions.effective_routes_for_history(
+                                key,
+                                route,
+                            )
+                        )
+                    except Exception:
+                        effective_routes = None
+                    history_policy = history_policy_for_effective_routes(
+                        effective_routes
                     )
+                    with capture_history_policy(history_policy):
+                        add_turn = getattr(
+                            self.conversation,
+                            "add_turn",
+                            None,
+                        )
+                        if callable(add_turn):
+                            try:
+                                add_turn(
+                                    key,
+                                    ChatTurn(
+                                        "user",
+                                        history_safe_content(utterance.raw),
+                                        source_message_id=message.id,
+                                    ),
+                                )
+                            except Exception:
+                                print(
+                                    "[MONITOR] Inbound conversation "
+                                    "recording degraded"
+                                )
+                        processed = await self._process_route(
+                            message,
+                            utterance=utterance,
+                            routing_context=routing_context,
+                            route=route,
+                            reference_time=reference_time,
+                        )
                     self.nlu_metrics.record_decision(
                         intent=processed.decision_route.intent,
                         source=processed.decision_route.source,
@@ -858,11 +937,12 @@ class MessageMonitor:
                     if receipt.result is not None:
                         return base.with_delivery(receipt.result)
                     try:
-                        send = await self._send_text_sequence_result(
-                            message,
-                            "Beklager, noe gikk galt. Jeg prøver ikke "
-                            "handlingen automatisk på nytt.",
-                        )
+                        with capture_history_policy(history_policy):
+                            send = await self._send_text_sequence_result(
+                                message,
+                                "Beklager, noe gikk galt. Jeg prøver ikke "
+                                "handlingen automatisk på nytt.",
+                            )
                     except MessageSendCancelled as cancelled:
                         raise DispatchCancelled(
                             base.with_delivery(cancelled.result),
@@ -2210,26 +2290,88 @@ class MessageMonitor:
     ) -> RouteProcessOutcome:
         """Generate prose or one typed proposal without inline execution."""
 
-        print(
-            "[MONITOR] _send_ai_response called for message: "
-            f"{utterance.text[:50]}..."
-        )
+        print("[MONITOR] AI response requested")
         channel_type = self._get_channel_type(message.channel)
-        search_context = ""
+        try:
+            conversation_topic = self.conversation.get_conversation_summary(
+                routing_context.key
+            )
+        except Exception as exc:
+            conversation_topic = None
+            print(
+                "[MONITOR] Conversation summary degraded: "
+                f"{_bounded_exception_type(exc)}"
+            )
+        update_interaction = getattr(
+            self.user_memory,
+            "update_last_interaction_result",
+            None,
+        )
+        if callable(update_interaction):
+            try:
+                await update_interaction(
+                    routing_context.author.user_id,
+                    reference_time=reference_time,
+                    topic=conversation_topic,
+                    username=routing_context.author.display_name,
+                )
+            except ManagerMutationError as exc:
+                code = (
+                    exc.code
+                    if exc.code
+                    in {
+                        "storage_write_failed",
+                        "commit_state_unknown",
+                    }
+                    else "commit_state_unknown"
+                )
+                print(
+                    "[MONITOR] User-memory update degraded: "
+                    f"{code}"
+                )
+            except Exception as exc:
+                print(
+                    "[MONITOR] User-memory update degraded: "
+                    f"{_bounded_exception_type(exc)}"
+                )
         search_was_requested = forced_search_info is not None
+        search_context: dict[str, object] = {
+            "requested": search_was_requested,
+            "status": "not_requested",
+            "results": (),
+        }
 
         if forced_search_info is not None:
-            query = forced_search_info.get("query", "")
-            search_type = forced_search_info.get("type", "web")
+            query_value = (
+                forced_search_info.get("query", "")
+                if isinstance(forced_search_info, Mapping)
+                else ""
+            )
+            query = query_value if isinstance(query_value, str) else ""
+            type_value = (
+                forced_search_info.get("type", "web")
+                if isinstance(forced_search_info, Mapping)
+                else "web"
+            )
+            search_type = "news" if type_value == "news" else "web"
+            search_context = {
+                "requested": True,
+                "query": query,
+                "type": search_type,
+                "status": "no_results",
+                "results": (),
+            }
             try:
                 if search_type == "news":
-                    search_results = await self.search_manager.get_news(query)
-                else:
-                    search_results = await self.search_manager.search(query)
-                if search_results:
-                    search_context = self.search_manager.format_results_for_ai(
-                        search_results
+                    raw_search_results = await self.search_manager.get_news(
+                        query
                     )
+                else:
+                    raw_search_results = await self.search_manager.search(query)
+                search_results = _validated_search_results(raw_search_results)
+                if search_results:
+                    search_context["status"] = "ok"
+                    search_context["results"] = search_results
                     has_deep_content = any(
                         len(result.get("body", "")) > 500
                         for result in search_results
@@ -2248,11 +2390,13 @@ class MessageMonitor:
                                 )
                             )
                             if page_content:
-                                search_context += (
-                                    "\n\nDETALJERT INFORMASJON FRA KILDEN "
-                                    f"({top_url}):\n{page_content}\n"
-                                )
+                                search_context["fetched_page"] = {
+                                    "url": top_url,
+                                    "content": page_content,
+                                }
             except Exception as exc:
+                search_context["status"] = "degraded"
+                search_context["results"] = ()
                 print(
                     "[MONITOR] Search context degraded: "
                     f"{type(exc).__name__}"
@@ -2269,47 +2413,66 @@ class MessageMonitor:
             )
 
         try:
-            user_context = await self.user_memory.format_context_for_prompt(
-                message.author.id,
-                message.author.name,
+            snapshot = self.user_memory.snapshot_user(message.author.id)
+            user_snapshot = (
+                copy.deepcopy(snapshot)
+                if isinstance(snapshot, Mapping)
+                else {}
             )
         except Exception:
-            user_context = ""
+            user_snapshot = {}
+
+        context_data = {
+            "author": {
+                "id": routing_context.author.user_id,
+                "display_name": routing_context.author.display_name,
+            },
+            "channel_type": channel_type,
+            "user_memory": user_snapshot,
+            "search": search_context,
+        }
         try:
-            conversation_context = self.conversation.get_context(
-                message.channel.id,
-                limit=5,
+            context_prompt = build_context_prompt(context_data)
+        except Exception:
+            print("[MONITOR] Untrusted context serialization degraded")
+            context_prompt = build_context_prompt(
+                {"context_unavailable": True}
+            )
+
+        get_prompt_history = getattr(
+            self.conversation,
+            "get_prompt_history",
+            None,
+        )
+        try:
+            history = (
+                get_prompt_history(
+                    routing_context.key,
+                    limit=10,
+                    exclude_source_message_id=message.id,
+                )
+                if callable(get_prompt_history)
+                else ()
             )
         except Exception:
-            conversation_context = []
+            print("[MONITOR] Conversation history retrieval degraded")
+            history = ()
 
         system_prompt = self.get_system_prompt(
-            user_context=user_context,
-            conversation_context=conversation_context,
             style=self.ResponseStyle.CASUAL,
             routed_intent=routed_intent.intent,
             reference_time=reference_time,
         )
-        if search_context:
-            system_prompt += (
-                "\n\nSØKERESULTATER FRA NETTET:\n"
-                f"{search_context}\n\n"
-                "Bruk bare kildene over for oppdaterte påstander. "
-                "Oppgi kilde og vær tydelig på svak eller manglende dokumentasjon."
-            )
-        elif search_was_requested:
-            system_prompt += (
-                "\n\nSØK: Ingen kilder ble funnet. Ikke presenter svaret som "
-                "live-sjekket eller verifisert på nettet."
-            )
 
         try:
             success, ai_response = await self.hermes.generate_response(
                 message_content=utterance.raw,
-                author_name=message.author.name,
+                author_name=routing_context.author.display_name,
                 channel_type=channel_type,
                 is_mention=True,
                 system_prompt=system_prompt,
+                context_prompt=context_prompt,
+                history=history,
             )
         except asyncio.CancelledError:
             raise
@@ -2643,6 +2806,14 @@ class MessageMonitor:
 
         return dashboard
 
+    def record_outbound(self, message, content: str) -> None:
+        """Record one definitely delivered response in the exact turn scope."""
+
+        self.conversation.add_turn(
+            conversation_key_from_message(message),
+            ChatTurn("assistant", history_safe_content(content)),
+        )
+
     def _record_monitor_delivery(
         self,
         message,
@@ -2652,26 +2823,14 @@ class MessageMonitor:
         if result.state is not DeliveryState.DELIVERED:
             return
         self.response_count += 1
-        author_name = getattr(getattr(message, "author", None), "name", "unknown")
-        print(
-            f"[MONITOR] Response sent to {author_name}: "
-            f"{response_text[:100]}..."
-        )
-        add_message = getattr(self.conversation, "add_message", None)
-        if callable(add_message):
-            try:
-                add_message(
-                    channel_id=message.channel.id,
-                    user_id=message.author.id,
-                    username="Inebotten",
-                    content=response_text,
-                    is_bot=True,
-                )
-            except Exception:
-                # Conversation history is contextual bookkeeping.  Once the
-                # Discord adapter has confirmed delivery it must not rewrite
-                # that truth or trigger an alternate response.
-                print("[MONITOR] Conversation response recording degraded")
+        print("[MONITOR] Response delivered")
+        try:
+            self.record_outbound(message, response_text)
+        except Exception:
+            # Conversation history is contextual bookkeeping.  Once the
+            # Discord adapter has confirmed delivery it must not rewrite
+            # that truth or trigger an alternate response.
+            print("[MONITOR] Outbound conversation recording degraded")
 
     async def _send_response_result(
         self,

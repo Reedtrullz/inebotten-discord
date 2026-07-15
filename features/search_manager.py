@@ -75,15 +75,18 @@ class SearchManager:
                     )
                 )
                 if response and response.get('results'):
-                    print(f"[SEARCH] Tavily (Advanced) success for: {query}")
+                    print("[SEARCH] Tavily advanced search succeeded")
                     return [self._normalize_result(r, "tavily") for r in response["results"]]
-            except Exception as e:
-                print(f"[SEARCH] Tavily failed: {e}")
+            except Exception as exc:
+                print(
+                    "[SEARCH] Tavily search failed: "
+                    f"{type(exc).__name__}"
+                )
 
         # 2. Try Google (Reliable Scraper Fallback)
         try:
             from googlesearch import search as google_search
-            print(f"[SEARCH] Trying Google fallback for: {query}")
+            print("[SEARCH] Trying Google fallback")
             loop = asyncio.get_running_loop()
             # googlesearch-python returns an iterator of URLs
             urls = await loop.run_in_executor(
@@ -98,23 +101,29 @@ class SearchManager:
                     )
                     for url in urls
                 ]
-        except Exception as e:
-            print(f"[SEARCH] Google search failed: {e}")
+        except Exception as exc:
+            print(
+                "[SEARCH] Google search failed: "
+                f"{type(exc).__name__}"
+            )
 
         # 3. Try DuckDuckGo (Last resort)
         try:
             from duckduckgo_search import DDGS
             if not self.ddgs:
                 self.ddgs = DDGS()
-            print(f"[SEARCH] Trying DuckDuckGo last resort for: {query}")
+            print("[SEARCH] Trying DuckDuckGo last resort")
             loop = asyncio.get_running_loop()
             results = await loop.run_in_executor(
                 None,
                 lambda: list(self.ddgs.text(query, region=region, max_results=max_results))
             )
             return [self._normalize_result(result, "duckduckgo") for result in results]
-        except Exception as e:
-            print(f"[SEARCH] All search providers failed: {e}")
+        except Exception as exc:
+            print(
+                "[SEARCH] All search providers failed: "
+                f"{type(exc).__name__}"
+            )
             return []
 
     async def get_news(self, query: str = "", max_results: int = 3, region: str = "no-no") -> List[Dict]:
@@ -133,8 +142,11 @@ class SearchManager:
                 )
                 if response and response.get('results'):
                     return [self._normalize_result(r, "tavily") for r in response["results"]]
-            except Exception as e:
-                print(f"[SEARCH] Tavily news failed: {e}")
+            except Exception as exc:
+                print(
+                    "[SEARCH] Tavily news failed: "
+                    f"{type(exc).__name__}"
+                )
 
         # Fallback to general search with "nyheter" prefix
         return await self.search(f"siste nytt {query}", max_results=max_results, region=region)
@@ -224,8 +236,7 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
         for opinion in opinion_blocklist:
             if re.search(opinion, content_lower):
                 logging.debug(
-                    "Search intent rejected – opinion pattern matched: %s in %r",
-                    opinion, content,
+                    "search_intent_rejected reason=opinion_pattern"
                 )
                 return None
 
@@ -235,8 +246,7 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
 
         if len(query) < 3:
             logging.debug(
-                "Search intent rejected – extracted query too short (%r) from %r",
-                query, content,
+                "search_intent_rejected reason=query_too_short"
             )
             return None
 
@@ -244,8 +254,7 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
         vague_queries = ["nytt", "skjer", "det", "greia", "planen", "opplegget"]
         if query.lower() in vague_queries:
             logging.debug(
-                "Search intent rejected – query is too vague: %r",
-                query
+                "search_intent_rejected reason=query_too_vague"
             )
             return None
 

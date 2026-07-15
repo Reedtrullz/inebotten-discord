@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import unquote
 
 from cal_system.natural_language_parser import NaturalParseResult
 from cal_system.temporal_resolver import OSLO, TemporalResolver
@@ -185,6 +186,36 @@ _RESERVED_CALENDAR_AUTH_CODES = frozenset(
         "stop",
     }
 )
+_OAUTH_REDIRECT_CODE = re.compile(
+    r"(?:[?&]code=)(?P<code>[^&\s]{6,2048})",
+    re.IGNORECASE,
+)
+_BARE_OAUTH_CODE = re.compile(
+    r"(?P<code>4(?:/|%2f)"
+    r"(?=[A-Za-z0-9._~%+\-/=]{4,2048})"
+    r"(?=[A-Za-z0-9._~%+\-/=]*[A-Za-z_\-])"
+    r"[A-Za-z0-9._~%+\-/=]{4,2048})",
+    re.IGNORECASE,
+)
+_EXPLICIT_AUTH_FOLLOWUP = re.compile(
+    r"(?:\b(?:kalender|gcal)\s+(?:auth|login|kode|code)|"
+    r"\bkalenderkode)\s+"
+    r"(?P<code>[A-Za-z0-9._~%+\-/=]{6,2048})",
+    re.IGNORECASE,
+)
+_NATURAL_AUTH_FOLLOWUP = re.compile(
+    r"(?:"
+    r"(?:her|here)\s+(?:er|is)\s+(?:den|koden|kode|the\s+code)|"
+    r"(?:den\s+nye\s+|min\s+|my\s+)?"
+    r"(?:koden|kode|code|oauth-koden|oauth-code|oauth\s+code)\s+"
+    r"(?:er|is)|"
+    r"(?:jeg\s+fikk|i\s+got)\s+(?:denne\s+|the\s+)?(?:koden|code)"
+    r")\s*[:=\-]?\s*`?"
+    r"(?P<code>(?=[A-Za-z0-9._~%+\-/=]{6,2048})"
+    r"(?=[A-Za-z0-9._~%+\-/=]*[0-9_%+\-/=])"
+    r"[A-Za-z0-9._~%+\-/=]{6,2048})`?",
+    re.IGNORECASE,
+)
 _WATCHLIST_GENRE = (
     r"komedie|comedy|drama|sci-fi|action|thriller|horror"
 )
@@ -281,6 +312,33 @@ def _phrase_present(text: str, phrase: str) -> bool:
 
 def _present_terms(text: str, terms) -> tuple[str, ...]:
     return tuple(term for term in terms if _phrase_present(text, term))
+
+
+def _extract_auth_followup_code(text: str) -> str | None:
+    """Extract only tightly framed, credential-shaped OAuth follow-ups."""
+
+    if not isinstance(text, str):
+        return None
+    cleaned = text.strip()
+    match = _OAUTH_REDIRECT_CODE.search(cleaned)
+    if match is None:
+        match = _BARE_OAUTH_CODE.search(cleaned)
+    if match is None:
+        match = _EXPLICIT_AUTH_FOLLOWUP.search(cleaned)
+    if match is None:
+        match = _NATURAL_AUTH_FOLLOWUP.search(cleaned)
+    if match is None:
+        return None
+    code = unquote(
+        match.group("code").strip("`<>").rstrip(".,;!?")
+    )
+    if (
+        not 6 <= len(code) <= 2048
+        or any(character.isspace() for character in code)
+        or code.casefold() in _RESERVED_CALENDAR_AUTH_CODES
+    ):
+        return None
+    return code
 
 
 def _pending_key(
@@ -419,6 +477,54 @@ class IntentRouter:
             channel_id = key.channel_id
             user_id = key.user_id
 
+        semantics = analyze_utterance(utterance)
+        context = CollectorContext(
+            utterance=utterance,
+            semantics=semantics,
+            routing=routing_context,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            reference_time=captured,
+        )
+        credential_code = _extract_auth_followup_code(utterance.text)
+        if credential_code is not None:
+            explicit_auth = _EXPLICIT_AUTH_FOLLOWUP.search(
+                utterance.text
+            ) is not None
+            if explicit_auth or self._matches_active_calendar_auth_flow(
+                context
+            ):
+                return RoutedIntent(
+                    IntentResult(
+                        BotIntent.CALENDAR_AUTH,
+                        0.99,
+                        {"auth_code": credential_code},
+                        (
+                            "calendar_auth_keyword"
+                            if explicit_auth
+                            else "calendar_auth_scoped_followup"
+                        ),
+                        risk=IntentRisk.MUTATING,
+                        requires_confirmation=True,
+                    )
+                )
+            return RoutedIntent(
+                IntentResult(
+                    BotIntent.CLARIFY,
+                    1.0,
+                    {
+                        "clarification": (
+                            "Jeg sender ikke en mulig påloggingskode til "
+                            "chatmodellen. Start Google Calendar-pålogging "
+                            "i denne kanalen og prøv igjen."
+                        )
+                    },
+                    "credential_shaped_input_blocked",
+                    risk=IntentRisk.READ_ONLY,
+                )
+            )
+
         pending = self._pending_result(
             utterance,
             _pending_key(
@@ -431,16 +537,6 @@ class IntentRouter:
         if pending is not None:
             return RoutedIntent(pending)
 
-        semantics = analyze_utterance(utterance)
-        context = CollectorContext(
-            utterance=utterance,
-            semantics=semantics,
-            routing=routing_context,
-            guild_id=guild_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            reference_time=captured,
-        )
         candidates: list[IntentCandidate] = []
         parser_errors: list[str] = []
         collector_rejections: list[CandidateRejection] = []
@@ -1285,12 +1381,14 @@ class IntentRouter:
 
         auth_match = re.fullmatch(
             rf"{_POLITE_COMMAND_PREFIX}(?:(?:kalender|gcal)\s+"
-            r"(?:(?:auth|login)(?:\s+(?P<auth_code>[4/a-z0-9_-]+))?|"
-            r"(?:kode|code)(?:\s+(?P<label_code>[4/a-z0-9_-]+))?)|"
-            r"kalenderkode(?:\s+(?P<compact_code>[4/a-z0-9_-]+))?)\s*\??",
+            r"(?:(?:auth|login)(?:\s+(?P<auth_code>[a-z0-9._~%+/=\-]+))?|"
+            r"(?:kode|code)(?:\s+(?P<label_code>[a-z0-9._~%+/=\-]+))?)|"
+            r"kalenderkode(?:\s+(?P<compact_code>[a-z0-9._~%+/=\-]+))?)\s*\??",
             text.strip(),
             re.I,
         )
+        auth_code: str | None = None
+        auth_reason: str | None = None
         if auth_match:
             auth_code = next(
                 (
@@ -1300,12 +1398,44 @@ class IntentRouter:
                 ),
                 None,
             )
+            if isinstance(auth_code, str):
+                auth_code = unquote(auth_code)
             if (
                 isinstance(auth_code, str)
                 and auth_code.casefold() in _RESERVED_CALENDAR_AUTH_CODES
             ):
                 auth_match = None
-        if auth_match:
+                auth_code = None
+        if auth_match is not None:
+            auth_reason = "calendar_auth_keyword"
+        else:
+            followup_code = _extract_auth_followup_code(text)
+            if followup_code is not None:
+                if self._matches_active_calendar_auth_flow(context):
+                    auth_code = followup_code
+                    auth_reason = "calendar_auth_scoped_followup"
+                else:
+                    blocked = IntentResult(
+                        BotIntent.CLARIFY,
+                        1.0,
+                        {
+                            "clarification": (
+                                "Jeg sender ikke en mulig påloggingskode til "
+                                "chatmodellen. Start Google Calendar-pålogging "
+                                "i denne kanalen og prøv igjen."
+                            )
+                        },
+                        "credential_shaped_input_blocked",
+                    )
+                    candidates.append(
+                        self._candidate_from_result(
+                            blocked,
+                            tier=20,
+                            order=99,
+                            specificity=5,
+                        )
+                    )
+        if auth_reason is not None:
             result = IntentResult(
                 BotIntent.CALENDAR_AUTH,
                 0.99,
@@ -1314,20 +1444,37 @@ class IntentRouter:
                     if auth_code is not None
                     else {}
                 ),
-                "calendar_auth_keyword",
+                auth_reason,
             )
             candidates.append(
                 self._candidate_from_result(
                     result,
                     tier=20,
                     order=100,
-                    specificity=4,
+                    specificity=(
+                        5
+                        if auth_reason == "calendar_auth_scoped_followup"
+                        else 4
+                    ),
                     action_terms=_present_terms(
-                        control, ("auth", "kode", "code", "login")
+                        control,
+                        (
+                            "auth",
+                            "kode",
+                            "koden",
+                            "code",
+                            "login",
+                        ),
                     )
                     or (("kalenderkode",) if _phrase_present(
                         control, "kalenderkode"
-                    ) else ()),
+                    ) else ())
+                    or (
+                        (auth_code,)
+                        if auth_reason == "calendar_auth_scoped_followup"
+                        and auth_code is not None
+                        else ()
+                    ),
                     domain_terms=_present_terms(
                         control, ("kalender", "gcal", "calendar")
                     )
@@ -3383,6 +3530,33 @@ class IntentRouter:
                 )
 
         return None
+
+    def _matches_active_calendar_auth_flow(
+        self,
+        context: CollectorContext,
+    ) -> bool:
+        if (
+            context.channel_id is None
+            or context.user_id is None
+            or isinstance(context.channel_id, bool)
+            or not isinstance(context.channel_id, int)
+            or isinstance(context.user_id, bool)
+            or not isinstance(context.user_id, int)
+        ):
+            return False
+        calendar = getattr(self.monitor, "calendar", None)
+        gcal = getattr(calendar, "gcal", None)
+        checker = getattr(gcal, "has_active_auth_flow", None)
+        if not callable(checker):
+            return False
+        try:
+            return checker(
+                context.user_id,
+                context.channel_id,
+                reference_time=context.reference_time,
+            ) is True
+        except Exception:
+            return False
 
     def _has_active_reminders(self, scope_id: int | None) -> bool:
         reminders = getattr(self.monitor, "reminders", None)

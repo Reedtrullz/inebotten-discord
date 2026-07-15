@@ -107,13 +107,19 @@ to ensure consistent access to shared state like rate limiting and
         try:
             result = await _settle_owned_send(owned_send)
         except MessageSendCancelled as exc:
-            self._record_delivered_response(exc.result)
+            self._record_delivered_response(
+                message,
+                content,
+                exc.result,
+            )
             raise
-        self._record_delivered_response(result)
+        self._record_delivered_response(message, content, result)
         return result
 
     def _record_delivered_response(
         self,
+        message: discord.Message,
+        content: str,
         result: MessageSendResult,
     ) -> None:
         if result.state is not DeliveryState.DELIVERED:
@@ -124,6 +130,19 @@ to ensure consistent access to shared state like rate limiting and
             bool,
         ):
             self.monitor.response_count = response_count + 1
+
+        recorder = getattr(self.monitor, "record_outbound", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(message, content)
+        except Exception:
+            # Conversation history is best-effort bookkeeping. Discord has
+            # already committed the response, so a recording failure must not
+            # rewrite definite delivery truth.
+            self.logger.warning(
+                "Could not record outbound conversation turn"
+            )
 
     async def check_rate_limit(self) -> tuple[bool, Optional[str]]:
         """

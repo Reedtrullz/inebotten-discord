@@ -34,5 +34,5 @@ class BrowserManager:
         if not self.is_configured():
             return None
 
-        print(f"[BROWSER] Browserbase content extraction is not configured for: {url}")
+        print("[BROWSER] Browserbase content extraction is not configured")
         return None
