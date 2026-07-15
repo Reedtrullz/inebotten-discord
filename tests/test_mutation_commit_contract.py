@@ -180,6 +180,20 @@ async def test_every_auxiliary_result_api_preserves_historical_success_shapes(tm
         guild_id=1,
     )
     assert watch_edit["title"] == "Arrival 2"
+    await watchlist.edit_watchlist_result(
+        1,
+        genre="Sci-Fi",
+        comment="Se snart",
+        guild_id=1,
+    )
+    watch_clear = await watchlist.edit_watchlist_result(
+        1,
+        genre=None,
+        comment=None,
+        guild_id=1,
+    )
+    assert watch_clear["genre"] is None
+    assert watch_clear["comment"] is None
     removed = await watchlist.remove_watchlist_result(2, guild_id=1)
     assert removed["title"] == "Dark"
 

@@ -18,6 +18,9 @@ from core.mutation_coordinator import MutationCoordinator, WATCHLIST_STORE_SCOPE
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
+_UNSET = object()
+
+
 class WatchlistManager:
     """
     Manages watchlists for movies and series
@@ -367,10 +370,10 @@ class WatchlistManager:
     async def edit_watchlist_result(
         self,
         index,
-        title=None,
-        type=None,
-        genre=None,
-        comment=None,
+        title=_UNSET,
+        type=_UNSET,
+        genre=_UNSET,
+        comment=_UNSET,
         guild_id=None,
     ):
         async with self.mutation_coordinator.hold(WATCHLIST_STORE_SCOPE):
@@ -384,13 +387,13 @@ class WatchlistManager:
             source_index = index - 1 if source == "movies" else index - movie_count - 1
             item = bucket[source][source_index]
             old_type = item.get("type")
-            if title is not None:
+            if title is not _UNSET:
                 item["title"] = title
-            if genre is not None:
+            if genre is not _UNSET:
                 item["genre"] = genre
-            if comment is not None:
+            if comment is not _UNSET:
                 item["comment"] = comment
-            if type is not None and type != old_type:
+            if type is not _UNSET and type is not None and type != old_type:
                 bucket[source].pop(source_index)
                 item["type"] = type
                 target = "movies" if type == "movie" else "series"
@@ -414,14 +417,20 @@ class WatchlistManager:
             The updated item dict, or None if index is invalid
         """
         self._require_offline_projection()
+        changes = {}
+        if title is not None:
+            changes["title"] = title
+        if type is not None:
+            changes["type"] = type
+        if genre is not None:
+            changes["genre"] = genre
+        if comment is not None:
+            changes["comment"] = comment
         return asyncio.run(
             self.edit_watchlist_result(
                 index,
-                title=title,
-                type=type,
-                genre=genre,
-                comment=comment,
                 guild_id=guild_id,
+                **changes,
             )
         )
 
