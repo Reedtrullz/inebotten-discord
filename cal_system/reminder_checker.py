@@ -19,6 +19,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from zoneinfo import ZoneInfo
+
+from cal_system.reminder_clock import ReminderClock, SystemReminderClock
+from core.mutation_coordinator import MutationCoordinator
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
@@ -38,6 +41,9 @@ class ReminderChecker:
         send_channel_message_func=None,
         send_ping_message_func=None,
         storage_path=None,
+        *,
+        clock: ReminderClock | None = None,
+        mutation_coordinator: MutationCoordinator | None = None,
     ):
         self.calendar = calendar_manager
         self.reminders = reminder_manager
@@ -45,6 +51,8 @@ class ReminderChecker:
         self.get_channel = get_channel_func
         self.send_channel_message = send_channel_message_func
         self.send_ping_message = send_ping_message_func
+        self.clock = clock or SystemReminderClock()
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
         self.running = False
         self._morning_digest_sent = False
         self._last_gcal_sync = 0

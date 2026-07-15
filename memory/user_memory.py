@@ -1,235 +1,437 @@
 #!/usr/bin/env python3
-"""
-User Memory System for Inebotten
-Stores preferences, conversation history, and personal details per user
-"""
+"""Persistent, transaction-safe user memory for Inebotten."""
 
-import json
+from __future__ import annotations
+
 import asyncio
 import copy
-from datetime import datetime, timedelta
+import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
+from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
+from core.mutation_coordinator import MEMORY_STORE_SCOPE, MutationCoordinator
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
-class UserMemory:
-    """
-    Manages persistent memory about users across conversations
-    """
+_T = TypeVar("_T")
 
-    def __init__(self, storage_path=None):
+
+class UserMemory:
+    """Manage the complete user-memory JSON root through one coordinator."""
+
+    def __init__(
+        self,
+        storage_path=None,
+        *,
+        mutation_coordinator: MutationCoordinator | None = None,
+    ) -> None:
         if storage_path is None:
             storage_path = hermes_discord_data_path("user_memory.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.memory = {}
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
+        self.memory: dict[str, dict[str, Any]] = {}
 
-    async def setup(self):
-        """Async initialization"""
+    async def setup(self) -> None:
+        """Load the last committed root before production writers start."""
         self.memory = await self._load_memory()
 
-    async def _load_memory(self):
-        """Load memory from storage asynchronously"""
+    async def _load_memory(self) -> dict[str, dict[str, Any]]:
         if not self.storage_path.exists():
             return {}
 
-        def _read():
+        def _read() -> dict[str, dict[str, Any]]:
             try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[MEMORY] User memory load error: {e}")
+                with self.storage_path.open("r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                return loaded if isinstance(loaded, dict) else {}
+            except Exception:
                 return {}
 
         return await asyncio.to_thread(_read)
 
-    async def _save_memory(self):
-        """Save memory to storage atomically and asynchronously"""
+    def _save_memory_sync(self, candidate: dict[str, dict[str, Any]]) -> None:
+        """Persist one detached complete-root candidate or raise."""
+        write_json_atomic(self.storage_path, candidate)
+
+    async def _persist_and_publish(
+        self,
+        candidate: dict[str, dict[str, Any]],
+    ) -> None:
+        """Settle one owned atomic write before publishing or carrying cancellation."""
+        save_task = asyncio.create_task(
+            asyncio.to_thread(self._save_memory_sync, candidate),
+            name="user-memory-save",
+        )
+        current = asyncio.current_task()
+        outer_cancelled = False
+
+        while True:
+            try:
+                await asyncio.shield(save_task)
+                break
+            except asyncio.CancelledError:
+                cancellation_requests = current.cancelling() if current else 0
+                if cancellation_requests:
+                    outer_cancelled = True
+                    for _ in range(cancellation_requests):
+                        current.uncancel()
+                    continue
+                raise ManagerMutationCancelled(
+                    "commit_state_unknown",
+                    mutated=False,
+                    retryable=False,
+                    commit_unknown=True,
+                )
+            except Exception:
+                break
+
+        if save_task.cancelled():
+            raise ManagerMutationCancelled(
+                "commit_state_unknown",
+                mutated=False,
+                retryable=False,
+                commit_unknown=True,
+            )
+
         try:
-            await asyncio.to_thread(write_json_atomic, self.storage_path, self.memory)
-        except Exception as e:
-            print(f"[MEMORY] User memory save error: {e}")
+            save_task.result()
+        except Exception as exc:
+            if outer_cancelled:
+                raise ManagerMutationCancelled(
+                    "storage_write_failed",
+                    mutated=False,
+                    retryable=True,
+                ) from exc
+            raise ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            ) from exc
 
-    async def get_user(self, user_id, username=None):
-        """
-        Get or create user memory
-        """
-        user_key = str(user_id)
+        self.memory = candidate
+        if outer_cancelled:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=True,
+                retryable=False,
+            )
 
-        if user_key not in self.memory:
-            self.memory[user_key] = {
-                "username": username,
-                "first_seen": datetime.now().isoformat(),
-                "preferences": {
-                    "formality": "casual",
-                    "humor_style": "friendly",
-                    "response_length": "medium",
-                    "use_dialect": True,
-                },
-                "interests": [],
-                "location": None,
-                "last_topics": [],
-                "conversation_count": 0,
-                "last_interaction": None,
-                "favorite_commands": [],
-                "birthday": None,
-                "timezone": "Europe/Oslo",
-            }
-            await self._save_memory()
+    async def _transaction(
+        self,
+        mutate: Callable[
+            [dict[str, dict[str, Any]]],
+            tuple[_T, bool],
+        ],
+    ) -> _T:
+        """Mutate a detached root, persist it, then publish exactly once."""
+        try:
+            async with self.mutation_coordinator.hold(MEMORY_STORE_SCOPE):
+                candidate = copy.deepcopy(self.memory)
+                result, changed = mutate(candidate)
+                if changed:
+                    await self._persist_and_publish(candidate)
+                return copy.deepcopy(result)
+        except (ManagerMutationError, ManagerMutationCancelled):
+            raise
+        except asyncio.CancelledError as exc:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=False,
+                retryable=True,
+            ) from exc
 
-        if username and not self.memory[user_key].get("username"):
-            self.memory[user_key]["username"] = username
-            await self._save_memory()
+    @staticmethod
+    def _require_reference_time(reference_time: datetime) -> datetime:
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            raise ValueError("reference_time_must_be_aware")
+        return reference_time
 
-        return self.memory[user_key]
+    @staticmethod
+    def _new_user(username: object, reference_time: datetime) -> dict[str, Any]:
+        return {
+            "username": username,
+            "first_seen": reference_time.isoformat(),
+            "preferences": {
+                "formality": "casual",
+                "humor_style": "friendly",
+                "response_length": "medium",
+                "use_dialect": True,
+            },
+            "interests": [],
+            "location": None,
+            "last_topics": [],
+            "conversation_count": 0,
+            "last_interaction": None,
+            "favorite_commands": [],
+            "birthday": None,
+            "timezone": "Europe/Oslo",
+        }
 
-    async def update_last_interaction(self, user_id, topic=None, username=None):
-        """Update last interaction time and optionally topic"""
-        user = await self.get_user(user_id, username)
-        user["last_interaction"] = datetime.now().isoformat()
-        user["conversation_count"] = user.get("conversation_count", 0) + 1
+    def _get_user_locked(
+        self,
+        candidate: dict[str, dict[str, Any]],
+        user_id: object,
+        *,
+        username: object = None,
+        reference_time: datetime | None = None,
+        create: bool,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Return one candidate-owned record; caller already owns the root lease."""
+        key = str(user_id)
+        user = candidate.get(key)
+        changed = False
+        if not isinstance(user, dict):
+            if not create:
+                return None, False
+            if reference_time is None:
+                raise ValueError("reference_time_required")
+            user = self._new_user(username, reference_time)
+            candidate[key] = user
+            changed = True
+        elif username and not user.get("username"):
+            user["username"] = username
+            changed = True
+        return user, changed
 
-        if topic:
-            if isinstance(topic, list):
-                # Flatten the list of topics
-                current_topics = user.get("last_topics", [])
-                for t in reversed(topic): # Add them in order
-                    if t not in current_topics:
-                        current_topics = [t] + current_topics
-                user["last_topics"] = current_topics[:5]
-            else:
-                user["last_topics"] = ([topic] + user.get("last_topics", []))[:5]
+    async def get_or_create_user_result(
+        self,
+        user_id: object,
+        username: object,
+        *,
+        reference_time: datetime,
+    ) -> dict[str, Any]:
+        reference = self._require_reference_time(reference_time)
 
-        await self._save_memory()
+        def mutate(candidate):
+            user, changed = self._get_user_locked(
+                candidate,
+                user_id,
+                username=username,
+                reference_time=reference,
+                create=True,
+            )
+            assert user is not None
+            return user, changed
 
-    async def add_interest(self, user_id, interest):
-        """Add an interest for a user"""
-        user = await self.get_user(user_id)
-        if interest.lower() not in [i.lower() for i in user.get("interests", [])]:
-            user["interests"].append(interest)
-            await self._save_memory()
+        return await self._transaction(mutate)
 
-    async def set_preference(self, user_id, key, value):
-        """Set a user preference"""
-        user = await self.get_user(user_id)
-        if "preferences" not in user:
-            user["preferences"] = {}
-        user["preferences"][key] = value
-        await self._save_memory()
+    async def update_last_interaction_result(
+        self,
+        user_id: object,
+        *,
+        reference_time: datetime,
+        topic: object = None,
+        username: object = None,
+    ) -> bool:
+        reference = self._require_reference_time(reference_time)
 
-    async def set_location(self, user_id, location):
-        """Set user location"""
-        user = await self.get_user(user_id)
-        user["location"] = location
-        await self._save_memory()
+        def mutate(candidate):
+            user, _ = self._get_user_locked(
+                candidate,
+                user_id,
+                username=username,
+                reference_time=reference,
+                create=True,
+            )
+            assert user is not None
+            user["last_interaction"] = reference.isoformat()
+            user["conversation_count"] = user.get("conversation_count", 0) + 1
+            if topic:
+                current = list(user.get("last_topics") or [])
+                if isinstance(topic, list):
+                    for item in reversed(topic):
+                        if item not in current:
+                            current = [item] + current
+                else:
+                    current = [topic] + current
+                user["last_topics"] = current[:5]
+            return True, True
+
+        return await self._transaction(mutate)
+
+    async def add_interest_result(self, user_id: object, interest: object) -> bool:
+        def mutate(candidate):
+            user, _ = self._get_user_locked(
+                candidate, user_id, create=False
+            )
+            if user is None:
+                return False, False
+            interests = user.setdefault("interests", [])
+            normalized = str(interest)
+            if normalized.casefold() in {
+                str(item).casefold() for item in interests
+            }:
+                return False, False
+            interests.append(interest)
+            return True, True
+
+        return await self._transaction(mutate)
+
+    async def set_preference_result(
+        self,
+        user_id: object,
+        key: object,
+        value: object,
+    ) -> bool:
+        def mutate(candidate):
+            user, _ = self._get_user_locked(
+                candidate, user_id, create=False
+            )
+            if user is None:
+                return False, False
+            preferences = user.setdefault("preferences", {})
+            if preferences.get(key) == value and key in preferences:
+                return False, False
+            preferences[key] = value
+            return True, True
+
+        return await self._transaction(mutate)
+
+    async def set_location_result(
+        self,
+        user_id: object,
+        canonical_city: object,
+    ) -> bool:
+        def mutate(candidate):
+            user, _ = self._get_user_locked(
+                candidate, user_id, create=False
+            )
+            if user is None or user.get("location") == canonical_city:
+                return False, False
+            user["location"] = canonical_city
+            return True, True
+
+        return await self._transaction(mutate)
+
+    async def delete_user_memory_result(self, user_id: object) -> bool:
+        def mutate(candidate):
+            key = str(user_id)
+            if key not in candidate:
+                return False, False
+            del candidate[key]
+            return True, True
+
+        return await self._transaction(mutate)
+
+    def snapshot_pending_user(self, user_id: object) -> dict[str, Any] | None:
+        user = self.memory.get(str(user_id))
+        return copy.deepcopy(user) if isinstance(user, dict) else None
+
+    def snapshot_user(self, user_id: object) -> dict[str, Any] | None:
+        return self.snapshot_pending_user(user_id)
+
+    async def get_user(self, user_id: object, username=None) -> dict[str, Any]:
+        """Return a detached read-only snapshot; username never fills storage."""
+        return self.snapshot_user(user_id) or {}
+
+    async def update_last_interaction(
+        self,
+        user_id,
+        topic=None,
+        username=None,
+    ) -> None:
+        reference = datetime.now().astimezone()
+        await self.update_last_interaction_result(
+            user_id,
+            reference_time=reference,
+            topic=topic,
+            username=username,
+        )
+
+    async def add_interest(self, user_id, interest) -> None:
+        reference = datetime.now().astimezone()
+        await self.get_or_create_user_result(
+            user_id, None, reference_time=reference
+        )
+        await self.add_interest_result(user_id, interest)
+
+    async def set_preference(self, user_id, key, value) -> None:
+        reference = datetime.now().astimezone()
+        await self.get_or_create_user_result(
+            user_id, None, reference_time=reference
+        )
+        await self.set_preference_result(user_id, key, value)
+
+    async def set_location(self, user_id, location) -> None:
+        reference = datetime.now().astimezone()
+        await self.get_or_create_user_result(
+            user_id, None, reference_time=reference
+        )
+        await self.set_location_result(user_id, location)
+
+    async def delete_user_memory(self, user_id) -> bool:
+        return await self.delete_user_memory_result(user_id)
 
     async def get_days_since_last_chat(self, user_id):
-        """Get number of days since last interaction"""
-        user = await self.get_user(user_id)
+        user = self.snapshot_user(user_id) or {}
         last = user.get("last_interaction")
         if not last:
             return None
-
         try:
-            last_date = datetime.fromisoformat(last)
-            delta = datetime.now() - last_date
-            return delta.days
-        except Exception as e:
-            print(f"[MEMORY] Date parse error: {e}")
+            return (datetime.now().astimezone() - datetime.fromisoformat(last)).days
+        except (TypeError, ValueError):
             return None
 
     async def get_personalized_greeting(self, user_id, username=None):
-        """Generate a personalized greeting"""
-        user = await self.get_user(user_id, username)
+        user = self.snapshot_user(user_id) or {}
         days_since = await self.get_days_since_last_chat(user_id)
-
-        greetings = []
-        name = user.get("username") or username or ""
-
-        # Time-based greeting
-        hour = datetime.now().hour
+        hour = datetime.now().astimezone().hour
         if 5 <= hour < 12:
-            time_greeting = "God morgen"
+            greeting = "God morgen"
         elif 12 <= hour < 17:
-            time_greeting = "God dag"
+            greeting = "God dag"
         elif 17 <= hour < 22:
-            time_greeting = "God kveld"
+            greeting = "God kveld"
         else:
-            time_greeting = "Hei"
-
-        # Add name if known
-        if name:
-            greetings.append(f"{time_greeting} {name}!")
-        else:
-            greetings.append(f"{time_greeting}!")
-
-        # Add "long time no see" if appropriate
+            greeting = "Hei"
+        name = user.get("username") or username or ""
+        parts = [f"{greeting} {name}!" if name else f"{greeting}!"]
         if days_since is not None and days_since >= 3:
-            greetings.append(f"Lenge siden sist - {days_since} dager!")
-
-        # Add reference to known interests
-        interests = user.get("interests", [])
-        if interests and len(interests) > 0:
+            parts.append(f"Lenge siden sist - {days_since} dager!")
+        interests = user.get("interests") or []
+        if interests:
             import random
 
-            interest = random.choice(interests)
-            greetings.append(f"Forresten, hvordan går det med {interest}?")
-
-        return " ".join(greetings)
+            parts.append(f"Forresten, hvordan går det med {random.choice(interests)}?")
+        return " ".join(parts)
 
     async def format_context_for_prompt(self, user_id, username=None):
-        """Format user memory as context for AI prompt"""
-        user = await self.get_user(user_id, username)
-
-        context_parts = []
-
-        # Basic info
+        user = self.snapshot_user(user_id) or {}
+        parts = []
         if user.get("location"):
-            context_parts.append(f"Bor i: {user['location']}")
-
-        # Interests
-        if user.get("interests"):
-            interests = [str(i) for i in user["interests"] if i]
-            if interests:
-                context_parts.append(f"Interesser: {', '.join(interests)}")
-
-        # Recent topics
-        if user.get("last_topics"):
-            # Ensure all items are strings (handles legacy corrupted data)
-            topics = []
-            for t in user["last_topics"][:3]:
-                if isinstance(t, list):
-                    topics.extend([str(item) for item in t if item])
-                elif t:
-                    topics.append(str(t))
-            
-            if topics:
-                context_parts.append(
-                    f"Nylige samtaler: {', '.join(topics[:3])}"
-                )
-
-        # Preferences
-        prefs = user.get("preferences", {})
-        if prefs.get("humor_style"):
-            context_parts.append(f"Humørstil: {prefs['humor_style']}")
-        if prefs.get("use_dialect"):
-            context_parts.append("Bruker gjerne dialektuttrykk")
-
-        return " | ".join(context_parts) if context_parts else ""
+            parts.append(f"Bor i: {user['location']}")
+        interests = [str(item) for item in user.get("interests", []) if item]
+        if interests:
+            parts.append(f"Interesser: {', '.join(interests)}")
+        topics = []
+        for topic in user.get("last_topics", [])[:3]:
+            if isinstance(topic, list):
+                topics.extend(str(item) for item in topic if item)
+            elif topic:
+                topics.append(str(topic))
+        if topics:
+            parts.append(f"Nylige samtaler: {', '.join(topics[:3])}")
+        preferences = user.get("preferences") or {}
+        if preferences.get("humor_style"):
+            parts.append(f"Humørstil: {preferences['humor_style']}")
+        if preferences.get("use_dialect"):
+            parts.append("Bruker gjerne dialektuttrykk")
+        return " | ".join(parts)
 
     async def export_user_memory(self, user_id):
-        """Return a copy of one user's stored memory without creating new data."""
-        user = self.memory.get(str(user_id))
-        return copy.deepcopy(user) if isinstance(user, dict) else {}
+        return self.snapshot_user(user_id) or {}
 
     async def format_user_memory_for_user(self, user_id, username=None):
-        """Format one user's memory for direct user-facing display."""
-        user = await self.export_user_memory(user_id)
+        user = self.snapshot_user(user_id)
         if not user:
             return "Jeg har ikke lagret noe brukerminne om deg ennå."
-
         preferences = user.get("preferences") or {}
         interests = user.get("interests") or []
         topics = user.get("last_topics") or []
@@ -246,46 +448,41 @@ class UserMemory:
         ]
         return "\n".join(lines)
 
-    async def delete_user_memory(self, user_id):
-        """Delete one user's stored memory, returning True if anything was removed."""
-        user_key = str(user_id)
-        if user_key not in self.memory:
-            return False
-        self.memory.pop(user_key, None)
-        await self._save_memory()
-        return True
+
+_user_memory: UserMemory | None = None
 
 
-# Singleton instance
-_user_memory = None
-
-
-def get_user_memory():
-    """Get or create singleton UserMemory instance"""
+def get_user_memory(
+    mutation_coordinator: MutationCoordinator | None = None,
+) -> UserMemory:
+    """Return the compatibility singleton without weakening coordinator ownership."""
     global _user_memory
     if _user_memory is None:
-        _user_memory = UserMemory()
+        _user_memory = UserMemory(
+            mutation_coordinator=mutation_coordinator
+        )
+    elif (
+        mutation_coordinator is not None
+        and _user_memory.mutation_coordinator is not mutation_coordinator
+    ):
+        raise RuntimeError("mutation_coordinator_identity_mismatch")
     return _user_memory
 
 
 if __name__ == "__main__":
-    async def main():
+    async def main() -> None:
         from tempfile import NamedTemporaryFile
 
         with NamedTemporaryFile(delete=False) as tmp:
             storage_path = tmp.name
-        mem = UserMemory(storage_path=storage_path)
-
-        # Simulate user interactions
-        await mem.update_last_interaction("user1", "RBK-kamp", username="Ola")
-        await mem.add_interest("user1", "fotball")
-        await mem.add_interest("user1", "RBK")
-        await mem.set_location("user1", "Trondheim")
-
-        print("User memory:", await mem.get_user("user1"))
-        print("\nGreeting:", await mem.get_personalized_greeting("user1"))
-        print("\nContext:", await mem.format_context_for_prompt("user1"))
-
+        memory = UserMemory(storage_path)
+        await memory.setup()
+        await memory.update_last_interaction(
+            "user1", "RBK-kamp", username="Ola"
+        )
+        await memory.add_interest("user1", "fotball")
+        await memory.set_location("user1", "Trondheim")
+        print("User memory:", await memory.get_user("user1"))
         Path(storage_path).unlink(missing_ok=True)
 
     asyncio.run(main())

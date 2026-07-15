@@ -4,6 +4,8 @@ Poll Manager for Inebotten
 Simple, conversational polls for quick decisions
 """
 
+import asyncio
+import copy
 import json
 import re
 import uuid
@@ -12,6 +14,9 @@ from pathlib import Path
 import random
 from zoneinfo import ZoneInfo
 
+from cal_system.reminder_clock import ReminderClock, SystemReminderClock
+from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
+from core.mutation_coordinator import MutationCoordinator, POLL_STORE_SCOPE
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
@@ -23,13 +28,21 @@ class PollManager:
     Manages quick polls for group decisions
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(
+        self,
+        storage_path=None,
+        *,
+        clock: ReminderClock | None = None,
+        mutation_coordinator: MutationCoordinator | None = None,
+    ):
         if storage_path is None:
             storage_path = hermes_discord_data_path("polls.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.polls = self._load_polls()
+        self.clock = clock or SystemReminderClock()
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
         self.emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
     def _load_polls(self):
@@ -43,9 +56,114 @@ class PollManager:
                 return {}
         return {}
 
-    def _save_polls(self):
-        """Save polls to storage"""
-        write_json_atomic(self.storage_path, self.polls)
+    def _save_polls(self, candidate):
+        """Persist a detached complete-root candidate."""
+        write_json_atomic(self.storage_path, candidate)
+
+    @staticmethod
+    def _require_aware(reference_time):
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            raise ValueError("reference_time_must_be_aware")
+        return reference_time.astimezone(OSLO)
+
+    @staticmethod
+    def _require_offline_projection():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError("use_async_result_api")
+
+    async def _commit_candidate(self, candidate):
+        """Settle one owned atomic write, publish once, and retain cancellation truth."""
+        writer = asyncio.create_task(asyncio.to_thread(self._save_polls, candidate))
+        current = asyncio.current_task()
+        outer_cancelled = False
+        while True:
+            try:
+                await asyncio.shield(writer)
+                break
+            except asyncio.CancelledError:
+                cancellation_requests = current.cancelling() if current else 0
+                if cancellation_requests:
+                    outer_cancelled = True
+                    for _ in range(cancellation_requests):
+                        current.uncancel()
+                    continue
+                raise ManagerMutationCancelled(
+                    "commit_state_unknown",
+                    mutated=False,
+                    retryable=False,
+                    commit_unknown=True,
+                )
+            except Exception:
+                break
+
+        if writer.cancelled():
+            raise ManagerMutationCancelled(
+                "commit_state_unknown",
+                mutated=False,
+                retryable=False,
+                commit_unknown=True,
+            )
+        try:
+            writer.result()
+        except Exception as exc:
+            if outer_cancelled:
+                raise ManagerMutationCancelled(
+                    "storage_write_failed",
+                    mutated=False,
+                    retryable=True,
+                ) from exc
+            raise ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            ) from exc
+
+        self.polls = candidate
+        if outer_cancelled:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=True,
+                retryable=False,
+            )
+
+    async def create_poll_result(
+        self,
+        guild_id,
+        question,
+        options,
+        created_by,
+        created_by_id=None,
+        *,
+        reference_time,
+    ):
+        """Create and durably publish a poll from one captured aware instant."""
+        now = self._require_aware(reference_time)
+        async with self.mutation_coordinator.hold(POLL_STORE_SCOPE):
+            candidate = copy.deepcopy(self.polls)
+            poll_id = f"poll_{guild_id}_{uuid.uuid4().hex}"
+            poll = {
+                "id": poll_id,
+                "guild_id": str(guild_id),
+                "question": question,
+                "options": [
+                    {"text": opt, "votes": [], "emoji": self.emojis[i]}
+                    for i, opt in enumerate(options[:10])
+                ],
+                "created_by": created_by,
+                "created_by_id": created_by_id,
+                "created_at": now.isoformat(),
+                "expires_at": (now + timedelta(days=7)).isoformat(),
+                "status": "active",
+            }
+            candidate.setdefault(str(guild_id), {})[poll_id] = poll
+            await self._commit_candidate(candidate)
+            return poll
 
     def create_poll(self, guild_id, question, options, created_by, created_by_id=None):
         """
@@ -61,30 +179,18 @@ class PollManager:
         Returns:
             poll_id
         """
-        poll_id = f"poll_{guild_id}_{uuid.uuid4().hex}"
-
-        poll = {
-            "id": poll_id,
-            "guild_id": str(guild_id),
-            "question": question,
-            "options": [
-                {"text": opt, "votes": [], "emoji": self.emojis[i]}
-                for i, opt in enumerate(options[:10])
-            ],
-            "created_by": created_by,
-            "created_by_id": created_by_id,
-            "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(days=7)).isoformat(),
-            "status": "active",
-        }
-
-        if str(guild_id) not in self.polls:
-            self.polls[str(guild_id)] = {}
-
-        self.polls[str(guild_id)][poll_id] = poll
-        self._save_polls()
-
-        return poll
+        self._require_offline_projection()
+        reference_time = self._require_aware(self.clock.now())
+        return asyncio.run(
+            self.create_poll_result(
+                guild_id,
+                question,
+                options,
+                created_by,
+                created_by_id,
+                reference_time=reference_time,
+            )
+        )
 
     def get_poll(self, guild_id, poll_id):
         """Get a poll by guild and poll ID. Returns dict or None."""
@@ -106,6 +212,35 @@ class PollManager:
             return poll.get("created_by") == username
         return False
 
+    async def edit_poll_result(
+        self,
+        guild_id,
+        poll_id,
+        user_id,
+        username=None,
+        question=None,
+        options=None,
+    ):
+        async with self.mutation_coordinator.hold(POLL_STORE_SCOPE):
+            candidate = copy.deepcopy(self.polls)
+            guild_key = str(guild_id)
+            poll = candidate.get(guild_key, {}).get(poll_id)
+            if not poll:
+                return False, "Poll not found"
+            if poll["status"] != "active":
+                return False, "Poll is closed"
+            if not self.is_poll_owner(poll, user_id, username):
+                return False, "You are not the owner of this poll"
+            if question is not None:
+                poll["question"] = question
+            if options is not None:
+                poll["options"] = [
+                    {"text": opt, "votes": [], "emoji": self.emojis[i]}
+                    for i, opt in enumerate(options[:10])
+                ]
+            await self._commit_candidate(candidate)
+            return True, poll
+
     def edit_poll(self, guild_id, poll_id, user_id, username=None, question=None, options=None):
         """
         Edit an existing active poll.
@@ -113,28 +248,30 @@ class PollManager:
         Returns:
             (True, poll) or (False, error_message)
         """
-        guild_key = str(guild_id)
-        poll = self.get_poll(guild_key, poll_id)
-        if not poll:
-            return False, "Poll not found"
+        self._require_offline_projection()
+        return asyncio.run(
+            self.edit_poll_result(
+                guild_id,
+                poll_id,
+                user_id,
+                username,
+                question,
+                options,
+            )
+        )
 
-        if poll["status"] != "active":
-            return False, "Poll is closed"
-
-        if not self.is_poll_owner(poll, user_id, username):
-            return False, "You are not the owner of this poll"
-
-        if question is not None:
-            poll["question"] = question
-
-        if options is not None:
-            poll["options"] = [
-                {"text": opt, "votes": [], "emoji": self.emojis[i]}
-                for i, opt in enumerate(options[:10])
-            ]
-
-        self._save_polls()
-        return True, poll
+    async def delete_poll_result(self, guild_id, poll_id, user_id, username=None):
+        async with self.mutation_coordinator.hold(POLL_STORE_SCOPE):
+            candidate = copy.deepcopy(self.polls)
+            guild_key = str(guild_id)
+            poll = candidate.get(guild_key, {}).get(poll_id)
+            if not poll:
+                return False, "Poll not found"
+            if not self.is_poll_owner(poll, user_id, username):
+                return False, "You are not the owner of this poll"
+            del candidate[guild_key][poll_id]
+            await self._commit_candidate(candidate)
+            return True, "Poll deleted"
 
     def delete_poll(self, guild_id, poll_id, user_id, username=None):
         """
@@ -143,17 +280,29 @@ class PollManager:
         Returns:
             (True, "Poll deleted") or (False, error_message)
         """
-        guild_key = str(guild_id)
-        poll = self.get_poll(guild_key, poll_id)
-        if not poll:
-            return False, "Poll not found"
+        self._require_offline_projection()
+        return asyncio.run(
+            self.delete_poll_result(guild_id, poll_id, user_id, username)
+        )
 
-        if not self.is_poll_owner(poll, user_id, username):
-            return False, "You are not the owner of this poll"
-
-        del self.polls[guild_key][poll_id]
-        self._save_polls()
-        return True, "Poll deleted"
+    async def vote_result(self, guild_id, poll_id, option_num, user_id, username):
+        async with self.mutation_coordinator.hold(POLL_STORE_SCOPE):
+            candidate = copy.deepcopy(self.polls)
+            guild_key = str(guild_id)
+            poll = candidate.get(guild_key, {}).get(poll_id)
+            if not poll:
+                return False, "Poll not found"
+            if poll["status"] != "active":
+                return False, "Poll is closed"
+            option_idx = option_num - 1
+            if option_idx < 0 or option_idx >= len(poll["options"]):
+                return False, "Invalid option"
+            for option in poll["options"]:
+                if str(user_id) in option["votes"]:
+                    option["votes"].remove(str(user_id))
+            poll["options"][option_idx]["votes"].append(str(user_id))
+            await self._commit_candidate(candidate)
+            return True, "Vote recorded"
 
     def vote(self, guild_id, poll_id, option_num, user_id, username):
         """
@@ -162,69 +311,58 @@ class PollManager:
         Args:
             option_num: 1-indexed option number
         """
-        guild_key = str(guild_id)
+        self._require_offline_projection()
+        return asyncio.run(
+            self.vote_result(guild_id, poll_id, option_num, user_id, username)
+        )
 
-        if guild_key not in self.polls or poll_id not in self.polls[guild_key]:
-            return False, "Poll not found"
-
-        poll = self.polls[guild_key][poll_id]
-
-        if poll["status"] != "active":
-            return False, "Poll is closed"
-
-        option_idx = option_num - 1
-        if option_idx < 0 or option_idx >= len(poll["options"]):
-            return False, "Invalid option"
-
-        # Remove previous vote from this user
-        for opt in poll["options"]:
-            if str(user_id) in opt["votes"]:
-                opt["votes"].remove(str(user_id))
-
-        # Add new vote
-        poll["options"][option_idx]["votes"].append(str(user_id))
-        self._save_polls()
-
-        return True, "Vote recorded"
+    @classmethod
+    def _select_active_polls(cls, polls, guild_id, *, reference_time):
+        now = cls._require_aware(reference_time)
+        active = []
+        for poll_id, poll in polls.get(str(guild_id), {}).items():
+            if poll.get("status") != "active":
+                continue
+            expires = datetime.fromisoformat(poll["expires_at"])
+            if expires.tzinfo is None or expires.utcoffset() is None:
+                expires = expires.replace(tzinfo=OSLO)
+            if expires > now.astimezone(expires.tzinfo):
+                active.append((poll_id, poll))
+        return active
 
     def get_active_polls(self, guild_id, *, reference_time=None):
         """Get active polls for a guild at one explicit point in time."""
         guild_key = str(guild_id)
 
         if reference_time is None:
-            now = datetime.now()
-        else:
-            if (
-                reference_time.tzinfo is None
-                or reference_time.utcoffset() is None
-            ):
-                raise ValueError("reference_time_must_be_aware")
-            now = reference_time.astimezone(OSLO)
+            reference_time = self._require_aware(self.clock.now())
+        return [
+            poll
+            for _, poll in self._select_active_polls(
+                self.polls,
+                guild_key,
+                reference_time=reference_time,
+            )
+        ]
 
-        if guild_key not in self.polls:
-            return []
-
-        active = []
-
-        for poll_id, poll in self.polls[guild_key].items():
-            if poll["status"] == "active":
-                expires = datetime.fromisoformat(poll["expires_at"])
-                comparison_now = now
-                if expires.tzinfo is None or expires.utcoffset() is None:
-                    if comparison_now.tzinfo is not None:
-                        comparison_now = comparison_now.astimezone(OSLO).replace(
-                            tzinfo=None
-                        )
-                elif comparison_now.tzinfo is None:
-                    comparison_now = comparison_now.replace(
-                        tzinfo=OSLO
-                    ).astimezone(expires.tzinfo)
-                else:
-                    comparison_now = comparison_now.astimezone(expires.tzinfo)
-                if expires > comparison_now:
-                    active.append(poll)
-
-        return active
+    def snapshot_pending_items(self, scope_id, *, reference_time):
+        """Return detached active polls in the same order users see."""
+        rows = []
+        for poll_id, poll in self._select_active_polls(
+            self.polls,
+            scope_id,
+            reference_time=reference_time,
+        ):
+            if not isinstance(poll_id, str) or not poll_id.strip():
+                raise ValueError("invalid_target_state")
+            if not isinstance(poll.get("question"), str) or not poll["question"].strip():
+                raise ValueError("invalid_target_state")
+            if not isinstance(poll.get("options"), list):
+                raise ValueError("invalid_target_state")
+            row = copy.deepcopy(poll)
+            row["poll_id"] = poll_id
+            rows.append(row)
+        return tuple(rows)
 
     def format_poll(self, poll, lang="no"):
         """Format poll for display in specified language"""
@@ -250,6 +388,29 @@ class PollManager:
 
         return "\n".join(lines)
 
+    async def close_poll_result(
+        self,
+        guild_id,
+        poll_id,
+        user_id=None,
+        username=None,
+    ):
+        async with self.mutation_coordinator.hold(POLL_STORE_SCOPE):
+            candidate = copy.deepcopy(self.polls)
+            guild_key = str(guild_id)
+            poll = candidate.get(guild_key, {}).get(poll_id)
+            if not poll:
+                return False, "Poll not found"
+            if user_id is not None and not self.is_poll_owner(
+                poll, user_id, username
+            ):
+                return False, "You are not the owner of this poll"
+            if poll["status"] == "closed":
+                return False, "Poll is already closed"
+            poll["status"] = "closed"
+            await self._commit_candidate(candidate)
+            return True, poll
+
     def close_poll(self, guild_id, poll_id, user_id=None, username=None):
         """
         Close a poll. If user_id is provided, checks ownership.
@@ -257,20 +418,10 @@ class PollManager:
         Returns:
             (True, poll) or (False, error_message)
         """
-        guild_key = str(guild_id)
-        poll = self.get_poll(guild_key, poll_id)
-        if not poll:
-            return False, "Poll not found"
-
-        if user_id is not None and not self.is_poll_owner(poll, user_id, username):
-            return False, "You are not the owner of this poll"
-
-        if poll["status"] == "closed":
-            return False, "Poll is already closed"
-
-        self.polls[guild_key][poll_id]["status"] = "closed"
-        self._save_polls()
-        return True, poll
+        self._require_offline_projection()
+        return asyncio.run(
+            self.close_poll_result(guild_id, poll_id, user_id, username)
+        )
 
 
 def parse_poll_command(message_content):

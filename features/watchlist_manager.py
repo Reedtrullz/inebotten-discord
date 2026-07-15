@@ -5,12 +5,16 @@ Watchlist Manager for Inebotten
 Manages movie and series recommendations from Discord channels
 """
 
+import asyncio
+import copy
 import json
 import random
 import re
 from datetime import datetime
 from pathlib import Path
 
+from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
+from core.mutation_coordinator import MutationCoordinator, WATCHLIST_STORE_SCOPE
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
@@ -20,13 +24,19 @@ class WatchlistManager:
     Can import from Discord channels or store locally
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(
+        self,
+        storage_path=None,
+        *,
+        mutation_coordinator: MutationCoordinator | None = None,
+    ):
         if storage_path is None:
             storage_path = hermes_discord_data_path("watchlist.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.watchlist = self._load_watchlist()
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
 
         # Default starter recommendations if no watchlist exists
         self.default_movies = [
@@ -96,20 +106,130 @@ class WatchlistManager:
 
     def _get_scope(self, guild_id=None):
         """
-        Get a watchlist bucket.
+        Read a watchlist bucket without creating missing storage state.
         Without guild_id, keep using the legacy global bucket for compatibility.
         """
         if guild_id is None:
-            self.watchlist.setdefault("movies", [])
-            self.watchlist.setdefault("series", [])
-            return self.watchlist
+            bucket = self.watchlist
+        else:
+            scopes = self.watchlist.get("scopes", {})
+            bucket = (
+                scopes.get(str(guild_id), {})
+                if isinstance(scopes, dict)
+                else {}
+            )
 
-        scopes = self.watchlist.setdefault("scopes", {})
-        return scopes.setdefault(str(guild_id), self._empty_watchlist())
+        if not isinstance(bucket, dict):
+            return self._empty_watchlist()
+        movies = bucket.get("movies", [])
+        series = bucket.get("series", [])
+        return {
+            "movies": movies if isinstance(movies, list) else [],
+            "series": series if isinstance(series, list) else [],
+        }
 
-    def _save_watchlist(self):
-        """Save watchlist to storage"""
-        write_json_atomic(self.storage_path, self.watchlist)
+    def _save_watchlist(self, candidate):
+        """Persist a detached complete-root candidate."""
+        write_json_atomic(self.storage_path, candidate)
+
+    @staticmethod
+    def _require_offline_projection():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError("use_async_result_api")
+
+    @staticmethod
+    def _candidate_scope(candidate, guild_id=None):
+        if guild_id is None:
+            candidate.setdefault("movies", [])
+            candidate.setdefault("series", [])
+            return candidate
+        scopes = candidate.setdefault("scopes", {})
+        return scopes.setdefault(
+            str(guild_id),
+            {"movies": [], "series": []},
+        )
+
+    async def _commit_candidate(self, candidate):
+        writer = asyncio.create_task(
+            asyncio.to_thread(self._save_watchlist, candidate)
+        )
+        current = asyncio.current_task()
+        outer_cancelled = False
+        while True:
+            try:
+                await asyncio.shield(writer)
+                break
+            except asyncio.CancelledError:
+                cancellation_requests = current.cancelling() if current else 0
+                if cancellation_requests:
+                    outer_cancelled = True
+                    for _ in range(cancellation_requests):
+                        current.uncancel()
+                    continue
+                raise ManagerMutationCancelled(
+                    "commit_state_unknown",
+                    mutated=False,
+                    retryable=False,
+                    commit_unknown=True,
+                )
+            except Exception:
+                break
+
+        if writer.cancelled():
+            raise ManagerMutationCancelled(
+                "commit_state_unknown",
+                mutated=False,
+                retryable=False,
+                commit_unknown=True,
+            )
+        try:
+            writer.result()
+        except Exception as exc:
+            if outer_cancelled:
+                raise ManagerMutationCancelled(
+                    "storage_write_failed",
+                    mutated=False,
+                    retryable=True,
+                ) from exc
+            raise ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            ) from exc
+
+        self.watchlist = candidate
+        if outer_cancelled:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=True,
+                retryable=False,
+            )
+
+    async def add_watchlist_result(
+        self,
+        title,
+        content_type="movie",
+        guild_id=None,
+        **kwargs,
+    ):
+        """Add one item and publish only after the complete root is durable."""
+        async with self.mutation_coordinator.hold(WATCHLIST_STORE_SCOPE):
+            candidate = copy.deepcopy(self.watchlist)
+            bucket = self._candidate_scope(candidate, guild_id)
+            item = {
+                "title": title,
+                "type": content_type,
+                "added_at": datetime.now().isoformat(),
+                "watched": False,
+                "completed": False,
+                **kwargs,
+            }
+            target = "movies" if content_type == "movie" else "series"
+            bucket[target].append(item)
+            await self._commit_candidate(candidate)
+            return True
 
     def add_from_discord_message(self, title, content_type="movie", guild_id=None, **kwargs):
         """
@@ -121,23 +241,15 @@ class WatchlistManager:
             guild_id: Guild/channel scope. DMs and group DMs should pass channel ID.
             **kwargs: Extra info like genre, year, platform, etc.
         """
-        bucket = self._get_scope(guild_id)
-        item = {
-            "title": title,
-            "type": content_type,
-            "added_at": datetime.now().isoformat(),
-            "watched": False,
-            "completed": False,
-            **kwargs,
-        }
-
-        if content_type == "movie":
-            bucket["movies"].append(item)
-        else:
-            bucket["series"].append(item)
-
-        self._save_watchlist()
-        return True
+        self._require_offline_projection()
+        return asyncio.run(
+            self.add_watchlist_result(
+                title,
+                content_type=content_type,
+                guild_id=guild_id,
+                **kwargs,
+            )
+        )
 
     def get_random_suggestion(self, content_type=None, genre=None, guild_id=None):
         """
@@ -201,17 +313,39 @@ class WatchlistManager:
             "series_unwatched": len(unwatched_series),
         }
 
+    async def mark_as_watched_result(self, title, guild_id=None):
+        """Mark an item through the same transactional write boundary."""
+        async with self.mutation_coordinator.hold(WATCHLIST_STORE_SCOPE):
+            candidate = copy.deepcopy(self.watchlist)
+            bucket = self._candidate_scope(candidate, guild_id)
+            for item in bucket["movies"] + bucket["series"]:
+                if item["title"].lower() == title.lower():
+                    item["watched"] = True
+                    item["completed"] = True
+                    item["watched_at"] = datetime.now().isoformat()
+                    await self._commit_candidate(candidate)
+                    return True
+            return False
+
     def mark_as_watched(self, title, guild_id=None):
-        """Mark an item as watched"""
-        bucket = self._get_scope(guild_id)
-        for item in bucket["movies"] + bucket["series"]:
-            if item["title"].lower() == title.lower():
-                item["watched"] = True
-                item["completed"] = True
-                item["watched_at"] = datetime.now().isoformat()
-                self._save_watchlist()
-                return True
-        return False
+        """Offline compatibility projection for marking an item watched."""
+        self._require_offline_projection()
+        return asyncio.run(self.mark_as_watched_result(title, guild_id))
+
+    async def remove_watchlist_result(self, index, guild_id=None):
+        async with self.mutation_coordinator.hold(WATCHLIST_STORE_SCOPE):
+            candidate = copy.deepcopy(self.watchlist)
+            bucket = self._candidate_scope(candidate, guild_id)
+            movie_count = len(bucket["movies"])
+            total = movie_count + len(bucket["series"])
+            if not 1 <= index <= total:
+                raise ValueError(f"Invalid watchlist index: {index}")
+            if index <= movie_count:
+                item = bucket["movies"].pop(index - 1)
+            else:
+                item = bucket["series"].pop(index - movie_count - 1)
+            await self._commit_candidate(candidate)
+            return item
 
     def remove_from_watchlist(self, index, guild_id=None):
         """
@@ -227,17 +361,42 @@ class WatchlistManager:
         Raises:
             ValueError: If index is invalid
         """
-        bucket = self._get_scope(guild_id)
-        items = bucket["movies"] + bucket["series"]
-        if not 1 <= index <= len(items):
-            raise ValueError(f"Invalid watchlist index: {index}")
-        item = items[index - 1]
-        if item in bucket["movies"]:
-            bucket["movies"].remove(item)
-        else:
-            bucket["series"].remove(item)
-        self._save_watchlist()
-        return item
+        self._require_offline_projection()
+        return asyncio.run(self.remove_watchlist_result(index, guild_id))
+
+    async def edit_watchlist_result(
+        self,
+        index,
+        title=None,
+        type=None,
+        genre=None,
+        comment=None,
+        guild_id=None,
+    ):
+        async with self.mutation_coordinator.hold(WATCHLIST_STORE_SCOPE):
+            candidate = copy.deepcopy(self.watchlist)
+            bucket = self._candidate_scope(candidate, guild_id)
+            movie_count = len(bucket["movies"])
+            total = movie_count + len(bucket["series"])
+            if not 1 <= index <= total:
+                return None
+            source = "movies" if index <= movie_count else "series"
+            source_index = index - 1 if source == "movies" else index - movie_count - 1
+            item = bucket[source][source_index]
+            old_type = item.get("type")
+            if title is not None:
+                item["title"] = title
+            if genre is not None:
+                item["genre"] = genre
+            if comment is not None:
+                item["comment"] = comment
+            if type is not None and type != old_type:
+                bucket[source].pop(source_index)
+                item["type"] = type
+                target = "movies" if type == "movie" else "series"
+                bucket[target].append(item)
+            await self._commit_candidate(candidate)
+            return item
 
     def edit_watchlist_entry(self, index, title=None, type=None, genre=None, comment=None, guild_id=None):
         """
@@ -254,32 +413,27 @@ class WatchlistManager:
         Returns:
             The updated item dict, or None if index is invalid
         """
-        bucket = self._get_scope(guild_id)
-        items = bucket["movies"] + bucket["series"]
-        if not 1 <= index <= len(items):
-            return None
-        item = items[index - 1]
-        old_type = item.get("type")
+        self._require_offline_projection()
+        return asyncio.run(
+            self.edit_watchlist_result(
+                index,
+                title=title,
+                type=type,
+                genre=genre,
+                comment=comment,
+                guild_id=guild_id,
+            )
+        )
 
-        if title is not None:
-            item["title"] = title
-        if genre is not None:
-            item["genre"] = genre
-        if comment is not None:
-            item["comment"] = comment
-        if type is not None and type != old_type:
-            if old_type == "movie":
-                bucket["movies"].remove(item)
-            else:
-                bucket["series"].remove(item)
-            item["type"] = type
-            if type == "movie":
-                bucket["movies"].append(item)
-            else:
-                bucket["series"].append(item)
-
-        self._save_watchlist()
-        return item
+    def snapshot_pending_items(self, scope_id):
+        """Return movies then series without creating a missing scope."""
+        scopes = self.watchlist.get("scopes", {})
+        bucket = scopes.get(str(scope_id))
+        if not isinstance(bucket, dict):
+            return ()
+        movies = bucket.get("movies", [])
+        series = bucket.get("series", [])
+        return tuple(copy.deepcopy(movies + series))
 
     def format_suggestion(self, item, lang="no"):
         """Format a suggestion for display in specified language"""

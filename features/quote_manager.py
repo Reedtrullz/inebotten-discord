@@ -4,12 +4,16 @@ Quote Manager for Inebotten
 Saves funny quotes and messages from the group
 """
 
+import asyncio
+import copy
 import json
 import random
 import re
 from datetime import datetime
 from pathlib import Path
 
+from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
+from core.mutation_coordinator import MutationCoordinator, QUOTE_STORE_SCOPE
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
@@ -24,13 +28,19 @@ class QuoteManager:
     Manages funny quotes and memorable messages
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(
+        self,
+        storage_path=None,
+        *,
+        mutation_coordinator: MutationCoordinator | None = None,
+    ):
         if storage_path is None:
             storage_path = hermes_discord_data_path("quotes.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.quotes = self._load_quotes()
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
 
     def _load_quotes(self):
         """Load quotes from storage"""
@@ -43,9 +53,87 @@ class QuoteManager:
                 return {}
         return {}
 
-    def _save_quotes(self):
-        """Save quotes to storage"""
-        write_json_atomic(self.storage_path, self.quotes)
+    def _save_quotes(self, candidate):
+        """Persist a detached complete-root candidate."""
+        write_json_atomic(self.storage_path, candidate)
+
+    @staticmethod
+    def _require_offline_projection():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError("use_async_result_api")
+
+    async def _commit_candidate(self, candidate):
+        writer = asyncio.create_task(asyncio.to_thread(self._save_quotes, candidate))
+        current = asyncio.current_task()
+        outer_cancelled = False
+        while True:
+            try:
+                await asyncio.shield(writer)
+                break
+            except asyncio.CancelledError:
+                cancellation_requests = current.cancelling() if current else 0
+                if cancellation_requests:
+                    outer_cancelled = True
+                    for _ in range(cancellation_requests):
+                        current.uncancel()
+                    continue
+                raise ManagerMutationCancelled(
+                    "commit_state_unknown",
+                    mutated=False,
+                    retryable=False,
+                    commit_unknown=True,
+                )
+            except Exception:
+                break
+
+        if writer.cancelled():
+            raise ManagerMutationCancelled(
+                "commit_state_unknown",
+                mutated=False,
+                retryable=False,
+                commit_unknown=True,
+            )
+        try:
+            writer.result()
+        except Exception as exc:
+            if outer_cancelled:
+                raise ManagerMutationCancelled(
+                    "storage_write_failed",
+                    mutated=False,
+                    retryable=True,
+                ) from exc
+            raise ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            ) from exc
+
+        self.quotes = candidate
+        if outer_cancelled:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=True,
+                retryable=False,
+            )
+
+    async def add_quote_result(self, guild_id, text, author, context=None):
+        """Add one quote and publish only after durable persistence."""
+        async with self.mutation_coordinator.hold(QUOTE_STORE_SCOPE):
+            candidate = copy.deepcopy(self.quotes)
+            guild_key = str(guild_id)
+            now = datetime.now()
+            quote = {
+                "text": text,
+                "author": author,
+                "context": context,
+                "date": now.strftime("%d.%m.%Y"),
+                "timestamp": now.isoformat(),
+            }
+            candidate.setdefault(guild_key, []).append(quote)
+            await self._commit_candidate(candidate)
+            return True
 
     def add_quote(self, guild_id, text, author, context=None):
         """
@@ -57,23 +145,8 @@ class QuoteManager:
             author: Who said it
             context: Optional context (what was happening)
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.quotes:
-            self.quotes[guild_key] = []
-
-        quote = {
-            "text": text,
-            "author": author,
-            "context": context,
-            "date": datetime.now().strftime("%d.%m.%Y"),
-            "timestamp": datetime.now().isoformat(),
-        }
-
-        self.quotes[guild_key].append(quote)
-        self._save_quotes()
-
-        return True
+        self._require_offline_projection()
+        return asyncio.run(self.add_quote_result(guild_id, text, author, context))
 
     def get_random_quote(self, guild_id=None):
         """Get a random quote from a guild"""
@@ -116,6 +189,35 @@ class QuoteManager:
         guild_key = str(guild_id)
         return self.quotes.get(guild_key, []).copy()
 
+    def snapshot_pending_items(self, scope_id):
+        """Return detached quotes in display order without creating a bucket."""
+        return tuple(copy.deepcopy(self.quotes.get(str(scope_id), [])))
+
+    async def update_quote_result(
+        self,
+        guild_id,
+        index,
+        text=None,
+        author=None,
+    ):
+        async with self.mutation_coordinator.hold(QUOTE_STORE_SCOPE):
+            candidate = copy.deepcopy(self.quotes)
+            guild_key = str(guild_id)
+            quotes = candidate.get(guild_key)
+            zero_based_index = index - 1
+            if (
+                quotes is None
+                or zero_based_index < 0
+                or zero_based_index >= len(quotes)
+            ):
+                raise ValueError("Quote index out of range")
+            if text is not None:
+                quotes[zero_based_index]["text"] = text
+            if author is not None:
+                quotes[zero_based_index]["author"] = author
+            await self._commit_candidate(candidate)
+            return True
+
     def update_quote(self, guild_id, index, text=None, author=None):
         """
         Update a quote by 1-based index.
@@ -129,24 +231,31 @@ class QuoteManager:
         Raises:
             ValueError: If the quote index is invalid
         """
-        guild_key = str(guild_id)
+        self._require_offline_projection()
+        return asyncio.run(
+            self.update_quote_result(
+                guild_id,
+                index,
+                text=text,
+                author=author,
+            )
+        )
 
-        if guild_key not in self.quotes:
-            raise ValueError("Quote index out of range")
-
-        quotes = self.quotes[guild_key]
-        zero_based_index = index - 1
-
-        if zero_based_index < 0 or zero_based_index >= len(quotes):
-            raise ValueError("Quote index out of range")
-
-        if text is not None:
-            quotes[zero_based_index]["text"] = text
-        if author is not None:
-            quotes[zero_based_index]["author"] = author
-
-        self._save_quotes()
-        return True
+    async def delete_quote_result(self, guild_id, index):
+        async with self.mutation_coordinator.hold(QUOTE_STORE_SCOPE):
+            candidate = copy.deepcopy(self.quotes)
+            guild_key = str(guild_id)
+            quotes = candidate.get(guild_key)
+            zero_based_index = index - 1
+            if (
+                quotes is None
+                or zero_based_index < 0
+                or zero_based_index >= len(quotes)
+            ):
+                raise ValueError("Quote index out of range")
+            quotes.pop(zero_based_index)
+            await self._commit_candidate(candidate)
+            return True
 
     def delete_quote(self, guild_id, index):
         """
@@ -159,20 +268,8 @@ class QuoteManager:
         Raises:
             ValueError: If the quote index is invalid
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.quotes:
-            raise ValueError("Quote index out of range")
-
-        quotes = self.quotes[guild_key]
-        zero_based_index = index - 1
-
-        if zero_based_index < 0 or zero_based_index >= len(quotes):
-            raise ValueError("Quote index out of range")
-
-        quotes.pop(zero_based_index)
-        self._save_quotes()
-        return True
+        self._require_offline_projection()
+        return asyncio.run(self.delete_quote_result(guild_id, index))
 
     def format_quote(self, quote, lang="no"):
         """Format quote for display in specified language"""

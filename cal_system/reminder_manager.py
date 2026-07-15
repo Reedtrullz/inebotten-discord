@@ -4,13 +4,22 @@ Reminder Manager for Inebotten
 Tracks reminders that can be marked as completed
 """
 
+import asyncio
+import copy
 import json
 import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from cal_system.reminder_clock import ReminderClock, SystemReminderClock
+from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
+from core.mutation_coordinator import MutationCoordinator, REMINDER_STORE_SCOPE
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+
+
+OSLO = ZoneInfo("Europe/Oslo")
 
 
 class ReminderManager:
@@ -18,13 +27,21 @@ class ReminderManager:
     Manages reminders that users can mark as completed
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(
+        self,
+        storage_path=None,
+        *,
+        clock: ReminderClock | None = None,
+        mutation_coordinator: MutationCoordinator | None = None,
+    ):
         if storage_path is None:
             storage_path = hermes_discord_data_path("reminders.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.reminders = self._load_reminders()
+        self.clock = clock or SystemReminderClock()
+        self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
 
     def _load_reminders(self):
         """Load reminders from storage"""
@@ -37,9 +54,160 @@ class ReminderManager:
                 return {}
         return {}
 
-    def _save_reminders(self):
-        """Save reminders to storage"""
-        write_json_atomic(self.storage_path, self.reminders)
+    def _save_reminders(self, candidate):
+        """Persist one detached complete-root candidate or raise."""
+        write_json_atomic(self.storage_path, candidate)
+
+    @staticmethod
+    def _require_aware(reference_time):
+        if (
+            not isinstance(reference_time, datetime)
+            or reference_time.tzinfo is None
+            or reference_time.utcoffset() is None
+        ):
+            raise ValueError("reference_time_must_be_aware")
+        return reference_time.astimezone(OSLO)
+
+    @staticmethod
+    def _require_offline_projection():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError("use_async_result_api")
+
+    async def _persist_and_publish(self, candidate):
+        """Settle the owned write, then publish or carry exact cancellation truth."""
+        writer = asyncio.create_task(
+            asyncio.to_thread(self._save_reminders, candidate),
+            name="reminder-store-save",
+        )
+        current = asyncio.current_task()
+        outer_cancelled = False
+
+        while True:
+            try:
+                await asyncio.shield(writer)
+                break
+            except asyncio.CancelledError as exc:
+                if current is not None and current.cancelling() > 0:
+                    outer_cancelled = True
+                    while current.cancelling() > 0:
+                        current.uncancel()
+                    continue
+                raise ManagerMutationCancelled(
+                    "commit_state_unknown",
+                    mutated=False,
+                    retryable=False,
+                    commit_unknown=True,
+                ) from exc
+            except Exception:
+                break
+
+        if writer.cancelled():
+            raise ManagerMutationCancelled(
+                "commit_state_unknown",
+                mutated=False,
+                retryable=False,
+                commit_unknown=True,
+            )
+
+        try:
+            writer.result()
+        except Exception as exc:
+            if outer_cancelled:
+                raise ManagerMutationCancelled(
+                    "storage_write_failed",
+                    mutated=False,
+                    retryable=True,
+                ) from exc
+            raise ManagerMutationError(
+                "storage_write_failed",
+                mutated=False,
+            ) from exc
+
+        self.reminders = candidate
+        if outer_cancelled:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=True,
+                retryable=False,
+            )
+
+    async def _transaction(self, mutate):
+        """Mutate a detached root and make it visible only after persistence."""
+        try:
+            async with self.mutation_coordinator.hold(REMINDER_STORE_SCOPE):
+                candidate = copy.deepcopy(self.reminders)
+                result, changed = mutate(candidate)
+                if changed:
+                    await self._persist_and_publish(candidate)
+                return copy.deepcopy(result)
+        except (ManagerMutationError, ManagerMutationCancelled):
+            raise
+        except asyncio.CancelledError as exc:
+            raise ManagerMutationCancelled(
+                "cancelled",
+                mutated=False,
+                retryable=True,
+            ) from exc
+
+    @staticmethod
+    def _active_reminders_in(root, guild_id):
+        """Select active rows in the stable order used for display numbering."""
+        rows = [
+            (position, reminder)
+            for position, reminder in enumerate(root.get(str(guild_id), ()))
+            if not reminder.get("completed", False)
+        ]
+        rows.sort(key=lambda row: (str(row[1].get("created_at", "")), row[0]))
+        return [reminder for _, reminder in rows]
+
+    async def add_reminder_result(
+        self,
+        guild_id,
+        user_id,
+        username,
+        text,
+        due_date=None,
+        recurrence=None,
+        recurrence_day=None,
+        rrule_day=None,
+        gcal_event_id=None,
+        gcal_link=None,
+        channel_id=None,
+        *,
+        reference_time,
+    ):
+        """Create and durably publish a reminder from one captured instant."""
+        now = self._require_aware(reference_time)
+
+        def mutate(candidate):
+            guild_key = str(guild_id)
+            reminder_id = f"rem_{guild_id}_{uuid.uuid4().hex}"
+            reminder = {
+                "id": reminder_id,
+                "user_id": str(user_id),
+                "username": username,
+                "text": text,
+                "due_date": due_date,
+                "recurrence": recurrence,
+                "recurrence_day": recurrence_day,
+                "rrule_day": rrule_day,
+                "gcal_event_id": gcal_event_id,
+                "gcal_link": gcal_link,
+                "channel_id": (
+                    str(channel_id) if channel_id is not None else None
+                ),
+                "created_at": now.isoformat(),
+                "completed": False,
+                "completed_at": None,
+                "completed_by": None,
+            }
+            candidate.setdefault(guild_key, []).append(reminder)
+            return reminder_id, True
+
+        return await self._transaction(mutate)
 
     def add_reminder(
         self,
@@ -74,36 +242,74 @@ class ReminderManager:
         Returns:
             reminder_id
         """
-        guild_key = str(guild_id)
-        reminder_id = f"rem_{guild_id}_{uuid.uuid4().hex}"
+        self._require_offline_projection()
+        reference_time = self._require_aware(self.clock.now())
+        return asyncio.run(
+            self.add_reminder_result(
+                guild_id,
+                user_id,
+                username,
+                text,
+                due_date,
+                recurrence,
+                recurrence_day,
+                rrule_day,
+                gcal_event_id,
+                gcal_link,
+                channel_id,
+                reference_time=reference_time,
+            )
+        )
 
-        if guild_key not in self.reminders:
-            self.reminders[guild_key] = []
-        if channel_id:
-            channel_id = str(channel_id)
+    async def complete_reminder_result(
+        self,
+        guild_id,
+        reminder_num=None,
+        reminder_id=None,
+        *,
+        reference_time,
+    ):
+        """Complete one reminder or advance its legacy recurrence atomically."""
+        now = self._require_aware(reference_time)
 
-        reminder = {
-            "id": reminder_id,
-            "user_id": str(user_id),
-            "username": username,
-            "text": text,
-            "due_date": due_date,
-            "recurrence": recurrence,
-            "recurrence_day": recurrence_day,
-            "rrule_day": rrule_day,
-            "gcal_event_id": gcal_event_id,
-            "gcal_link": gcal_link,
-            "channel_id": channel_id,
-            "created_at": datetime.now().isoformat(),
-            "completed": False,
-            "completed_at": None,
-            "completed_by": None,
-        }
+        def mutate(candidate):
+            active = self._active_reminders_in(candidate, guild_id)
+            target = None
+            if reminder_num is not None:
+                index = reminder_num - 1
+                if 0 <= index < len(active):
+                    target = active[index]
+            elif reminder_id:
+                target = next(
+                    (
+                        reminder
+                        for reminder in active
+                        if reminder.get("id") == reminder_id
+                    ),
+                    None,
+                )
 
-        self.reminders[guild_key].append(reminder)
-        self._save_reminders()
+            if target is None:
+                return (False, None, None), False
 
-        return reminder_id
+            if target.get("recurrence") and target.get("due_date"):
+                next_date = self._calculate_next_date(
+                    target["due_date"],
+                    target["recurrence"],
+                    target.get("recurrence_day"),
+                )
+                if next_date:
+                    target["due_date"] = next_date
+                    target["completed_count"] = (
+                        target.get("completed_count", 0) + 1
+                    )
+                    return (True, target["text"], next_date), True
+
+            target["completed"] = True
+            target["completed_at"] = now.isoformat()
+            return (True, target["text"], None), True
+
+        return await self._transaction(mutate)
 
     def complete_reminder(self, guild_id, reminder_num=None, reminder_id=None):
         """
@@ -118,53 +324,16 @@ class ReminderManager:
         Returns:
             (success, reminder_text, next_date) - next_date is set for recurring reminders
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            return False, None, None
-
-        incomplete = self.get_active_reminders(guild_id)
-
-        target_reminder = None
-
-        if reminder_num is not None:
-            # Find by number
-            idx = reminder_num - 1
-            if 0 <= idx < len(incomplete):
-                target_reminder = incomplete[idx]
-
-        elif reminder_id:
-            # Find by ID
-            for reminder in self.reminders[guild_key]:
-                if reminder["id"] == reminder_id and not reminder["completed"]:
-                    target_reminder = reminder
-                    break
-
-        if not target_reminder:
-            return False, None, None
-
-        # Check if it's a recurring reminder
-        if target_reminder.get("recurrence") and target_reminder.get("due_date"):
-            # Calculate next occurrence
-            next_date = self._calculate_next_date(
-                target_reminder["due_date"],
-                target_reminder["recurrence"],
-                target_reminder.get("recurrence_day"),
+        self._require_offline_projection()
+        reference_time = self._require_aware(self.clock.now())
+        return asyncio.run(
+            self.complete_reminder_result(
+                guild_id,
+                reminder_num=reminder_num,
+                reminder_id=reminder_id,
+                reference_time=reference_time,
             )
-
-            if next_date:
-                target_reminder["due_date"] = next_date
-                target_reminder["completed_count"] = (
-                    target_reminder.get("completed_count", 0) + 1
-                )
-                self._save_reminders()
-                return True, target_reminder["text"], next_date
-
-        # Non-recurring reminder - mark as completed
-        target_reminder["completed"] = True
-        target_reminder["completed_at"] = datetime.now().isoformat()
-        self._save_reminders()
-        return True, target_reminder["text"], None
+        )
 
     def _calculate_next_date(self, current_date_str, recurrence, recurrence_day=None):
         """
@@ -208,20 +377,23 @@ class ReminderManager:
         Returns:
             List of reminder dicts
         """
-        guild_key = str(guild_id)
+        return self._active_reminders_in(self.reminders, guild_id)
 
-        if guild_key not in self.reminders:
-            return []
+    def snapshot_pending_items(self, scope_id):
+        """Return detached active reminders in display/target order."""
+        return tuple(
+            copy.deepcopy(
+                self._active_reminders_in(self.reminders, scope_id)
+            )
+        )
 
-        # Filter incomplete reminders
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
-
-        # Sort by creation date
-        active.sort(key=lambda x: x["created_at"])
-
-        return active
-
-    def get_completed_reminders(self, guild_id, days=7):
+    def get_completed_reminders(
+        self,
+        guild_id,
+        days=7,
+        *,
+        reference_time=None,
+    ):
         """
         Get recently completed reminders
         """
@@ -230,18 +402,28 @@ class ReminderManager:
         if guild_key not in self.reminders:
             return []
 
-        cutoff = datetime.now() - timedelta(days=days)
+        if reference_time is None:
+            reference_time = self.clock.now()
+        cutoff = self._require_aware(reference_time) - timedelta(days=days)
 
         completed = []
         for r in self.reminders[guild_key]:
             if r["completed"] and r.get("completed_at"):
                 completed_at = datetime.fromisoformat(r["completed_at"])
+                if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+                    completed_at = completed_at.replace(tzinfo=OSLO)
                 if completed_at >= cutoff:
                     completed.append(r)
 
         return completed
 
-    def format_reminders_list(self, guild_id, show_completed=False):
+    def format_reminders_list(
+        self,
+        guild_id,
+        show_completed=False,
+        *,
+        reference_time=None,
+    ):
         """Format reminders for display"""
         active = self.get_active_reminders(guild_id)
 
@@ -279,7 +461,11 @@ class ReminderManager:
                     lines.append(f"   🔗 [Åpne i Google Calendar]({r['gcal_link']})")
 
         if show_completed:
-            completed = self.get_completed_reminders(guild_id, days=3)
+            completed = self.get_completed_reminders(
+                guild_id,
+                days=3,
+                reference_time=reference_time,
+            )
             if completed:
                 lines.append("\n✅ **Fullført nylig:**")
                 for r in completed[:5]:
@@ -287,26 +473,112 @@ class ReminderManager:
 
         return "\n".join(lines) if lines else None
 
+    async def delete_old_completed_result(
+        self,
+        guild_id,
+        days=7,
+        *,
+        reference_time,
+    ):
+        """Prune old completions through the same complete-root transaction."""
+        now = self._require_aware(reference_time)
+        cutoff = now - timedelta(days=days)
+
+        def mutate(candidate):
+            guild_key = str(guild_id)
+            existing = candidate.get(guild_key)
+            if existing is None:
+                return 0, False
+
+            retained = []
+            for reminder in existing:
+                completed_at_raw = reminder.get("completed_at")
+                keep = not reminder.get("completed") or not completed_at_raw
+                if not keep:
+                    try:
+                        completed_at = datetime.fromisoformat(completed_at_raw)
+                        if completed_at.tzinfo is None:
+                            completed_at = completed_at.replace(tzinfo=OSLO)
+                        keep = completed_at >= cutoff.astimezone(
+                            completed_at.tzinfo
+                        )
+                    except (TypeError, ValueError):
+                        keep = False
+                if keep:
+                    retained.append(reminder)
+
+            removed = len(existing) - len(retained)
+            if not removed:
+                return 0, False
+            candidate[guild_key] = retained
+            return removed, True
+
+        return await self._transaction(mutate)
+
     def delete_old_completed(self, guild_id, days=7):
-        """Delete reminders completed more than N days ago"""
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            return
-
-        cutoff = datetime.now() - timedelta(days=days)
-
-        self.reminders[guild_key] = [
-            r
-            for r in self.reminders[guild_key]
-            if not r["completed"]
-            or (
-                r.get("completed_at")
-                and datetime.fromisoformat(r["completed_at"]) >= cutoff
+        """Offline compatibility projection for old-reminder pruning."""
+        self._require_offline_projection()
+        reference_time = self._require_aware(self.clock.now())
+        asyncio.run(
+            self.delete_old_completed_result(
+                guild_id,
+                days,
+                reference_time=reference_time,
             )
-        ]
+        )
 
-        self._save_reminders()
+    async def edit_reminder_result(
+        self,
+        guild_id,
+        index=None,
+        title=None,
+        date=None,
+        time=None,
+        recurrence=None,
+        *,
+        reminder_id=None,
+        reference_time,
+    ):
+        """Edit a numbered or stable-ID reminder on a detached candidate."""
+        self._require_aware(reference_time)
+
+        def mutate(candidate):
+            active = self._active_reminders_in(candidate, guild_id)
+            target = None
+            if reminder_id is not None:
+                target = next(
+                    (
+                        reminder
+                        for reminder in active
+                        if reminder.get("id") == reminder_id
+                    ),
+                    None,
+                )
+            elif index is not None:
+                position = index - 1
+                if 0 <= position < len(active):
+                    target = active[position]
+
+            if target is None:
+                if not candidate.get(str(guild_id)):
+                    raise ValueError(
+                        "Ingen påminnelser funnet for denne serveren."
+                    )
+                selector = reminder_id if reminder_id is not None else index
+                raise ValueError(f"Ugyldig påminnelse-nummer: {selector}")
+
+            if title is not None:
+                target["text"] = title
+            if date is not None:
+                target["due_date"] = date
+            # Separate reminder time storage arrives in Task 5. Preserve the
+            # historical no-op projection until that schema lands.
+            _ = time
+            if recurrence is not None:
+                target["recurrence"] = recurrence
+            return target, True
+
+        return await self._transaction(mutate)
 
     def edit_reminder(self, guild_id, index, title=None, date=None, time=None, recurrence=None):
         """
@@ -326,29 +598,79 @@ class ReminderManager:
         Raises:
             ValueError: If index is invalid
         """
-        guild_key = str(guild_id)
+        self._require_offline_projection()
+        reference_time = self._require_aware(self.clock.now())
+        return asyncio.run(
+            self.edit_reminder_result(
+                guild_id,
+                index,
+                title,
+                date,
+                time,
+                recurrence,
+                reference_time=reference_time,
+            )
+        )
 
-        if guild_key not in self.reminders:
-            raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
+    async def _delete_reminder_record_result(
+        self,
+        guild_id,
+        *,
+        index=None,
+        reminder_id=None,
+        reference_time,
+    ):
+        """Return the deleted record for the legacy index projection."""
+        self._require_aware(reference_time)
 
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
-        active.sort(key=lambda x: x["created_at"])
+        def mutate(candidate):
+            active = self._active_reminders_in(candidate, guild_id)
+            target = None
+            if reminder_id is not None:
+                target = next(
+                    (
+                        reminder
+                        for reminder in active
+                        if reminder.get("id") == reminder_id
+                    ),
+                    None,
+                )
+            elif index is not None:
+                position = index - 1
+                if 0 <= position < len(active):
+                    target = active[position]
 
-        idx = index - 1
-        if idx < 0 or idx >= len(active):
-            raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
+            if target is None:
+                if not candidate.get(str(guild_id)):
+                    raise ValueError(
+                        "Ingen påminnelser funnet for denne serveren."
+                    )
+                selector = reminder_id if reminder_id is not None else index
+                raise ValueError(f"Ugyldig påminnelse-nummer: {selector}")
 
-        target = active[idx]
+            candidate[str(guild_id)].remove(target)
+            return target, True
 
-        if title is not None:
-            target["text"] = title
-        if date is not None:
-            target["due_date"] = date
-        if recurrence is not None:
-            target["recurrence"] = recurrence
+        return await self._transaction(mutate)
 
-        self._save_reminders()
-        return target
+    async def delete_reminder_result(
+        self,
+        guild_id,
+        reminder_id,
+        *,
+        reference_time,
+    ):
+        """Delete an active reminder by exact stable ID."""
+        self._require_aware(reference_time)
+        try:
+            await self._delete_reminder_record_result(
+                guild_id,
+                reminder_id=reminder_id,
+                reference_time=reference_time,
+            )
+        except ValueError:
+            return False
+        return True
 
     def delete_reminder_by_id(self, guild_id, index):
         """
@@ -364,22 +686,15 @@ class ReminderManager:
         Raises:
             ValueError: If index is invalid
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
-
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
-        active.sort(key=lambda x: x["created_at"])
-
-        idx = index - 1
-        if idx < 0 or idx >= len(active):
-            raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
-
-        target = active[idx]
-        self.reminders[guild_key].remove(target)
-        self._save_reminders()
-        return target
+        self._require_offline_projection()
+        reference_time = self._require_aware(self.clock.now())
+        return asyncio.run(
+            self._delete_reminder_record_result(
+                guild_id,
+                index=index,
+                reference_time=reference_time,
+            )
+        )
 
     def search_reminders(self, guild_id, query):
         """
