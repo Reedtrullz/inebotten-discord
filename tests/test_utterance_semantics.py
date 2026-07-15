@@ -113,6 +113,69 @@ def test_distant_trailing_cancellation_disallows_mutation(text):
 
 
 @pytest.mark.parametrize(
+    ("text", "action_terms"),
+    [
+        ("slett poll 1 avbryt", ("slett", "poll")),
+        ("delete poll 1 cancel", ("delete", "poll")),
+        ("kalender auth cancel", ("auth", "kalender")),
+        ("kalenderkode avbryt", ("kalenderkode",)),
+        (
+            "endre møte med Ola til fredag avbryt",
+            ("endre", "møte"),
+        ),
+        (
+            "edit meeting with Ola to Friday cancel",
+            ("edit", "meeting"),
+        ),
+        (
+            "legg Arrival på watchlisten avbryt",
+            ("legg", "watchlisten"),
+        ),
+        (
+            "add Arrival to the watchlist cancel",
+            ("add", "watchlist"),
+        ),
+        ("husk å kjøpe melk stopp", ("husk",)),
+    ],
+)
+def test_bare_terminal_cancellation_after_complete_frame_is_control(
+    text, action_terms
+):
+    assert is_negated_action(
+        normalize_utterance(text), action_terms
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("text", "action_terms"),
+    [
+        ("husk å si stopp", ("husk",)),
+        ("husk å se Stop", ("husk",)),
+        ("playing Stop", ("playing",)),
+        ("playing The Last Stop", ("playing",)),
+        ("husk å se The Last Stop", ("husk",)),
+        ("legg til filmen Cancel", ("legg",)),
+        ("legg til filmen Operation Cancel", ("legg",)),
+        ("add film Cancel", ("add",)),
+        (
+            "legg til filmen Cancel på watchlisten",
+            ("legg", "watchlisten"),
+        ),
+        ("endre tittel til Cancel", ("endre",)),
+        ("endre tittel til Operation Cancel", ("endre",)),
+        ("lagre sitat Operation Cancel", ("lagre", "sitat")),
+        ("save quote The Last Stop", ("save", "quote")),
+    ],
+)
+def test_bare_cancellation_word_can_be_the_payload_target(
+    text, action_terms
+):
+    assert is_negated_action(
+        normalize_utterance(text), action_terms
+    ) is False
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "ikke glem å kjøpe melk på dager der jeg ikke gjør det ofte",

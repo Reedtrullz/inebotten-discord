@@ -102,6 +102,42 @@ TRAILING_CANCELLATION_MARKERS = frozenset({
     "vent", "wait", "egentlig", "actually",
 })
 TRAILING_CANCELLATION_LOOKBACK = 12
+BARE_TRAILING_CANCELLATIONS = frozenset({
+    "avbryt", "cancel", "stopp", "stop",
+})
+_BARE_CANCELLATION_COMPLETE_FRAMES = frozenset({
+    ("kalender", "auth"),
+    ("kalender", "login"),
+    ("kalender", "kode"),
+    ("gcal", "auth"),
+    ("gcal", "login"),
+    ("gcal", "kode"),
+    ("kalenderkode",),
+})
+_BARE_CANCELLATION_PAYLOAD_SHELLS = (
+    re.compile(
+        r"^(?:husk|hugs)\s+(?:å|at)\s+(?:si|se|sjå)"
+        r"(?:\s+.+)?$"
+    ),
+    re.compile(r"^remember\s+to\s+(?:say|watch)(?:\s+.+)?$"),
+    re.compile(
+        r"^(?:spiller|playing|ser\s+på|watching)(?:\s+.+)?$"
+    ),
+    re.compile(
+        r"^(?:legg(?:\s+til)?|add)\s+"
+        r"(?:filmen|film|serien|serie|movie|show|series)"
+        r"(?:\s+.+)?$"
+    ),
+    re.compile(
+        r"^(?:endre|rediger|edit|change)\s+(?:tittel|title)\s+"
+        r"(?:til|to)(?:\s+.+)?$"
+    ),
+    re.compile(r"^(?:lagre|save)\s+(?:sitat|quote)(?:\s+.+)?$"),
+    re.compile(
+        r"^(?:husk\s+dette|lagre\s+dette|remember\s+this|"
+        r"save\s+this|quote\s+this)(?:\s+.+)?$"
+    ),
+)
 
 
 def _contains_phrase(text: str, phrases: Iterable[str]) -> bool:
@@ -149,6 +185,39 @@ def _has_hard_clause_boundary(
     )
 
 
+def _bare_terminal_cancellation_is_control(
+    tokens: tuple[str, ...],
+    *,
+    action_end: int,
+    cancellation_start: int,
+    cancellation: tuple[str, ...],
+) -> bool:
+    """Recognize a bare cancel suffix only after a completed action value."""
+    if (
+        len(cancellation) != 1
+        or cancellation[0] not in BARE_TRAILING_CANCELLATIONS
+    ):
+        return False
+
+    prefix = tokens[:cancellation_start]
+    if prefix in _BARE_CANCELLATION_COMPLETE_FRAMES:
+        return True
+
+    # A terminal word can itself be the requested value ("playing Stop",
+    # "endre tittel til Cancel", or a film named "Cancel"). In those
+    # incomplete value shells there is no earlier payload to cancel.
+    if not prefix or prefix[-1] in {"til", "to"}:
+        return False
+    joined_prefix = " ".join(prefix)
+    if any(
+        pattern.fullmatch(joined_prefix)
+        for pattern in _BARE_CANCELLATION_PAYLOAD_SHELLS
+    ):
+        return False
+
+    return action_end < cancellation_start
+
+
 def _has_trailing_action_cancellation(
     utterance: NormalizedUtterance,
     *,
@@ -167,6 +236,12 @@ def _has_trailing_action_cancellation(
     return (
         any(token in TRAILING_CANCELLATION_MARKERS for token in boundary_window)
         or _has_hard_clause_boundary(utterance.control_text, cancellation)
+        or _bare_terminal_cancellation_is_control(
+            utterance.tokens,
+            action_end=action_end,
+            cancellation_start=cancellation_start,
+            cancellation=cancellation,
+        )
     )
 
 
