@@ -6,9 +6,13 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
-from cal_system.natural_language_parser import NaturalLanguageParser
+import pytest
+
+from cal_system.natural_language_parser import NaturalLanguageParser, NaturalParseResult
 from cal_system.temporal_resolver import DATE_ALIASES, OSLO, TemporalResolver
-from core.intent_models import IntentRisk, RejectionCode
+from core.eval_fixtures import EvalFixture
+from core.intent_models import IntentCandidate, IntentRisk, IntentSource, RejectionCode
+from core.intent_payloads import ENVELOPE_KEYS, validate_intent_payload
 from core.intent_router import (
     BotIntent,
     COLLECTOR_ORDER,
@@ -25,11 +29,33 @@ from core.nlu_metrics import NLUMetrics
 from core.utterance import normalize_utterance
 from core.utterance_semantics import analyze_utterance
 from features.crypto_manager import parse_price_command
+from features.quote_manager import parse_quote_command
 from features.search_manager import detect_search_intent
 from features.watchlist_manager import parse_watchlist_command
+from tests.nlu_harness import build_production_router
 
 
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=OSLO)
+
+
+@pytest.fixture
+def production_router_adapter():
+    return build_production_router(EvalFixture.MIXED_STATE)
+
+
+@pytest.fixture
+def active_poll_router_adapter():
+    return build_production_router(EvalFixture.ACTIVE_POLL)
+
+
+def _nested_payload_keys(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            yield key
+            yield from _nested_payload_keys(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _nested_payload_keys(nested)
 
 
 class DummyMonitor:
@@ -59,7 +85,7 @@ class DummyMonitor:
         self.parse_poll_command = self._parse_poll
         self.parse_vote = self._parse_vote
         self.parse_watchlist_command = parse_watchlist_command
-        self.parse_quote_command = self._parse_quote
+        self.parse_quote_command = parse_quote_command
         self.parse_price_command = self._parse_price
         self.parse_horoscope_command = self._parse_horoscope
         self.parse_compliment_command = self._parse_compliment
@@ -394,7 +420,10 @@ class IntentRouterTests(unittest.TestCase):
     def test_reminder_search_routes_to_local_reminder_search(self):
         result = self.route("søk påminnelse lege")
         self.assertEqual(result.intent, BotIntent.REMINDER_SEARCH)
-        self.assertEqual(result.payload["query"], "lege")
+        self.assertEqual(
+            result.payload,
+            {"reminder": {"action": "search", "query": "lege"}},
+        )
 
     def test_reminder_create_list_and_complete_route_to_reminders(self):
         self.assertEqual(self.route("påminnelse Ring lege om 2 timer").intent, BotIntent.REMINDER_CREATE)
@@ -450,9 +479,11 @@ class IntentRouterTests(unittest.TestCase):
         result = self.route("liste sitater")
         self.assertEqual(result.intent, BotIntent.QUOTE_LIST)
 
-    def test_birthday_edit_routes_to_birthday_edit(self):
+    def test_birthday_edit_requires_resolved_identity_before_execution(self):
         result = self.route("endre bursdag")
-        self.assertEqual(result.intent, BotIntent.BIRTHDAY_EDIT)
+        self.assertEqual(result.intent, BotIntent.CLARIFY)
+        self.assertEqual(result.payload, {})
+        self.assertEqual(result.reason, "birthday_identity_required")
 
     def test_birthday_edit_is_anchored_to_a_direct_frame(self):
         for text in (
@@ -465,7 +496,7 @@ class IntentRouterTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(
                     self.route(text).intent,
-                    BotIntent.BIRTHDAY_EDIT,
+                    BotIntent.CLARIFY,
                 )
         for text in (
             "jeg lurer på hvordan man kan endre bursdag",
@@ -495,7 +526,7 @@ class IntentRouterTests(unittest.TestCase):
                 for candidate in router._collect_calendar_reminder_candidates(
                     context
                 ).candidates
-                if candidate.reason == "birthday_edit_keyword"
+                if candidate.reason == "birthday_identity_required"
             ]
 
         targetless = collect("endre bursdag")
@@ -1504,6 +1535,496 @@ class IntentRouterTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertNotEqual(self.route(text).intent, BotIntent.HELP)
+
+
+@pytest.mark.parametrize(
+    ("text", "intent", "envelope", "expected"),
+    [
+        (
+            "jeg må levere rapport 20.07.2030",
+            BotIntent.CALENDAR_ITEM,
+            "calendar_item",
+            {"title": "levere rapport", "date": "20.07.2030", "type": "task"},
+        ),
+        (
+            "kalender endre 1 type: task",
+            BotIntent.CALENDAR_EDIT,
+            "calendar_edit",
+            {"target": "1", "changes": {"type": "task"}},
+        ),
+        (
+            "slett møte med Ola",
+            BotIntent.CALENDAR_DELETE,
+            "calendar_target",
+            {"target": "møte med Ola"},
+        ),
+        (
+            "kalender slett alt",
+            BotIntent.CALENDAR_CLEAR,
+            "calendar_target",
+            {"all": True},
+        ),
+        (
+            "påminn meg om å ringe legen 20.07.2030 kl 14",
+            BotIntent.REMINDER_CREATE,
+            "reminder",
+            {
+                "action": "add",
+                "text": "ringe legen",
+                "due_at": "2030-07-20T14:00:00+02:00",
+                "due_date": "20.07.2030",
+                "time": "14:00",
+                "timezone": "Europe/Oslo",
+            },
+        ),
+        (
+            "påminnelser",
+            BotIntent.REMINDER_LIST,
+            "reminder",
+            {"action": "list"},
+        ),
+        (
+            "søk påminnelse lege",
+            BotIntent.REMINDER_SEARCH,
+            "reminder",
+            {"action": "search", "query": "lege"},
+        ),
+        (
+            "endre påminnelse 1 tekst: Ring tannlegen",
+            BotIntent.REMINDER_EDIT,
+            "reminder",
+            {"action": "edit", "number": 1, "changes": {"text": "Ring tannlegen"}},
+        ),
+        (
+            "slett påminnelse 1",
+            BotIntent.REMINDER_DELETE,
+            "reminder",
+            {"action": "delete", "number": 1},
+        ),
+        (
+            "avstemning Pizza? / Ja / Nei",
+            BotIntent.POLL_CREATE,
+            "poll",
+            {"question": "Pizza?", "options": ["Ja", "Nei"], "lang": "no"},
+        ),
+        (
+            "rediger avstemning 1 alternativer: Pizza / Taco / Salat",
+            BotIntent.POLL_EDIT,
+            "poll_edit",
+            {"target": 1, "options": ["Pizza", "Taco", "Salat"]},
+        ),
+        (
+            "slett poll 1",
+            BotIntent.POLL_DELETE,
+            "poll_delete",
+            {"target": 1},
+        ),
+        (
+            "lukk poll 1",
+            BotIntent.POLL_CLOSE,
+            "poll_close",
+            {"target": 1},
+        ),
+        (
+            "endre watchlist 1 tittel: The Matrix",
+            BotIntent.WATCHLIST,
+            "watchlist",
+            {"action": "edit", "index": 1, "title": "The Matrix", "lang": "no"},
+        ),
+        (
+            "hva skal vi se?",
+            BotIntent.WATCHLIST,
+            "watchlist",
+            {"action": "suggest", "type": None, "genre": None, "lang": "no"},
+        ),
+        (
+            "liste sitater",
+            BotIntent.QUOTE_LIST,
+            "quote",
+            {"action": "list", "lang": "no"},
+        ),
+        (
+            "endre sitat 1 tekst: Ny tekst forfatter: Kari",
+            BotIntent.QUOTE_EDIT,
+            "quote",
+            {
+                "action": "edit",
+                "index": 1,
+                "text": "Ny tekst",
+                "author": "Kari",
+                "lang": "no",
+            },
+        ),
+        (
+            "slett sitat 1",
+            BotIntent.QUOTE_DELETE,
+            "quote",
+            {"action": "delete", "index": 1, "lang": "no"},
+        ),
+    ],
+)
+def test_production_action_routes_emit_complete_validated_envelopes(
+    production_router_adapter, text, intent, envelope, expected
+):
+    result, parser_names = production_router_adapter.evaluate(text, guild_id=123)
+
+    assert parser_names == ()
+    assert result.intent is intent
+    assert ENVELOPE_KEYS[intent] == envelope
+    assert result.payload == {envelope: expected}
+    assert validate_intent_payload(intent, result.payload[envelope]) == expected
+    assert {"content", "original_text", "raw_text"}.isdisjoint(
+        _nested_payload_keys(result.payload)
+    )
+
+
+def test_poll_vote_freezes_the_single_active_poll_id(active_poll_router_adapter):
+    result, parser_names = active_poll_router_adapter.evaluate("1", guild_id=123)
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.POLL_VOTE
+    assert result.payload == {"vote": {"option": 1, "poll_id": "poll-1"}}
+
+
+@pytest.mark.parametrize(
+    ("text", "intent", "envelope", "expected"),
+    [
+        (
+            "slett poll",
+            BotIntent.POLL_DELETE,
+            "poll_delete",
+            {"poll_id": "poll-1"},
+        ),
+        (
+            "lukk poll",
+            BotIntent.POLL_CLOSE,
+            "poll_close",
+            {"poll_id": "poll-1"},
+        ),
+        (
+            "endre poll spørsmål: Middag?",
+            BotIntent.POLL_EDIT,
+            "poll_edit",
+            {"poll_id": "poll-1", "question": "Middag?"},
+        ),
+        (
+            "endre poll spørsmål: Middag: pizza eller taco?",
+            BotIntent.POLL_EDIT,
+            "poll_edit",
+            {
+                "poll_id": "poll-1",
+                "question": "Middag: pizza eller taco?",
+            },
+        ),
+    ],
+)
+def test_targetless_poll_actions_freeze_the_single_active_poll(
+    active_poll_router_adapter, text, intent, envelope, expected
+):
+    result, parser_names = active_poll_router_adapter.evaluate(text, guild_id=123)
+
+    assert parser_names == ()
+    assert result.intent is intent
+    assert result.payload == {envelope: expected}
+
+
+@pytest.mark.parametrize("text", ["1", "slett poll", "lukk poll", "endre poll spørsmål: Ny?"])
+def test_implicit_poll_actions_fail_closed_without_one_stable_poll_id(text):
+    monitor = DummyMonitor(active_polls=True)
+    monitor.poll.get_active_polls = lambda *_args, **_kwargs: [
+        {"id": "poll-1"},
+        {"id": "poll-2"},
+    ]
+
+    result = IntentRouter(monitor, now_provider=lambda: NOW).route(text, guild_id=123)
+
+    assert result.intent is BotIntent.AI_CHAT
+    assert result.payload == {}
+
+
+def test_calendar_create_projects_parser_only_fields_and_none_values():
+    monitor = DummyMonitor()
+    monitor.nlp_parser.parse_task_with_recurrence_result = lambda *_args, **_kwargs: {
+        "title": "Styremøte",
+        "date": "20.07.2030",
+        "time": None,
+        "type": "event",
+        "recurrence": "weekly",
+        "recurrence_day": "mandag",
+        "rrule_day": "MO",
+        "days_offset": 5,
+        "description": "Saksliste",
+        "due_at": "2030-07-20T09:00:00+02:00",
+    }
+    result = IntentRouter(monitor, now_provider=lambda: NOW).route(
+        "møte Styremøte 20.07.2030", guild_id=123
+    )
+
+    assert result.intent is BotIntent.CALENDAR_ITEM
+    assert result.payload == {
+        "calendar_item": {
+            "title": "Styremøte",
+            "date": "20.07.2030",
+            "type": "event",
+            "recurrence": "weekly",
+            "recurrence_day": "mandag",
+            "rrule_day": "MO",
+            "days_offset": 5,
+            "description": "Saksliste",
+        }
+    }
+
+
+@pytest.mark.parametrize("stage", ["task", "event"])
+@pytest.mark.parametrize(
+    "invalid",
+    [[], 1, "SECRET_CALENDAR_VALUE", NaturalParseResult([])],  # type: ignore[arg-type]
+)
+def test_non_mapping_calendar_parser_output_is_a_bounded_diagnostic(
+    stage, invalid
+):
+    monitor = DummyMonitor()
+    if stage == "task":
+        monitor.nlp_parser.parse_task_with_recurrence_result = (
+            lambda *_args, **_kwargs: invalid
+        )
+    else:
+        monitor.nlp_parser.parse_task_with_recurrence_result = (
+            lambda *_args, **_kwargs: NaturalParseResult(None)
+        )
+        monitor.nlp_parser.parse_event_result = lambda *_args, **_kwargs: invalid
+    metrics = NLUMetrics()
+
+    routed = IntentRouter(
+        monitor, metrics=metrics, now_provider=lambda: NOW
+    ).evaluate_utterance(
+        normalize_utterance("møte styremøte 20.07.2030"),
+        guild_id=123,
+    )
+
+    assert routed.result.intent is BotIntent.AI_CHAT
+    assert routed.result.payload == {}
+    assert routed.diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}
+    assert metrics.snapshot()["parser_errors"] == {
+        "parser=calendar|code=invalid_payload": 1
+    }
+    assert "SECRET_CALENDAR_VALUE" not in repr(routed)
+
+
+def test_invalid_parser_payload_is_bounded_and_never_arbitrated():
+    monitor = DummyMonitor()
+    monitor.parse_quote_command = lambda _text: {
+        "action": "get",
+        "raw_text": "SECRET_RAW_TEXT",
+    }
+    metrics = NLUMetrics()
+    routed = IntentRouter(
+        monitor, metrics=metrics, now_provider=lambda: NOW
+    ).evaluate_utterance(normalize_utterance("sitat"), guild_id=123)
+
+    assert routed.result.intent is BotIntent.AI_CHAT
+    assert routed.result.payload == {}
+    assert routed.diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}
+    assert metrics.snapshot()["parser_errors"] == {
+        "parser=quote|code=invalid_payload": 1
+    }
+    assert "SECRET_RAW_TEXT" not in repr(routed)
+
+
+@pytest.mark.parametrize("family", ["calendar", "poll", "watchlist"])
+def test_one_invalid_parser_object_records_one_diagnostic_across_candidate_tiers(
+    family,
+):
+    monitor = DummyMonitor()
+    if family == "calendar":
+        monitor.nlp_parser.parse_task_with_recurrence_result = (
+            lambda *_args, **_kwargs: {
+                "title": "Møte",
+                "date": "20.07.2030",
+                "type": "bad",
+            }
+        )
+        text = "møte Møte 20.07.2030"
+    elif family == "poll":
+        monitor.parse_poll_command = lambda _text: {
+            "question": "Hva?",
+            "options": ["Ja", "Nei"],
+            "lang": "xx",
+        }
+        text = "lag poll Hva? / Ja / Nei"
+    else:
+        monitor.parse_watchlist_command = lambda *_args, **_kwargs: {
+            "action": "add",
+            "title": "Matrix",
+            "type": "bad",
+        }
+        text = "legg Matrix på watchlist"
+    metrics = NLUMetrics()
+
+    routed = IntentRouter(
+        monitor, metrics=metrics, now_provider=lambda: NOW
+    ).evaluate_utterance(normalize_utterance(text), guild_id=123)
+
+    assert routed.result.intent is BotIntent.AI_CHAT
+    assert routed.result.payload == {}
+    assert routed.diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}
+    assert metrics.snapshot()["parser_errors"] == {
+        f"parser={family}|code=invalid_payload": 1
+    }
+
+
+@pytest.mark.parametrize(
+    ("family", "text", "invalid_action"),
+    [
+        ("reminder", "påminnelse Ring lege", ["add"]),
+        ("reminder", "påminnelse Ring lege", {"add": True}),
+        ("watchlist", "vis watchlist", ["status"]),
+        ("watchlist", "vis watchlist", {"status": True}),
+        ("quote", "sitat", ["get"]),
+        ("quote", "sitat", {"get": True}),
+    ],
+)
+def test_json_shaped_parser_actions_fail_closed_with_bounded_diagnostic(
+    family, text, invalid_action
+):
+    monitor = DummyMonitor()
+    if family == "reminder":
+        monitor.parse_reminder_command = lambda *_args, **_kwargs: {
+            "action": invalid_action
+        }
+    elif family == "watchlist":
+        monitor.parse_watchlist_command = lambda *_args, **_kwargs: {
+            "action": invalid_action
+        }
+    else:
+        monitor.parse_quote_command = lambda *_args, **_kwargs: {
+            "action": invalid_action
+        }
+    metrics = NLUMetrics()
+
+    routed = IntentRouter(
+        monitor, metrics=metrics, now_provider=lambda: NOW
+    ).evaluate_utterance(normalize_utterance(text), guild_id=123)
+
+    assert routed.result.intent is BotIntent.AI_CHAT
+    assert routed.result.payload == {}
+    assert routed.diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}
+    assert metrics.snapshot()["parser_errors"] == {
+        f"parser={family}|code=invalid_payload": 1
+    }
+    assert repr(invalid_action) not in repr(routed)
+
+
+@pytest.mark.parametrize("family", ["reminder", "watchlist", "quote"])
+def test_non_mapping_parser_output_is_a_bounded_invalid_payload(family):
+    monitor = DummyMonitor()
+    text = {
+        "reminder": "påminnelse Ring lege",
+        "watchlist": "vis watchlist",
+        "quote": "sitat",
+    }[family]
+    if family == "reminder":
+        monitor.parse_reminder_command = lambda *_args, **_kwargs: []
+    elif family == "watchlist":
+        monitor.parse_watchlist_command = lambda *_args, **_kwargs: []
+    else:
+        monitor.parse_quote_command = lambda *_args, **_kwargs: []
+    metrics = NLUMetrics()
+
+    routed = IntentRouter(
+        monitor, metrics=metrics, now_provider=lambda: NOW
+    ).evaluate_utterance(normalize_utterance(text), guild_id=123)
+
+    assert routed.result.intent is BotIntent.AI_CHAT
+    assert routed.diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}
+    assert metrics.snapshot()["parser_errors"] == {
+        f"parser={family}|code=invalid_payload": 1
+    }
+
+
+@pytest.mark.parametrize(
+    ("parser", "invalid"),
+    [
+        ("create", []),
+        ("create", 7),
+        ("vote", []),
+        ("vote", "1"),
+        ("vote", True),
+    ],
+)
+def test_non_mapping_poll_parser_output_is_a_bounded_invalid_payload(
+    parser, invalid
+):
+    monitor = DummyMonitor(active_polls=parser == "vote")
+    if parser == "create":
+        monitor.parse_poll_command = lambda _text: invalid
+        text = "lag poll Hva? / Ja / Nei"
+    else:
+        monitor.parse_vote = lambda _text: invalid
+        text = "1"
+    metrics = NLUMetrics()
+
+    routed = IntentRouter(
+        monitor, metrics=metrics, now_provider=lambda: NOW
+    ).evaluate_utterance(normalize_utterance(text), guild_id=123)
+
+    assert routed.result.intent is BotIntent.AI_CHAT
+    assert routed.result.payload == {}
+    assert routed.diagnostics.rejection_counts == {RejectionCode.PARSER_ERROR: 1}
+    assert metrics.snapshot()["parser_errors"] == {
+        "parser=poll|code=invalid_payload": 1
+    }
+
+
+def test_quote_author_lookup_routes_in_norwegian_and_english(
+    production_router_adapter,
+):
+    for text, author, lang in (
+        ("hva sa Kari?", "Kari", "no"),
+        ("what did Kari say?", "Kari", "en"),
+    ):
+        result, parser_names = production_router_adapter.evaluate(text, guild_id=123)
+        assert parser_names == ()
+        assert result.intent is BotIntent.QUOTE
+        assert result.payload == {
+            "quote": {"action": "get", "author": author, "lang": lang}
+        }
+
+
+def test_semantic_action_candidate_is_validated_before_arbitration():
+    router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
+    candidate = IntentCandidate(
+        BotIntent.QUOTE,
+        0.9,
+        50,
+        payload={"quote": {"action": "get", "raw_text": "SECRET"}},
+        source=IntentSource.SEMANTIC,
+    )
+
+    valid, rejected = router._validate_action_candidates([candidate])
+
+    assert valid == []
+    assert len(rejected) == 1
+    assert rejected[0].code is RejectionCode.PARSER_ERROR
+    assert router.metrics.snapshot()["parser_errors"] == {
+        "parser=quote|code=invalid_payload": 1
+    }
+
+
+def test_action_routes_never_expose_raw_text_compatibility_fields(
+    production_router_adapter,
+):
+    forbidden = {"content", "original_text", "raw_text"}
+
+    for text in (
+        "jeg må levere rapport 20.07.2030",
+        "endre påminnelse 1 tekst: Ring tannlegen",
+        "rediger avstemning 1 alternativer: Pizza / Taco / Salat",
+        "endre watchlist 1 tittel: The Matrix",
+        "endre sitat 1 tekst: Ny tekst forfatter: Kari",
+    ):
+        result, _ = production_router_adapter.evaluate(text, guild_id=123)
+        assert forbidden.isdisjoint(_nested_payload_keys(result.payload))
 
 
 if __name__ == "__main__":

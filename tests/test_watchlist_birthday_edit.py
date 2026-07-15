@@ -160,11 +160,12 @@ class WatchlistBirthdayEditTests(unittest.TestCase):
 
         self.assertIsNone(parsed)
 
-    def test_intent_routing_endre_bursdag_routes_correctly(self):
+    def test_intent_routing_endre_bursdag_requires_identity_resolution(self):
         route = IntentRouter(DummyMonitor()).route("endre bursdag Ola Nordmann 02.03.1991", guild_id=123)
 
-        self.assertEqual(route.intent, BotIntent.BIRTHDAY_EDIT)
-        self.assertEqual(route.reason, "birthday_edit_keyword")
+        self.assertEqual(route.intent, BotIntent.CLARIFY)
+        self.assertEqual(route.payload, {})
+        self.assertEqual(route.reason, "birthday_identity_required")
 
     def test_leap_day_birthday_uses_feb_28_in_non_leap_year(self):
         class FixedDateTime(datetime):

@@ -13,6 +13,12 @@ from pathlib import Path
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
+QUOTE_EDIT_FIELD = re.compile(
+    r"(?<!\w)(?P<label>tekst|text|forfatter|author)\s*:\s*",
+    flags=re.IGNORECASE,
+)
+
+
 class QuoteManager:
     """
     Manages funny quotes and memorable messages
@@ -214,49 +220,128 @@ def parse_quote_command(message_content):
     Returns:
         dict with action and text, or None
     """
-    content_lower = message_content.lower()
-
-    # Detect language
-    no_keywords = ["husk", "lagre", "gullkorn", "sitat"]
+    if not isinstance(message_content, str):
+        return None
+    content = re.sub(r"^\s*<@!?\d+>\s*", "", message_content)
+    content = re.sub(
+        r"^\s*@inebotten\b\s*", "", content, flags=re.IGNORECASE
+    ).strip()
+    if not content:
+        return None
+    content_lower = content.casefold()
     lang = (
         "no"
-        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in no_keywords)
+        if re.search(
+            r"\b(?:husk|huskes|lagre|gullkorn|sitat|sitater|endre|rediger|"
+            r"slett|fjern|liste|vis|forfatter|tekst|hva|sa)\b",
+            content_lower,
+        )
         else "en"
     )
 
-    # Check for saving a quote (Norwegian)
-    save_phrases_no = ["husk dette", "lagre dette", "dette må huskes", "gullkorn"]
-    # Check for saving a quote (English)
-    save_phrases_en = [
-        "remember this",
-        "save this",
-        "this must be remembered",
-        "quote this",
-    ]
+    list_match = re.fullmatch(
+        r"(?:liste\s+sitater|vis\s+sitater|alle\s+sitater|"
+        r"list\s+quotes|show\s+quotes|all\s+quotes)\s*[?.!]*",
+        content,
+        re.IGNORECASE,
+    )
+    if list_match:
+        return {"action": "list", "lang": lang}
 
-    all_save_phrases = save_phrases_no + save_phrases_en
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in all_save_phrases):
-        # Extract text after the command
-        text = message_content
-        for phrase in all_save_phrases + ["@inebotten"]:
-            # Use regex for replacement to ensure word boundaries if needed, but here simple replace is usually fine for extraction
-            # though regex is safer.
-            text = re.sub(rf'\b{re.escape(phrase)}\b', '', text, flags=re.IGNORECASE).strip()
+    edit = re.fullmatch(
+        r"(?:endre|rediger|edit)\s+(?:sitat|quote)\s+"
+        r"(?P<index>\d+)\s+(?P<body>.+?)\s*",
+        content,
+        re.IGNORECASE,
+    )
+    if edit and int(edit.group("index")) > 0:
+        body = edit.group("body")
+        fields = list(QUOTE_EDIT_FIELD.finditer(body))
+        if not fields or body[: fields[0].start()].strip():
+            return None
+        aliases = {
+            "tekst": "text",
+            "text": "text",
+            "forfatter": "author",
+            "author": "author",
+        }
+        payload = {
+            "action": "edit",
+            "index": int(edit.group("index")),
+            "lang": lang,
+        }
+        seen = set()
+        for index, field in enumerate(fields):
+            key = aliases[field.group("label").casefold()]
+            if key in seen:
+                return None
+            seen.add(key)
+            end = (
+                fields[index + 1].start()
+                if index + 1 < len(fields)
+                else len(body)
+            )
+            value = body[field.end() : end].strip(" \t\r\n,;")
+            if value:
+                payload[key] = value
+        if "text" in payload or "author" in payload:
+            return payload
+        return None
 
-        # Remove colon if present at start
-        text = text.lstrip(":").strip()
+    delete = re.fullmatch(
+        r"(?:slett|fjern|delete|remove)\s+(?:sitat|quote)\s+"
+        r"(?P<index>\d+)\s*[?.!]*",
+        content,
+        re.IGNORECASE,
+    )
+    if delete and int(delete.group("index")) > 0:
+        return {
+            "action": "delete",
+            "index": int(delete.group("index")),
+            "lang": lang,
+        }
 
+    save = re.fullmatch(
+        r"(?:husk\s+dette|lagre\s+dette|dette\s+må\s+huskes|gullkorn|"
+        r"remember\s+this|save\s+this|this\s+must\s+be\s+remembered|"
+        r"quote\s+this|lagre\s+sitat|save\s+quote)\b"
+        r"(?:\s*[:\-\u2013\u2014]\s*|\s+)(?P<text>.+?)\s*",
+        content,
+        re.IGNORECASE,
+    )
+    if save:
+        text = save.group("text").strip()
+        quote_pairs = {'"': '"', "'": "'", "“": "”", "‘": "’", "«": "»"}
+        if len(text) >= 2 and quote_pairs.get(text[0]) == text[-1]:
+            text = text[1:-1].strip()
         if text:
             return {"action": "save", "text": text, "lang": lang}
 
-    # Check for retrieving a quote
-    get_words_no = ["sitat", "husk hva", "hva sa"]
-    get_words_en = ["quote", "random quote", "show quote"]
-
-    all_get_words = get_words_no + get_words_en
-    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in all_get_words):
+    author_match = re.fullmatch(
+        r"(?:hva\s+sa\s+(?P<author_no>.+?)|"
+        r"what\s+did\s+(?P<author_en>.+?)\s+say)\s*[?.!]*",
+        content,
+        re.IGNORECASE,
+    )
+    if author_match:
+        author = (
+            author_match.group("author_no") or author_match.group("author_en")
+        ).strip()
+    else:
+        author = ""
+    if author:
+        return {
+            "action": "get",
+            "author": author,
+            "lang": lang,
+        }
+    if re.fullmatch(
+        r"(?:sitat|quote|random\s+quote|show\s+quote|vis\s+sitat|"
+        r"vis\s+quote|husk\s+hva(?:\s+.+)?)\s*[?.!]*",
+        content,
+        re.IGNORECASE,
+    ):
         return {"action": "get", "lang": lang}
-
     return None
 
 

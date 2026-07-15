@@ -5,7 +5,78 @@ from types import SimpleNamespace
 
 from core.intent_router import BotIntent, IntentRouter
 from features.quote_handler import QuoteHandler
-from features.quote_manager import QuoteManager
+from features.quote_manager import QuoteManager, parse_quote_command
+
+
+class QuoteParserTests(unittest.TestCase):
+    def test_parser_emits_complete_payloads_for_every_quote_action(self):
+        cases = {
+            "husk dette: Viktig!": {
+                "action": "save",
+                "text": "Viktig!",
+                "lang": "no",
+            },
+            "hva sa Kari?": {
+                "action": "get",
+                "author": "Kari",
+                "lang": "no",
+            },
+            "what did Kari say?": {
+                "action": "get",
+                "author": "Kari",
+                "lang": "en",
+            },
+            "liste sitater": {"action": "list", "lang": "no"},
+            "endre sitat 2 tekst: Ny tekst! forfatter: Kari Nordmann": {
+                "action": "edit",
+                "index": 2,
+                "text": "Ny tekst!",
+                "author": "Kari Nordmann",
+                "lang": "no",
+            },
+            "delete quote 3": {"action": "delete", "index": 3, "lang": "en"},
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(parse_quote_command(text), expected)
+
+    def test_parser_allows_one_nonblank_edit_field(self):
+        self.assertEqual(
+            parse_quote_command("endre sitat 1 tekst: forfatter: Kari"),
+            {
+                "action": "edit",
+                "index": 1,
+                "author": "Kari",
+                "lang": "no",
+            },
+        )
+
+    def test_parser_preserves_colon_punctuation_inside_quote_text(self):
+        self.assertEqual(
+            parse_quote_command("endre sitat 1 tekst: Husk dette: alltid"),
+            {
+                "action": "edit",
+                "index": 1,
+                "text": "Husk dette: alltid",
+                "lang": "no",
+            },
+        )
+
+    def test_parser_rejects_incomplete_or_unknown_edit_fields(self):
+        for text in (
+            "endre sitat 1",
+            "endre sitat 0 tekst: Ny",
+            "endre sitat 1 foo: Hemmelig tekst: Ny",
+            "endre sitat 1 tekst: En tekst: To",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_quote_command(text))
+
+    def test_norwegian_passive_save_frame_keeps_language(self):
+        self.assertEqual(
+            parse_quote_command("dette må huskes: Viktig"),
+            {"action": "save", "text": "Viktig", "lang": "no"},
+        )
 
 
 class QuoteManagerCrudTests(unittest.TestCase):
@@ -92,7 +163,7 @@ class DummyQuoteMonitor:
         self.parse_poll_command = lambda content: None
         self.parse_vote = lambda content: None
         self.parse_watchlist_command = lambda content: None
-        self.parse_quote_command = lambda content: None
+        self.parse_quote_command = parse_quote_command
         self.parse_price_command = lambda content: None
         self.parse_horoscope_command = lambda content: None
         self.parse_compliment_command = lambda content: None
@@ -116,11 +187,22 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.intent, BotIntent.QUOTE_LIST)
 
     def test_quote_edit_routes_to_quote_edit_with_concrete_target(self):
-        result = self._router().route("endre sitat 1", guild_id=123)
+        result = self._router().route(
+            "endre sitat 1 tekst: Ny tekst forfatter: Kari",
+            guild_id=123,
+        )
         self.assertEqual(result.intent, BotIntent.QUOTE_EDIT)
         self.assertEqual(
             result.payload,
-            {"quote": {"action": "edit", "index": 1}},
+            {
+                "quote": {
+                    "action": "edit",
+                    "index": 1,
+                    "text": "Ny tekst",
+                    "author": "Kari",
+                    "lang": "no",
+                }
+            },
         )
 
     def test_targetless_quote_edit_falls_back_without_mutation(self):

@@ -3,12 +3,13 @@
 """Central intent router for Inebotten message handling."""
 
 from collections import Counter
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 import re
 from typing import Any, Dict, Optional
 
+from cal_system.natural_language_parser import NaturalParseResult
 from cal_system.temporal_resolver import OSLO, TemporalResolver
 from core.intent_arbitration import arbitrate_candidates
 
@@ -24,6 +25,11 @@ from core.intent_models import (
     RoutedIntent,
 )
 from core.intent_policy import classify_intent_risk
+from core.intent_payloads import (
+    ENVELOPE_KEYS,
+    PayloadValidationError,
+    validate_intent_payload,
+)
 from core.message_context import RoutingContext
 from core.nlu_metrics import NLUMetrics
 from core.utterance import NormalizedUtterance, normalize_utterance
@@ -191,6 +197,62 @@ _LEADING_QUOTE_SAVE_FRAME = re.compile(
     r"(?:\s*[:\-–—]\s*|\s+)(?P<payload>.+?)\s*$",
     re.IGNORECASE,
 )
+_POLL_EDIT_FIELD = re.compile(
+    r"(?<!\w)(?P<label>spørsmål|question|alternativer|options)\s*:\s*",
+    re.IGNORECASE,
+)
+_CANONICAL_CALENDAR_CREATE_FIELDS = (
+    "title",
+    "date",
+    "time",
+    "type",
+    "recurrence",
+    "recurrence_day",
+    "rrule_day",
+    "days_offset",
+    "description",
+)
+_PAYLOAD_METRIC_FAMILY = {
+    **{
+        intent: "calendar"
+        for intent in (
+            BotIntent.CALENDAR_ITEM,
+            BotIntent.CALENDAR_EDIT,
+            BotIntent.CALENDAR_DELETE,
+            BotIntent.CALENDAR_COMPLETE,
+            BotIntent.CALENDAR_CLEAR,
+        )
+    },
+    **{
+        intent: "reminder"
+        for intent in (
+            BotIntent.REMINDER_CREATE,
+            BotIntent.REMINDER_LIST,
+            BotIntent.REMINDER_SEARCH,
+            BotIntent.REMINDER_COMPLETE,
+            BotIntent.REMINDER_EDIT,
+            BotIntent.REMINDER_DELETE,
+        )
+    },
+    **{
+        intent: "poll"
+        for intent in (
+            BotIntent.POLL_CREATE,
+            BotIntent.POLL_VOTE,
+            BotIntent.POLL_EDIT,
+            BotIntent.POLL_DELETE,
+            BotIntent.POLL_CLOSE,
+        )
+    },
+    BotIntent.WATCHLIST: "watchlist",
+    BotIntent.QUOTE: "quote",
+    BotIntent.QUOTE_LIST: "quote",
+    BotIntent.QUOTE_EDIT: "quote",
+    BotIntent.QUOTE_DELETE: "quote",
+    BotIntent.BIRTHDAY_CREATE: "birthday",
+    BotIntent.BIRTHDAY_LIST: "birthday",
+    BotIntent.BIRTHDAY_EDIT: "birthday",
+}
 
 
 def _phrase_present(text: str, phrase: str) -> bool:
@@ -327,6 +389,11 @@ class IntentRouter:
             parser_errors.extend(output.parser_errors)
             collector_rejections.extend(output.rejections)
 
+        candidates, payload_rejections = self._validate_action_candidates(
+            candidates
+        )
+        collector_rejections.extend(payload_rejections)
+
         decision = arbitrate_candidates(
             utterance, semantics, candidates
         )
@@ -364,6 +431,67 @@ class IntentRouter:
                 ),
             ),
         )
+
+    def _validate_action_candidates(
+        self, candidates: list[IntentCandidate]
+    ) -> tuple[list[IntentCandidate], list[CandidateRejection]]:
+        """Canonicalize every typed action candidate before arbitration."""
+
+        valid: list[IntentCandidate] = []
+        rejected: list[CandidateRejection] = []
+        invalid_payloads: list[tuple[BotIntent, dict[str, Any]]] = []
+        for candidate in candidates:
+            envelope = ENVELOPE_KEYS.get(candidate.intent)
+            if envelope is None:
+                valid.append(candidate)
+                continue
+            try:
+                if set(candidate.payload) != {envelope}:
+                    raise PayloadValidationError("missing_payload")
+                raw = candidate.payload[envelope]
+                if not isinstance(raw, Mapping):
+                    raise PayloadValidationError("missing_payload")
+                normalized = validate_intent_payload(
+                    candidate.intent,
+                    raw,
+                    source=candidate.source,
+                )
+            except (PayloadValidationError, TypeError, ValueError):
+                duplicate = False
+                for seen_intent, seen_payload in invalid_payloads:
+                    if seen_intent is not candidate.intent:
+                        continue
+                    try:
+                        same_payload = seen_payload == candidate.payload
+                        duplicate = (
+                            same_payload
+                            if type(same_payload) is bool
+                            else False
+                        )
+                    except Exception:
+                        duplicate = False
+                    if duplicate:
+                        break
+                if duplicate:
+                    continue
+                invalid_payloads.append((candidate.intent, candidate.payload))
+                rejected.append(
+                    CandidateRejection(candidate, RejectionCode.PARSER_ERROR)
+                )
+                self.metrics.record_parser_error(
+                    _PAYLOAD_METRIC_FAMILY[candidate.intent],
+                    "invalid_payload",
+                )
+                continue
+            payload = {envelope: normalized}
+            valid.append(
+                replace(
+                    candidate,
+                    payload=payload,
+                    risk=classify_intent_risk(candidate.intent, payload),
+                )
+            )
+        return valid, rejected
 
     def _safe_parse(
         self,
@@ -459,6 +587,35 @@ class IntentRouter:
         self.metrics.record_parser_error(
             "calendar", "invalid_temporal"
         )
+
+    def _append_invalid_payload(
+        self,
+        rejections: list[CandidateRejection],
+        *,
+        intent: BotIntent,
+        family: str,
+        tier: int,
+        order: int,
+    ) -> None:
+        """Record one bounded diagnostic without retaining parser data."""
+
+        rejections.append(
+            CandidateRejection(
+                IntentCandidate(
+                    intent,
+                    0.0,
+                    tier,
+                    order=order,
+                    payload={},
+                    reason="invalid_payload_diagnostic",
+                    source=IntentSource.DETERMINISTIC,
+                    risk=classify_intent_risk(intent, {}),
+                    specificity=0,
+                ),
+                RejectionCode.PARSER_ERROR,
+            )
+        )
+        self.metrics.record_parser_error(family, "invalid_payload")
 
     def _collect_control_candidates(
         self, context: CollectorContext
@@ -707,6 +864,15 @@ class IntentRouter:
                 now=context.reference_time,
                 temporal_resolver=self.temporal_resolver,
             )
+        if parsed_reminder is not None and not isinstance(parsed_reminder, dict):
+            self._append_invalid_payload(
+                rejections,
+                intent=BotIntent.REMINDER_CREATE,
+                family="reminder",
+                tier=30,
+                order=94,
+            )
+            parsed_reminder = None
 
         explicit_reminder_list = re.fullmatch(
             r"(?:(?:vis|list|show)\s+)?(?:påminnelser|påminningar|"
@@ -860,7 +1026,7 @@ class IntentRouter:
                     "reminder_edit_keyword",
                 )
                 tier, order, specificity = 20, 60, 3
-            elif action in {"delete", "complete"}:
+            elif isinstance(action, str) and action in {"delete", "complete"}:
                 complete_selector = (
                     (
                         isinstance(parsed_reminder.get("number"), int)
@@ -908,7 +1074,15 @@ class IntentRouter:
                     "reminder_search_keyword",
                 )
                 tier, order, specificity = 30, 80, 3
-            if reminder_result is not None:
+            if reminder_result is None:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.REMINDER_CREATE,
+                    family="reminder",
+                    tier=30,
+                    order=94,
+                )
+            else:
                 candidates.append(
                     self._candidate_from_result(
                         reminder_result,
@@ -1444,10 +1618,10 @@ class IntentRouter:
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
-                        BotIntent.BIRTHDAY_EDIT,
+                        BotIntent.CLARIFY,
                         0.95,
                         {},
-                        "birthday_edit_keyword",
+                        "birthday_identity_required",
                     ),
                     tier=30,
                     order=120,
@@ -1499,11 +1673,22 @@ class IntentRouter:
             )
             if isinstance(task_result, dict):
                 calendar_item = task_result
-            elif task_result is not None and task_result.errors:
+            elif isinstance(task_result, NaturalParseResult) and task_result.errors:
                 self._append_invalid_temporal(rejections)
-            elif task_result is not None:
+            elif isinstance(task_result, NaturalParseResult):
                 calendar_item = task_result.item
-                if calendar_item is None:
+                if calendar_item is not None and not isinstance(
+                    calendar_item, dict
+                ):
+                    self._append_invalid_payload(
+                        rejections,
+                        intent=BotIntent.CALENDAR_ITEM,
+                        family="calendar",
+                        tier=40,
+                        order=130,
+                    )
+                    calendar_item = None
+                elif calendar_item is None:
                     event_parser = getattr(
                         parser, "parse_event_result", None
                     ) or getattr(parser, "parse_event", None)
@@ -1519,10 +1704,40 @@ class IntentRouter:
                     )
                     if isinstance(event_result, dict):
                         calendar_item = event_result
-                    elif event_result is not None and event_result.errors:
+                    elif (
+                        isinstance(event_result, NaturalParseResult)
+                        and event_result.errors
+                    ):
                         self._append_invalid_temporal(rejections)
-                    elif event_result is not None:
+                    elif isinstance(event_result, NaturalParseResult):
                         calendar_item = event_result.item
+                        if calendar_item is not None and not isinstance(
+                            calendar_item, dict
+                        ):
+                            self._append_invalid_payload(
+                                rejections,
+                                intent=BotIntent.CALENDAR_ITEM,
+                                family="calendar",
+                                tier=40,
+                                order=130,
+                            )
+                            calendar_item = None
+                    elif event_result is not None:
+                        self._append_invalid_payload(
+                            rejections,
+                            intent=BotIntent.CALENDAR_ITEM,
+                            family="calendar",
+                            tier=40,
+                            order=130,
+                        )
+            elif task_result is not None:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.CALENDAR_ITEM,
+                    family="calendar",
+                    tier=40,
+                    order=130,
+                )
 
         if isinstance(calendar_item, dict):
             calendar_item = self._resolve_calendar_followup(
@@ -1531,6 +1746,16 @@ class IntentRouter:
                 channel_id=context.channel_id,
                 user_id=context.user_id,
             )
+            calendar_item = {
+                key: calendar_item[key]
+                for key in _CANONICAL_CALENDAR_CREATE_FIELDS
+                if key in calendar_item
+                and not (
+                    key != "days_offset"
+                    and key != "title"
+                    and calendar_item[key] is None
+                )
+            }
             confidence = 0.86
             if (
                 calendar_item.get("date")
@@ -1643,9 +1868,22 @@ class IntentRouter:
                 re.I | re.S,
             )
         )
-        if poll_list_gate and self._has_active_poll(
-            context.guild_id, context.reference_time
-        ):
+        poll_mutation_frame = bool(
+            re.match(
+                rf"^{_POLITE_COMMAND_PREFIX}(?:endre|rediger|edit|slett|"
+                r"delete|fjern|remove|lukk|close|avslutt|steng)\s+"
+                r"(?:poll|avstemning)\b",
+                control,
+                re.I,
+            )
+        )
+        active_polls = (
+            self._active_polls(context.guild_id, context.reference_time)
+            if poll_list_gate or control.isdigit() or poll_domain
+            else ()
+        )
+        single_poll_id = self._single_poll_id(active_polls)
+        if poll_list_gate and active_polls:
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -1666,6 +1904,7 @@ class IntentRouter:
         slash_shape = control.count("/") >= 2 or " / " in control
         poll_create_gate = bool(
             not poll_list_gate
+            and not poll_mutation_frame
             and (
                 re.match(
                     rf"^{_POLITE_COMMAND_PREFIX}"
@@ -1687,6 +1926,15 @@ class IntentRouter:
                 getattr(self.monitor, "parse_poll_command", None),
                 text,
             )
+        if parsed_poll is not None and not isinstance(parsed_poll, dict):
+            self._append_invalid_payload(
+                rejections,
+                intent=BotIntent.POLL_CREATE,
+                family="poll",
+                tier=50,
+                order=150,
+            )
+            parsed_poll = None
         if isinstance(parsed_poll, dict):
             question = parsed_poll.get("question")
             options = parsed_poll.get("options")
@@ -1743,9 +1991,7 @@ class IntentRouter:
                     )
                 )
 
-        if control.isdigit() and self._has_active_poll(
-            context.guild_id, context.reference_time
-        ):
+        if control.isdigit() and single_poll_id is not None:
             parsed_vote = self._safe_parse(
                 errors,
                 rejections,
@@ -1754,13 +2000,17 @@ class IntentRouter:
                 getattr(self.monitor, "parse_vote", None),
                 text,
             )
-            if isinstance(parsed_vote, int) and parsed_vote > 0:
+            if type(parsed_vote) is int and parsed_vote > 0:
+                vote_payload = {
+                    "option": parsed_vote,
+                    "poll_id": single_poll_id,
+                }
                 candidates.append(
                     self._candidate_from_result(
                         IntentResult(
                             BotIntent.POLL_VOTE,
                             0.95,
-                            {"vote": parsed_vote},
+                            {"vote": vote_payload},
                             "active_poll_vote",
                         ),
                         tier=50,
@@ -1769,10 +2019,16 @@ class IntentRouter:
                         domain_terms=(control,),
                     )
                 )
+            elif parsed_vote is not None:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.POLL_VOTE,
+                    family="poll",
+                    tier=50,
+                    order=160,
+                )
 
-        if poll_domain and self._has_active_poll(
-            context.guild_id, context.reference_time
-        ):
+        if poll_domain and active_polls:
             poll_ref = self._parse_poll_reference(control)
             poll_mutations = (
                 (
@@ -1806,18 +2062,34 @@ class IntentRouter:
                     re.I,
                 ):
                     continue
-                target = poll_ref.get("target")
+                action_payload = {
+                    key: value
+                    for key, value in poll_ref.items()
+                    if value is not None
+                }
+                if not action_payload and single_poll_id is not None:
+                    action_payload["poll_id"] = single_poll_id
+                if not action_payload:
+                    continue
+                if intent is BotIntent.POLL_EDIT:
+                    edit_changes = self._parse_poll_edit_changes(text)
+                    if edit_changes is not None:
+                        action_payload.update(edit_changes)
+                has_target = bool(
+                    action_payload.get("target") is not None
+                    or action_payload.get("poll_id")
+                )
                 candidates.append(
                     self._candidate_from_result(
                         IntentResult(
                             intent,
                             0.95,
-                            {envelope: dict(poll_ref)},
+                            {envelope: action_payload},
                             reason,
                         ),
                         tier=50,
                         order=order,
-                        specificity=3 if target is not None else 2,
+                        specificity=3 if has_target else 2,
                         action_terms=_present_terms(control, actions),
                         domain_terms=poll_domain,
                     )
@@ -1933,9 +2205,18 @@ class IntentRouter:
                 reference_time=context.reference_time,
                 temporal_resolver=self.temporal_resolver,
             )
+        if parsed_watchlist is not None and not isinstance(parsed_watchlist, dict):
+            self._append_invalid_payload(
+                rejections,
+                intent=BotIntent.WATCHLIST,
+                family="watchlist",
+                tier=50,
+                order=210,
+            )
+            parsed_watchlist = None
         if isinstance(parsed_watchlist, dict):
             action = parsed_watchlist.get("action")
-            action_is_live = {
+            action_is_live = isinstance(action, str) and {
                 "status": watchlist_status_gate,
                 "list": watchlist_status_gate,
                 "suggest": watchlist_suggest_gate,
@@ -1944,6 +2225,13 @@ class IntentRouter:
                 "edit": watchlist_edit_gate,
             }.get(action, False)
             if not action_is_live:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.WATCHLIST,
+                    family="watchlist",
+                    tier=50,
+                    order=210,
+                )
                 parsed_watchlist = None
         if isinstance(parsed_watchlist, dict):
             action = parsed_watchlist.get("action")
@@ -1954,6 +2242,13 @@ class IntentRouter:
                 or (isinstance(index, int) and index > 0)
             )
             if action in {"add", "edit", "remove"} and not complete_mutation:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.WATCHLIST,
+                    family="watchlist",
+                    tier=50,
+                    order=210,
+                )
                 parsed_watchlist = None
             else:
                 result = IntentResult(
@@ -2048,76 +2343,31 @@ class IntentRouter:
 
         quote_list_gate = bool(
             re.fullmatch(
-                r"(?:liste\s+sitater|vis\s+sitater|alle\s+sitater)",
+                r"(?:liste\s+sitater|vis\s+sitater|alle\s+sitater|"
+                r"list\s+quotes|show\s+quotes|all\s+quotes)",
                 control,
                 re.I,
             )
         )
-        if quote_list_gate:
-            candidates.append(
-                self._candidate_from_result(
-                    IntentResult(
-                        BotIntent.QUOTE_LIST,
-                        0.95,
-                        {},
-                        "quote_list_keyword",
-                    ),
-                    tier=50,
-                    order=230,
-                    specificity=2,
-                    domain_terms=_present_terms(control, QUOTE_LIST_KEYWORDS),
-                )
-            )
-
         quote_domain = _present_terms(control, ("sitat", "quote"))
-        quote_edit = re.fullmatch(
-            r"(?:endre|rediger|edit)\s+(?:sitat|quote)\s+(\d+)(?:\s+.+)?",
-            control,
-            re.I,
-        )
-        if quote_edit and int(quote_edit.group(1)) > 0:
-            candidates.append(
-                self._candidate_from_result(
-                    IntentResult(
-                        BotIntent.QUOTE_EDIT,
-                        0.95,
-                        {"quote": {"action": "edit", "index": int(quote_edit.group(1))}},
-                        "quote_edit_keyword",
-                    ),
-                    tier=50,
-                    order=240,
-                    specificity=3,
-                    action_terms=_present_terms(control, ("endre", "rediger", "edit")),
-                    domain_terms=quote_domain,
-                )
+        quote_edit_gate = bool(
+            re.fullmatch(
+                r"(?:endre|rediger|edit)\s+(?:sitat|quote)\s+"
+                r"\d+(?:\s+.+)?",
+                control,
+                re.I,
             )
-        quote_delete = re.fullmatch(
+        )
+        quote_delete_gate = bool(re.fullmatch(
             r"(?:slett|fjern|delete|remove)\s+(?:sitat|quote)\s+(\d+)",
             control,
             re.I,
-        )
-        if quote_delete and int(quote_delete.group(1)) > 0:
-            candidates.append(
-                self._candidate_from_result(
-                    IntentResult(
-                        BotIntent.QUOTE_DELETE,
-                        0.95,
-                        {"quote": {"action": "delete", "index": int(quote_delete.group(1))}},
-                        "quote_delete_keyword",
-                    ),
-                    tier=50,
-                    order=250,
-                    specificity=3,
-                    action_terms=_present_terms(
-                        control, ("slett", "delete", "fjern", "remove")
-                    ),
-                    domain_terms=quote_domain,
-                )
-            )
+        ))
         quote_get_gate = bool(
             re.fullmatch(
                 r"(?:sitat|quote|random\s+quote|show\s+quote|vis\s+sitat|"
-                r"vis\s+quote|husk\s+hva(?:\s+.+)?|hva\s+sa(?:\s+.+)?)\s*\??",
+                r"vis\s+quote|husk\s+hva(?:\s+.+)?|hva\s+sa(?:\s+.+)?|"
+                r"what\s+did\s+.+?\s+say)\s*\??",
                 control,
                 re.I,
             )
@@ -2132,7 +2382,13 @@ class IntentRouter:
                 re.I,
             )
         )
-        quote_gate = bool(quote_get_gate or quote_save_gate)
+        quote_gate = bool(
+            quote_list_gate
+            or quote_edit_gate
+            or quote_delete_gate
+            or quote_get_gate
+            or quote_save_gate
+        )
         parsed_quote = None
         if quote_gate:
             parsed_quote = self._safe_parse(
@@ -2143,14 +2399,35 @@ class IntentRouter:
                 getattr(self.monitor, "parse_quote_command", None),
                 text,
             )
+        if parsed_quote is not None and not isinstance(parsed_quote, dict):
+            self._append_invalid_payload(
+                rejections,
+                intent=BotIntent.QUOTE,
+                family="quote",
+                tier=50,
+                order=260,
+            )
+            parsed_quote = None
         leading_save = self._parse_leading_quote_save(text)
         if leading_save is not None:
             parsed_quote = leading_save
         if isinstance(parsed_quote, dict):
             action = parsed_quote.get("action")
-            if (action == "save" and not quote_save_gate) or (
-                action == "get" and not quote_get_gate
-            ):
+            action_is_live = isinstance(action, str) and {
+                "list": quote_list_gate,
+                "edit": quote_edit_gate,
+                "delete": quote_delete_gate,
+                "save": quote_save_gate,
+                "get": quote_get_gate,
+            }.get(action, False)
+            if not action_is_live:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.QUOTE,
+                    family="quote",
+                    tier=50,
+                    order=260,
+                )
                 parsed_quote = None
         if isinstance(parsed_quote, dict):
             action = parsed_quote.get("action")
@@ -2158,25 +2435,68 @@ class IntentRouter:
                 isinstance(parsed_quote.get("text"), str)
                 and parsed_quote["text"].strip()
             ):
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.QUOTE,
+                    family="quote",
+                    tier=50,
+                    order=260,
+                )
                 parsed_quote = None
-            elif action in {"save", "get"}:
+            elif action in {"save", "get", "list", "edit", "delete"}:
+                intent, reason, order, specificity = {
+                    "list": (
+                        BotIntent.QUOTE_LIST,
+                        "quote_list_keyword",
+                        230,
+                        2,
+                    ),
+                    "edit": (
+                        BotIntent.QUOTE_EDIT,
+                        "quote_edit_keyword",
+                        240,
+                        3,
+                    ),
+                    "delete": (
+                        BotIntent.QUOTE_DELETE,
+                        "quote_delete_keyword",
+                        250,
+                        3,
+                    ),
+                    "save": (BotIntent.QUOTE, "quote_parser", 260, 3),
+                    "get": (BotIntent.QUOTE, "quote_parser", 260, 1),
+                }[action]
                 candidates.append(
                     self._candidate_from_result(
                         IntentResult(
-                            BotIntent.QUOTE,
-                            0.9,
+                            intent,
+                            0.95 if action in {"list", "edit", "delete"} else 0.9,
                             {"quote": dict(parsed_quote)},
-                            "quote_parser",
+                            reason,
                         ),
                         tier=50,
-                        order=260,
-                        specificity=3 if action == "save" else 1,
+                        order=order,
+                        specificity=specificity,
                         action_terms=_present_terms(
                             control,
-                            ("husk", "lagre", "remember", "save", "quote this"),
+                            (
+                                "husk",
+                                "lagre",
+                                "remember",
+                                "save",
+                                "quote this",
+                                "endre",
+                                "rediger",
+                                "edit",
+                                "slett",
+                                "fjern",
+                                "delete",
+                                "remove",
+                            ),
                         ),
                         domain_terms=quote_domain or _present_terms(
-                            control, ("gullkorn", "dette")
+                            control,
+                            ("gullkorn", "dette", "hva sa", "what did", "say"),
                         ),
                     )
                 )
@@ -2886,7 +3206,12 @@ class IntentRouter:
                 return IntentResult(
                     BotIntent.REMINDER_SEARCH,
                     0.98,
-                    {"query": query},
+                    {
+                        "reminder": {
+                            "action": "search",
+                            "query": query,
+                        }
+                    },
                     "reminder_search_keyword",
                 )
 
@@ -3081,22 +3406,87 @@ class IntentRouter:
             word[0].isupper() for word in significant_words
         )
 
+    def _active_polls(
+        self,
+        guild_id: Optional[int],
+        reference_time: datetime,
+    ) -> tuple[Mapping[str, Any], ...]:
+        if guild_id is None:
+            return ()
+        try:
+            rows = self.monitor.poll.get_active_polls(
+                guild_id,
+                reference_time=reference_time,
+            )
+        except Exception:
+            return ()
+        if not isinstance(rows, (list, tuple)):
+            return ()
+        return tuple(row for row in rows if isinstance(row, Mapping))
+
     def _has_active_poll(
         self,
         guild_id: Optional[int],
         reference_time: datetime,
     ) -> bool:
-        if guild_id is None:
-            return False
-        try:
-            return bool(
-                self.monitor.poll.get_active_polls(
-                    guild_id,
-                    reference_time=reference_time,
-                )
+        return bool(self._active_polls(guild_id, reference_time))
+
+    @staticmethod
+    def _single_poll_id(
+        active_polls: tuple[Mapping[str, Any], ...],
+    ) -> str | None:
+        if len(active_polls) != 1:
+            return None
+        value = active_polls[0].get("id")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    def _parse_poll_edit_changes(
+        self, content: str
+    ) -> dict[str, Any] | None:
+        match = re.fullmatch(
+            rf"{_POLITE_COMMAND_PREFIX}(?:endre|rediger|edit)\s+"
+            r"(?:poll|avstemning)(?:\s+(?:\d+|siste|last))?\s+"
+            r"(?P<body>.+?)\s*",
+            content,
+            re.I,
+        )
+        if match is None:
+            return None
+        body = match.group("body")
+        fields = list(_POLL_EDIT_FIELD.finditer(body))
+        if not fields or body[: fields[0].start()].strip():
+            return None
+        aliases = {
+            "spørsmål": "question",
+            "question": "question",
+            "alternativer": "options",
+            "options": "options",
+        }
+        result: dict[str, Any] = {}
+        for index, field in enumerate(fields):
+            key = aliases[field.group("label").casefold()]
+            if key in result:
+                return None
+            end = (
+                fields[index + 1].start()
+                if index + 1 < len(fields)
+                else len(body)
             )
-        except Exception:
-            return False
+            value = body[field.end() : end].strip(" \t\r\n,;")
+            if not value:
+                return None
+            if key == "question":
+                result[key] = value
+            else:
+                separator = "/" if "/" in value else ","
+                result[key] = [
+                    option.strip()
+                    for option in value.split(separator)
+                    if option.strip()
+                ]
+        return result or None
 
     def _parse_poll_reference(self, content_lower: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {"target": None}
