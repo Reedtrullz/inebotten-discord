@@ -241,7 +241,7 @@ Validation atoms are exact: S200/S300/S500/TEXT2000 are stripped nonblank string
 
 **Task-1 implementation amendment (2026-07-15):** this paragraph and the table above are authoritative over older snippets below. The parser uses an explicit quote-aware nesting cap, bounded integer parsing, overflow-safe confidence/date handling, and treats any additional zero-to-three-space JSON fragment as ambiguity whenever a valid proposal is present. The prompt states the finite confidence range, reply/clarification limits, whole-second DUE_AT rule, recurrence literals, and zero-indent/unfenced/single-line provenance. Prompt atom tests compare exact atom names rather than substring counts because nullable atom names contain their base names.
 
-- [ ] **Step 1: Replace legacy default-dataclass tests with failing parser and registry tests (5 minutes)**
+- [x] **Step 1: Replace legacy default-dataclass tests with failing parser and registry tests (5 minutes)**
 
 Write these tests in tests/test_action_schema.py:
 
@@ -528,7 +528,7 @@ Run:
 
 Expected: FAIL during import because ActionName, ACTION_SPECS, parse_ai_response(), and validate_action_object() do not exist.
 
-- [ ] **Step 2: Add the exact schema types and complete ACTION_SPECS registry (5 minutes)**
+- [x] **Step 2: Add the exact schema types and complete ACTION_SPECS registry (5 minutes)**
 
 Replace ai/action_schema.py with these public types and registry. Keep ACTION_SPECS data-only; contextual checks belong to ActionBridge.
 
@@ -828,7 +828,7 @@ class ParsedAIResponse:
     legacy: bool = False
 ~~~
 
-- [ ] **Step 3: Implement complete scalar and cross-field validation (5 minutes)**
+- [x] **Step 3: Implement complete scalar and cross-field validation (5 minutes)**
 
 Add these functions below the registry in ai/action_schema.py:
 
@@ -1136,7 +1136,7 @@ Run:
 
 Expected: PASS for the registry and direct validator tests; parser tests still fail because parse_ai_response() is absent.
 
-- [ ] **Step 4: Implement the strict standalone-line parser and bounded legacy reader (5 minutes)**
+- [x] **Step 4: Implement the strict standalone-line parser and bounded legacy reader (5 minutes)**
 
 Add this parser below validate_action_object(). Error tuples contain only bounded machine codes and never model text.
 
@@ -1586,7 +1586,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Generate the provider prompt from ACTION_SPECS (5 minutes)**
+- [x] **Step 5: Generate the provider prompt from ACTION_SPECS (5 minutes)**
 
 Add:
 
@@ -1716,7 +1716,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the protocol (5 minutes)**
+- [x] **Step 6: Commit the protocol (5 minutes)**
 
 ~~~bash
 git add ai/action_schema.py tests/test_action_schema.py
@@ -1865,7 +1865,7 @@ The exact mapping is:
 
 NONE returns None. CLARIFY returns a non-executable BotIntent.CLARIFY route with payload {"clarification": clarification}. Every other result has source=SEMANTIC, risk=classify_intent_risk(intent,payload), and requires_confirmation=true exactly when risk is ADDITIVE, MUTATING, or DESTRUCTIVE.
 
-- [ ] **Step 1: Write failing exhaustive mapping and trust-boundary tests (5 minutes)**
+- [x] **Step 1: Write failing exhaustive mapping and trust-boundary tests (5 minutes)**
 
 Create tests/test_action_bridge.py with a parametrized row for all 34 executable ActionName values. Each row asserts the exact BotIntent and outer payload shown above. Also add:
 
@@ -1974,7 +1974,7 @@ Run:
 
 Expected: FAIL because core/action_bridge.py does not exist.
 
-- [ ] **Step 2: Implement the complete mapping code (5 minutes)**
+- [x] **Step 2: Implement the complete mapping code (5 minutes)**
 
 Create core/action_bridge.py with these exact builders. ACTION_ROUTE_BUILDERS is public only so the exhaustiveness test can prove registry parity.
 
@@ -2422,7 +2422,7 @@ ACTION_ROUTE_BUILDERS: dict[ActionName, RouteBuilder] = {
 }
 ~~~
 
-- [ ] **Step 3: Implement contextual checks and arbitration (5 minutes)**
+- [x] **Step 3: Implement contextual checks and arbitration (5 minutes)**
 
 Add:
 
@@ -2883,7 +2883,7 @@ Run:
 
 Expected: PASS with all ActionName mappings exact and no execution dependency.
 
-- [ ] **Step 4: Pin legacy migration semantics and zero side effects (5 minutes)**
+- [x] **Step 4: Pin legacy migration semantics and zero side effects (5 minutes)**
 
 Add tests that parse legacy SAVE_EVENT and SHOW_DASHBOARD, bridge them, and assert:
 
@@ -2909,7 +2909,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the inert bridge (5 minutes)**
+- [x] **Step 5: Commit the inert bridge (5 minutes)**
 
 ~~~bash
 git add core/action_bridge.py tests/nlu_test_support.py \
@@ -10364,7 +10364,7 @@ Expected: PASS; no sockets or external providers are used.
 - Consumes: the completed commits from Tasks 1–9.
 - Produces: compile, static-error, focused-test, aggregate-test, NLU-contract, and diff evidence.
 
-- [ ] **Step 1: Verify disk and worktree scope (5 minutes)**
+- [x] **Step 1: Verify disk and worktree scope (5 minutes)**
 
 Run:
 
@@ -10376,7 +10376,7 @@ git diff --name-only HEAD~9..HEAD
 
 Expected: at least 30 GiB free. Changed production/test paths are limited to the files listed in this plan; unrelated user changes remain untouched.
 
-- [ ] **Step 2: Compile and run fatal static checks (5 minutes)**
+- [x] **Step 2: Compile and run fatal static checks (5 minutes)**
 
 ~~~bash
 .venv312/bin/python -m compileall -q \
@@ -10388,7 +10388,7 @@ Expected: at least 30 GiB free. Changed production/test paths are limited to the
 
 Expected: both commands exit 0 and flake8 reports zero selected errors.
 
-- [ ] **Step 3: Run the focused action, pending, monitor, and context gate (5 minutes)**
+- [x] **Step 3: Run the focused action, pending, monitor, and context gate (5 minutes)**
 
 ~~~bash
 .venv312/bin/python -m pytest \
@@ -10411,7 +10411,7 @@ Expected: both commands exit 0 and flake8 reports zero selected errors.
 
 Expected: PASS with no live provider, Discord, Google Calendar, or persistence calls.
 
-- [ ] **Step 4: Run the production NLU safety contract (5 minutes)**
+- [x] **Step 4: Run the production NLU safety contract (5 minutes)**
 
 ~~~bash
 .venv312/bin/python scripts/evaluate_nlu.py \
@@ -10421,7 +10421,7 @@ Expected: PASS with no live provider, Discord, Google Calendar, or persistence c
 
 Expected: exit 0; parser error rate and negative mutation false-positive rate are zero, destructive precision and critical recall are one, payload accuracy is one, overall exact intent accuracy is at least 0.98, and each labeled locale is at least 0.95.
 
-- [ ] **Step 5: Run every non-browser test (5 minutes)**
+- [x] **Step 5: Run every non-browser test (5 minutes)**
 
 ~~~bash
 .venv312/bin/python -m pytest -q --ignore=tests/test_console_frontend.py
@@ -10429,7 +10429,7 @@ Expected: exit 0; parser error rate and negative mutation false-positive rate ar
 
 Expected: PASS. Do not collapse a browser-environment error into this offline result.
 
-- [ ] **Step 6: Inspect exact trust-boundary invariants (5 minutes)**
+- [x] **Step 6: Inspect exact trust-boundary invariants (5 minutes)**
 
 Run:
 
@@ -10457,7 +10457,7 @@ Expected:
 - one runtime parse call in AIActionHandler plus the parser definition;
 - clean whitespace diff.
 
-- [ ] **Step 7: Run browser regression separately only when Chromium is already installed (5 minutes)**
+- [x] **Step 7: Run browser regression separately only when Chromium is already installed (5 minutes)**
 
 ~~~bash
 .venv312/bin/python -m pytest -q tests/test_console_frontend.py
@@ -10465,7 +10465,7 @@ Expected:
 
 Expected: PASS when the local Chromium binary exists. If it is absent, report the environment skip separately; do not install a browser or use network access as part of this offline implementation plan.
 
-- [ ] **Step 8: Log durable implementation evidence to Obsidian (5 minutes)**
+- [x] **Step 8: Log durable implementation evidence to Obsidian (5 minutes)**
 
 Use the $obsidian skill after the code is implemented. Record the commit SHAs, focused/non-browser test results, NLU report path, action/pending/history trust boundaries, and any separately skipped browser proof. Do not log raw utterances, model outputs, action slots, user names, URLs, credentials, or tokens.
 
