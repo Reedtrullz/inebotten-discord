@@ -78,7 +78,9 @@ class DummyQuoteMonitor:
         )
         self.client = None
         self.countdown = SimpleNamespace(parse_countdown_query=lambda content: None)
-        self.poll = SimpleNamespace(get_active_polls=lambda guild_id: [])
+        self.poll = SimpleNamespace(
+            get_active_polls=lambda guild_id, reference_time=None: []
+        )
         self.conversation = SimpleNamespace(
             should_show_dashboard=lambda content, guild_id: (False, "default"),
             threads={},
@@ -113,9 +115,17 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
         result = self._router().route("liste sitater", guild_id=123)
         self.assertEqual(result.intent, BotIntent.QUOTE_LIST)
 
-    def test_quote_edit_routes_to_quote_edit(self):
-        result = self._router().route("endre sitat", guild_id=123)
+    def test_quote_edit_routes_to_quote_edit_with_concrete_target(self):
+        result = self._router().route("endre sitat 1", guild_id=123)
         self.assertEqual(result.intent, BotIntent.QUOTE_EDIT)
+        self.assertEqual(
+            result.payload,
+            {"quote": {"action": "edit", "index": 1}},
+        )
+
+    def test_targetless_quote_edit_falls_back_without_mutation(self):
+        result = self._router().route("endre sitat", guild_id=123)
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
 
     async def test_handler_list_quotes_outputs_numbered_quotes(self):
         manager = self.make_manager()

@@ -109,7 +109,9 @@ class MentionGateTests(unittest.IsolatedAsyncioTestCase):
         monitor.parse_compliment_command = lambda content: None
         monitor.parse_calculator_command = lambda content: None
         monitor.parse_shorten_command = lambda content: None
-        monitor.poll = SimpleNamespace(get_active_polls=lambda guild_id: [])
+        monitor.poll = SimpleNamespace(
+            get_active_polls=lambda guild_id, reference_time=None: []
+        )
         monitor.detect_search_intent = lambda content: None
         monitor.conversation = SimpleNamespace(
             should_show_dashboard=lambda content, guild_id: (False, "test")

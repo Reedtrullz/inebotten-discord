@@ -35,7 +35,9 @@ class DummyMonitor:
         self.parse_compliment_command = lambda content: None
         self.parse_calculator_command = lambda content: None
         self.parse_shorten_command = lambda content: None
-        self.poll = SimpleNamespace(get_active_polls=lambda guild_id: [])
+        self.poll = SimpleNamespace(
+            get_active_polls=lambda guild_id, reference_time=None: []
+        )
 
     def _has_active_poll(self, guild_id):
         return False
