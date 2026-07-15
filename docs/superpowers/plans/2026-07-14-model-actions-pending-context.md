@@ -199,18 +199,18 @@ The closed validation table is:
 | CLARIFY | none | none | clarification is S500 | none |
 | SHOW_DASHBOARD | none | none | none | none |
 | HELP | none | none | none | none |
-| CALENDAR_CREATE | title:S200 | date:DATE, time:TIME, type:EVENT_TYPE, recurrence:S200, recurrence_day:S200, rrule_day:S200, days_offset:DAY_OFFSET, description:TEXT2000 | at least one of date/days_offset; a literal date/time validates together; days_offset is the temporal anchor otherwise | none |
+| CALENDAR_CREATE | title:S200 | date:DATE, time:TIME, type:EVENT_TYPE, recurrence:RECURRENCE, recurrence_day:S200, rrule_day:S200, days_offset:DAY_OFFSET, description:TEXT2000 | at least one of date/days_offset; a literal date/time validates together; days_offset is the temporal anchor otherwise | none |
 | CALENDAR_LIST | none | none | none | none |
 | CALENDAR_SEARCH | query:S500 | none | none | none |
 | CALENDAR_COMPLETE | none | target:S200, number:POS_INT | exactly one of target/number | none |
-| CALENDAR_EDIT | target:S200 | title:S200, description:TEXT2000, date:DATE, time:TIME, recurrence:NULLABLE_S200 | at least one change; date/time together | none |
+| CALENDAR_EDIT | target:S200 | title:S200, description:TEXT2000, date:DATE, time:TIME, recurrence:NULLABLE_RECURRENCE | at least one change; date/time together | none |
 | CALENDAR_DELETE | none | target:S200, number:POS_INT | exactly one of target/number | none |
 | CALENDAR_CLEAR | none | none | none | bridge adds all=true |
-| REMINDER_CREATE | text:S500 | due_at:DUE_AT, due_date:DATE, time:TIME, timezone:OSLO, recurrence:S200 | temporal fields agree | none |
+| REMINDER_CREATE | text:S500 | due_at:DUE_AT, due_date:DATE, time:TIME, timezone:OSLO, recurrence:RECURRENCE | temporal fields agree; non-null recurrence requires due_at or due_date | none |
 | REMINDER_LIST | none | none | none | none |
 | REMINDER_SEARCH | query:S500 | none | none | none |
 | REMINDER_COMPLETE | number:POS_INT | none | none | resolver later injects stable reminder_id |
-| REMINDER_EDIT | number:POS_INT | text:S500, due_at:NULLABLE_DUE_AT, due_date:NULLABLE_DATE, time:NULLABLE_TIME, timezone:OSLO, recurrence:NULLABLE_S200 | at least one change; non-null temporal fields agree | none |
+| REMINDER_EDIT | number:POS_INT | text:S500, due_at:NULLABLE_DUE_AT, due_date:NULLABLE_DATE, time:NULLABLE_TIME, timezone:OSLO, recurrence:NULLABLE_RECURRENCE | at least one material change (timezone alone is inert); non-null temporal fields agree; a time-only edit is validated after the target date is frozen | none |
 | REMINDER_DELETE | number:POS_INT | none | none | resolver later injects stable reminder_id |
 | POLL_CREATE | question:S300, options:OPTIONS | none | none | none |
 | POLL_LIST | none | none | none | none |
@@ -232,7 +232,9 @@ The closed validation table is:
 | QUOTE_EDIT | index:POS_INT | text:TEXT2000, author:S200 | at least text/author | none |
 | QUOTE_DELETE | index:POS_INT | none | none | none |
 
-Validation atoms are exact: S200/S300/S500/TEXT2000 are stripped nonblank strings with the named maximum; POS_INT rejects bool and requires greater than zero; INT rejects bool; DAY_OFFSET rejects bool and is inclusively bounded to -3650..3650; DATE is an exact calendar-valid `DD.MM.YYYY`; TIME is an exact zero-padded `HH:MM`; none reads a clock or constructs a TemporalResolver. DUE_AT is an aware ISO-8601 datetime; OPTIONS is 2–10 unique stripped strings of 1–100 characters; POLL_TARGET is POS_INT or the exact string siste; YEAR is 1900–2100; DAY is 1–31; MONTH is 1–12; OSLO is exactly Europe/Oslo. Optional strings may not be blank. Relative phrases are resolved before this boundary or represented only by `days_offset`, which ActionBridge converts to an absolute date using the captured turn reference.
+Validation atoms are exact: S200/S300/S500/TEXT2000 are stripped nonblank strings with the named maximum; POS_INT rejects bool and requires greater than zero; INT rejects bool; DAY_OFFSET rejects bool and is inclusively bounded to -3650..3650; DATE is an exact calendar-valid `DD.MM.YYYY`; TIME is an exact zero-padded `HH:MM`; none reads a clock or constructs a TemporalResolver. DUE_AT is an aware ISO-8601 datetime at whole-second precision; RECURRENCE is exactly daily/weekly/biweekly/monthly/yearly; nullable variants accept JSON null. OPTIONS is 2–10 unique stripped strings of 1–100 characters; POLL_TARGET is POS_INT or the exact string siste; YEAR is 1900–2100; DAY is 1–31; MONTH is 1–12; OSLO is exactly Europe/Oslo. Optional strings may not be blank. Relative phrases are resolved before this boundary or represented only by `days_offset`, which ActionBridge converts to an absolute date using the captured turn reference.
+
+**Task-1 implementation amendment (2026-07-15):** this paragraph and the table above are authoritative over older snippets below. The parser uses an explicit quote-aware nesting cap, bounded integer parsing, overflow-safe confidence/date handling, and treats any additional zero-to-three-space JSON fragment as ambiguity whenever a valid proposal is present. The prompt states the finite confidence range, reply/clarification limits, whole-second DUE_AT rule, recurrence literals, and zero-indent/unfenced/single-line provenance. Prompt atom tests compare exact atom names rather than substring counts because nullable atom names contain their base names.
 
 - [ ] **Step 1: Replace legacy default-dataclass tests with failing parser and registry tests (5 minutes)**
 
@@ -597,6 +599,8 @@ class SlotRule(str, Enum):
     NULLABLE_DUE_AT = "NULLABLE_DUE_AT"
     NULLABLE_S200 = "NULLABLE_S200"
     NULLABLE_TEXT2000 = "NULLABLE_TEXT2000"
+    RECURRENCE = "RECURRENCE"
+    NULLABLE_RECURRENCE = "NULLABLE_RECURRENCE"
     OSLO = "OSLO"
     EVENT_TYPE = "EVENT_TYPE"
     MEDIA_TYPE = "MEDIA_TYPE"
@@ -648,7 +652,7 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType({
             ("date", SlotRule.DATE),
             ("time", SlotRule.TIME),
             ("type", SlotRule.EVENT_TYPE),
-            ("recurrence", SlotRule.S200),
+            ("recurrence", SlotRule.RECURRENCE),
             ("recurrence_day", SlotRule.S200),
             ("rrule_day", SlotRule.S200),
             ("days_offset", SlotRule.DAY_OFFSET),
@@ -670,7 +674,7 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType({
             ("description", SlotRule.TEXT2000),
             ("date", SlotRule.DATE),
             ("time", SlotRule.TIME),
-            ("recurrence", SlotRule.NULLABLE_S200),
+            ("recurrence", SlotRule.NULLABLE_RECURRENCE),
         ),
         at_least_one=("title", "description", "date", "time", "recurrence"),
         temporal_family="calendar",
@@ -687,7 +691,7 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType({
             ("due_date", SlotRule.DATE),
             ("time", SlotRule.TIME),
             ("timezone", SlotRule.OSLO),
-            ("recurrence", SlotRule.S200),
+            ("recurrence", SlotRule.RECURRENCE),
         ),
         temporal_family="reminder",
     ),
@@ -704,14 +708,13 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType({
             ("due_date", SlotRule.NULLABLE_DATE),
             ("time", SlotRule.NULLABLE_TIME),
             ("timezone", SlotRule.OSLO),
-            ("recurrence", SlotRule.NULLABLE_S200),
+            ("recurrence", SlotRule.NULLABLE_RECURRENCE),
         ),
         at_least_one=(
             "text",
             "due_at",
             "due_date",
             "time",
-            "timezone",
             "recurrence",
         ),
         temporal_family="reminder",
@@ -874,11 +877,11 @@ def _due_at_value(value: object) -> str:
     raw = _string(value, 64, "invalid_due_at")
     try:
         parsed = datetime.fromisoformat(raw)
-    except ValueError as exc:
+    except (OverflowError, ValueError) as exc:
         raise ActionValidationError("invalid_due_at") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
+    if parsed.tzinfo is None or parsed.utcoffset() is None or parsed.microsecond:
         raise ActionValidationError("invalid_due_at")
-    return parsed.isoformat()
+    return parsed.isoformat(timespec="seconds")
 
 
 def _validate_slot(name: str, value: object, rule: SlotRule) -> JsonValue:
@@ -918,6 +921,13 @@ def _validate_slot(name: str, value: object, rule: SlotRule) -> JsonValue:
         return None if value is None else _string(value, 200, f"invalid_slot:{name}")
     if rule is SlotRule.NULLABLE_TEXT2000:
         return None if value is None else _string(value, 2000, f"invalid_slot:{name}")
+    if rule is SlotRule.RECURRENCE:
+        result = _string(value, 20, f"invalid_slot:{name}")
+        if result not in {"daily", "weekly", "biweekly", "monthly", "yearly"}:
+            raise ActionValidationError(f"invalid_slot:{name}")
+        return result
+    if rule is SlotRule.NULLABLE_RECURRENCE:
+        return None if value is None else _validate_slot(name, value, SlotRule.RECURRENCE)
     if rule is SlotRule.OSLO:
         if value != "Europe/Oslo":
             raise ActionValidationError(f"invalid_slot:{name}")
@@ -973,25 +983,59 @@ def _validate_temporal(
     action: ActionName,
 ) -> None:
     date_key = "date" if family == "calendar" else "due_date"
+    has_date = date_key in slots
+    has_time = "time" in slots
+    has_due_at = "due_at" in slots
     date_value = slots.get(date_key)
     time_value = slots.get("time")
     due_at = slots.get("due_at")
-    if family == "calendar" and date_value is None and slots.get("days_offset") is not None:
+    if family == "calendar":
+        if date_value is None and slots.get("days_offset") is not None:
+            return
+        if action is ActionName.CALENDAR_EDIT and date_value is None:
+            return
+        if time_value is not None and date_value is None:
+            raise ActionValidationError("invalid_temporal")
         return
+
+    if action is ActionName.REMINDER_EDIT:
+        if not has_due_at and not has_date:
+            return
+        if has_due_at and due_at is None:
+            if (has_date and date_value is not None) or (
+                has_time and time_value is not None
+            ):
+                raise ActionValidationError("invalid_temporal")
+            return
+        if not has_due_at and has_date and date_value is None:
+            if has_time and time_value is not None:
+                raise ActionValidationError("invalid_temporal")
+            return
+        if has_due_at and due_at is not None and (
+            (has_date and date_value is None)
+            or (has_time and time_value is None)
+        ):
+            raise ActionValidationError("inconsistent_temporal")
+        if has_date and date_value is not None and has_time and time_value is None:
+            raise ActionValidationError("invalid_temporal")
+
     if (
-        family == "calendar"
-        and action is ActionName.CALENDAR_EDIT
+        action is ActionName.REMINDER_CREATE
+        and slots.get("recurrence") is not None
+        and due_at is None
         and date_value is None
     ):
-        # A time-only edit is canonical but its DST validation depends on the
-        # frozen target's existing date. PendingTargetResolver merges and
-        # validates that date/time before the confirmation is presented.
-        return
+        raise ActionValidationError("invalid_temporal")
     if time_value is not None and date_value is None and due_at is None:
         raise ActionValidationError("invalid_temporal")
-    if family != "reminder" or due_at is None:
+    if due_at is None:
         return
-    parsed = datetime.fromisoformat(str(due_at)).astimezone(ZoneInfo("Europe/Oslo"))
+    try:
+        parsed = datetime.fromisoformat(str(due_at)).astimezone(
+            ZoneInfo("Europe/Oslo")
+        )
+    except (OverflowError, ValueError) as exc:
+        raise ActionValidationError("invalid_due_at") from exc
     if date_value is not None and parsed.strftime("%d.%m.%Y") != date_value:
         raise ActionValidationError("inconsistent_temporal")
     if time_value is not None and parsed.strftime("%H:%M") != time_value:
@@ -1047,11 +1091,15 @@ def validate_action_object(raw: object) -> ActionProposal:
     except (TypeError, ValueError) as exc:
         raise ActionValidationError("unknown_action") from exc
     confidence = raw["confidence"]
+    try:
+        numeric_confidence = float(confidence)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ActionValidationError("invalid_confidence") from exc
     if (
         isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
-        or not math.isfinite(float(confidence))
-        or not 0.0 <= float(confidence) <= 1.0
+        or not math.isfinite(numeric_confidence)
+        or not 0.0 <= numeric_confidence <= 1.0
     ):
         raise ActionValidationError("invalid_confidence")
     reply = raw["reply"]
@@ -1068,7 +1116,7 @@ def validate_action_object(raw: object) -> ActionProposal:
     slots = _validate_slots(action, raw["slots"])
     return ActionProposal(
         action=action,
-        confidence=float(confidence),
+        confidence=numeric_confidence,
         slots=slots,
         reply=reply.strip(),
         clarification=clarification,
@@ -1175,6 +1223,7 @@ def _reject_json_constant(value: str):
 
 
 MAX_JSON_INTEGER_DIGITS = 128
+MAX_JSON_NESTING = 64
 
 
 def _parse_bounded_json_int(raw: str) -> int:
@@ -1183,8 +1232,32 @@ def _parse_bounded_json_int(raw: str) -> int:
     return int(raw)
 
 
+def _ensure_bounded_json_nesting(raw: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_JSON_NESTING:
+                raise ActionValidationError("json_too_deep")
+        elif char in "]}":
+            depth = max(0, depth - 1)
+
+
 def _strict_action_json_loads(line: str) -> object:
     try:
+        _ensure_bounded_json_nesting(line)
         return json.loads(
             line,
             object_pairs_hook=_unique_json_object,
@@ -1523,12 +1596,14 @@ _ATOM_FORMATS = (
     "DAY_OFFSET=integer -3650..3650 inclusive, bool forbidden; "
     "DATE=exact valid DD.MM.YYYY; "
     "TIME=exact zero-padded HH:MM; "
-    "DUE_AT=aware ISO-8601 datetime with offset; "
+    "DUE_AT=aware whole-second ISO-8601 datetime with offset; "
     "NULLABLE_DATE=DATE or JSON null; "
     "NULLABLE_TIME=TIME or JSON null; "
     "NULLABLE_DUE_AT=DUE_AT or JSON null; "
     "NULLABLE_S200=S200 or JSON null; "
     "NULLABLE_TEXT2000=TEXT2000 or JSON null; "
+    "RECURRENCE=literal daily, weekly, biweekly, monthly, or yearly; "
+    "NULLABLE_RECURRENCE=RECURRENCE or JSON null; "
     "OSLO=literal Europe/Oslo; "
     "EVENT_TYPE=literal event or task; "
     "MEDIA_TYPE=literal movie or series; "
@@ -1603,11 +1678,16 @@ def test_prompt_is_generated_from_every_action():
 
 
 def test_prompt_contains_machine_validation_rules_and_exact_shape():
+    atom_names = [
+        definition.split("=", 1)[0]
+        for definition in _ATOM_FORMATS.split("; ")
+    ]
     for rule in SlotRule:
-        assert _ATOM_FORMATS.count(f"{rule.value}=") == 1
-        assert ACTION_PROTOCOL_PROMPT.count(f"{rule.value}=") == 1
+        assert atom_names.count(rule.value) == 1
+    assert ACTION_PROTOCOL_PROMPT.count(_ATOM_FORMATS) == 1
     assert "DATE=exact valid DD.MM.YYYY" in ACTION_PROTOCOL_PROMPT
-    assert "DUE_AT=aware ISO-8601 datetime with offset" in ACTION_PROTOCOL_PROMPT
+    assert "DUE_AT=aware whole-second ISO-8601 datetime with offset" in ACTION_PROTOCOL_PROMPT
+    assert "RECURRENCE=literal daily, weekly, biweekly, monthly, or yearly" in ACTION_PROTOCOL_PROMPT
     assert "DAY_OFFSET=integer -3650..3650 inclusive" in ACTION_PROTOCOL_PROMPT
     assert "EVENT_TYPE=literal event or task" in ACTION_PROTOCOL_PROMPT
     assert "MEDIA_TYPE=literal movie or series" in ACTION_PROTOCOL_PROMPT
@@ -1658,6 +1738,8 @@ Expected: one commit containing no monitor or provider behavior.
 - Produces: one arbitrated IntentResult or None.
 - Never calls: MessageMonitor._handle_intent(), feature handlers, managers, send(), reply(), or persistence.
 
+**Task-2 review amendment (2026-07-15):** `proposal_for()` accepts and forwards `clarification`; exhaustive write rows use utterances containing live action/domain evidence rather than the neutral default. Exact payload assertions are post-`validate_intent_payload()` canonical payloads, so reminder `due_at` may project Oslo date/time/timezone. Poll vote always injects the sole active `poll_id`; poll edit/delete/close inject it when target is omitted and reject zero/multiple-active-poll context. Explicit poll targets remain explicit. Tests pin `_ACTION_EVIDENCE` and `_DOMAIN_EVIDENCE` coverage, every false `semantics.allows_mutation` state, and the bounded bridge-only temporal error codes.
+
 Before writing the bridge tests, create one shared offline test-support surface; later tasks extend this same file rather than copying helpers between test modules. `tests/nlu_test_support.py` exports exactly:
 
 ~~~python
@@ -1672,13 +1754,20 @@ def routing_context(*, mentions=()) -> RoutingContext:
     )
 
 
-def proposal_for(action, slots, *, confidence=0.91, reply="") -> ActionProposal:
+def proposal_for(
+    action,
+    slots,
+    *,
+    confidence=0.91,
+    reply="",
+    clarification=None,
+) -> ActionProposal:
     return ActionProposal(
         action=action,
         confidence=confidence,
         slots=MappingProxyType(dict(slots)),
         reply=reply,
-        clarification=None,
+        clarification=clarification,
     )
 
 
@@ -1749,10 +1838,10 @@ The exact mapping is:
 | REMINDER_DELETE | REMINDER_DELETE | {"reminder":{"action":"delete","number":number}} |
 | POLL_CREATE | POLL_CREATE | {"poll":copy(question,options)} |
 | POLL_LIST | POLL_LIST | {} |
-| POLL_VOTE | POLL_VOTE | {"vote":{"option":option}} |
-| POLL_EDIT | POLL_EDIT | {"poll_edit":copy(target,question,options)} |
-| POLL_DELETE | POLL_DELETE | {"poll_delete":copy(target)} |
-| POLL_CLOSE | POLL_CLOSE | {"poll_close":copy(target)} |
+| POLL_VOTE | POLL_VOTE | {"vote":{"option":option,"poll_id":sole_active_poll_id}}; otherwise reject |
+| POLL_EDIT | POLL_EDIT | {"poll_edit":copy(explicit target or sole active poll_id,question,options)} |
+| POLL_DELETE | POLL_DELETE | {"poll_delete":copy(explicit target or sole active poll_id)} |
+| POLL_CLOSE | POLL_CLOSE | {"poll_close":copy(explicit target or sole active poll_id)} |
 | BIRTHDAY_CREATE | BIRTHDAY_CREATE | {"birthday":{"action":"add","user_id":user_id,"display_name":resolved_name, plus copy(day,month,year)}} |
 | BIRTHDAY_LIST | BIRTHDAY_LIST | {"birthday":{"action":"list","scope":scope-or-all}} |
 | BIRTHDAY_EDIT | BIRTHDAY_EDIT | {"birthday":{"action":"edit","user_id":user_id, plus copy(day,month,year)}} |
