@@ -156,8 +156,7 @@ class WatchlistBirthdayEditTests(unittest.TestCase):
     def test_watchlist_index_must_be_scoped_to_command(self):
         parsed = parse_watchlist_command("fjern watchlist etter 2 dager")
 
-        self.assertEqual(parsed["action"], "remove")
-        self.assertIsNone(parsed["index"])
+        self.assertIsNone(parsed)
 
     def test_intent_routing_endre_bursdag_routes_correctly(self):
         route = IntentRouter(DummyMonitor()).route("endre bursdag Ola Nordmann 02.03.1991", guild_id=123)
