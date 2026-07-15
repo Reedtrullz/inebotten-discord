@@ -24,6 +24,7 @@ RESOLVER = TemporalResolver()
         ("today at 1pm", "14.07.2026", "13:00"),
         ("i morgen kl 8", "15.07.2026", "08:00"),
         ("imorgen kl 8", "15.07.2026", "08:00"),
+        ("i morra kl 8", "15.07.2026", "08:00"),
         ("imorra kl 8", "15.07.2026", "08:00"),
         ("imårra kl 8", "15.07.2026", "08:00"),
         ("i morgon klokka fjorten", "15.07.2026", "14:00"),

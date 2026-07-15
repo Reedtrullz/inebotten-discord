@@ -17,6 +17,7 @@ DATE_ALIASES = {
     "today": 0,
     "i morgen": 1,
     "imorgen": 1,
+    "i morra": 1,
     "imorra": 1,
     "imårra": 1,
     "i morgon": 1,
