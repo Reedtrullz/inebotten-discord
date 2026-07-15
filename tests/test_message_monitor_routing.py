@@ -5,6 +5,7 @@
 import unittest
 import asyncio
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from core.intent_router import BotIntent, IntentRouter
@@ -39,6 +40,7 @@ class FakeConversation:
     def __init__(self, wants_dashboard=False):
         self.wants_dashboard_value = wants_dashboard
         self.messages = []
+        self.threads = {}
 
     def should_show_dashboard(self, content, channel_id):
         return self.wants_dashboard_value, "test"
@@ -121,12 +123,16 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.search_manager = SimpleNamespace()
         monitor.browser_manager = SimpleNamespace(is_configured=lambda: False)
         monitor.detect_search_intent = lambda content: None
-        monitor.calendar = SimpleNamespace(get_upcoming=lambda guild_id, days=7: [])
+        monitor.calendar = SimpleNamespace(
+            get_upcoming=lambda guild_id, days=7, reference_time=None: []
+        )
         monitor.conv_gen = SimpleNamespace(generate_dashboard=lambda **kwargs: "dashboard")
 
         monitor.countdown = SimpleNamespace(parse_countdown_query=lambda content: None)
         monitor.poll = SimpleNamespace(
-            get_active_polls=lambda guild_id: [{"id": "poll1"}] if active_polls else []
+            get_active_polls=lambda guild_id, reference_time=None: (
+                [{"id": "poll1"}] if active_polls else []
+            )
         )
         monitor.reminders = SimpleNamespace(
             get_active_reminders=lambda guild_id: [{"id": "rem1"}] if active_reminders else []
@@ -185,6 +191,98 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(monitor.intent_stats[BotIntent.HELP.value]["count"], 1)
+
+    async def test_routing_passes_exact_message_scope_to_intent_router(self):
+        monitor = self.make_monitor()
+        routed = []
+
+        class RecordingRouter:
+            def route(
+                self,
+                content,
+                guild_id=None,
+                *,
+                channel_id=None,
+                user_id=None,
+            ):
+                routed.append(
+                    {
+                        "content": content,
+                        "guild_id": guild_id,
+                        "channel_id": channel_id,
+                        "user_id": user_id,
+                    }
+                )
+                return SimpleNamespace(
+                    intent=BotIntent.AI_CHAT,
+                    confidence=1.0,
+                    payload={},
+                    reason="recording_router",
+                )
+
+        async def noop_handle_intent(message, route):
+            return None
+
+        monitor.intent_router = RecordingRouter()
+        monitor._handle_intent = noop_handle_intent
+        message = RecordingMessage("@inebotten hjelp")
+        message.guild = SimpleNamespace(id=321)
+        message.channel = SimpleNamespace(id=654)
+        message.author = SimpleNamespace(id=987, name="Scoped user")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(
+            routed,
+            [
+                {
+                    "content": "hjelp",
+                    "guild_id": 321,
+                    "channel_id": 654,
+                    "user_id": 987,
+                }
+            ],
+        )
+
+    async def test_vague_reminder_followup_stays_in_channel_scope(self):
+        monitor = self.make_monitor()
+        base_time = datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc)
+        monitor.conversation.threads = {
+            100: [
+                {
+                    "user_id": 42,
+                    "username": "Inebotten",
+                    "content": "Skal jeg legge inn en påminnelse om å kjøpe melk?",
+                    "is_bot": True,
+                    "timestamp": base_time,
+                }
+            ],
+            200: [
+                {
+                    "user_id": 88,
+                    "username": "Inebotten",
+                    "content": "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
+                    "is_bot": True,
+                    "timestamp": base_time + timedelta(minutes=5),
+                }
+            ],
+        }
+        created = []
+
+        async def capture_reminder(message, payload):
+            created.append(payload["reminder"])
+
+        monitor.handlers["reminders"].handle_reminder_create = capture_reminder
+        message = RecordingMessage("@inebotten minn meg på det i morgen")
+        message.guild = SimpleNamespace(id=999)
+        message.channel = SimpleNamespace(id=100)
+        message.author = SimpleNamespace(id=7, name="Current user")
+
+        await monitor.handle_message(message)
+
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["text"], "Kjøpe melk")
+        self.assertNotIn("helsejournal", created[0]["text"].casefold())
 
     async def test_low_confidence_rejection_is_tracked(self):
         monitor = self.make_monitor()
@@ -457,7 +555,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_bare_calendar_title_delete_routes_to_calendar_handler(self):
         monitor = self.make_monitor()
         monitor.calendar = SimpleNamespace(
-            get_upcoming=lambda guild_id, days=365: [
+            get_upcoming=lambda guild_id, days=365, reference_time=None: [
                 {"title": "Send inn meldekort (Uke 25 - 26)", "date": "29.06.2026", "time": "12:00"}
             ]
         )

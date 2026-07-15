@@ -489,7 +489,12 @@ class MessageMonitor:
         guild_id = message.guild.id if message.guild else message.channel.id
         route = None
         try:
-            route = self.intent_router.route(message.content, guild_id=guild_id)
+            route = self.intent_router.route(
+                message.content,
+                guild_id=guild_id,
+                channel_id=message.channel.id,
+                user_id=message.author.id,
+            )
             self._last_routed_intent = route.intent
             print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
             await self._handle_intent(message, route)
