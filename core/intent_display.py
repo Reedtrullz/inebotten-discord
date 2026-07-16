@@ -16,6 +16,7 @@ INTENT_DISPLAY_LABELS = MappingProxyType(
         BotIntent.CALENDAR_DELETE: "slette kalenderoppføringen",
         BotIntent.CALENDAR_COMPLETE: "fullføre kalenderoppføringen",
         BotIntent.CALENDAR_EDIT: "endre kalenderoppføringen",
+        BotIntent.CALENDAR_FACT_CHECK: "faktasjekke kalenderoppføringen",
         BotIntent.CALENDAR_SEARCH: "søke i kalenderen",
         BotIntent.CALENDAR_CLEAR: "tømme hele kalenderen",
         BotIntent.CALENDAR_ITEM: "opprette kalenderoppføring",

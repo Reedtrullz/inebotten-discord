@@ -44,6 +44,8 @@ from core.action_authorization import (
     ClaimedActionAuthorization,
     issue_claimed_action_authorization,
 )
+from ai.calendar_fact_check_extractor import CalendarFactCheckExtractor
+from core.calendar_fact_check_store import CalendarFactCheckStore
 from core.intent_models import IntentResult, IntentRisk, IntentSource
 from core.intent_router import BotIntent, IntentRouter
 from core.intent_payloads import (
@@ -75,6 +77,7 @@ from core.pending_actions import (
     PendingActionStore,
     PendingBusyError,
     PendingKind,
+    PendingStatus,
 )
 from core.pending_targets import (
     FrozenPendingRoute,
@@ -98,6 +101,8 @@ from features.ai_action_handler import (
     PendingPresentationSpec,
     UnsupportedConfirmationSummary,
 )
+from features.calendar_fact_check_handler import CalendarFactCheckHandler
+from features.calendar_fact_check_manager import CalendarFactCheckManager
 from web_console.console_store import (
     get_console_store,
     sanitize_reminder_runtime,
@@ -531,6 +536,9 @@ class MessageMonitor:
             metrics=self.nlu_metrics,
             now_provider=clock_now,
         )
+        self.calendar_fact_checks = CalendarFactCheckStore(
+            now_provider=clock_now,
+        )
         self.pending_targets = PendingTargetResolver(
             self,
             coordinator=self.mutation_coordinator,
@@ -539,6 +547,7 @@ class MessageMonitor:
             self,
             metrics=self.nlu_metrics,
             pending_actions=self.pending_actions,
+            calendar_fact_checks=self.calendar_fact_checks,
             temporal_resolver=self.temporal_resolver,
             now_provider=clock_now,
         )
@@ -547,6 +556,14 @@ class MessageMonitor:
             dispatch_claimed=self._dispatch_claimed_intent,
             metrics=self.nlu_metrics,
             temporal_resolver=self.temporal_resolver,
+        )
+        self.calendar_fact_check_handler = CalendarFactCheckHandler(
+            self,
+            CalendarFactCheckManager(
+                search_manager=self.search_manager,
+                browser_manager=self.browser_manager,
+                extractor=CalendarFactCheckExtractor(self.hermes),
+            ),
         )
 
     def _track_background_task(self, coro, name):
@@ -1893,6 +1910,49 @@ class MessageMonitor:
                 reference_time=reference_time,
                 semantic_action_allowed=True,
             )
+
+        if route.intent is BotIntent.CALENDAR_FACT_CHECK:
+            payload = self._typed_inner_payload(route)
+            if not isinstance(payload, Mapping):
+                return await self._send_route_text(
+                    message,
+                    "Jeg kunne ikke lese faktasjekken trygt. Start på nytt.",
+                    route,
+                    "failed",
+                )
+            flow = await self.calendar_fact_check_handler.handle(
+                payload,
+                routing_context,
+                reference_time=reference_time,
+            )
+            if flow.proposed_route is None:
+                return await self._send_route_text(
+                    message,
+                    flow.text,
+                    route,
+                    "handled",
+                )
+            outcome = await self._process_route(
+                message,
+                utterance=utterance,
+                routing_context=routing_context,
+                route=flow.proposed_route,
+                reference_time=reference_time,
+                visible_text=flow.text,
+            )
+            pending = self.pending_actions.peek(routing_context.key)
+            if (
+                flow.clear_after_staged
+                and outcome.decision_outcome == "staged"
+                and outcome.dispatch.delivery_result is not None
+                and outcome.dispatch.delivery_result.state is DeliveryState.DELIVERED
+                and pending is not None
+                and pending.status is PendingStatus.READY
+                and len(pending.routes) == 1
+                and pending.routes[0].payload == flow.proposed_route.payload
+            ):
+                self.calendar_fact_checks.cancel(routing_context.key)
+            return outcome
 
         if route.requires_confirmation:
             try:

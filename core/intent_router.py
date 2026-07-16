@@ -14,6 +14,7 @@ from cal_system.natural_language_parser import NaturalParseResult
 from cal_system.temporal_resolver import OSLO, TemporalResolver
 from core.intent_arbitration import arbitrate_candidates
 from core.calendar_fact_check_recognition import parse_schedule_concern
+from core.calendar_fact_check_store import CalendarFactCheckStore
 
 from core.intent_models import (
     BotIntent,
@@ -865,6 +866,7 @@ class IntentRouter:
         monitor,
         metrics: NLUMetrics | None = None,
         pending_actions: PendingActionStore | None = None,
+        calendar_fact_checks: CalendarFactCheckStore | None = None,
         *,
         temporal_resolver: TemporalResolver | None = None,
         now_provider: Callable[[], datetime] | None = None,
@@ -872,6 +874,7 @@ class IntentRouter:
         self.monitor = monitor
         self.metrics = metrics if metrics is not None else NLUMetrics()
         self.pending_actions = pending_actions
+        self.calendar_fact_checks = calendar_fact_checks
         inherited_resolver = getattr(
             getattr(monitor, "nlp_parser", None),
             "temporal_resolver",
