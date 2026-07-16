@@ -6,6 +6,7 @@ from core.intent_models import BotIntent
 
 CONFIDENCE_THRESHOLDS = {
     BotIntent.CALENDAR_ITEM: 0.94,
+    BotIntent.CALENDAR_FACT_CHECK: 0.95,
     BotIntent.SEARCH: 0.70,
     BotIntent.PRICE: 0.85,
     BotIntent.HOROSCOPE: 0.85,

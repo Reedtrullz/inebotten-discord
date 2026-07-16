@@ -47,6 +47,13 @@ class CalendarEditPayload(TypedDict):
     changes: CalendarChanges
 
 
+class CalendarFactCheckPayload(TypedDict, total=False):
+    action: Literal["start", "select", "search", "cancel"]
+    field: Literal["schedule"]
+    target: str
+    number: int
+
+
 class ReminderCreatePayload(TypedDict):
     action: Literal["add"]
     text: str
@@ -157,6 +164,7 @@ PayloadValue: TypeAlias = (
     CalendarCreatePayload
     | CalendarListPayload
     | CalendarEditPayload
+    | CalendarFactCheckPayload
     | CalendarTargetPayload
     | ReminderCreatePayload
     | ReminderTargetPayload
@@ -1035,10 +1043,39 @@ def _calendar_list(
     return {"date": canonical_date}
 
 
+def _calendar_fact_check(
+    raw: Mapping[str, Any], *, source: IntentSource
+) -> dict[str, Any]:
+    del source
+    value = _mapping(raw, frozenset({"action", "field", "target", "number"}))
+    action = value.get("action")
+    allowed = {
+        "start": {"action", "field", "target"},
+        "select": {"action", "number"},
+        "search": {"action", "field", "target"},
+        "cancel": {"action"},
+    }
+    if not isinstance(action, str) or action not in allowed:
+        _fail("wrong_action")
+    if set(value) != allowed[action]:
+        _fail("unknown_key")
+    if action in {"start", "search"}:
+        if value.get("field") != "schedule":
+            _fail("wrong_action")
+        target = _string(value.get("target"))
+        if len(target) > 200:
+            _fail("value_too_long")
+        return {"action": action, "field": "schedule", "target": target}
+    if action == "select":
+        return {"action": "select", "number": _positive_int(value.get("number"))}
+    return {"action": "cancel"}
+
+
 INTENT_VALIDATORS: dict[BotIntent, Validator] = {
     BotIntent.CALENDAR_ITEM: _calendar_create,
     BotIntent.CALENDAR_LIST: _calendar_list,
     BotIntent.CALENDAR_EDIT: _calendar_edit,
+    BotIntent.CALENDAR_FACT_CHECK: _calendar_fact_check,
     BotIntent.CALENDAR_DELETE: lambda raw, *, source: _calendar_target(
         BotIntent.CALENDAR_DELETE, raw, source=source
     ),
@@ -1104,6 +1141,7 @@ ENVELOPE_KEYS: dict[BotIntent, str] = {
     BotIntent.CALENDAR_ITEM: "calendar_item",
     BotIntent.CALENDAR_LIST: "calendar_list",
     BotIntent.CALENDAR_EDIT: "calendar_edit",
+    BotIntent.CALENDAR_FACT_CHECK: "calendar_fact_check",
     BotIntent.CALENDAR_DELETE: "calendar_target",
     BotIntent.CALENDAR_COMPLETE: "calendar_target",
     BotIntent.CALENDAR_CLEAR: "calendar_target",

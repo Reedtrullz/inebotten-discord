@@ -731,6 +731,7 @@ _PAYLOAD_METRIC_FAMILY = {
             BotIntent.CALENDAR_ITEM,
             BotIntent.CALENDAR_LIST,
             BotIntent.CALENDAR_EDIT,
+            BotIntent.CALENDAR_FACT_CHECK,
             BotIntent.CALENDAR_DELETE,
             BotIntent.CALENDAR_COMPLETE,
             BotIntent.CALENDAR_CLEAR,

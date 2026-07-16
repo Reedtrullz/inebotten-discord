@@ -16,6 +16,7 @@ BASE_INTENT_RISK: dict[BotIntent, IntentRisk] = {
     BotIntent.CALENDAR_DELETE: IntentRisk.DESTRUCTIVE,
     BotIntent.CALENDAR_COMPLETE: IntentRisk.MUTATING,
     BotIntent.CALENDAR_EDIT: IntentRisk.MUTATING,
+    BotIntent.CALENDAR_FACT_CHECK: IntentRisk.READ_ONLY,
     BotIntent.CALENDAR_SEARCH: IntentRisk.READ_ONLY,
     BotIntent.CALENDAR_CLEAR: IntentRisk.DESTRUCTIVE,
     BotIntent.CALENDAR_ITEM: IntentRisk.ADDITIVE,

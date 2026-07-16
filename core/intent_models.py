@@ -18,6 +18,7 @@ class BotIntent(Enum):
     CALENDAR_DELETE = "calendar_delete"
     CALENDAR_COMPLETE = "calendar_complete"
     CALENDAR_EDIT = "calendar_edit"
+    CALENDAR_FACT_CHECK = "calendar_fact_check"
     CALENDAR_SEARCH = "calendar_search"
     CALENDAR_CLEAR = "calendar_clear"
     CALENDAR_ITEM = "calendar_item"
