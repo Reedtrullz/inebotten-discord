@@ -13,6 +13,7 @@ from urllib.parse import unquote
 from cal_system.natural_language_parser import NaturalParseResult
 from cal_system.temporal_resolver import OSLO, TemporalResolver
 from core.intent_arbitration import arbitrate_candidates
+from core.calendar_fact_check_recognition import parse_schedule_concern
 
 from core.intent_models import (
     BotIntent,
@@ -1700,6 +1701,33 @@ class IntentRouter:
         candidates: list[IntentCandidate] = []
         errors: list[str] = []
         rejections: list[CandidateRejection] = []
+
+        fact_check_target = parse_schedule_concern(
+            context.utterance,
+            context.semantics,
+        )
+        if fact_check_target is not None:
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CALENDAR_FACT_CHECK,
+                        0.99,
+                        {
+                            "calendar_fact_check": {
+                                "action": "start",
+                                "field": "schedule",
+                                "target": fact_check_target,
+                            }
+                        },
+                        "calendar_fact_check_concern",
+                    ),
+                    tier=30,
+                    order=118,
+                    specificity=3,
+                    action_terms=("schedule_concern",),
+                    domain_terms=("calendar",),
+                )
+            )
 
         local_search_gate = bool(
             _BOUNDED_BARE_SEARCH_REQUEST.fullmatch(control)
