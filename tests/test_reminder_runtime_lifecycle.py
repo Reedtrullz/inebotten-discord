@@ -10,9 +10,11 @@ import pytest
 
 import core.message_monitor as message_monitor_module
 from cal_system.reminder_manager import ReminderManager
-from core.dispatch_result import ExternalCommitState
+from core.dispatch_result import ExternalCommitState, ExternalMutationResult
 from core.message_monitor import MessageMonitor, SelfbotClient
 from core.mutation_coordinator import MutationCoordinator
+from web_console.console_store import ConsoleStore
+from web_console.state_collector import collect_bot_status
 
 
 OSLO = ZoneInfo("Europe/Oslo")
@@ -176,6 +178,104 @@ async def test_monitor_owns_one_identity_graph_and_setup_is_idempotent(
         assert monitor.user_memory.setup.await_count == 1
         assert checker.setup_calls == 1
         assert checker.start_calls == 1
+    finally:
+        await monitor.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("gcal_result", "calendar_status", "degraded_reasons"),
+    [
+        (
+            ExternalMutationResult(
+                False,
+                ExternalCommitState.UNKNOWN,
+                error_code="external_commit_unknown",
+            ),
+            "degraded",
+            ["calendar_sync_degraded"],
+        ),
+        (
+            ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="invalid_credentials",
+            ),
+            "degraded",
+            ["calendar_sync_degraded"],
+        ),
+        (
+            ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="credential_dependency_unavailable",
+            ),
+            "degraded",
+            ["calendar_sync_degraded"],
+        ),
+        (
+            ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="not_configured",
+            ),
+            "disabled",
+            [],
+        ),
+        (
+            ExternalMutationResult(
+                False,
+                ExternalCommitState.UNCHANGED,
+                error_code="integration_disabled",
+            ),
+            "disabled",
+            [],
+        ),
+    ],
+)
+async def test_gcal_startup_status_projects_without_phantom_task(
+    tmp_path,
+    monkeypatch,
+    gcal_result,
+    calendar_status,
+    degraded_reasons,
+):
+    monitor, *_ = _build_monitor(tmp_path, monkeypatch)
+    monitor.calendar.setup = AsyncMock()
+    monitor.user_memory.setup = AsyncMock()
+    monitor.calendar.ensure_gcal_configured = AsyncMock(
+        return_value=gcal_result
+    )
+    monitor.calendar.sync_from_gcal_result = AsyncMock()
+    monitor.client.user = SimpleNamespace(id=7)
+    monitor.client.guilds = []
+    monitor.client.start_time = None
+    monitor.client.latency = 0.1
+    monitor.client.is_ready = lambda: True
+    monitor.client.is_closed = lambda: False
+
+    try:
+        await monitor.setup()
+        await asyncio.sleep(0)
+
+        assert set(monitor._tasks_by_name) == {
+            "console-persistence",
+            "reminder-checker",
+        }
+        assert "initial-gcal-sync" not in monitor._tasks_by_name
+        assert "initial-gcal-sync" not in monitor.get_task_health()
+        monitor.calendar.sync_from_gcal_result.assert_not_awaited()
+        assert bool(monitor.calendar.last_gcal_sync_error) is (
+            calendar_status == "degraded"
+        )
+
+        status = collect_bot_status(
+            monitor,
+            store=ConsoleStore(data_dir=tmp_path / "console"),
+        )
+        assert status["tasks"]["status"] == "ok"
+        assert status["calendar_sync"]["status"] == calendar_status
+        assert status["degraded_reasons"] == degraded_reasons
     finally:
         await monitor.close()
 

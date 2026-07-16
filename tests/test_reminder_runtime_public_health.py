@@ -253,6 +253,33 @@ async def test_public_surfaces_drop_raw_task_items_and_error_content(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_isolated_calendar_failure_does_not_poison_task_health(monkeypatch):
+    monitor = _monitor(SimpleNamespace(get_health=lambda: PUBLIC_RUNTIME))
+    monitor.calendar = SimpleNamespace(
+        gcal_enabled=False,
+        last_gcal_sync_error="configuration_failed",
+    )
+    monitor.get_task_health = lambda: {
+        "console-persistence": {"state": "running"},
+        "reminder-checker": {"state": "running"},
+    }
+
+    bot, health, collected = await _collect_surfaces(monkeypatch, monitor)
+
+    assert bot["degraded_reasons"] == ["calendar_sync_degraded"]
+    assert bot["tasks"]["status"] == "ok"
+    assert health["status"] == "degraded"
+    assert health["tasks"]["status"] == "ok"
+    assert health["calendar_sync"] == {
+        "status": "degraded",
+        "gcal_enabled": False,
+        "error_code": "sync_failed",
+    }
+    assert collected["status"]["tasks"]["status"] == "ok"
+    assert "tasks_degraded" not in bot["degraded_reasons"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "raw_health",
     [

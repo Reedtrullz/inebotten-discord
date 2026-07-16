@@ -35,7 +35,6 @@ from core.dispatch_result import (
     DeliveryState,
     DispatchCancelled,
     DispatchOutcome,
-    ExternalCommitState,
     ManagerMutationCancelled,
     ManagerMutationError,
     MessageSendCancelled,
@@ -145,6 +144,10 @@ _RATE_SNAPSHOT_LIMIT = 1000
 _NO_TYPED_ENVELOPE = object()
 _TRUNCATION_MARKER = "\n\n[svaret er forkortet]"
 _SEARCH_CONTEXT_FIELDS = ("title", "href", "url", "body", "snippet")
+_GCAL_EXPECTED_DISABLED_ERRORS = frozenset(
+    {"integration_disabled", "not_configured"}
+)
+_GCAL_STARTUP_ERROR = "Google Calendar kunne ikke klargjøres ved oppstart."
 
 
 @dataclass(frozen=True, slots=True)
@@ -909,12 +912,16 @@ class MessageMonitor:
                 print("[MONITOR] Google Calendar integration enabled")
                 print("[MONITOR] Performing initial Google Calendar sync...")
                 reference_time = self.reminder_clock.now()
-            elif gcal_status.state is ExternalCommitState.UNKNOWN:
-                self._set_task_health(
-                    "initial-gcal-sync",
-                    state="degraded",
-                    last_error="external_commit_unknown",
-                )
+            elif (
+                getattr(gcal_status, "error_code", None)
+                not in _GCAL_EXPECTED_DISABLED_ERRORS
+            ):
+                # No sync task exists on this branch, so reporting a failed
+                # ``initial-gcal-sync`` task would poison task health forever.
+                # Keep the startup failure visible on the calendar component,
+                # where the readiness contract already permits isolated Google
+                # Calendar degradation without masking core bot failures.
+                self.calendar.last_gcal_sync_error = _GCAL_STARTUP_ERROR
 
             reminder_checker = getattr(self, "reminder_checker", None)
             if reminder_checker is not None:
