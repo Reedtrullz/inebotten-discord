@@ -262,16 +262,16 @@ def test_destructive_precision_never_credits_an_unlabeled_true_intent():
 def test_versioned_corpus_loads_the_declared_baseline():
     cases = load_cases(CORPUS_PATH)
 
-    assert len(cases) == 375
+    assert len(cases) == 386
     assert {case.locale for case in cases} == {"nb", "nn", "en"}
     assert {case.family for case in cases} == EVAL_FAMILIES
     assert cases[0].id == "nb-reminder-husk-mandag"
     assert (
         cases[-1].id
-        == "en-calendar-clear-possessive-natural"
+        == "nb-calendar-fact-check-unrelated-error-inert"
     )
-    assert sum(case.critical for case in cases) == 367
-    assert sum(case.family == "negative" for case in cases) == 75
+    assert sum(case.critical for case in cases) == 378
+    assert sum(case.family == "negative" for case in cases) == 83
 
 
 @pytest.mark.parametrize(
@@ -294,7 +294,7 @@ def test_sequenced_contract_invariant_has_no_context_free_exemptions():
     # probe when its declared ACTIVE_POLL fixture supplies the needed context;
     # the context-free ActionBridge grammar does not need to treat every bare
     # number as a second action.
-    assert len(EXECUTABLE_CASES) == 296
+    assert len(EXECUTABLE_CASES) == 299
 
 
 def test_production_evaluator_relative_dates_do_not_read_wall_clock(monkeypatch):
@@ -352,6 +352,11 @@ def test_local_eval_risk_partition_is_complete():
         "watchlist",
         "quote",
     } == target
+
+
+def test_calendar_fact_check_is_read_only_in_evaluator_partition():
+    assert "calendar_fact_check" in READ_ONLY
+    assert classify_eval_risk("calendar_fact_check", {}) == "read_only"
 
 
 @pytest.mark.parametrize(

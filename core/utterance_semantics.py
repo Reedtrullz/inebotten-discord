@@ -82,6 +82,13 @@ _SEQUENCED_ACTION_HEAD = (
     # context-aware collector probe for the complete supported surface.
     r"(?:hjelp|help|status)\b|"
     r"(?:møte|meeting)\b|"
+    r"(?:(?:jeg\s+er\s+ganske\s+sikker\s+på\s+at|jeg\s+tror|"
+    r"eg\s+trur|i\s+think)\s+)?"
+    r"(?:(?:the\s+)?(?:time|date)|tidspunktet|tidspunkt|tiden|datoen|dato)\s+"
+    r"(?:for|til|on)\s+[^,;.?!]{1,200}\s+"
+    r"(?:er\s+feil|er\s+galt|stemmer\s+ikke|ikke\s+stemmer|"
+    r"kan\s+være\s+feil|is\s+wrong|does(?:n't|\s+not)\s+look\s+right|"
+    r"might\s+be\s+wrong)|"
     r"(?:ikke\s+(?:glem|la\s+meg\s+glemme)|"
     r"ikkje\s+(?:gløym|lat\s+meg\s+gløyme)|"
     r"don['’]?t\s+(?:let\s+me\s+)?forget)\b|"

@@ -78,6 +78,7 @@ def test_choice_selection_and_invalid_choice_are_bounded(adapter):
         ("klokka 18", {"time": "18:00"}),
         ("27.07.2026", {"date": "27.07.2026"}),
         ("27.07.2026 klokka 18", {"date": "27.07.2026", "time": "18:00"}),
+        ("27. juli 2026 klokka 18", {"date": "27.07.2026", "time": "18:00"}),
     ),
 )
 def test_direct_temporal_reply_only_stages_requested_fields(adapter, text, changes):
@@ -114,6 +115,14 @@ def test_expired_recognized_continuation_gets_targeted_copy(adapter):
     adapter._clock.value += timedelta(minutes=10)
     result = adapter.route_help_example("sjekk")
     assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "calendar_fact_check_expired"
+
+
+def test_unrelated_turn_after_ttl_does_not_consume_expiry_notice(adapter):
+    begin(adapter)
+    adapter._clock.value += timedelta(minutes=10)
+    assert adapter.route_help_example("hvordan går det?").intent is BotIntent.AI_CHAT
+    result = adapter.route_help_example("sjekk")
     assert result.reason == "calendar_fact_check_expired"
 
 

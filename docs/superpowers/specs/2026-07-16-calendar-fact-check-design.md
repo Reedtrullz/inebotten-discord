@@ -1,5 +1,9 @@
 # Calendar Fact-Check Conversation Design
 
+> Implementation status (2026-07-16): implemented on
+> `codex/natural-language-actions`; local verification evidence is recorded in
+> `docs/superpowers/plans/2026-07-16-calendar-fact-check-implementation-checkpoint.md`.
+
 **Date:** 2026-07-16
 **Status:** Approved in conversation
 **Scope:** Natural-language concerns about a known calendar entry's scheduled date/time

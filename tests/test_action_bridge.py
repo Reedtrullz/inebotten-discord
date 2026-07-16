@@ -1511,7 +1511,7 @@ def test_bridge_sequence_exemption_is_only_context_dependent_bare_poll_vote():
     assert tuple((case.id, case.text) for case in exempt) == (
         ("nb-poll-vote", "1"),
     )
-    assert len(_CONTEXT_FREE_BRIDGE_SEQUENCE_CASES) == 295
+    assert len(_CONTEXT_FREE_BRIDGE_SEQUENCE_CASES) == 298
 
 
 def test_context_dependent_sequence_guard_cannot_be_reopened_by_model_bridge():

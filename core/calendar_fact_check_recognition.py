@@ -46,18 +46,28 @@ _ORDINALS = {
     "fjerde": 4, "fourth": 4,
     "femte": 5, "fifth": 5,
 }
+_MONTH_NAME = (
+    r"januar|februar|mars|april|mai|juni|juli|august|september|"
+    r"oktober|november|desember|january|february|march|april|may|"
+    r"june|july|august|september|october|november|december"
+)
+_DIRECT_DATE = (
+    rf"(?:\d{{1,2}}[./]\d{{1,2}}(?:[./]\d{{2,4}})?|"
+    rf"\d{{1,2}}\.?\s+(?:{_MONTH_NAME})(?:\s+\d{{4}})?|"
+    r"i\s+dag|i\s+morgen|i\s+morgon|today|tomorrow)"
+)
 _DIRECT_TEMPORAL = re.compile(
     r"(?:(?:riktig(?:e)?\s+)?(?:dato|tidspunkt|tid)(?:en|et)?\s+er\s+|"
     r"sett\s+den\s+til\s+|change\s+it\s+to\s+)?"
     r"(?:"
-    r"\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?"
+    rf"{_DIRECT_DATE}"
     r"(?:\s+(?:kl(?:okka|okken)?\.?|at)\s+[^\s]+(?:\s*(?:am|pm))?)?|"
     r"(?:kl(?:okka|okken)?\.?|at)\s+[^\s]+(?:\s*(?:am|pm))?|"
     r"\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm)"
     r")",
     re.IGNORECASE,
 )
-_DATE_CUE = re.compile(r"\d{1,2}[./]\d{1,2}|\b(?:today|tomorrow|i dag|i morgen)\b", re.I)
+_DATE_CUE = re.compile(rf"{_DIRECT_DATE}", re.I)
 _TIME_CUE = re.compile(r"\b(?:kl(?:okka|okken)?\.?|at)\b|\d{1,2}:\d{2}|\b\d{1,2}\s*(?:am|pm)\b", re.I)
 _AMBIGUOUS_CUED_HOUR = re.compile(
     r"(?:kl(?:okka|okken)?\.?|at)\s+(?:[1-9]|1[0-2])",
@@ -73,6 +83,18 @@ class FactCheckContinuation:
     clarification: str | None = None
 
 
+def looks_like_fact_check_continuation(text: str) -> bool:
+    normalized = " ".join(text.strip().split())
+    folded = normalized.casefold().strip(" .!?")
+    return bool(
+        _SEARCH_CONTINUATION.fullmatch(folded)
+        or _CANCEL_CONTINUATION.fullmatch(folded)
+        or folded.isdecimal()
+        or folded in _ORDINALS
+        or _DIRECT_TEMPORAL.fullmatch(normalized)
+    )
+
+
 def parse_fact_check_continuation(
     text: str,
     inquiry: CalendarFactCheckInquiry | None,
@@ -83,13 +105,7 @@ def parse_fact_check_continuation(
 ) -> FactCheckContinuation | None:
     normalized = " ".join(text.strip().split())
     folded = normalized.casefold().strip(" .!?")
-    recognized = bool(
-        _SEARCH_CONTINUATION.fullmatch(folded)
-        or _CANCEL_CONTINUATION.fullmatch(folded)
-        or folded.isdecimal()
-        or folded in _ORDINALS
-        or _DIRECT_TEMPORAL.fullmatch(normalized)
-    )
+    recognized = looks_like_fact_check_continuation(normalized)
     if expired and recognized:
         return FactCheckContinuation("expired")
     if inquiry is None:

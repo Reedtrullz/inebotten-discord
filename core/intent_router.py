@@ -14,6 +14,7 @@ from cal_system.natural_language_parser import NaturalParseResult
 from cal_system.temporal_resolver import OSLO, TemporalResolver
 from core.intent_arbitration import arbitrate_candidates
 from core.calendar_fact_check_recognition import (
+    looks_like_fact_check_continuation,
     parse_fact_check_continuation,
     parse_schedule_concern,
 )
@@ -1100,7 +1101,11 @@ class IntentRouter:
             user_id=user_id,
             routing_context=routing_context,
         )
-        if self.calendar_fact_checks is not None and fact_check_key is not None:
+        if (
+            self.calendar_fact_checks is not None
+            and fact_check_key is not None
+            and looks_like_fact_check_continuation(utterance.text)
+        ):
             lookup = self.calendar_fact_checks.lookup(fact_check_key)
             continuation = parse_fact_check_continuation(
                 utterance.text,
