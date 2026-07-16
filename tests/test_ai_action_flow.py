@@ -2152,6 +2152,54 @@ async def test_cancel_wrapper_disarms_pending_action_without_dispatch(monitor):
 
 
 @pytest.mark.asyncio
+async def test_calendar_fact_check_direct_reply_stages_then_cancels_without_edit(
+    monitor,
+):
+    row = {
+        **_calendar_row(),
+        "title": "Møte med Ola",
+        "date": "26.07.2026",
+        "time": "09:00",
+    }
+    monitor.calendar.snapshot_target_items = (
+        lambda *, reference_time: (dict(row),)
+    )
+    monitor.calendar.snapshot_pending_items = (
+        lambda *, reference_time: (dict(row),)
+    )
+    edit = AsyncMock(return_value=DispatchOutcome.success(mutated=True))
+    monitor.handlers["calendar"].handle_edit = edit
+
+    concern = RecordingMessage(
+        "@inebotten jeg tror tidspunktet for Møte med Ola er feil"
+    )
+    await monitor.handle_message(concern)
+    assert "Møte med Ola" in concern.replies[0]
+    assert "26.07.2026 kl. 09:00" in concern.replies[0]
+    edit.assert_not_awaited()
+
+    correction = RecordingMessage("@inebotten klokka 18")
+    await monitor.handle_message(correction)
+    pending = monitor.pending_actions.peek(conversation_key_from_message(correction))
+    assert pending is not None and pending.status is PendingStatus.READY
+    assert pending.routes[0].payload == {
+        "calendar_edit": {
+            "target": "calendar-1",
+            "changes": {"time": "18:00"},
+        }
+    }
+    assert monitor.calendar_fact_checks.lookup(
+        conversation_key_from_message(correction)
+    ).inquiry is None
+    edit.assert_not_awaited()
+
+    cancellation = RecordingMessage("@inebotten nei")
+    await monitor.handle_message(cancellation)
+    assert cancellation.replies == ["Avbrutt."]
+    edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_authorized_turn_normalizes_once_and_keeps_later_bot_mention(
     monitor,
     monkeypatch,

@@ -2005,11 +2005,24 @@ class MessageMonitor:
                     route,
                     "failed",
                 )
-            return await self._send_flow_outcome(
+            outcome = await self._send_flow_outcome(
                 message,
                 staged,
                 fallback_route=frozen.route,
             )
+            pending = self.pending_actions.peek(routing_context.key)
+            if (
+                route.reason == "calendar_fact_check_direct_edit"
+                and outcome.decision_outcome == "staged"
+                and outcome.dispatch.delivery_result is not None
+                and outcome.dispatch.delivery_result.state is DeliveryState.DELIVERED
+                and pending is not None
+                and pending.status is PendingStatus.READY
+                and len(pending.routes) == 1
+                and pending.routes[0].payload == route.payload
+            ):
+                self.calendar_fact_checks.cancel(routing_context.key)
+            return outcome
 
         if (
             route.intent is BotIntent.AI_CHAT

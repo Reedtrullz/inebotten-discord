@@ -27,6 +27,8 @@ from core.dispatch_result import (
     ManagerMutationError,
     MessageSendResult,
 )
+from core.calendar_fact_check_evidence import CalendarEvidenceDecision, CalendarEvidenceStatus
+from core.calendar_fact_check_store import CalendarFactCheckStore
 from core.intent_models import IntentResult, IntentSource
 from core.intent_payloads import PayloadValidationError
 from core.intent_router import BotIntent, IntentRouter
@@ -39,6 +41,7 @@ from core.pending_targets import PendingTargetResolver
 from core.send_receipt import DiscordSendCoordinator
 from core.utterance import normalize_utterance
 from features.ai_action_handler import AIActionHandler
+from features.calendar_fact_check_handler import CalendarFactCheckHandler
 from features.quote_manager import parse_quote_command
 from features.watchlist_manager import parse_watchlist_command
 from memory.conversation_context import ConversationContext
@@ -277,6 +280,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor.calendar = SimpleNamespace(
             get_upcoming=lambda guild_id, days=7, reference_time=None: [],
             snapshot_pending_items=lambda *, reference_time: (),
+            snapshot_target_items=lambda *, reference_time: (),
             snapshot_all_item_ids=lambda: (),
         )
         monitor.conv_gen = SimpleNamespace(generate_dashboard=lambda **kwargs: "dashboard")
@@ -370,6 +374,9 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             metrics=monitor.nlu_metrics,
             now_provider=clock_now,
         )
+        monitor.calendar_fact_checks = CalendarFactCheckStore(
+            now_provider=clock_now,
+        )
         monitor.pending_targets = PendingTargetResolver(
             monitor,
             coordinator=monitor.mutation_coordinator,
@@ -378,6 +385,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             monitor,
             metrics=monitor.nlu_metrics,
             pending_actions=monitor.pending_actions,
+            calendar_fact_checks=monitor.calendar_fact_checks,
             temporal_resolver=monitor.temporal_resolver,
             now_provider=clock_now,
         )
@@ -386,6 +394,14 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
             dispatch_claimed=monitor._dispatch_claimed_intent,
             metrics=monitor.nlu_metrics,
             temporal_resolver=monitor.temporal_resolver,
+        )
+        class UnavailableFactCheckManager:
+            async def investigate(self, _target):
+                return CalendarEvidenceDecision(CalendarEvidenceStatus.UNAVAILABLE)
+
+        monitor.calendar_fact_check_handler = CalendarFactCheckHandler(
+            monitor,
+            UnavailableFactCheckManager(),
         )
         monitor.recording_polls = polls
         return monitor

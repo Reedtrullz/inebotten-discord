@@ -13,7 +13,10 @@ from urllib.parse import unquote
 from cal_system.natural_language_parser import NaturalParseResult
 from cal_system.temporal_resolver import OSLO, TemporalResolver
 from core.intent_arbitration import arbitrate_candidates
-from core.calendar_fact_check_recognition import parse_schedule_concern
+from core.calendar_fact_check_recognition import (
+    parse_fact_check_continuation,
+    parse_schedule_concern,
+)
 from core.calendar_fact_check_store import CalendarFactCheckStore
 
 from core.intent_models import (
@@ -48,6 +51,7 @@ from core.pending_actions import (
     PendingActionStore,
     PendingResolutionKind,
 )
+from core.pending_targets import PendingTargetError
 from core.utterance import NormalizedUtterance, normalize_utterance
 from core.utterance_semantics import (
     MAX_SEQUENCE_CLAUSE_PROBES,
@@ -1089,6 +1093,85 @@ class IntentRouter:
         )
         if pending is not None:
             return RoutedIntent(pending)
+
+        fact_check_key = _pending_key(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            routing_context=routing_context,
+        )
+        if self.calendar_fact_checks is not None and fact_check_key is not None:
+            lookup = self.calendar_fact_checks.lookup(fact_check_key)
+            continuation = parse_fact_check_continuation(
+                utterance.text,
+                lookup.inquiry,
+                expired=lookup.expired,
+                temporal_resolver=self.temporal_resolver,
+                reference_time=captured,
+            )
+            if continuation is not None:
+                if continuation.kind == "expired":
+                    return RoutedIntent(IntentResult(
+                        BotIntent.CLARIFY,
+                        1.0,
+                        {"clarification": "Faktasjekken er utløpt. Start på nytt."},
+                        "calendar_fact_check_expired",
+                    ))
+                if continuation.clarification is not None:
+                    return RoutedIntent(IntentResult(
+                        BotIntent.CLARIFY,
+                        1.0,
+                        {"clarification": continuation.clarification},
+                        "calendar_fact_check_clarify",
+                    ))
+                if continuation.kind == "direct":
+                    assert lookup.inquiry is not None
+                    target = lookup.inquiry.targets[0]
+                    try:
+                        self.monitor.pending_targets.revalidate_calendar_fact_check_target(
+                            target,
+                            reference_time=captured,
+                        )
+                    except PendingTargetError:
+                        self.calendar_fact_checks.cancel(fact_check_key)
+                        return RoutedIntent(IntentResult(
+                            BotIntent.CLARIFY,
+                            1.0,
+                            {"clarification": "Kalenderoppføringen har endret seg; start på nytt."},
+                            "calendar_fact_check_stale",
+                        ))
+                    assert continuation.changes is not None
+                    return RoutedIntent(IntentResult(
+                        BotIntent.CALENDAR_EDIT,
+                        1.0,
+                        {"calendar_edit": {
+                            "target": target.stable_id,
+                            "changes": dict(continuation.changes),
+                        }},
+                        "calendar_fact_check_direct_edit",
+                        risk=IntentRisk.MUTATING,
+                        requires_confirmation=True,
+                    ))
+                payload = (
+                    {"action": "select", "number": continuation.number}
+                    if continuation.kind == "select"
+                    else (
+                        {"action": "cancel"}
+                        if continuation.kind == "cancel"
+                        else {
+                            "action": "search",
+                            "field": "schedule",
+                            "target": lookup.inquiry.targets[0].stable_id,
+                        }
+                    )
+                )
+                return RoutedIntent(IntentResult(
+                    BotIntent.CALENDAR_FACT_CHECK,
+                    1.0,
+                    {"calendar_fact_check": payload},
+                    f"calendar_fact_check_{continuation.kind}",
+                    risk=IntentRisk.READ_ONLY,
+                ))
 
         candidates: list[IntentCandidate] = []
         parser_errors: list[str] = []
