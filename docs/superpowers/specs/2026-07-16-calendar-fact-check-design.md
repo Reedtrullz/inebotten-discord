@@ -81,6 +81,12 @@ When no trustworthy result exists:
 
 > Jeg fant ikke et tidspunkt jeg kan verifisere godt nok. Vet du hva det skal være?
 
+When trustworthy evidence matches the stored schedule:
+
+> NFF oppgir også **26.07.2026 kl. 09:00**. Jeg fant derfor ingen kildebasert endring å foreslå.
+
+This outcome is read-only and does not stage a no-op edit.
+
 When search or AI-assisted extraction fails:
 
 > Jeg fikk ikke undersøkt tidspunktet akkurat nå. Kalenderen er ikke endret.
@@ -113,7 +119,7 @@ Add a read-only `CALENDAR_FACT_CHECK` intent. Its payload has a small typed enve
 
 ```text
 calendar_fact_check:
-  action: start | select | search
+  action: start | select | search | cancel
   field: schedule
   target: string or stable calendar id, for start/search
   number: positive integer, for select
@@ -121,7 +127,8 @@ calendar_fact_check:
 
 Payload validation enforces the action-specific fields: `start` requires a
 target, `select` requires only a number, and `search` requires the stable target
-from the active inquiry. Extra fields fail closed.
+from the active inquiry. `cancel` requires no fields beyond the action. Extra
+fields fail closed.
 
 The deterministic recognizer accepts assertion/concern frames only when all of the following are true:
 
@@ -181,7 +188,7 @@ The router checks the exact conversation's unexpired inquiry after existing conf
 
 ### Search and evidence processing
 
-The fact-check handler reuses `SearchManager.search()` with at most three results and, when needed, `BrowserManager.fetch_page_content()` for at most those three normalized result URLs under its existing URL-safety policy and content limits. The query includes the exact inert event title, stored year, and stored date as a search hint rather than a required truth, because the date itself may be wrong. No user memory, conversation history, Discord id, credentials, cookies, or unrelated calendar rows are sent.
+The fact-check handler reuses the existing `SearchManager` fallback logic through a new backward-compatible `search_with_status()` result with at most three matches; the existing `search()` remains a list-returning wrapper for all current callers. The structured result distinguishes providers being unavailable from providers completing successfully with no matches. When needed, the handler calls `BrowserManager.fetch_page_content()` for at most those three result URLs after the existing `sanitize_url()` SSRF guard accepts them. Page content is optional: the current browser adapter may return no extracted content, in which case bounded search snippets are the only evidence and must be sufficient on their own. The query includes the exact inert event title, stored year, and stored date as a search hint rather than a required truth, because the date itself may be wrong. No user memory, conversation history, Discord id, credentials, cookies, or unrelated calendar rows are sent.
 
 Search results are normalized to the existing title, URL, body, provider, fetched time, publication time, freshness, and deep-content fields. A dedicated strict extraction parser accepts zero to three source findings. Each finding contains only:
 
@@ -219,6 +226,7 @@ Execution still requires an explicit confirmation. At confirmation time, existin
 - Browser fetch unavailable: use bounded search snippets if sufficient; otherwise return insufficient evidence.
 - AI extraction unavailable or invalid: targeted investigation failure; no mutation.
 - Conflicting or weak evidence: present the conflict/limitation with source links; no edit proposal.
+- Supported evidence matching the current schedule: report that the checked source agrees; no no-op edit proposal.
 - Target changed during investigation: discard the proposal and ask the user to start again.
 - Discord send failure: do not leave a newly presented edit confirmable unless the existing delivery-settlement rules mark the confirmation fully delivered.
 
