@@ -205,6 +205,53 @@ _PAYLOAD_ERROR_CODES = frozenset(
     }
 )
 _RECURRENCES = frozenset({"daily", "weekly", "biweekly", "monthly", "yearly"})
+_RECURRENCE_DAY_CODES = {
+    "mo": "MO",
+    "mon": "MO",
+    "monday": "MO",
+    "mandag": "MO",
+    "man": "MO",
+    "mån": "MO",
+    "måndag": "MO",
+    "tu": "TU",
+    "tue": "TU",
+    "tues": "TU",
+    "tuesday": "TU",
+    "tir": "TU",
+    "tirsdag": "TU",
+    "tysdag": "TU",
+    "we": "WE",
+    "wed": "WE",
+    "weds": "WE",
+    "wednesday": "WE",
+    "ons": "WE",
+    "onsdag": "WE",
+    "th": "TH",
+    "thu": "TH",
+    "thur": "TH",
+    "thurs": "TH",
+    "thursday": "TH",
+    "tor": "TH",
+    "torsdag": "TH",
+    "fr": "FR",
+    "fri": "FR",
+    "friday": "FR",
+    "fre": "FR",
+    "fredag": "FR",
+    "sa": "SA",
+    "sat": "SA",
+    "saturday": "SA",
+    "lør": "SA",
+    "lørdag": "SA",
+    "lau": "SA",
+    "laurdag": "SA",
+    "su": "SU",
+    "sun": "SU",
+    "sunday": "SU",
+    "søn": "SU",
+    "søndag": "SU",
+    "sundag": "SU",
+}
 _MISSING = object()
 _ABSOLUTE_DATE = re.compile(
     r"\s*(?P<day>\d{1,2})[./](?P<month>\d{1,2})"
@@ -268,6 +315,21 @@ def _recurrence(value: object, *, allow_none: bool) -> str | None:
     if normalized not in _RECURRENCES:
         _fail("invalid_recurrence")
     return normalized
+
+
+def canonical_recurrence_day_code(value: object) -> str | None:
+    """Return one weekday code for known Norwegian/English aliases."""
+
+    if not isinstance(value, str):
+        return None
+    return _RECURRENCE_DAY_CODES.get(value.strip().casefold())
+
+
+def calendar_date_weekday_code(value: str) -> str:
+    """Return the canonical weekday code for one validated calendar date."""
+
+    weekday = datetime.strptime(value, "%d.%m.%Y").weekday()
+    return ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[weekday]
 
 
 def _reference_for_date(value: object) -> datetime:
@@ -454,9 +516,32 @@ def _calendar_create(raw: Mapping[str, Any], *, source: IntentSource) -> dict[st
         result["type"] = value["type"]
     if "recurrence" in value:
         result["recurrence"] = _recurrence(value["recurrence"], allow_none=False)
-    for key in ("recurrence_day", "rrule_day", "description"):
-        if key in value:
-            result[key] = _string(value[key])
+    recurrence_codes: dict[str, str] = {}
+    for key in ("recurrence_day", "rrule_day"):
+        if key not in value:
+            continue
+        day = _string(value[key])
+        code = canonical_recurrence_day_code(day)
+        if code is None:
+            _fail("invalid_recurrence")
+        recurrence_codes[key] = code
+        result[key] = code if key == "rrule_day" else day
+    if recurrence_codes and result.get("recurrence") not in {
+        "weekly",
+        "biweekly",
+    }:
+        _fail("invalid_recurrence")
+    if len(set(recurrence_codes.values())) > 1:
+        _fail("invalid_recurrence")
+    if recurrence_codes and "date" in result:
+        if calendar_date_weekday_code(result["date"]) != next(
+            iter(recurrence_codes.values())
+        ):
+            _fail("invalid_recurrence")
+    if "recurrence_day" in recurrence_codes:
+        result["rrule_day"] = recurrence_codes["recurrence_day"]
+    if "description" in value:
+        result["description"] = _string(value["description"])
     return result
 
 

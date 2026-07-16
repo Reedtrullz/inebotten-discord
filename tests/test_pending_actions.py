@@ -225,8 +225,14 @@ def test_target_guard_sanitizes_discord_and_link_surface():
         original_position=1,
         fingerprint=None,
         revision=" revision-a ",
-        label="  <@123> **Ringe** http://example.invalid\n ",
-        display_detail="<@&456> _detalj_ https://example.invalid/path",
+        label="  <@123> <t:123:R> **Ringe** http://example.invalid\n ",
+        display_detail=(
+            "<@&456> </foo:123> <:x:123> _detalj_ "
+            "https://example.invalid/path"
+        ),
+        display_fields=(
+            (" <#789> dato ", "https://example.invalid <@123>\n09:00"),
+        ),
     )
 
     assert guard.stable_id == "reminder-a"
@@ -237,7 +243,13 @@ def test_target_guard_sanitizes_discord_and_link_surface():
     assert "\n" not in guard.label
     assert len(guard.label) <= 200
     assert "<@" not in guard.display_detail
+    assert "<t:" not in guard.label
+    assert "</foo:" not in guard.display_detail
+    assert "<:x:" not in guard.display_detail
     assert "https://" not in guard.display_detail
+    assert guard.display_fields == (
+        ("‹#789› dato", "https：//example.invalid ‹＠123› 09:00"),
+    )
 
 
 def test_target_guard_rejects_invalid_position_and_oversize_detail():
@@ -259,7 +271,17 @@ def test_target_guard_rejects_invalid_position_and_oversize_detail():
             None,
             "revision",
             "label",
-            "x" * 4_001,
+            "x" * 8_001,
+        )
+    with pytest.raises(ValueError, match="invalid_display_fields"):
+        PendingTargetGuard(
+            PendingTargetFamily.REMINDER,
+            "id",
+            1,
+            None,
+            "revision",
+            "label",
+            display_fields=(("dato", 123),),
         )
 
 

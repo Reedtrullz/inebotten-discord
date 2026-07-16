@@ -13,7 +13,7 @@ from cal_system.temporal_resolver import TemporalResolver
 from core.action_bridge import ActionBridge
 from core.dispatch_result import DeliveryState, DispatchOutcome, MessageSendResult
 from core.intent_models import BotIntent, IntentResult, IntentRisk, IntentSource
-from core.intent_payloads import PayloadValidationError
+from core.intent_payloads import PayloadValidationError, validate_intent_payload
 from core.message_context import conversation_key_from_message
 from core.nlu_metrics import NLUMetrics
 from core.pending_actions import (
@@ -29,6 +29,9 @@ from features.ai_action_handler import (
     ModelDisposition,
     UnsupportedConfirmationSummary,
     format_choice_label,
+    format_confirmation_card_details,
+    format_confirmation_card_heading,
+    format_confirmation_card_messages,
     format_confirmation_details,
     format_confirmation_messages,
     neutralize_confirmation_value,
@@ -81,6 +84,8 @@ def guard(
     family: PendingTargetFamily,
     label: str,
     detail: str | None = None,
+    *,
+    display_fields: tuple[tuple[str, str], ...] = (),
 ) -> PendingTargetGuard:
     return PendingTargetGuard(
         family=family,
@@ -90,6 +95,7 @@ def guard(
         revision="revision-a",
         label=label,
         display_detail=detail or label,
+        display_fields=display_fields,
     )
 
 
@@ -108,7 +114,15 @@ def destructive_calendar_guard() -> PendingTargetGuard:
     return guard(
         PendingTargetFamily.CALENDAR,
         "Møte med Ola",
-        "Møte med Ola 15.07.2026 kl. 14:00",
+        "tittel: Møte med Ola; dato: 15.07.2026; tid: 14:00; "
+        "type: event; status: ikke fullført",
+        display_fields=(
+            ("tittel", "Møte med Ola"),
+            ("dato", "15.07.2026"),
+            ("tid", "14:00"),
+            ("type", "event"),
+            ("status", "ikke fullført"),
+        ),
     )
 
 
@@ -921,7 +935,7 @@ async def test_calendar_auth_two_stage_confirmation_hides_code_and_dispatches_on
     )
     initiation_flow = action_handler.prepare_confirmation(message, initiation)
     assert initiation_flow.presentation is not None
-    assert "starte kalenderautorisering" in "\n".join(
+    assert "koble til Google Kalender" in "\n".join(
         initiation_flow.presentation.messages
     )
     assert action_handler.store.peek(key) is None
@@ -949,7 +963,8 @@ async def test_calendar_auth_two_stage_confirmation_hides_code_and_dispatches_on
     exchange_flow = action_handler.prepare_confirmation(message, exchange)
     assert exchange_flow.presentation is not None
     preview = "\n".join(exchange_flow.presentation.messages)
-    assert "sende inn den oppgitte kalenderkoden" in preview
+    assert "kalenderkoden" in preview
+    assert "Selve koden vises ikke" in preview
     assert canary not in preview
     assert "SECRET_STATE_456" not in preview
     assert canary not in repr(action_handler.metrics.snapshot())
@@ -1022,11 +1037,53 @@ def confirmation_case(
 
 
 _CALENDAR_GUARD = destructive_calendar_guard()
-_REMINDER_GUARD = guard(PendingTargetFamily.REMINDER, "Ringe legen")
-_POLL_GUARD = guard(PendingTargetFamily.POLL, "Mat?", "Mat? — Taco")
-_WATCH_GUARD = guard(PendingTargetFamily.WATCHLIST, "The Bear")
-_QUOTE_GUARD = guard(PendingTargetFamily.QUOTE, "Et sitat")
-_BIRTHDAY_GUARD = guard(PendingTargetFamily.BIRTHDAY, "Ola Nordmann")
+_REMINDER_GUARD = guard(
+    PendingTargetFamily.REMINDER,
+    "Ringe legen",
+    display_fields=(
+        ("tekst", "Ringe legen"),
+        ("dato", "15.07.2026"),
+        ("tid", "09:00"),
+        ("status", "ikke fullført"),
+    ),
+)
+_POLL_GUARD = guard(
+    PendingTargetFamily.POLL,
+    "Mat?",
+    "Mat? — Taco",
+    display_fields=(
+        ("spørsmål", "Mat?"),
+        ("alternativer", "1. Pizza; 2. Taco"),
+    ),
+)
+_POLL_VOTE_GUARD = guard(
+    PendingTargetFamily.POLL,
+    "Mat?",
+    "Mat? — Taco",
+    display_fields=(("spørsmål", "Mat?"), ("valg", "Taco")),
+)
+_WATCH_GUARD = guard(
+    PendingTargetFamily.WATCHLIST,
+    "The Bear",
+    display_fields=(
+        ("tittel", "The Bear"),
+        ("type", "series"),
+        ("sjanger", "drama"),
+    ),
+)
+_QUOTE_GUARD = guard(
+    PendingTargetFamily.QUOTE,
+    "Et sitat",
+    display_fields=(("tekst", "Et sitat"), ("forfatter", "Ola")),
+)
+_BIRTHDAY_GUARD = guard(
+    PendingTargetFamily.BIRTHDAY,
+    "Ola Nordmann",
+    display_fields=(
+        ("person", "Ola Nordmann"),
+        ("dato", "02.03.1991"),
+    ),
+)
 
 
 CONFIRMATION_CASES = (
@@ -1055,7 +1112,9 @@ CONFIRMATION_CASES = (
             }
         },
         "endre kalenderoppføringen",
-        "Møte med Ola 15.07.2026 kl. 14:00",
+        "Møte med Ola",
+        "15.07.2026",
+        "14:00",
         "Tannlege",
         "10:00",
         target_guard=_CALENDAR_GUARD,
@@ -1089,7 +1148,7 @@ CONFIRMATION_CASES = (
     confirmation_case(
         BotIntent.CALENDAR_AUTH,
         {"action": "start"},
-        "starte kalenderautorisering",
+        "koble til Google Kalender",
     ),
     confirmation_case(
         BotIntent.REMINDER_CREATE,
@@ -1149,14 +1208,14 @@ CONFIRMATION_CASES = (
         BotIntent.POLL_VOTE,
         {"vote": {"poll_id": "poll-a", "option": 2}},
         "stemme i avstemningen",
-        "Mat? — Taco",
-        target_guard=_POLL_GUARD,
+        "Taco",
+        target_guard=_POLL_VOTE_GUARD,
     ),
     confirmation_case(
         BotIntent.POLL_EDIT,
         {"poll_edit": {"poll_id": "poll-a", "question": "Ny mat?"}},
         "endre avstemningen",
-        "Mat? — Taco",
+        "Taco",
         "Ny mat?",
         target_guard=_POLL_GUARD,
     ),
@@ -1164,14 +1223,14 @@ CONFIRMATION_CASES = (
         BotIntent.POLL_DELETE,
         {"poll_delete": {"poll_id": "poll-a"}},
         "slette avstemningen",
-        "Mat? — Taco",
+        "Taco",
         target_guard=_POLL_GUARD,
     ),
     confirmation_case(
         BotIntent.POLL_CLOSE,
         {"poll_close": {"poll_id": "poll-a"}},
         "lukke avstemningen",
-        "Mat? — Taco",
+        "Taco",
         target_guard=_POLL_GUARD,
     ),
     confirmation_case(
@@ -1273,7 +1332,7 @@ CONFIRMATION_CASES = (
     confirmation_case(
         BotIntent.MEMORY_DELETE,
         {"memory": {"content": "HEMMELIG_INNHOLD", "confirmed": True}},
-        "slette lagret brukerminne",
+        "slette det jeg husker om deg",
     ),
     confirmation_case(
         BotIntent.SET_LOCATION,
@@ -1284,7 +1343,7 @@ CONFIRMATION_CASES = (
     confirmation_case(
         BotIntent.PROFILE,
         {"profile": {"action": "status", "value": "dnd"}},
-        "endre profilstatusen",
+        "endre statusen min",
         "dnd",
     ),
 )
@@ -1338,8 +1397,576 @@ def test_confirmation_details_cover_every_supported_write_proposition(
         assert "HEMMELIG_INNHOLD" not in details
 
 
+@pytest.mark.parametrize("route,target_guard,expected", CONFIRMATION_CASES)
+def test_confirmation_cards_cover_every_supported_write_proposition(
+    route,
+    target_guard,
+    expected,
+):
+    card = "\n".join(
+        (
+            format_confirmation_card_heading(route),
+            format_confirmation_card_details(route, target_guard),
+        )
+    )
+    aliases = {
+        "weekly": "Hver uke",
+        "series": "Serie",
+        "dnd": "Ikke forstyrr",
+    }
+    for value in expected:
+        assert aliases.get(value, value) in card
+    if route.intent is BotIntent.MEMORY_DELETE:
+        assert "HEMMELIG_INNHOLD" not in card
+
+
+def test_calendar_delete_confirmation_is_a_clean_action_card():
+    route = destructive_calendar_route()
+    target = destructive_calendar_guard()
+    details = format_confirmation_card_details(route, target)
+    messages = format_confirmation_card_messages(
+        heading="🗑️ **Skal jeg slette kalenderoppføringen?**",
+        details=details,
+        instruction=(
+            "Svar `@inebotten ja` for å bekrefte, eller "
+            "`@inebotten nei` for å avbryte."
+        ),
+        optional_prefix="",
+        max_messages=5,
+        max_message_length=2000,
+    )
+
+    assert messages == (
+        "🗑️ **Skal jeg slette kalenderoppføringen?**\n\n"
+        "**Møte med Ola**\n"
+        "📅 15.07.2026 kl. 14:00\n"
+        "**Type:** Avtale\n"
+        "**Status:** Ikke fullført\n\n"
+        "Svar `@inebotten ja` for å bekrefte, eller "
+        "`@inebotten nei` for å avbryte.",
+    )
+    assert "Bekreftelsesdetaljer" not in messages[0]
+    assert "1/1" not in messages[0]
+    assert "mål:" not in messages[0]
+
+
+def test_default_model_staging_copy_is_not_repeated_before_action_card(
+    action_handler,
+    message,
+):
+    flow = action_handler.prepare_confirmation(
+        message,
+        semantic_reminder_route(),
+        prefix="Jeg har forberedt handlingen, men ikke utført den.",
+    )
+
+    assert flow.presentation is not None
+    preview = "\n".join(flow.presentation.messages)
+    assert "Jeg har forberedt handlingen" not in preview
+    assert "Skal jeg opprette påminnelsen?" in preview
+
+
+@pytest.mark.parametrize(
+    ("intent", "payload", "expected"),
+    (
+        (
+            BotIntent.CALENDAR_ITEM,
+            {"calendar_item": {"title": "Møte", "date": "17.07.2026"}},
+            "📅 **Skal jeg opprette kalenderoppføringen?**",
+        ),
+        (
+            BotIntent.REMINDER_CREATE,
+            {"reminder": {"action": "add", "text": "Ring legen"}},
+            "🔔 **Skal jeg opprette påminnelsen?**",
+        ),
+        (
+            BotIntent.POLL_CREATE,
+            {"poll": {"question": "Mat?", "options": ["Pizza", "Taco"]}},
+            "🗳️ **Skal jeg opprette avstemningen?**",
+        ),
+        (
+            BotIntent.WATCHLIST,
+            {"watchlist": {"action": "add", "title": "The Bear"}},
+            "🎬 **Skal jeg legge til i se-listen?**",
+        ),
+        (
+            BotIntent.QUOTE,
+            {"quote": {"action": "save", "text": "Et sitat"}},
+            "📝 **Skal jeg lagre sitatet?**",
+        ),
+        (
+            BotIntent.BIRTHDAY_CREATE,
+            {
+                "birthday": {
+                    "action": "add",
+                    "user_id": 7,
+                    "display_name": "Ola",
+                    "day": 2,
+                    "month": 3,
+                }
+            },
+            "🎂 **Skal jeg lagre bursdagen?**",
+        ),
+        (
+            BotIntent.SET_LOCATION,
+            {"city": "Tromsø"},
+            "📍 **Skal jeg lagre bostedet?**",
+        ),
+        (
+            BotIntent.PROFILE,
+            {"profile": {"action": "status", "value": "dnd"}},
+            "👤 **Skal jeg endre statusen min?**",
+        ),
+        (
+            BotIntent.CALENDAR_AUTH,
+            {"action": "start"},
+            "🔐 **Skal jeg koble til Google Kalender?**",
+        ),
+        (
+            BotIntent.MEMORY_DELETE,
+            {"memory": {"action": "delete"}},
+            "⚠️ **Skal jeg slette det jeg husker om deg?**",
+        ),
+    ),
+)
+def test_confirmation_headings_use_friendly_copy_and_domain_icons(
+    intent,
+    payload,
+    expected,
+):
+    route = IntentResult(
+        intent,
+        0.99,
+        payload,
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+
+    assert format_confirmation_card_heading(route) == expected
+
+
+def test_confirmation_card_numbers_only_multipart_previews():
+    instruction = "Svar `@inebotten ja` eller `@inebotten nei`."
+    messages = format_confirmation_card_messages(
+        heading="📝 **Skal jeg lagre sitatet?**",
+        details="x" * 120,
+        instruction=instruction,
+        optional_prefix="",
+        max_messages=5,
+        max_message_length=140,
+    )
+
+    assert len(messages) > 1
+    assert all(
+        f"_(del {index} av {len(messages)})_" in message
+        for index, message in enumerate(messages, start=1)
+    )
+    assert all(instruction not in message for message in messages[:-1])
+    assert messages[-1].endswith(instruction)
+
+
+@pytest.mark.parametrize("control", (">>> quote", "> quote", "# heading", "- list"))
+def test_confirmation_card_marks_continuations_before_midline_markdown(control):
+    heading = "📝 **Skal jeg lagre sitatet?**"
+    instruction = "Svar `@inebotten ja` eller `@inebotten nei`."
+    marker = "↪ "
+    reserved = len(
+        f"{heading} _(del 5 av 5)_\n\n\n\n{instruction}"
+    ) + len(marker)
+    first_piece_size = 2000 - reserved
+
+    messages = format_confirmation_card_messages(
+        heading=heading,
+        details=("x" * first_piece_size) + control,
+        instruction=instruction,
+        optional_prefix="",
+        max_messages=5,
+        max_message_length=2000,
+    )
+
+    assert len(messages) == 2
+    continuation = messages[1].split("\n\n", 1)[1]
+    assert continuation.startswith(f"{marker}{control}")
+
+
+def test_watchlist_edit_confirmation_shows_nullable_fields_are_removed():
+    route = IntentResult(
+        BotIntent.WATCHLIST,
+        0.99,
+        {
+            "watchlist": {
+                "action": "edit",
+                "index": 1,
+                "genre": None,
+                "comment": None,
+            }
+        },
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+    target = guard(
+        PendingTargetFamily.WATCHLIST,
+        "The Bear",
+        display_fields=(
+            ("tittel", "The Bear"),
+            ("type", "series"),
+            ("sjanger", "drama"),
+            ("kommentar", "Se snart"),
+        ),
+    )
+
+    details = format_confirmation_card_details(route, target)
+
+    assert "**Endringer**" in details
+    assert "**Sjanger:** Fjern" in details
+    assert "**Kommentar:** Fjern" in details
+
+
+def test_poll_vote_confirmation_uses_selected_text_without_internal_number():
+    route = IntentResult(
+        BotIntent.POLL_VOTE,
+        0.99,
+        {"vote": {"poll_id": "poll-a", "option": 2}},
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+    target = guard(
+        PendingTargetFamily.POLL,
+        "Mat?",
+        display_fields=(("spørsmål", "Mat?"), ("valg", "Taco")),
+    )
+
+    details = format_confirmation_card_details(route, target)
+
+    assert details == "**Mat?**\n**Valg:** Taco"
+    assert "**Valg:** 2" not in details
+
+
+def test_birthday_cards_render_one_date_instead_of_repeating_date_parts():
+    target = guard(
+        PendingTargetFamily.BIRTHDAY,
+        "Ola Nordmann",
+        display_fields=(
+            ("person", "Ola Nordmann"),
+            ("dato", "02.03.1991"),
+        ),
+    )
+    create = IntentResult(
+        BotIntent.BIRTHDAY_CREATE,
+        0.99,
+        {
+            "birthday": {
+                "action": "add",
+                "user_id": 7,
+                "display_name": "Ola Nordmann",
+                "day": 2,
+                "month": 3,
+                "year": 1991,
+            }
+        },
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+    edit = replace(
+        create,
+        intent=BotIntent.BIRTHDAY_EDIT,
+        payload={
+            "birthday": {
+                "action": "edit",
+                "user_id": 7,
+                "day": 3,
+                "month": 4,
+                "year": 1992,
+            }
+        },
+        risk=IntentRisk.MUTATING,
+    )
+
+    assert format_confirmation_card_details(create, target) == (
+        "**Ola Nordmann**\n📅 02.03.1991"
+    )
+    assert format_confirmation_card_details(edit, target) == (
+        "**Ola Nordmann**\n"
+        "📅 02.03.1991\n\n"
+        "**Endringer**\n"
+        "**Ny dato:** 03.04.1992"
+    )
+
+
+def test_reminder_cards_hide_canonical_time_transport_fields():
+    route = IntentResult(
+        BotIntent.REMINDER_CREATE,
+        0.99,
+        {
+            "reminder": {
+                "action": "add",
+                "text": "Ring legen",
+                "due_at": "2026-07-20T13:00:00+00:00",
+                "due_date": "20.07.2026",
+                "time": "15:00",
+                "timezone": "Europe/Oslo",
+            }
+        },
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+    due_at_only = replace(
+        route,
+        payload={
+            "reminder": {
+                "action": "add",
+                "text": "Ring legen",
+                "due_at": "2026-07-20T13:00:00+00:00",
+                "timezone": "Europe/Oslo",
+            }
+        },
+    )
+
+    for candidate in (route, due_at_only):
+        details = format_confirmation_card_details(candidate, None)
+        assert "📅 20.07.2026 kl. 15:00" in details
+        assert "2026-07-20T13:00:00+00:00" not in details
+        assert "Europe/Oslo" not in details
+        assert "Tidspunkt" not in details
+        assert "Tidssone" not in details
+
+
+@pytest.mark.parametrize(
+    ("day", "rrule_day", "expected_day", "date", "days_offset"),
+    (
+        ("fredag", "FR", "Fredag", "17.07.2026", 1),
+        ("måndag", "MO", "Måndag", "20.07.2026", 4),
+        ("tysdag", "TU", "Tysdag", "21.07.2026", 5),
+        ("laurdag", "SA", "Laurdag", "18.07.2026", 2),
+        ("sundag", "SU", "Sundag", "19.07.2026", 3),
+    ),
+)
+def test_calendar_card_hides_redundant_offset_and_recurrence_alias(
+    day,
+    rrule_day,
+    expected_day,
+    date,
+    days_offset,
+):
+    payload = validate_intent_payload(
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "Ukentlig møte",
+            "date": date,
+            "days_offset": days_offset,
+            "recurrence": "weekly",
+            "recurrence_day": day,
+            "rrule_day": rrule_day,
+        },
+    )
+    route = IntentResult(
+        BotIntent.CALENDAR_ITEM,
+        0.99,
+        {"calendar_item": payload},
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+
+    details = format_confirmation_card_details(route, None)
+
+    assert f"📅 {date}" in details
+    assert "Dager fra nå" not in details
+    assert details.count(f"**Gjentakelsesdag:** {expected_day}") == 1
+    assert rrule_day not in details
+
+
+def test_conflicting_recurrence_days_fail_closed_before_confirmation():
+    route = IntentResult(
+        BotIntent.CALENDAR_ITEM,
+        0.99,
+        {
+            "calendar_item": {
+                "title": "Ukentlig møte",
+                "date": "17.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "monday",
+                "rrule_day": "FR",
+            }
+        },
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+
+    with pytest.raises(
+        UnsupportedConfirmationSummary,
+        match="conflicting_confirmation_fields",
+    ):
+        format_confirmation_card_details(route, None)
+
+
+def test_reminder_edit_renders_removed_date_and_time_as_fields_not_icons():
+    route = IntentResult(
+        BotIntent.REMINDER_EDIT,
+        0.99,
+        {
+            "reminder": {
+                "action": "edit",
+                "reminder_id": "reminder-a",
+                "changes": {"due_date": None, "time": None},
+            }
+        },
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+
+    details = format_confirmation_card_details(route, _REMINDER_GUARD)
+
+    assert "**Dato:** Fjern" in details
+    assert "**Tid:** Fjern" in details
+    assert "📅 fjern" not in details
+    assert "kl. fjern" not in details
+
+
+def test_long_poll_question_is_rendered_once_without_truncated_headline():
+    question = "Q" * 300
+    route = IntentResult(
+        BotIntent.POLL_DELETE,
+        0.99,
+        {"poll_delete": {"poll_id": "poll-a"}},
+        risk=IntentRisk.DESTRUCTIVE,
+        requires_confirmation=True,
+    )
+    target = guard(
+        PendingTargetFamily.POLL,
+        question,
+        display_fields=(("spørsmål", question),),
+    )
+
+    details = format_confirmation_card_details(route, target)
+
+    assert details == f"**Spørsmål:** {question}"
+    assert details.count("Q" * 200) == 1
+
+
+def test_memory_delete_and_singular_calendar_clear_use_clean_copy():
+    memory_route = IntentResult(
+        BotIntent.MEMORY_DELETE,
+        0.99,
+        {"memory": {"action": "delete"}},
+        risk=IntentRisk.DESTRUCTIVE,
+        requires_confirmation=True,
+    )
+    memory_guard = guard(PendingTargetFamily.MEMORY, "lagret brukerminne")
+    clear_route = IntentResult(
+        BotIntent.CALENDAR_CLEAR,
+        0.99,
+        {"calendar_target": {"all": True}},
+        risk=IntentRisk.DESTRUCTIVE,
+        requires_confirmation=True,
+    )
+    clear_guard = guard(
+        PendingTargetFamily.CALENDAR,
+        "hele kalenderen",
+        display_fields=(
+            ("omfang", "hele kalenderen"),
+            ("oppføringer", "1"),
+        ),
+    )
+
+    assert format_confirmation_card_details(memory_route, memory_guard) == ""
+    assert format_confirmation_card_details(clear_route, clear_guard) == (
+        "Hele **1 oppføring** blir slettet."
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "value", "expected"),
+    (
+        ("status", "online", "**Status:** Pålogget"),
+        ("status", "offline", "**Status:** Frakoblet"),
+        ("status", "idle", "**Status:** Borte"),
+        ("status", "dnd", "**Status:** Ikke forstyrr"),
+        ("status", "invisible", "**Status:** Usynlig"),
+        ("playing", "Baldur's Gate 3", "**Aktivitet:** Baldur's Gate 3"),
+        ("watching", "The Bear", "**Aktivitet:** The Bear"),
+    ),
+)
+def test_profile_confirmation_uses_user_facing_field_labels(
+    action,
+    value,
+    expected,
+):
+    route = IntentResult(
+        BotIntent.PROFILE,
+        0.99,
+        {"profile": {"action": action, "value": value}},
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+
+    details = format_confirmation_card_details(route, None)
+
+    assert details == expected
+    assert "**Verdi:**" not in details
+
+
+@pytest.mark.parametrize(
+    ("route", "expected", "raw"),
+    (
+        (
+            IntentResult(
+                BotIntent.CALENDAR_ITEM,
+                0.99,
+                {
+                    "calendar_item": {
+                        "title": "Legetime",
+                        "date": "15.07.2026",
+                        "recurrence": "weekly",
+                    }
+                },
+                risk=IntentRisk.ADDITIVE,
+                requires_confirmation=True,
+            ),
+            "**Gjentakelse:** Hver uke",
+            "weekly",
+        ),
+        (
+            IntentResult(
+                BotIntent.WATCHLIST,
+                0.99,
+                {
+                    "watchlist": {
+                        "action": "add",
+                        "title": "The Bear",
+                        "type": "series",
+                    }
+                },
+                risk=IntentRisk.ADDITIVE,
+                requires_confirmation=True,
+            ),
+            "**Type:** Serie",
+            "series",
+        ),
+        (
+            IntentResult(
+                BotIntent.PROFILE,
+                0.99,
+                {"profile": {"action": "status", "value": "dnd"}},
+                risk=IntentRisk.MUTATING,
+                requires_confirmation=True,
+            ),
+            "**Status:** Ikke forstyrr",
+            "dnd",
+        ),
+    ),
+)
+def test_confirmation_cards_humanize_internal_enum_values(route, expected, raw):
+    details = format_confirmation_card_details(route, None)
+
+    assert expected in details
+    assert raw not in details
+
+
 def test_confirmation_neutralizes_discord_controls_urls_and_bidi_losslessly():
-    canary = "@everyone <@123> <#456> https://example.test/a_b\u202e\nslutt"
+    canary = (
+        "@everyone <@123> <#456> <t:123:R> </foo:123> <:x:123> "
+        "<a:x:123> >>> https://example.test/a_b\u202e\nslutt"
+    )
     route = replace(
         semantic_reminder_route(),
         payload={"reminder": {"action": "add", "text": canary}},
@@ -1349,9 +1976,127 @@ def test_confirmation_neutralizes_discord_controls_urls_and_bidi_losslessly():
     assert "<@123>" not in details
     assert "<#456>" not in details
     assert "https://" not in details
+    assert "<t:" not in details
+    assert "</foo:" not in details
+    assert "<:x:" not in details
+    assert "<a:x:" not in details
+    assert ">>>" not in details
+    assert "‹t:123:R›" in details
     assert "https：//example.test/a\\_b" in details
     assert "\u202e" not in details
-    assert "slutt" in details
+    assert "a\\_b slutt" in details
+    assert neutralize_confirmation_value("Pay\nPal\tlater") == "Pay Pal later"
+
+
+def test_card_preview_accepts_schema_maximum_backslashes_and_balances_markdown():
+    instruction = "Svar `@inebotten ja` eller `@inebotten nei`."
+    for text in ("\\" * 2000, "*" * 2000):
+        route = IntentResult(
+            BotIntent.QUOTE,
+            0.99,
+            {"quote": {"action": "save", "text": text}},
+            risk=IntentRisk.ADDITIVE,
+            requires_confirmation=True,
+        )
+        details = format_confirmation_card_details(route, None)
+        messages = format_confirmation_card_messages(
+            heading=format_confirmation_card_heading(route),
+            details=details,
+            instruction=instruction,
+            optional_prefix="",
+            max_messages=5,
+            max_message_length=2000,
+        )
+
+        assert details.startswith("**Tekst:** ")
+        assert len(messages) <= 5
+        assert all(len(message) <= 2000 for message in messages)
+        assert all(message.count("**") % 2 == 0 for message in messages)
+        assert sum(message.count("\\") for message in messages) == details.count(
+            "\\"
+        )
+
+
+def test_schema_maximum_quote_edit_fits_in_five_card_messages():
+    route = IntentResult(
+        BotIntent.QUOTE_EDIT,
+        0.99,
+        {
+            "quote": {
+                "action": "edit",
+                "index": 1,
+                "text": "*" * 2000,
+                "author": "*" * 200,
+            }
+        },
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+    target = guard(
+        PendingTargetFamily.QUOTE,
+        "Langt sitat",
+        display_fields=(
+            ("tekst", "*" * 1700),
+            ("forfatter", "*" * 200),
+        ),
+    )
+    details = format_confirmation_card_details(route, target)
+
+    messages = format_confirmation_card_messages(
+        heading=format_confirmation_card_heading(route),
+        details=details,
+        instruction="Svar `@inebotten ja` eller `@inebotten nei`.",
+        optional_prefix="",
+        max_messages=5,
+        max_message_length=2000,
+    )
+
+    assert len(messages) <= 5
+    assert all(len(message) <= 2000 for message in messages)
+    assert sum(message.count(r"\*") for message in messages) == 4_100
+
+
+def test_schema_maximum_calendar_edit_fits_without_echoing_old_description():
+    route = IntentResult(
+        BotIntent.CALENDAR_EDIT,
+        0.99,
+        {
+            "calendar_edit": {
+                "target": "calendar-a",
+                "changes": {
+                    "title": "*" * 200,
+                    "description": "*" * 2000,
+                },
+            }
+        },
+        risk=IntentRisk.MUTATING,
+        requires_confirmation=True,
+    )
+    target = guard(
+        PendingTargetFamily.CALENDAR,
+        "*" * 200,
+        display_fields=(
+            ("tittel", "*" * 200),
+            ("dato", "24.07.2026"),
+            ("tid", "09:00"),
+            ("type", "event"),
+            ("status", "ikke fullført"),
+        ),
+    )
+    details = format_confirmation_card_details(route, target)
+
+    messages = format_confirmation_card_messages(
+        heading=format_confirmation_card_heading(route),
+        details=details,
+        instruction="Svar `@inebotten ja` eller `@inebotten nei`.",
+        optional_prefix="",
+        max_messages=5,
+        max_message_length=2000,
+    )
+
+    assert len(messages) <= 5
+    assert all(len(message) <= 2000 for message in messages)
+    assert sum(message.count(r"\*") for message in messages) == 2_400
 
 
 def _details_from_messages(messages: tuple[str, ...], instruction: str) -> str:

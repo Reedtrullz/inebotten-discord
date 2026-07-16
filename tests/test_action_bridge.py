@@ -647,6 +647,90 @@ def test_calendar_days_offset_conflict_and_naive_reference_fail_bounded():
         )
 
 
+def test_calendar_recurrence_day_protocol_aliases_canonicalize_end_to_end():
+    result = ActionBridge().to_result(
+        proposal_for(
+            ActionName.CALENDAR_CREATE,
+            {
+                "title": "Ukentlig møte",
+                "date": "20.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "Mon",
+                "rrule_day": "MO",
+            },
+        ),
+        bridge_context(
+            utterance=normalize_utterance("create meeting on Monday every week")
+        ),
+    )
+
+    assert result is not None
+    assert result.payload["calendar_item"]["recurrence_day"] == "Mon"
+    assert result.payload["calendar_item"]["rrule_day"] == "MO"
+
+
+def test_calendar_recurrence_day_protocol_rejects_inconsistent_aliases():
+    with pytest.raises(PayloadValidationError, match="invalid_recurrence"):
+        ActionBridge().to_result(
+            proposal_for(
+                ActionName.CALENDAR_CREATE,
+                {
+                    "title": "Ukentlig møte",
+                    "date": "17.07.2026",
+                    "recurrence": "weekly",
+                    "recurrence_day": "Mon",
+                    "rrule_day": "FR",
+                },
+            ),
+            bridge_context(
+                utterance=normalize_utterance(
+                    "create meeting on Monday every week"
+                )
+            ),
+        )
+
+
+def test_calendar_recurrence_day_rejects_date_weekday_mismatch_end_to_end():
+    with pytest.raises(PayloadValidationError, match="invalid_recurrence"):
+        ActionBridge().to_result(
+            proposal_for(
+                ActionName.CALENDAR_CREATE,
+                {
+                    "title": "Ukentlig møte",
+                    "date": "17.07.2026",
+                    "recurrence": "weekly",
+                    "recurrence_day": "monday",
+                    "rrule_day": "MO",
+                },
+            ),
+            bridge_context(
+                utterance=normalize_utterance(
+                    "create meeting on Monday every week"
+                )
+            ),
+        )
+
+
+def test_calendar_recurrence_day_only_derives_rrule_code_end_to_end():
+    result = ActionBridge().to_result(
+        proposal_for(
+            ActionName.CALENDAR_CREATE,
+            {
+                "title": "Ukentlig møte",
+                "date": "20.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "monday",
+            },
+        ),
+        bridge_context(
+            utterance=normalize_utterance("create meeting on Monday every week")
+        ),
+    )
+
+    assert result is not None
+    assert result.payload["calendar_item"]["rrule_day"] == "MO"
+
+
 @pytest.mark.parametrize(
     "date_value,time_value,error",
     [

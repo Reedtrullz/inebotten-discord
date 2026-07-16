@@ -21,6 +21,9 @@ from core.nlu_metrics import NLUMetrics
 from core.utterance_semantics import CONFIRMATIONS, TRAILING_CANCELLATIONS
 
 
+_MAX_PENDING_DETAIL_LENGTH = 8_000
+
+
 class PendingKind(str, Enum):
     CONFIRMATION = "confirmation"
     CHOICE = "choice"
@@ -53,22 +56,29 @@ class PendingTargetFamily(str, Enum):
     MEMORY = "memory"
 
 
-def _without_discord_control_surface(value: object) -> str:
-    without_controls = "".join(
-        char
+def neutralize_discord_text(value: object) -> str:
+    """Return inert one-line text that Discord renders as literal content."""
+
+    normalized_controls = "".join(
+        " " if char.isspace() else char
         for char in str(value)
         if unicodedata.category(char) not in {"Cc", "Cf"}
+        or char.isspace()
     )
-    one_line = " ".join(without_controls.split())
+    one_line = " ".join(normalized_controls.split())
     url_safe = re.sub(
         r"(?i)\bhttps?://",
         lambda match: match.group(0).replace("://", "：//"),
         one_line,
     )
-    token_safe = re.sub(r"<(?=[@#])", "‹", url_safe)
-    mention_safe = token_safe.replace("@", "＠")
+    angle_safe = url_safe.replace("<", "‹").replace(">", "›")
+    mention_safe = angle_safe.replace("@", "＠")
+    return escape_markdown(mention_safe, as_needed=False)
+
+
+def _without_discord_control_surface(value: object) -> str:
     return " ".join(
-        escape_markdown(mention_safe, as_needed=False).split()
+        neutralize_discord_text(value).split()
     )
 
 
@@ -83,7 +93,7 @@ def sanitize_pending_detail(value: object, *, fallback: str) -> str:
     """Return inert single-line detail or reject oversized preview data."""
 
     detail = _without_discord_control_surface(value)
-    if len(detail) > 4_000:
+    if len(detail) > _MAX_PENDING_DETAIL_LENGTH:
         raise ValueError("pending_detail_too_large")
     return detail or fallback
 
@@ -120,6 +130,7 @@ class PendingTargetGuard:
     label: str
     display_detail: str = ""
     proposition_hash: str | None = None
+    display_fields: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.family, PendingTargetFamily):
@@ -155,11 +166,35 @@ class PendingTargetGuard:
             self.label,
             fallback="valgt element",
         )
+        if (
+            not isinstance(self.display_fields, tuple)
+            or len(self.display_fields) > 32
+        ):
+            raise ValueError("invalid_display_fields")
+        safe_fields: list[tuple[str, str]] = []
+        field_size = 0
+        for field in self.display_fields:
+            if (
+                not isinstance(field, tuple)
+                or len(field) != 2
+                or not all(isinstance(part, str) for part in field)
+            ):
+                raise ValueError("invalid_display_fields")
+            safe_name = sanitize_pending_label(field[0], fallback="detalj")
+            safe_value = sanitize_pending_detail(
+                field[1],
+                fallback="ikke angitt",
+            )
+            field_size += len(safe_name) + len(safe_value)
+            if field_size > _MAX_PENDING_DETAIL_LENGTH:
+                raise ValueError("pending_detail_too_large")
+            safe_fields.append((safe_name, safe_value))
         object.__setattr__(self, "stable_id", stable_id)
         object.__setattr__(self, "fingerprint", fingerprint)
         object.__setattr__(self, "revision", revision)
         object.__setattr__(self, "proposition_hash", proposition_hash)
         object.__setattr__(self, "label", safe_label)
+        object.__setattr__(self, "display_fields", tuple(safe_fields))
         object.__setattr__(
             self,
             "display_detail",

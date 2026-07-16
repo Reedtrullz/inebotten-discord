@@ -77,7 +77,9 @@ async def test_deterministic_destructive_route_stages_then_confirms_once(monitor
     assert pending is not None
     assert pending.status is PendingStatus.READY
     assert pending.routes[0].payload["calendar_target"]["target"] == "calendar-1"
-    assert "Bekreftelsesdetaljer" in first.replies[0]
+    assert "Skal jeg slette kalenderoppføringen?" in first.replies[0]
+    assert "@inebotten ja" in first.replies[0]
+    assert "@inebotten nei" in first.replies[0]
 
     await monitor.handle_message(RecordingMessage("@inebotten ja"))
     await monitor.handle_message(RecordingMessage("@inebotten ja"))
@@ -182,7 +184,7 @@ async def test_memory_delete_requires_preview_and_executes_only_once(monitor):
         (
             "kalender auth",
             {},
-            "starte kalenderautorisering",
+            "koble til Google Kalender",
             None,
         ),
         (
@@ -1707,7 +1709,7 @@ async def test_schema_maximum_confirmation_crosses_presentation_losslessly(
 
     assert outcome.dispatch.ok
     assert tuple(sent) == flow.presentation.messages
-    assert "".join(sent).count("*") == 2_000
+    assert "".join(sent).count(r"\*") == 2_000
     pending = monitor.pending_actions.peek(
         conversation_key_from_message(message)
     )
@@ -2100,7 +2102,8 @@ async def test_reminder_partial_correction_repreviews_then_executes_once(
         "time": "15:00",
         "timezone": "Europe/Oslo",
     }
-    assert "Bekreftelsesdetaljer" in correction.replies[0]
+    assert "Skal jeg opprette påminnelsen?" in correction.replies[0]
+    assert "📅 20.07.2026 kl. 15:00" in correction.replies[0]
 
     await monitor.handle_message(RecordingMessage("@inebotten ja takk"))
     await monitor.handle_message(RecordingMessage("@inebotten ja takk"))

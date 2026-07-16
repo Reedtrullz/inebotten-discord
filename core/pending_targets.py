@@ -10,6 +10,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 
+from core.confirmation_display import confirmation_display_identity
 from core.intent_models import BotIntent, IntentResult
 from core.message_context import ConversationKey, RoutingContext, domain_scope_id
 from core.mutation_coordinator import (
@@ -23,7 +24,12 @@ from core.mutation_coordinator import (
     MutationCoordinator,
     MutationScope,
 )
-from core.pending_actions import PendingTargetFamily, PendingTargetGuard
+from core.pending_actions import (
+    PendingTargetFamily,
+    PendingTargetGuard,
+    sanitize_pending_detail,
+    sanitize_pending_label,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +79,26 @@ class PendingTargetResolver:
     _POLL_FIELDS = ("question", "options", "status")
     _WATCHLIST_FIELDS = ("title", "type", "genre", "comment")
     _QUOTE_FIELDS = ("text", "author")
+    _CALENDAR_DISPLAY_FIELDS = (
+        "title",
+        "date",
+        "time",
+        "type",
+        "completed",
+        "recurrence",
+        "recurrence_day",
+        "rrule_day",
+    )
+    _REMINDER_DISPLAY_FIELDS = (
+        "text",
+        "due_date",
+        "time",
+        "completed",
+        "recurrence",
+        "recurrence_day",
+        "rrule_day",
+    )
+    _POLL_DISPLAY_FIELDS = ("question", "options")
     _DETAIL_LABELS = {
         "title": "tittel",
         "text": "tekst",
@@ -381,19 +407,74 @@ class PendingTargetResolver:
         return str(value)
 
     @classmethod
-    def _detail(
+    def _detail_fields(
         cls,
         row: Mapping[str, object],
         fields: tuple[str, ...],
-    ) -> str:
-        parts = []
+    ) -> tuple[tuple[str, str], ...]:
+        parts: list[tuple[str, str]] = []
+        seen_labels: dict[str, str] = {}
         for field in fields:
             value = row.get(field)
             if value in (None, "", [], {}):
                 continue
             label = cls._DETAIL_LABELS.get(field, field)
-            parts.append(f"{label}: {cls._detail_value(field, value)}")
-        return "; ".join(parts) or "valgt element"
+            shown = cls._detail_value(field, value)
+            safe_label = sanitize_pending_label(label, fallback="detalj")
+            safe_value = sanitize_pending_detail(shown, fallback="ikke angitt")
+            semantic_value = confirmation_display_identity(
+                safe_label,
+                safe_value,
+            )
+            previous = seen_labels.get(label)
+            if previous == semantic_value:
+                continue
+            if previous is None:
+                seen_labels[label] = semantic_value
+            parts.append((label, shown))
+        return tuple(parts)
+
+    @staticmethod
+    def _visible_display_identity(
+        fields: tuple[tuple[str, str], ...],
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (
+                sanitize_pending_label(label, fallback="detalj").casefold(),
+                confirmation_display_identity(
+                    sanitize_pending_label(label, fallback="detalj"),
+                    sanitize_pending_detail(value, fallback="ikke angitt"),
+                ),
+            )
+            for label, value in fields
+        )
+
+    @classmethod
+    def _number_if_display_ambiguous(
+        cls,
+        fields: tuple[tuple[str, str], ...],
+        candidates: tuple[tuple[tuple[str, str], ...], ...],
+        *,
+        position: int,
+    ) -> tuple[tuple[str, str], ...]:
+        identity = cls._visible_display_identity(fields)
+        if sum(
+            cls._visible_display_identity(candidate) == identity
+            for candidate in candidates
+        ) > 1:
+            return (*fields, ("nummer", str(position + 1)))
+        return fields
+
+    @classmethod
+    def _detail(
+        cls,
+        row: Mapping[str, object],
+        fields: tuple[str, ...],
+    ) -> str:
+        parts = cls._detail_fields(row, fields)
+        return "; ".join(f"{label}: {value}" for label, value in parts) or (
+            "valgt element"
+        )
 
     def _requires_guard(self, route: IntentResult) -> bool:
         return self._expected_guard_family(route) is not None
@@ -494,6 +575,10 @@ class PendingTargetResolver:
                 "hele kalenderen",
                 f"hele kalenderen; {len(ids)} oppføringer",
                 self._proposition_hash(frozen_route),
+                display_fields=(
+                    ("omfang", "hele kalenderen"),
+                    ("oppføringer", str(len(ids))),
+                ),
             )
             return FrozenPendingRoute(frozen_route, guard)
         rows = self._calendar_rows(reference_time)
@@ -516,6 +601,18 @@ class PendingTargetResolver:
         inner["target"] = stable_id
         inner.pop("number", None)
         frozen = self._replace_inner(route, key, inner)
+        display_fields = self._detail_fields(
+            row,
+            self._CALENDAR_DISPLAY_FIELDS,
+        )
+        display_fields = self._number_if_display_ambiguous(
+            display_fields,
+            tuple(
+                self._detail_fields(candidate, self._CALENDAR_DISPLAY_FIELDS)
+                for candidate in rows
+            ),
+            position=position,
+        )
         guard = PendingTargetGuard(
             PendingTargetFamily.CALENDAR,
             stable_id,
@@ -525,6 +622,7 @@ class PendingTargetResolver:
             str(row.get("title") or "kalenderoppføring"),
             self._detail(row, self._CALENDAR_FIELDS),
             self._proposition_hash(frozen),
+            display_fields=display_fields,
         )
         return FrozenPendingRoute(frozen, guard)
 
@@ -548,6 +646,18 @@ class PendingTargetResolver:
         inner["reminder_id"] = stable_id
         inner.pop("number", None)
         frozen = self._replace_inner(route, "reminder", inner)
+        display_fields = self._detail_fields(
+            row,
+            self._REMINDER_DISPLAY_FIELDS,
+        )
+        display_fields = self._number_if_display_ambiguous(
+            display_fields,
+            tuple(
+                self._detail_fields(candidate, self._REMINDER_DISPLAY_FIELDS)
+                for candidate in rows
+            ),
+            position=position,
+        )
         guard = PendingTargetGuard(
             PendingTargetFamily.REMINDER,
             stable_id,
@@ -557,6 +667,7 @@ class PendingTargetResolver:
             str(row.get("text") or "påminnelse"),
             self._detail(row, self._REMINDER_FIELDS),
             self._proposition_hash(frozen),
+            display_fields=display_fields,
         )
         return FrozenPendingRoute(frozen, guard)
 
@@ -593,6 +704,14 @@ class PendingTargetResolver:
         projection = self._poll_projection(row)
         revision = self._digest(projection)
         detail = self._detail(projection, self._POLL_FIELDS)
+        display_fields = list(self._detail_fields(projection, self._POLL_DISPLAY_FIELDS))
+        candidate_display_fields = [
+            self._detail_fields(
+                self._poll_projection(candidate),
+                self._POLL_DISPLAY_FIELDS,
+            )
+            for candidate in rows
+        ]
         if route.intent is BotIntent.POLL_VOTE:
             option = inner.get("option")
             options = projection["options"]
@@ -604,6 +723,32 @@ class PendingTargetResolver:
             ):
                 raise PendingTargetError("target_not_found")
             detail += f"; valgt alternativ: {options[option - 1]}"
+            display_fields = [
+                *self._detail_fields(projection, ("question",)),
+                ("valg", str(options[option - 1])),
+            ]
+            candidate_display_fields = []
+            for candidate in rows:
+                candidate_projection = self._poll_projection(candidate)
+                candidate_options = candidate_projection["options"]
+                if not isinstance(candidate_options, list) or not 1 <= option <= len(
+                    candidate_options
+                ):
+                    candidate_display_fields.append(())
+                    continue
+                candidate_display_fields.append(
+                    (
+                        *self._detail_fields(candidate_projection, ("question",)),
+                        ("valg", str(candidate_options[option - 1])),
+                    )
+                )
+        display_fields = list(
+            self._number_if_display_ambiguous(
+                tuple(display_fields),
+                tuple(candidate_display_fields),
+                position=position,
+            )
+        )
         inner["poll_id"] = stable_id
         inner.pop("target", None)
         frozen = self._replace_inner(route, key, inner)
@@ -616,6 +761,7 @@ class PendingTargetResolver:
             str(row.get("question") or "avstemning"),
             detail,
             self._proposition_hash(frozen),
+            display_fields=tuple(display_fields),
         )
         return FrozenPendingRoute(frozen, guard)
 
@@ -645,6 +791,21 @@ class PendingTargetResolver:
             raise PendingTargetError("ambiguous_target")
         collection_revision = self._digest(sorted(fingerprints))
         frozen = copy.deepcopy(route)
+        display_field_names = fields
+        if (
+            family is PendingTargetFamily.WATCHLIST
+            and inner.get("action") == "edit"
+        ):
+            display_field_names = ("title", "type")
+        display_fields = self._detail_fields(row, display_field_names)
+        display_fields = self._number_if_display_ambiguous(
+            display_fields,
+            tuple(
+                self._detail_fields(candidate, display_field_names)
+                for candidate in rows
+            ),
+            position=position,
+        )
         guard = PendingTargetGuard(
             family,
             None,
@@ -654,6 +815,7 @@ class PendingTargetResolver:
             label,
             self._detail(row, fields),
             self._proposition_hash(frozen),
+            display_fields=display_fields,
         )
         return FrozenPendingRoute(frozen, guard)
 
@@ -722,6 +884,10 @@ class PendingTargetResolver:
             str(label),
             f"person: {label}; dato: {date_detail}",
             self._proposition_hash(frozen),
+            display_fields=(
+                ("person", str(label)),
+                ("dato", date_detail),
+            ),
         )
         return FrozenPendingRoute(frozen, guard)
 

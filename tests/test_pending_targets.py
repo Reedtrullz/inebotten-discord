@@ -182,6 +182,16 @@ def test_calendar_position_freezes_to_id_and_follows_reorder(
     assert "status: ikke fullført" in frozen.guard.display_detail
     assert "title:" not in frozen.guard.display_detail
     assert "completed:" not in frozen.guard.display_detail
+    assert frozen.guard.display_fields[:3] == (
+        ("tittel", "Lege"),
+        ("dato", "16.07.2026"),
+        ("tid", "12:00"),
+    )
+    assert ("status", "ikke fullført") in frozen.guard.display_fields
+    assert ("type", "event") in frozen.guard.display_fields
+    assert not any(
+        label == "forekomst" for label, _ in frozen.guard.display_fields
+    )
     state.calendar.reverse()
 
     claimed = resolver.revalidate(
@@ -191,6 +201,113 @@ def test_calendar_position_freezes_to_id_and_follows_reorder(
         reference_time=NOW,
     )
     assert claimed.payload[key]["target"] == "cal-a"
+
+
+def test_calendar_target_preview_does_not_echo_stored_description(resolver, state):
+    state.calendar[0]["description"] = "Privat møtekode 1234"
+
+    frozen = resolver.freeze(
+        _route(
+            BotIntent.CALENDAR_DELETE,
+            {"calendar_target": {"target": 1}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert "beskrivelse" not in dict(frozen.guard.display_fields)
+    assert all(
+        "Privat møtekode" not in value
+        for _, value in frozen.guard.display_fields
+    )
+
+
+def test_calendar_target_preview_adds_number_only_when_public_fields_collide(
+    resolver,
+    state,
+):
+    state.calendar[1] = deepcopy(state.calendar[0])
+    state.calendar[1]["id"] = "cal-b"
+    state.calendar[1]["description"] = "Annen privat beskrivelse"
+
+    frozen = resolver.freeze(
+        _route(
+            BotIntent.CALENDAR_DELETE,
+            {"calendar_target": {"target": 2}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert ("nummer", "2") in frozen.guard.display_fields
+    assert "beskrivelse" not in dict(frozen.guard.display_fields)
+
+
+def test_calendar_collision_detection_uses_sanitized_public_fields(
+    resolver,
+    state,
+):
+    state.calendar[0]["title"] = "Pay\u202ePal"
+    state.calendar[1] = deepcopy(state.calendar[0])
+    state.calendar[1]["id"] = "cal-b"
+    state.calendar[1]["title"] = "PayPal"
+    state.calendar[1]["description"] = "Annen privat beskrivelse"
+
+    frozen = resolver.freeze(
+        _route(
+            BotIntent.CALENDAR_DELETE,
+            {"calendar_target": {"target": 1}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert ("tittel", "PayPal") in frozen.guard.display_fields
+    assert ("nummer", "1") in frozen.guard.display_fields
+
+
+def test_stored_recurrence_aliases_dedupe_only_when_semantically_equal(
+    resolver,
+    state,
+):
+    state.calendar[0].update(
+        recurrence="weekly",
+        recurrence_day="måndag",
+        rrule_day="MO",
+    )
+    equivalent = resolver.freeze(
+        _route(
+            BotIntent.CALENDAR_DELETE,
+            {"calendar_target": {"target": 1}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+    assert equivalent.guard is not None
+    assert [
+        value
+        for label, value in equivalent.guard.display_fields
+        if label == "gjentakelsesdag"
+    ] == ["måndag"]
+
+    state.calendar[0].update(recurrence_day="monday", rrule_day="FR")
+    conflicting = resolver.freeze(
+        _route(
+            BotIntent.CALENDAR_DELETE,
+            {"calendar_target": {"target": 1}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+    assert conflicting.guard is not None
+    assert [
+        value
+        for label, value in conflicting.guard.display_fields
+        if label == "gjentakelsesdag"
+    ] == ["monday", "FR"]
 
 
 def test_calendar_same_id_revision_change_fails_closed(resolver, state):
@@ -273,6 +390,12 @@ def test_reminder_number_freezes_to_stable_id(resolver, state, intent):
         reference_time=NOW,
     )
     assert frozen.route.payload["reminder"] == {"reminder_id": "rem-b"}
+    assert frozen.guard.display_fields == (
+        ("tekst", "Kjøp melk"),
+        ("dato", "16.07.2026"),
+        ("tid", "12:00"),
+        ("status", "ikke fullført"),
+    )
     state.reminder.reverse()
 
     claimed = resolver.revalidate(
@@ -302,6 +425,27 @@ def test_recurring_reminder_occurrence_change_invalidates_guard(resolver, state)
         )
 
 
+def test_recurrence_day_aliases_render_once_without_raw_rrule(resolver, state):
+    state.calendar[0].update(
+        recurrence="weekly",
+        recurrence_day="friday",
+        rrule_day="FR",
+    )
+    frozen = resolver.freeze(
+        _route(BotIntent.CALENDAR_DELETE, {"calendar_target": {"target": 1}}),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    recurrence_days = [
+        value
+        for label, value in frozen.guard.display_fields
+        if label == "gjentakelsesdag"
+    ]
+    assert recurrence_days == ["friday"]
+    assert "FR" not in dict(frozen.guard.display_fields).values()
+
+
 @pytest.mark.parametrize(
     ("intent", "key"),
     [
@@ -328,6 +472,15 @@ def test_poll_operations_freeze_id_and_full_proposition(
     assert frozen.route.payload[key]["poll_id"] == "poll-a"
     if intent is BotIntent.POLL_VOTE:
         assert "Nei" in frozen.guard.display_detail
+        assert frozen.guard.display_fields == (
+            ("spørsmål", "Kaffe?"),
+            ("valg", "Nei"),
+        )
+    else:
+        assert frozen.guard.display_fields == (
+            ("spørsmål", "Kaffe?"),
+            ("alternativer", "1. Ja; 2. Nei"),
+        )
     state.polls[0]["options"][1]["text"] = "Kanskje"
 
     with pytest.raises(PendingTargetError, match="target_changed"):
@@ -370,6 +523,142 @@ def test_fingerprint_target_follows_unique_reorder(
         reference_time=NOW,
     )
     assert claimed.payload[payload_key]["index"] == 2
+
+
+def test_schema_maximum_quote_can_still_be_frozen_for_deletion(resolver, state):
+    state.quotes[0] = {"text": "*" * 2000, "author": "*" * 200}
+    frozen = resolver.freeze(
+        _route(BotIntent.QUOTE_DELETE, {"quote": {"action": "delete", "index": 1}}),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert dict(frozen.guard.display_fields)["tekst"].count(r"\*") == 2000
+
+
+def test_watchlist_edit_guard_keeps_only_identity_fields_in_preview(resolver):
+    frozen = resolver.freeze(
+        _route(
+            BotIntent.WATCHLIST,
+            {
+                "watchlist": {
+                    "action": "edit",
+                    "index": 1,
+                    "title": "Dune: Part Two",
+                    "comment": "Ny kommentar",
+                }
+            },
+            risk=IntentRisk.MUTATING,
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert frozen.guard.display_fields == (
+        ("tittel", "Dune"),
+        ("type", "movie"),
+    )
+
+
+def test_watchlist_edit_guard_adds_number_when_public_fields_collide(
+    resolver,
+    state,
+):
+    state.watchlist[0]["title"] = "Dune Part"
+    state.watchlist[1] = {
+        "title": "Dune\nPart",
+        "type": "movie",
+        "genre": "drama",
+        "comment": "Annen privat kommentar",
+    }
+
+    frozen = resolver.freeze(
+        _route(
+            BotIntent.WATCHLIST,
+            {
+                "watchlist": {
+                    "action": "edit",
+                    "index": 2,
+                    "title": "Dune: Part Two",
+                }
+            },
+            risk=IntentRisk.MUTATING,
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert frozen.guard.display_fields == (
+        ("tittel", "Dune Part"),
+        ("type", "movie"),
+        ("nummer", "2"),
+    )
+
+
+def test_collision_identity_normalizes_canonically_equivalent_unicode(
+    resolver,
+    state,
+):
+    state.watchlist[0]["title"] = "Café"
+    state.watchlist[1] = {
+        "title": "Cafe\u0301",
+        "type": "movie",
+        "genre": "drama",
+        "comment": "Annen privat kommentar",
+    }
+
+    frozen = resolver.freeze(
+        _route(
+            BotIntent.WATCHLIST,
+            {
+                "watchlist": {
+                    "action": "edit",
+                    "index": 2,
+                    "title": "Ny tittel",
+                }
+            },
+            risk=IntentRisk.MUTATING,
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+
+    assert frozen.guard is not None
+    assert ("nummer", "2") in frozen.guard.display_fields
+
+
+def test_stable_id_families_add_number_when_public_fields_collide(
+    resolver,
+    state,
+):
+    state.reminder[1] = deepcopy(state.reminder[0])
+    state.reminder[1]["reminder_id"] = "rem-b"
+    reminder = resolver.freeze(
+        _route(
+            BotIntent.REMINDER_DELETE,
+            {"reminder": {"action": "delete", "number": 2}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+    assert reminder.guard is not None
+    assert ("nummer", "2") in reminder.guard.display_fields
+
+    state.polls.append(deepcopy(state.polls[0]))
+    state.polls[1]["poll_id"] = "poll-b"
+    poll = resolver.freeze(
+        _route(
+            BotIntent.POLL_DELETE,
+            {"poll_delete": {"target": 2}},
+        ),
+        ROUTING,
+        reference_time=NOW,
+    )
+    assert poll.guard is not None
+    assert ("nummer", "2") in poll.guard.display_fields
 
 
 def test_duplicate_fingerprint_is_ambiguous_at_freeze(resolver, state):
@@ -808,7 +1097,7 @@ def test_guard_rejects_same_family_proposition_mispair(
 
 
 def test_oversized_confirmation_detail_maps_to_typed_error(resolver, state):
-    state.calendar[0]["description"] = "x" * 4_100
+    state.calendar[0]["description"] = "x" * 8_100
     route = _route(
         BotIntent.CALENDAR_DELETE,
         {"calendar_target": {"target": 1}},

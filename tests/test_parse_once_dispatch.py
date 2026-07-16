@@ -415,6 +415,58 @@ INVALID_PAYLOAD_CASES = [
         (BotIntent.CALENDAR_ITEM, {"title": "x", "date": "25.10.2026", "time": "02:30"}, IntentSource.DETERMINISTIC, "ambiguous_time"),
         (BotIntent.CALENDAR_ITEM, {"title": "x", "date": "29.03.2026", "time": "02:30"}, IntentSource.DETERMINISTIC, "invalid_time"),
     (BotIntent.CALENDAR_ITEM, {"title": "x"}, IntentSource.DETERMINISTIC, "missing_date"),
+    (
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "x",
+            "date": "15.07.2026",
+            "recurrence": "weekly",
+            "recurrence_day": "monday",
+            "rrule_day": "FR",
+        },
+        IntentSource.DETERMINISTIC,
+        "invalid_recurrence",
+    ),
+    (
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "x",
+            "date": "17.07.2026",
+            "recurrence": "weekly",
+            "recurrence_day": "monday",
+            "rrule_day": "MO",
+        },
+        IntentSource.DETERMINISTIC,
+        "invalid_recurrence",
+    ),
+    (
+        BotIntent.CALENDAR_ITEM,
+        {"title": "x", "date": "15.07.2026", "recurrence_day": "monday"},
+        IntentSource.DETERMINISTIC,
+        "invalid_recurrence",
+    ),
+    (
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "x",
+            "date": "15.07.2026",
+            "recurrence": "monthly",
+            "recurrence_day": "monday",
+        },
+        IntentSource.DETERMINISTIC,
+        "invalid_recurrence",
+    ),
+    (
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "x",
+            "date": "15.07.2026",
+            "recurrence": "weekly",
+            "recurrence_day": "funday",
+        },
+        IntentSource.DETERMINISTIC,
+        "invalid_recurrence",
+    ),
     (BotIntent.REMINDER_CREATE, {"action": "add", "text": "x", "due_at": "2026-07-15T09:00:00"}, IntentSource.DETERMINISTIC, "invalid_due_at"),
     (BotIntent.REMINDER_CREATE, {"action": "add", "text": "x", "due_date": "15.07.2026", "timezone": "Europe/Paris"}, IntentSource.DETERMINISTIC, "invalid_timezone"),
     (BotIntent.REMINDER_CREATE, {"action": "add", "text": "x", "recurrence": "weekly"}, IntentSource.DETERMINISTIC, "invalid_recurrence"),
@@ -434,6 +486,37 @@ def test_invalid_payloads_raise_only_bounded_codes(intent, raw, source, code):
         validate_intent_payload(intent, raw, source=source)  # type: ignore[arg-type]
     assert error.value.code == code
     assert str(error.value) == code
+
+
+def test_equivalent_calendar_recurrence_day_aliases_are_accepted():
+    result = validate_intent_payload(
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "Ukentlig møte",
+            "date": "17.07.2026",
+            "recurrence": "weekly",
+            "recurrence_day": "fredag",
+            "rrule_day": "FR",
+        },
+    )
+
+    assert result["recurrence_day"] == "fredag"
+    assert result["rrule_day"] == "FR"
+
+
+def test_calendar_recurrence_day_derives_canonical_rrule_code():
+    result = validate_intent_payload(
+        BotIntent.CALENDAR_ITEM,
+        {
+            "title": "Ukentlig møte",
+            "date": "20.07.2026",
+            "recurrence": "weekly",
+            "recurrence_day": "monday",
+        },
+    )
+
+    assert result["recurrence_day"] == "monday"
+    assert result["rrule_day"] == "MO"
 
 
 @pytest.mark.parametrize(

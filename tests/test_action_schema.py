@@ -76,8 +76,8 @@ EXPECTED_ACTION_SPEC_SNAPSHOT = {
             ("time", "TIME"),
             ("type", "EVENT_TYPE"),
             ("recurrence", "RECURRENCE"),
-            ("recurrence_day", "S200"),
-            ("rrule_day", "S200"),
+            ("recurrence_day", "WEEKDAY"),
+            ("rrule_day", "RRULE_DAY"),
             ("days_offset", "DAY_OFFSET"),
             ("description", "TEXT2000"),
         ),
@@ -521,6 +521,74 @@ def test_invalid_recurrence_is_rejected_and_nullable_recurrence_can_clear():
     assert cleared.slots["recurrence"] is None
 
 
+def test_calendar_weekday_slots_are_bounded_and_semantically_consistent():
+    proposal = validate_action_object(
+        action_object(
+            "CALENDAR_CREATE",
+            {
+                "title": "Møte",
+                "date": "20.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "Mon",
+                "rrule_day": "mo",
+            },
+        )
+    )
+    assert proposal.slots["recurrence_day"] == "Mon"
+    assert proposal.slots["rrule_day"] == "MO"
+
+    for slots, code in (
+        (
+            {
+                "title": "Møte",
+                "date": "20.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "funday",
+            },
+            "invalid_slot:recurrence_day",
+        ),
+        (
+            {
+                "title": "Møte",
+                "date": "20.07.2026",
+                "recurrence_day": "monday",
+            },
+            "invalid_recurrence",
+        ),
+        (
+            {
+                "title": "Møte",
+                "date": "20.07.2026",
+                "recurrence": "monthly",
+                "recurrence_day": "monday",
+            },
+            "invalid_recurrence",
+        ),
+        (
+            {
+                "title": "Møte",
+                "date": "20.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "monday",
+                "rrule_day": "FR",
+            },
+            "invalid_recurrence",
+        ),
+        (
+            {
+                "title": "Møte",
+                "date": "17.07.2026",
+                "recurrence": "weekly",
+                "recurrence_day": "monday",
+                "rrule_day": "MO",
+            },
+            "invalid_recurrence",
+        ),
+    ):
+        with pytest.raises(ActionValidationError, match=code):
+            validate_action_object(action_object("CALENDAR_CREATE", slots))
+
+
 def test_new_recurring_reminder_requires_a_temporal_anchor():
     with pytest.raises(ActionValidationError, match="invalid_temporal"):
         validate_action_object(
@@ -838,6 +906,8 @@ def test_prompt_contains_machine_validation_rules_and_exact_shape():
         in ACTION_PROTOCOL_PROMPT
     )
     assert "RECURRENCE=literal daily, weekly, biweekly, monthly, or yearly" in ACTION_PROTOCOL_PROMPT
+    assert "WEEKDAY=known Norwegian or English weekday alias" in ACTION_PROTOCOL_PROMPT
+    assert "RRULE_DAY=canonical two-letter weekday code" in ACTION_PROTOCOL_PROMPT
     assert "OPTIONS=array of 2-10 unique strings" in ACTION_PROTOCOL_PROMPT
     assert "exactly_one=target,number" in ACTION_PROTOCOL_PROMPT
     assert "at_least_one=date,days_offset" in ACTION_PROTOCOL_PROMPT

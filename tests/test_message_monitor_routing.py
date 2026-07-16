@@ -1686,7 +1686,12 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [])
         self.assertEqual(len(message.replies), 1)
-        self.assertIn("Bekreftelsesdetaljer", message.replies[0])
+        self.assertIn(
+            "Skal jeg slette kalenderoppføringen?",
+            message.replies[0],
+        )
+        self.assertIn("@inebotten ja", message.replies[0])
+        self.assertIn("@inebotten nei", message.replies[0])
         self.assertEqual(monitor.pending_actions.counts()["ready"], 1)
         self.assertEqual(monitor.intent_stats[BotIntent.CALENDAR_DELETE.value]["count"], 1)
 
@@ -1776,7 +1781,11 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         await monitor.handle_message(message)
 
         self.assertEqual(len(message.replies), 1)
-        self.assertIn("Bekreftelsesdetaljer", message.replies[0])
+        self.assertIn(
+            "Skal jeg fjerne elementet fra se-listen?",
+            message.replies[0],
+        )
+        self.assertNotIn("**Type:** fjern", message.replies[0])
         self.assertEqual(monitor.pending_actions.counts()["ready"], 1)
         self.assertEqual(monitor.response_count, 1)
 

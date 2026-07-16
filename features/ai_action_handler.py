@@ -5,13 +5,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import re
-import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-
-from discord.utils import escape_markdown
+from zoneinfo import ZoneInfo
 
 from ai.action_schema import (
     ActionName,
@@ -25,10 +23,17 @@ from core.action_bridge import (
     ActionBridgeContext,
     validate_route_payload,
 )
+from core.confirmation_display import (
+    confirmation_display_identity,
+    display_confirmation_value,
+)
 from core.dispatch_result import DispatchCancelled, DispatchOutcome
 from core.intent_display import INTENT_DISPLAY_LABELS
 from core.intent_models import BotIntent, IntentResult, IntentRisk
-from core.intent_payloads import ENVELOPE_KEYS, PayloadValidationError
+from core.intent_payloads import (
+    ENVELOPE_KEYS,
+    PayloadValidationError,
+)
 from core.message_context import (
     ConversationKey,
     RoutingContext,
@@ -40,7 +45,9 @@ from core.pending_actions import (
     PendingActionStore,
     PendingKind,
     PendingStatus,
+    PendingTargetFamily,
     PendingTargetGuard,
+    neutralize_discord_text,
 )
 from core.utterance import NormalizedUtterance
 
@@ -167,20 +174,7 @@ def _inert_model_visible_text(value: object) -> str:
 
 
 def neutralize_confirmation_value(value: object) -> str:
-    without_controls = "".join(
-        char
-        for char in str(value)
-        if unicodedata.category(char) not in {"Cc", "Cf"}
-    )
-    one_line = " ".join(without_controls.split())
-    url_safe = re.sub(
-        r"(?i)\bhttps?://",
-        lambda match: match.group(0).replace("://", "：//"),
-        one_line,
-    )
-    token_safe = re.sub(r"<(?=[@#])", "‹", url_safe)
-    mention_safe = token_safe.replace("@", "＠")
-    return escape_markdown(mention_safe, as_needed=False)
+    return neutralize_discord_text(value)
 
 
 def sanitize_visible_prefix(value: object, *, limit: int = 1000) -> str:
@@ -198,7 +192,7 @@ _CONFIRMATION_OPERATIONS = {
     BotIntent.CALENDAR_COMPLETE: "fullføre kalenderoppføringen",
     BotIntent.CALENDAR_CLEAR: "tømme hele kalenderen",
     BotIntent.CALENDAR_SYNC: "synkronisere kalenderen",
-    BotIntent.CALENDAR_AUTH: "starte kalenderautorisering",
+    BotIntent.CALENDAR_AUTH: "koble til Google Kalender",
     BotIntent.REMINDER_CREATE: "opprette påminnelsen",
     BotIntent.REMINDER_EDIT: "endre påminnelsen",
     BotIntent.REMINDER_DELETE: "slette påminnelsen",
@@ -214,9 +208,9 @@ _CONFIRMATION_OPERATIONS = {
     BotIntent.QUOTE_DELETE: "slette sitatet",
     BotIntent.BIRTHDAY_CREATE: "lagre bursdagen",
     BotIntent.BIRTHDAY_EDIT: "endre bursdagen",
-    BotIntent.MEMORY_DELETE: "slette lagret brukerminne",
+    BotIntent.MEMORY_DELETE: "slette det jeg husker om deg",
     BotIntent.SET_LOCATION: "lagre bostedet",
-    BotIntent.PROFILE: "endre profilstatusen",
+    BotIntent.PROFILE: "endre profilen min",
 }
 _CONFIRMATION_ACTION_OPERATIONS = {
     (BotIntent.WATCHLIST, "add"): "legge til i se-listen",
@@ -226,9 +220,9 @@ _CONFIRMATION_ACTION_OPERATIONS = {
     (BotIntent.WATCHLIST, "suggest"): "foreslå fra se-listen",
     (BotIntent.QUOTE, "save"): "lagre sitatet",
     (BotIntent.QUOTE, "get"): "vise et sitat",
-    (BotIntent.PROFILE, "status"): "endre profilstatusen",
-    (BotIntent.PROFILE, "playing"): "endre aktiviteten til spiller",
-    (BotIntent.PROFILE, "watching"): "endre aktiviteten til ser på",
+    (BotIntent.PROFILE, "status"): "endre statusen min",
+    (BotIntent.PROFILE, "playing"): "vise hva jeg spiller",
+    (BotIntent.PROFILE, "watching"): "vise hva jeg ser på",
 }
 _CONFIRMATION_FIELD_LABELS = {
     "title": "tittel",
@@ -340,10 +334,7 @@ def _inner_action(route: IntentResult) -> str | None:
     return None
 
 
-def format_confirmation_details(
-    route: IntentResult,
-    target_guard: PendingTargetGuard | None,
-) -> str:
+def _confirmation_operation(route: IntentResult) -> str:
     inner_action = _inner_action(route)
     operation = (
         _CONFIRMATION_ACTION_OPERATIONS.get((route.intent, inner_action))
@@ -354,6 +345,18 @@ def format_confirmation_details(
         operation = _CONFIRMATION_OPERATIONS.get(route.intent)
     if operation is None:
         raise UnsupportedConfirmationSummary()
+    if route.intent is BotIntent.CALENDAR_AUTH and _has_auth_secret(
+        route.payload
+    ):
+        return "sende inn kalenderkoden"
+    return operation
+
+
+def format_confirmation_details(
+    route: IntentResult,
+    target_guard: PendingTargetGuard | None,
+) -> str:
+    operation = _confirmation_operation(route)
     if route.intent is BotIntent.CALENDAR_AUTH:
         if _has_auth_secret(route.payload):
             return (
@@ -372,6 +375,433 @@ def format_confirmation_details(
     return "; ".join(parts)
 
 
+_PRIMARY_CONFIRMATION_FIELDS = frozenset(
+    {"tittel", "tekst", "spørsmål", "person", "omfang"}
+)
+_EDIT_CONFIRMATION_INTENTS = frozenset(
+    {
+        BotIntent.CALENDAR_EDIT,
+        BotIntent.REMINDER_EDIT,
+        BotIntent.POLL_EDIT,
+        BotIntent.QUOTE_EDIT,
+        BotIntent.BIRTHDAY_EDIT,
+    }
+)
+_DELETE_CONFIRMATION_INTENTS = frozenset(
+    {
+        BotIntent.CALENDAR_DELETE,
+        BotIntent.REMINDER_DELETE,
+        BotIntent.POLL_DELETE,
+        BotIntent.QUOTE_DELETE,
+    }
+)
+_COMPLETE_CONFIRMATION_INTENTS = frozenset(
+    {
+        BotIntent.CALENDAR_COMPLETE,
+        BotIntent.REMINDER_COMPLETE,
+        BotIntent.POLL_CLOSE,
+    }
+)
+_TARGET_PRIMARY_LABELS = {
+    PendingTargetFamily.CALENDAR: "tittel",
+    PendingTargetFamily.REMINDER: "tekst",
+    PendingTargetFamily.POLL: "spørsmål",
+    PendingTargetFamily.WATCHLIST: "tittel",
+    PendingTargetFamily.QUOTE: "tekst",
+    PendingTargetFamily.BIRTHDAY: "person",
+}
+_DOMAIN_CONFIRMATION_ICONS = {
+    BotIntent.CALENDAR_ITEM: "📅",
+    BotIntent.REMINDER_CREATE: "🔔",
+    BotIntent.POLL_CREATE: "🗳️",
+    BotIntent.WATCHLIST: "🎬",
+    BotIntent.QUOTE: "📝",
+    BotIntent.BIRTHDAY_CREATE: "🎂",
+    BotIntent.SET_LOCATION: "📍",
+    BotIntent.PROFILE: "👤",
+}
+_MAX_BOLD_HEADLINE_LENGTH = 200
+_OSLO = ZoneInfo("Europe/Oslo")
+
+
+def _material_confirmation_fields(
+    value: object,
+    *,
+    none_means_remove: bool = False,
+) -> list[tuple[str, str]]:
+    if not isinstance(value, Mapping):
+        raise UnsupportedConfirmationSummary()
+    rendered: list[tuple[str, str]] = []
+    for key, nested in value.items():
+        if not isinstance(key, str):
+            raise UnsupportedConfirmationSummary()
+        if key in _CONFIRMATION_METADATA_KEYS:
+            if isinstance(nested, Mapping):
+                rendered.extend(
+                    _material_confirmation_fields(
+                        nested,
+                        none_means_remove=none_means_remove,
+                    )
+                )
+            continue
+        label = _CONFIRMATION_FIELD_LABELS.get(key)
+        if label is None:
+            raise UnsupportedConfirmationSummary()
+        if isinstance(nested, Mapping):
+            children = _material_confirmation_fields(
+                nested,
+                none_means_remove=(none_means_remove or key == "changes"),
+            )
+            if key == "changes":
+                rendered.extend(children)
+            else:
+                rendered.append(
+                    (
+                        label,
+                        "; ".join(
+                            f"{child_label}: {child_value}"
+                            for child_label, child_value in children
+                        ),
+                    )
+                )
+        elif isinstance(nested, (list, tuple)):
+            rendered.append(
+                (
+                    label,
+                    "; ".join(
+                        f"{index}. {neutralize_confirmation_value(item)}"
+                        for index, item in enumerate(nested, start=1)
+                    ),
+                )
+            )
+        else:
+            if nested is None and not none_means_remove:
+                continue
+            rendered.append(
+                (
+                    label,
+                    "fjern"
+                    if nested is None
+                    else neutralize_confirmation_value(nested),
+                )
+            )
+    return rendered
+
+
+def _display_label(value: str) -> str:
+    return value[:1].upper() + value[1:]
+
+
+def _combine_birthday_date_fields(
+    fields: list[tuple[str, str]],
+    *,
+    label: str,
+) -> list[tuple[str, str]]:
+    positions = {
+        field_label: index
+        for index, (field_label, _) in enumerate(fields)
+        if field_label in {"dag", "måned", "år"}
+    }
+    if "dag" not in positions or "måned" not in positions:
+        return fields
+    values = dict(fields)
+    day = values["dag"]
+    month = values["måned"]
+    year = values.get("år")
+    if not day.isdecimal() or not month.isdecimal() or (
+        year is not None and not year.isdecimal()
+    ):
+        return fields
+    rendered = f"{int(day):02d}.{int(month):02d}"
+    if year is not None:
+        rendered += f".{int(year)}"
+    first_position = min(positions.values())
+    combined = [
+        field
+        for field in fields
+        if field[0] not in {"dag", "måned", "år"}
+    ]
+    combined.insert(first_position, (label, rendered))
+    return combined
+
+
+def _normalize_confirmation_time_fields(
+    fields: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    labels = {label for label, _ in fields}
+    has_explicit_date = any(
+        label == "dato" and value != "fjern" for label, value in fields
+    )
+    has_local_time = bool({"dato", "tid"} & labels)
+    normalized = [
+        field
+        for field in fields
+        if not (has_explicit_date and field[0] == "dager fra nå")
+    ]
+    due_at = next(
+        (
+            (index, value)
+            for index, (label, value) in enumerate(normalized)
+            if label == "tidspunkt"
+        ),
+        None,
+    )
+    if due_at is not None and not has_local_time and due_at[1] != "fjern":
+        index, value = due_at
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("naive_due_at")
+            local = parsed.astimezone(_OSLO)
+        except (OverflowError, ValueError):
+            pass
+        else:
+            normalized[index:index + 1] = [
+                ("dato", local.strftime("%d.%m.%Y")),
+                ("tid", local.strftime("%H:%M")),
+            ]
+            has_local_time = True
+    if has_local_time:
+        normalized = [
+            field
+            for field in normalized
+            if field[0] not in {"tidspunkt", "tidssone"}
+        ]
+    return normalized
+
+
+def _deduplicate_confirmation_fields(
+    fields: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    deduplicated: list[tuple[str, str]] = []
+    seen: dict[str, str] = {}
+    for label, value in fields:
+        label_key = label.casefold()
+        value_key = confirmation_display_identity(label, value)
+        previous = seen.get(label_key)
+        if previous == value_key:
+            continue
+        if previous is not None:
+            raise UnsupportedConfirmationSummary(
+                "conflicting_confirmation_fields"
+            )
+        seen[label_key] = value_key
+        deduplicated.append((label, value))
+    return deduplicated
+
+
+def _format_confirmation_fields(
+    fields: tuple[tuple[str, str], ...] | list[tuple[str, str]],
+    *,
+    headline: str | None,
+) -> list[str]:
+    remaining = _deduplicate_confirmation_fields(
+        _normalize_confirmation_time_fields(list(fields))
+    )
+    lines: list[str] = []
+    if headline and len(headline) <= _MAX_BOLD_HEADLINE_LENGTH:
+        lines.append(f"**{headline}**")
+        for index, (label, value) in enumerate(remaining):
+            if label in _PRIMARY_CONFIRMATION_FIELDS and value == headline:
+                remaining.pop(index)
+                break
+
+    date_index = next(
+        (
+            index
+            for index, (label, value) in enumerate(remaining)
+            if label == "dato" and value != "fjern"
+        ),
+        None,
+    )
+    time_index = next(
+        (
+            index
+            for index, (label, value) in enumerate(remaining)
+            if label == "tid" and value != "fjern"
+        ),
+        None,
+    )
+    if date_index is not None:
+        _, date_value = remaining[date_index]
+        time_value = remaining[time_index][1] if time_index is not None else None
+        line = f"📅 {date_value}"
+        if time_value:
+            line += f" kl. {time_value}"
+        lines.append(line)
+        consumed = {date_index}
+        if time_index is not None:
+            consumed.add(time_index)
+        remaining = [
+            field for index, field in enumerate(remaining) if index not in consumed
+        ]
+    elif time_index is not None:
+        _, time_value = remaining.pop(time_index)
+        lines.append(f"🕒 {time_value}")
+
+    lines.extend(
+        f"**{_display_label(label)}:** {display_confirmation_value(label, value)}"
+        for label, value in remaining
+    )
+    return lines
+
+
+def _fallback_target_lines(target_guard: PendingTargetGuard) -> list[str]:
+    lines = [f"**{target_guard.label}**"]
+    detail = target_guard.display_detail
+    primary = _TARGET_PRIMARY_LABELS.get(target_guard.family)
+    prefixes = [target_guard.label]
+    if primary is not None:
+        prefixes.insert(0, f"{primary}: {target_guard.label}")
+    for prefix in prefixes:
+        if detail == prefix:
+            detail = ""
+            break
+        marker = f"{prefix}; "
+        if detail.startswith(marker):
+            detail = detail[len(marker):]
+            break
+    if detail:
+        lines.append(detail[:1].upper() + detail[1:])
+    return lines
+
+
+def _confirmation_icon(route: IntentResult) -> str:
+    inner_action = _inner_action(route)
+    if route.intent in {BotIntent.CALENDAR_CLEAR, BotIntent.MEMORY_DELETE}:
+        return "⚠️"
+    if route.intent in _DELETE_CONFIRMATION_INTENTS or inner_action in {
+        "delete",
+        "remove",
+    }:
+        return "🗑️"
+    if route.intent in _EDIT_CONFIRMATION_INTENTS or inner_action == "edit":
+        return "✏️"
+    if route.intent in _COMPLETE_CONFIRMATION_INTENTS:
+        return "✅"
+    if route.intent is BotIntent.CALENDAR_AUTH:
+        return "🔐"
+    if route.intent is BotIntent.CALENDAR_SYNC:
+        return "🔄"
+    if route.intent is BotIntent.POLL_VOTE:
+        return "🗳️"
+    return _DOMAIN_CONFIRMATION_ICONS.get(route.intent, "➕")
+
+
+def format_confirmation_card_heading(route: IntentResult) -> str:
+    operation = _confirmation_operation(route)
+    return f"{_confirmation_icon(route)} **Skal jeg {operation}?**"
+
+
+def format_confirmation_card_details(
+    route: IntentResult,
+    target_guard: PendingTargetGuard | None,
+) -> str:
+    if route.intent is BotIntent.CALENDAR_AUTH and _has_auth_secret(
+        route.payload
+    ):
+        return "Den oppgitte kalenderkoden sendes inn. Selve koden vises ikke."
+
+    if route.intent is BotIntent.CALENDAR_CLEAR and target_guard is not None:
+        count = next(
+            (
+                value
+                for label, value in target_guard.display_fields
+                if label == "oppføringer"
+            ),
+            None,
+        )
+        if count is not None:
+            if count == "1":
+                return "Hele **1 oppføring** blir slettet."
+            return f"Alle **{count} oppføringer** blir slettet."
+
+    lines: list[str] = []
+    if target_guard is not None and route.intent is not BotIntent.MEMORY_DELETE:
+        if target_guard.display_fields:
+            headline = target_guard.label
+            primary_label = _TARGET_PRIMARY_LABELS.get(target_guard.family)
+            primary_value = next(
+                (
+                    value
+                    for label, value in target_guard.display_fields
+                    if label == primary_label
+                ),
+                None,
+            )
+            if primary_value is not None and primary_value != headline:
+                headline = None
+            lines.extend(
+                _format_confirmation_fields(
+                    target_guard.display_fields,
+                    headline=headline,
+                )
+            )
+        else:
+            lines.extend(_fallback_target_lines(target_guard))
+
+    birthday_guard_has_date = bool(
+        route.intent is BotIntent.BIRTHDAY_CREATE
+        and target_guard is not None
+        and any(label == "dato" for label, _ in target_guard.display_fields)
+    )
+    if route.intent in {BotIntent.CALENDAR_SYNC, BotIntent.MEMORY_DELETE} or (
+        birthday_guard_has_date
+    ):
+        fields = []
+    else:
+        fields = _material_confirmation_fields(
+            route.payload,
+            none_means_remove=(
+                route.intent is BotIntent.WATCHLIST
+                and _inner_action(route) == "edit"
+            ),
+        )
+    if route.intent in {BotIntent.BIRTHDAY_CREATE, BotIntent.BIRTHDAY_EDIT}:
+        fields = _combine_birthday_date_fields(
+            fields,
+            label=(
+                "ny dato"
+                if route.intent is BotIntent.BIRTHDAY_EDIT
+                and target_guard is not None
+                else "dato"
+            ),
+        )
+    if route.intent is BotIntent.PROFILE:
+        profile_label = (
+            "status" if _inner_action(route) == "status" else "aktivitet"
+        )
+        fields = [
+            (profile_label if label == "verdi" else label, value)
+            for label, value in fields
+        ]
+    if (
+        route.intent is BotIntent.POLL_VOTE
+        and target_guard is not None
+        and any(label == "valg" for label, _ in target_guard.display_fields)
+    ):
+        fields = [field for field in fields if field[0] != "valg"]
+    if fields:
+        if lines and (
+            route.intent in _EDIT_CONFIRMATION_INTENTS
+            or _inner_action(route) == "edit"
+        ):
+            lines.extend(("", "**Endringer**"))
+        headline = None
+        if not lines:
+            headline = next(
+                (
+                    value
+                    for label, value in fields
+                    if label in _PRIMARY_CONFIRMATION_FIELDS
+                ),
+                None,
+            )
+        lines.extend(_format_confirmation_fields(fields, headline=headline))
+
+    return "\n".join(lines)
+
+
 def _lossless_chunks(text: str, limit: int) -> tuple[str, ...]:
     if limit <= 0:
         raise ConfirmationPreviewTooLarge()
@@ -379,7 +809,14 @@ def _lossless_chunks(text: str, limit: int) -> tuple[str, ...]:
     remaining = text
     while remaining:
         cut = min(limit, len(remaining))
-        while cut > 0 and remaining[:cut].endswith("\\"):
+        if cut < len(remaining):
+            newline = remaining.rfind("\n", 0, cut + 1)
+            if newline >= 0 and newline >= cut - 128:
+                cut = newline + 1
+        trailing_backslashes = len(remaining[:cut]) - len(
+            remaining[:cut].rstrip("\\")
+        )
+        if trailing_backslashes % 2:
             cut -= 1
         if cut == 0:
             raise ConfirmationPreviewTooLarge()
@@ -423,6 +860,69 @@ def format_confirmation_messages(
         )
         message = f"{prefix}\n\n" if prefix else ""
         message += header + piece + suffix
+        if len(message) > max_message_length:
+            raise ConfirmationPreviewTooLarge()
+        messages.append(message)
+    return tuple(messages)
+
+
+def format_confirmation_card_messages(
+    *,
+    heading: str,
+    details: str,
+    instruction: str,
+    optional_prefix: str,
+    max_messages: int,
+    max_message_length: int,
+) -> tuple[str, ...]:
+    if (
+        not isinstance(heading, str)
+        or not heading
+        or "\n" in heading
+        or len(heading) > 300
+        or max_messages < 1
+        or max_message_length < 1
+    ):
+        raise ConfirmationPreviewTooLarge()
+    continuation_marker = "↪ "
+    reserved = len(
+        f"{heading} _(del {max_messages} av {max_messages})_\n\n"
+        f"\n\n{instruction}"
+    ) + len(continuation_marker)
+    pieces = _lossless_chunks(
+        details,
+        max_message_length - reserved,
+    )
+    if len(pieces) > max_messages:
+        raise ConfirmationPreviewTooLarge()
+
+    messages: list[str] = []
+    total = len(pieces)
+    for index, piece in enumerate(pieces, start=1):
+        header = (
+            heading
+            if total == 1
+            else f"{heading} _(del {index} av {total})_"
+        )
+        suffix = instruction if index == total else ""
+        piece_prefix = continuation_marker if index > 1 and piece else ""
+        fixed_size = len(header) + len(piece_prefix) + len(piece) + len(suffix)
+        if piece:
+            fixed_size += 2
+        if suffix:
+            fixed_size += 2
+        prefix_budget = max_message_length - fixed_size - 2
+        prefix = (
+            sanitize_visible_prefix(optional_prefix, limit=max(0, prefix_budget))
+            if index == 1
+            else ""
+        )
+        message = f"{prefix}\n\n" if prefix else ""
+        message += header
+        if piece:
+            message += f"\n\n{piece_prefix}{piece}"
+        if suffix:
+            message += f"\n\n{suffix}"
         if len(message) > max_message_length:
             raise ConfirmationPreviewTooLarge()
         messages.append(message)
@@ -831,13 +1331,14 @@ class AIActionHandler:
     ) -> tuple[str, ...]:
         del message
         instruction = (
-            "Svar @inebotten ja for å bekrefte eller "
-            "@inebotten nei for å avbryte."
+            "Svar `@inebotten ja` for å bekrefte, eller "
+            "`@inebotten nei` for å avbryte."
         )
-        return format_confirmation_messages(
-            details=self._summary(route, target_guard),
+        return format_confirmation_card_messages(
+            heading=format_confirmation_card_heading(route),
+            details=format_confirmation_card_details(route, target_guard),
             instruction=instruction,
-            optional_prefix=prefix,
+            optional_prefix=("" if prefix == _STAGED_ACTION_COPY else prefix),
             max_messages=5,
             max_message_length=2000,
         )
@@ -1130,6 +1631,9 @@ __all__ = [
     "UnsupportedConfirmationSummary",
     "apply_pending_correction",
     "format_choice_label",
+    "format_confirmation_card_details",
+    "format_confirmation_card_heading",
+    "format_confirmation_card_messages",
     "format_confirmation_details",
     "format_confirmation_messages",
     "neutralize_confirmation_value",

@@ -3192,7 +3192,7 @@ def test_calendar_create_projects_parser_only_fields_and_none_values():
     monitor = DummyMonitor()
     monitor.nlp_parser.parse_task_with_recurrence_result = lambda *_args, **_kwargs: {
         "title": "Styremøte",
-        "date": "20.07.2030",
+        "date": "22.07.2030",
         "time": None,
         "type": "event",
         "recurrence": "weekly",
@@ -3200,17 +3200,17 @@ def test_calendar_create_projects_parser_only_fields_and_none_values():
         "rrule_day": "MO",
         "days_offset": 5,
         "description": "Saksliste",
-        "due_at": "2030-07-20T09:00:00+02:00",
+        "due_at": "2030-07-22T09:00:00+02:00",
     }
     result = IntentRouter(monitor, now_provider=lambda: NOW).route(
-        "møte Styremøte 20.07.2030", guild_id=123
+        "møte Styremøte 22.07.2030", guild_id=123
     )
 
     assert result.intent is BotIntent.CALENDAR_ITEM
     assert result.payload == {
         "calendar_item": {
             "title": "Styremøte",
-            "date": "20.07.2030",
+            "date": "22.07.2030",
             "type": "event",
             "recurrence": "weekly",
             "recurrence_day": "mandag",

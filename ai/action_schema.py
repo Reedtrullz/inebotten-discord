@@ -16,6 +16,11 @@ from types import MappingProxyType
 from typing import Mapping, TypeAlias
 from zoneinfo import ZoneInfo
 
+from core.intent_payloads import (
+    calendar_date_weekday_code,
+    canonical_recurrence_day_code,
+)
+
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -81,6 +86,8 @@ class SlotRule(str, Enum):
     NULLABLE_TEXT2000 = "NULLABLE_TEXT2000"
     RECURRENCE = "RECURRENCE"
     NULLABLE_RECURRENCE = "NULLABLE_RECURRENCE"
+    WEEKDAY = "WEEKDAY"
+    RRULE_DAY = "RRULE_DAY"
     OSLO = "OSLO"
     EVENT_TYPE = "EVENT_TYPE"
     MEDIA_TYPE = "MEDIA_TYPE"
@@ -135,8 +142,8 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType(
                 ("time", SlotRule.TIME),
                 ("type", SlotRule.EVENT_TYPE),
                 ("recurrence", SlotRule.RECURRENCE),
-                ("recurrence_day", SlotRule.S200),
-                ("rrule_day", SlotRule.S200),
+                ("recurrence_day", SlotRule.WEEKDAY),
+                ("rrule_day", SlotRule.RRULE_DAY),
                 ("days_offset", SlotRule.DAY_OFFSET),
                 ("description", SlotRule.TEXT2000),
             ),
@@ -425,6 +432,17 @@ def _validate_slot(name: str, value: object, rule: SlotRule) -> JsonValue:
         if result not in _RECURRENCES:
             raise ActionValidationError(f"invalid_slot:{name}")
         return result
+    if rule is SlotRule.WEEKDAY:
+        result = _string(value, 20, f"invalid_slot:{name}")
+        if canonical_recurrence_day_code(result) is None:
+            raise ActionValidationError(f"invalid_slot:{name}")
+        return result
+    if rule is SlotRule.RRULE_DAY:
+        result = _string(value, 20, f"invalid_slot:{name}")
+        day_code = canonical_recurrence_day_code(result)
+        if day_code is None:
+            raise ActionValidationError(f"invalid_slot:{name}")
+        return day_code
     if rule is SlotRule.OSLO:
         if value != "Europe/Oslo":
             raise ActionValidationError(f"invalid_slot:{name}")
@@ -557,6 +575,27 @@ def _validate_birthday(slots: Mapping[str, JsonValue]) -> None:
         raise ActionValidationError("invalid_birthday") from exc
 
 
+def _validate_calendar_recurrence(slots: Mapping[str, JsonValue]) -> None:
+    day_values = [
+        slots[name]
+        for name in ("recurrence_day", "rrule_day")
+        if name in slots
+    ]
+    if not day_values:
+        return
+    if slots.get("recurrence") not in {"weekly", "biweekly"}:
+        raise ActionValidationError("invalid_recurrence")
+    day_codes = {
+        canonical_recurrence_day_code(value) for value in day_values
+    }
+    if None in day_codes or len(day_codes) != 1:
+        raise ActionValidationError("invalid_recurrence")
+    if "date" in slots and calendar_date_weekday_code(str(slots["date"])) not in (
+        day_codes
+    ):
+        raise ActionValidationError("invalid_recurrence")
+
+
 def _validate_slots(action: ActionName, raw: object) -> Mapping[str, JsonValue]:
     if not isinstance(raw, dict):
         raise ActionValidationError("invalid_slots")
@@ -578,6 +617,8 @@ def _validate_slots(action: ActionName, raw: object) -> Mapping[str, JsonValue]:
         raise ActionValidationError("at_least_one_slot_required")
     if spec.temporal_family:
         _validate_temporal(validated, spec.temporal_family, action=action)
+    if action is ActionName.CALENDAR_CREATE:
+        _validate_calendar_recurrence(validated)
     if action in {ActionName.BIRTHDAY_CREATE, ActionName.BIRTHDAY_EDIT}:
         _validate_birthday(validated)
     return MappingProxyType(validated)
@@ -1138,6 +1179,8 @@ _ATOM_FORMATS = (
     "NULLABLE_TEXT2000=TEXT2000 or JSON null; "
     "RECURRENCE=literal daily, weekly, biweekly, monthly, or yearly; "
     "NULLABLE_RECURRENCE=RECURRENCE or JSON null; "
+    "WEEKDAY=known Norwegian or English weekday alias; "
+    "RRULE_DAY=canonical two-letter weekday code; "
     "OSLO=literal Europe/Oslo; "
     "EVENT_TYPE=literal event or task; "
     "MEDIA_TYPE=literal movie or series; "
