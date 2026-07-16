@@ -9,8 +9,9 @@ import asyncio
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Literal, Optional
 
 
 _BARE_TEMPORAL_WHAT_HAPPENS = re.compile(
@@ -18,6 +19,13 @@ _BARE_TEMPORAL_WHAT_HAPPENS = re.compile(
     r"(?:dag|morgen|morgon|morra|overmorgen|overmorgon)\s*[?.!]*",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAttempt:
+    status: Literal["ok", "empty", "unavailable"]
+    results: tuple[dict, ...]
+    provider: Literal["tavily", "google", "duckduckgo"] | None
 
 
 class SearchManager:
@@ -61,12 +69,18 @@ class SearchManager:
             "has_deep_content": len(body) > 500,
         }
         
-    async def search(self, query: str, max_results: int = 3, region: str = "no-no") -> List[Dict]:
+    async def search_with_status(
+        self,
+        query: str,
+        max_results: int = 3,
+        region: str = "no-no",
+    ) -> SearchAttempt:
         """
         Perform a web search with multiple fallbacks.
         Order: Tavily (if key) -> Google -> DuckDuckGo
         """
-        # 1. Try Tavily (Pro AI Search)
+        bounded_max = max(1, min(int(max_results), 3))
+        completed_provider = None
         if self.tavily_api_key:
             try:
                 from tavily import TavilyClient
@@ -78,13 +92,18 @@ class SearchManager:
                     lambda: client.search(
                         query=query,
                         search_depth="advanced",
-                        max_results=max_results,
+                        max_results=bounded_max,
                         include_raw_content=True
                     )
                 )
+                completed_provider = "tavily"
                 if response and response.get('results'):
                     print("[SEARCH] Tavily advanced search succeeded")
-                    return [self._normalize_result(r, "tavily") for r in response["results"]]
+                    results = tuple(
+                        self._normalize_result(r, "tavily")
+                        for r in response["results"][:bounded_max]
+                    )
+                    return SearchAttempt("ok", results, "tavily")
             except Exception as exc:
                 print(
                     "[SEARCH] Tavily search failed: "
@@ -99,16 +118,18 @@ class SearchManager:
             # googlesearch-python returns an iterator of URLs
             urls = await loop.run_in_executor(
                 None,
-                lambda: list(google_search(query, num_results=max_results, lang="no"))
+                lambda: list(google_search(query, num_results=bounded_max, lang="no"))
             )
+            completed_provider = "google"
             if urls:
-                return [
+                results = tuple(
                     self._normalize_result(
                         {"title": "Søkeresultat", "url": url, "body": "Se kilde for detaljer."},
                         "google",
                     )
-                    for url in urls
-                ]
+                    for url in urls[:bounded_max]
+                )
+                return SearchAttempt("ok", results, "google")
         except Exception as exc:
             print(
                 "[SEARCH] Google search failed: "
@@ -124,15 +145,36 @@ class SearchManager:
             loop = asyncio.get_running_loop()
             results = await loop.run_in_executor(
                 None,
-                lambda: list(self.ddgs.text(query, region=region, max_results=max_results))
+                lambda: list(self.ddgs.text(query, region=region, max_results=bounded_max))
             )
-            return [self._normalize_result(result, "duckduckgo") for result in results]
+            completed_provider = "duckduckgo"
+            normalized = tuple(
+                self._normalize_result(result, "duckduckgo")
+                for result in results[:bounded_max]
+            )
+            if normalized:
+                return SearchAttempt("ok", normalized, "duckduckgo")
         except Exception as exc:
             print(
                 "[SEARCH] All search providers failed: "
                 f"{type(exc).__name__}"
             )
-            return []
+        if completed_provider is not None:
+            return SearchAttempt("empty", (), completed_provider)
+        return SearchAttempt("unavailable", (), None)
+
+    async def search(
+        self,
+        query: str,
+        max_results: int = 3,
+        region: str = "no-no",
+    ) -> List[Dict]:
+        attempt = await self.search_with_status(
+            query,
+            max_results=max_results,
+            region=region,
+        )
+        return list(attempt.results)
 
     async def get_news(self, query: str = "", max_results: int = 3, region: str = "no-no") -> List[Dict]:
         """

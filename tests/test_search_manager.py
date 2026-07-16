@@ -90,6 +90,7 @@ async def test_search_failover_logs_neither_query_nor_exception_body(
     manager = SearchManager()
     manager.tavily_api_key = "configured"
     assert await manager.search(query_canary) == []
+    assert (await manager.search_with_status(query_canary)).status == "unavailable"
 
     output = capsys.readouterr().out
     assert query_canary not in output
