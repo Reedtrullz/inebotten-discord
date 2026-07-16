@@ -24,6 +24,7 @@ from core.pending_targets import (
     PendingTargetResolver,
     conversation_turn_scope,
 )
+from core.calendar_fact_check_store import CalendarFactCheckTarget
 
 
 NOW = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("Europe/Oslo"))
@@ -94,6 +95,9 @@ def state():
 @pytest.fixture
 def resolver(state):
     calendar = SimpleNamespace(
+        snapshot_target_items=Mock(
+            side_effect=lambda *, reference_time: tuple(deepcopy(state.calendar))
+        ),
         snapshot_pending_items=Mock(
             side_effect=lambda *, reference_time: tuple(deepcopy(state.calendar))
         ),
@@ -139,6 +143,65 @@ def resolver(state):
         ),
     )
     return PendingTargetResolver(monitor, coordinator=MutationCoordinator())
+
+
+def test_calendar_fact_check_snapshot_prefers_exact_title(resolver, state):
+    state.calendar = [
+        _calendar_row("calendar-1", "Rosenborg - Fredrikstad"),
+        _calendar_row("calendar-2", "Trening Rosenborg - Fredrikstad"),
+    ]
+    state.calendar[0].update(date="26.07.2026", time="09:00")
+    targets = resolver.snapshot_calendar_fact_check_targets(
+        "Rosenborg - Fredrikstad",
+        reference_time=NOW,
+    )
+    assert targets == (
+        CalendarFactCheckTarget(
+            stable_id="calendar-1",
+            revision=targets[0].revision,
+            title="Rosenborg - Fredrikstad",
+            date="26.07.2026",
+            time="09:00",
+        ),
+    )
+    assert resolver.revalidate_calendar_fact_check_target(
+        targets[0], reference_time=NOW
+    ) == targets[0]
+
+
+def test_calendar_fact_check_snapshot_returns_overflow_sentinel(resolver, state):
+    state.calendar = [_calendar_row(f"cal-{i}", f"Kamp {i}") for i in range(6)]
+    assert len(resolver.snapshot_calendar_fact_check_targets(
+        "Kamp", reference_time=NOW
+    )) == 6
+    assert resolver.snapshot_calendar_fact_check_targets(
+        "Ukjent", reference_time=NOW
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda rows: rows[0].update(id="cal-b"),
+        lambda rows: rows[0].update(date="2026-07-16"),
+        lambda rows: rows[0].update(time="9"),
+    ),
+)
+def test_calendar_fact_check_snapshot_rejects_duplicate_or_malformed_rows(
+    resolver, state, mutation
+):
+    mutation(state.calendar)
+    with pytest.raises(PendingTargetError):
+        resolver.snapshot_calendar_fact_check_targets("", reference_time=NOW)
+
+
+def test_calendar_fact_check_revalidation_detects_revision_change(resolver, state):
+    snapshot = resolver.snapshot_calendar_fact_check_targets(
+        "Lege", reference_time=NOW
+    )[0]
+    state.calendar[0]["time"] = "13:00"
+    with pytest.raises(PendingTargetError, match="target_changed"):
+        resolver.revalidate_calendar_fact_check_target(snapshot, reference_time=NOW)
 
 
 def _route(

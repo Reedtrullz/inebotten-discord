@@ -10,6 +10,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 
+from core.calendar_fact_check_store import CalendarFactCheckTarget
 from core.confirmation_display import confirmation_display_identity
 from core.intent_models import BotIntent, IntentResult
 from core.message_context import ConversationKey, RoutingContext, domain_scope_id
@@ -540,6 +541,93 @@ class PendingTargetResolver:
                 reference_time=reference_time
             )
         )
+
+    def _calendar_fact_check_rows(
+        self,
+        reference_time: datetime,
+    ) -> tuple[dict[str, object], ...]:
+        self._aware(reference_time)
+        return self._rows(
+            self.monitor.calendar.snapshot_target_items(
+                reference_time=reference_time
+            )
+        )
+
+    def _calendar_fact_check_target(
+        self,
+        row: Mapping[str, object],
+    ) -> CalendarFactCheckTarget:
+        stable_id = self._id(row, "id", "item_id")
+        title = row.get("title")
+        date_value = row.get("date")
+        time_value = row.get("time")
+        if not isinstance(title, str) or not title.strip():
+            raise PendingTargetError("invalid_target_state")
+        if not isinstance(date_value, str):
+            raise PendingTargetError("invalid_target_state")
+        try:
+            parsed_date = datetime.strptime(date_value, "%d.%m.%Y")
+        except ValueError:
+            raise PendingTargetError("invalid_target_state") from None
+        if parsed_date.strftime("%d.%m.%Y") != date_value:
+            raise PendingTargetError("invalid_target_state")
+        if time_value is not None:
+            if not isinstance(time_value, str):
+                raise PendingTargetError("invalid_target_state")
+            try:
+                parsed_time = datetime.strptime(time_value, "%H:%M")
+            except ValueError:
+                raise PendingTargetError("invalid_target_state") from None
+            if parsed_time.strftime("%H:%M") != time_value:
+                raise PendingTargetError("invalid_target_state")
+        return CalendarFactCheckTarget(
+            stable_id=stable_id,
+            revision=self._digest(self._project(row, self._CALENDAR_FIELDS)),
+            title=title.strip(),
+            date=date_value,
+            time=time_value,
+        )
+
+    def snapshot_calendar_fact_check_targets(
+        self,
+        query: str,
+        *,
+        reference_time: datetime,
+        limit: int = 6,
+    ) -> tuple[CalendarFactCheckTarget, ...]:
+        if not isinstance(query, str) or isinstance(limit, bool) or limit <= 0:
+            raise PendingTargetError("invalid_target_state")
+        rows = self._calendar_fact_check_rows(reference_time)
+        targets = tuple(self._calendar_fact_check_target(row) for row in rows)
+        stable_ids = tuple(target.stable_id for target in targets)
+        if len(set(stable_ids)) != len(stable_ids):
+            raise PendingTargetError("ambiguous_target")
+        folded = query.strip().casefold()
+        exact = tuple(
+            target for target in targets if target.title.casefold() == folded
+        )
+        matches = exact or tuple(
+            target for target in targets if folded in target.title.casefold()
+        )
+        return matches[:limit]
+
+    def revalidate_calendar_fact_check_target(
+        self,
+        snapshot: CalendarFactCheckTarget,
+        *,
+        reference_time: datetime,
+    ) -> CalendarFactCheckTarget:
+        if not isinstance(snapshot, CalendarFactCheckTarget):
+            raise PendingTargetError("target_changed")
+        rows = self._calendar_fact_check_rows(reference_time)
+        matches = tuple(
+            self._calendar_fact_check_target(row)
+            for row in rows
+            if self._id(row, "id", "item_id") == snapshot.stable_id
+        )
+        if len(matches) != 1 or matches[0] != snapshot:
+            raise PendingTargetError("target_changed")
+        return matches[0]
 
     def _reminder_rows(self, scope_id: int) -> tuple[dict[str, object], ...]:
         return self._rows(
