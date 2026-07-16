@@ -16,6 +16,7 @@ from tests.nlu_harness import (
     READ_ONLY,
     EvalCase,
     EvalResult,
+    EVAL_FAMILIES,
     ParserProbe,
     aggregate_intent_report,
     build_production_router,
@@ -51,6 +52,11 @@ def corpus_line(**overrides):
 
 
 CORPUS_PATH = Path(__file__).parent / "fixtures" / "nlu_contract_v1.jsonl"
+EXECUTABLE_CASES = tuple(
+    case
+    for case in load_cases(CORPUS_PATH)
+    if case.expected_intent not in {"ai_chat", "clarify"}
+)
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-0.01", "1.01"])
@@ -193,14 +199,120 @@ def test_load_cases_accepts_calendar_clear_family(tmp_path: Path):
     assert case.fixture is EvalFixture.EMPTY
 
 
+@pytest.mark.parametrize(
+    ("expected_intent", "expected_payload"),
+    (
+        ("calendar_delete", {}),
+        ("calendar_delete", {"calendar_target.unrelated": 1}),
+        ("poll_delete", {}),
+        ("reminder_delete", {"reminder.action": "delete"}),
+        ("memory_delete", {}),
+        ("watchlist", {"watchlist.action": "remove"}),
+    ),
+)
+def test_load_cases_rejects_unlabeled_critical_destructive_cases(
+    tmp_path,
+    expected_intent,
+    expected_payload,
+):
+    path = tmp_path / "cases.jsonl"
+    path.write_text(
+        corpus_line(
+            family="negative",
+            expected_intent=expected_intent,
+            expected_payload=expected_payload,
+            critical=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="critical destructive case requires action and target payload",
+    ):
+        load_cases(path)
+
+
+def test_destructive_precision_never_credits_an_unlabeled_true_intent():
+    report = aggregate_intent_report(
+        [
+            eval_result(
+                id="unlabeled-delete",
+                family="calendar_delete",
+                expected_intent="calendar_delete",
+                actual_intent="calendar_delete",
+                expected_risk="destructive",
+                actual_risk="destructive",
+                payload_labeled=False,
+                payload_match=True,
+                critical=True,
+            )
+        ]
+    )
+
+    assert report["metrics"]["destructive_action_precision"] == {
+        "numerator": 0,
+        "denominator": 1,
+        "rate": 0.0,
+        "defined": True,
+    }
+
+
 def test_versioned_corpus_loads_the_declared_baseline():
     cases = load_cases(CORPUS_PATH)
 
-    assert len(cases) == 27
+    assert len(cases) == 375
     assert {case.locale for case in cases} == {"nb", "nn", "en"}
+    assert {case.family for case in cases} == EVAL_FAMILIES
     assert cases[0].id == "nb-reminder-husk-mandag"
-    assert cases[-1].id == "en-negated-reminder-delete"
-    assert sum(case.critical for case in cases) == 25
+    assert (
+        cases[-1].id
+        == "en-calendar-clear-possessive-natural"
+    )
+    assert sum(case.critical for case in cases) == 367
+    assert sum(case.family == "negative" for case in cases) == 75
+
+
+@pytest.mark.parametrize(
+    "case",
+    EXECUTABLE_CASES,
+    ids=lambda case: case.id,
+)
+def test_valid_write_plus_every_executable_contract_case_requires_split(case):
+    result = build_production_router(case.fixture).route_help_example(
+        f"create a meeting tomorrow and {case.text}"
+    )
+
+    assert result.intent is BotIntent.CLARIFY, case.id
+    assert result.reason == "multiple_actions_require_split", case.id
+    assert "calendar_item" not in result.payload, case.id
+
+
+def test_sequenced_contract_invariant_has_no_context_free_exemptions():
+    # Even the bare poll-vote token is safely recognized by the parser-aware
+    # probe when its declared ACTIVE_POLL fixture supplies the needed context;
+    # the context-free ActionBridge grammar does not need to treat every bare
+    # number as a second action.
+    assert len(EXECUTABLE_CASES) == 296
+
+
+def test_production_evaluator_relative_dates_do_not_read_wall_clock(monkeypatch):
+    import core.intent_router as intent_router_module
+
+    class ForbiddenWallClock:
+        @classmethod
+        def now(cls, *args, **kwargs):
+            raise AssertionError("evaluation must use its injected reference")
+
+    monkeypatch.setattr(intent_router_module, "datetime", ForbiddenWallClock)
+    result, parser_names = build_production_router(
+        EvalFixture.EMPTY
+    ).evaluate("møte i morgen kl 14", guild_id=123)
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.CALENDAR_ITEM
+    assert result.payload["calendar_item"]["date"] == "15.07.2026"
 
 
 def test_evaluator_uses_router_result_and_labeled_payload():
@@ -474,37 +586,78 @@ def test_zero_denominators_are_explicitly_undefined():
 
 
 def passing_report() -> dict[str, object]:
-    return aggregate_intent_report(
-        [
-            eval_result(id="negative", family="negative"),
-            eval_result(
-                id="delete",
-                locale="nn",
-                family="calendar_clear",
-                expected_intent="calendar_clear",
-                actual_intent="calendar_clear",
-                expected_risk="destructive",
-                actual_risk="destructive",
-                payload_labeled=True,
-                critical=True,
-            ),
-            eval_result(
-                id="add",
-                locale="en",
-                family="calendar_create",
-                expected_intent="calendar_item",
-                actual_intent="calendar_item",
-                expected_risk="additive",
-                actual_risk="additive",
-                payload_labeled=True,
-                critical=True,
-            ),
-        ]
+    rows = [
+        eval_result(
+            id=f"family-{family}",
+            family=family,
+            locale=("nb", "nn", "en")[index % 3],
+        )
+        for index, family in enumerate(sorted(EVAL_FAMILIES))
+    ]
+    rows.extend(
+        eval_result(id=f"negative-{index}", family="negative")
+        for index in range(9)
     )
+    rows.extend(
+        eval_result(id=f"coverage-{index}", family="chat")
+        for index in range(4)
+    )
+    clear_index = next(
+        index for index, row in enumerate(rows) if row.family == "calendar_clear"
+    )
+    rows[clear_index] = eval_result(
+        id="delete",
+        locale="nn",
+        family="calendar_clear",
+        expected_intent="calendar_clear",
+        actual_intent="calendar_clear",
+        expected_risk="destructive",
+        actual_risk="destructive",
+        payload_labeled=True,
+        critical=True,
+    )
+    create_index = next(
+        index for index, row in enumerate(rows) if row.family == "calendar_create"
+    )
+    rows[create_index] = eval_result(
+        id="add",
+        locale="en",
+        family="calendar_create",
+        expected_intent="calendar_item",
+        actual_intent="calendar_item",
+        expected_risk="additive",
+        actual_risk="additive",
+        payload_labeled=True,
+        critical=True,
+    )
+    return aggregate_intent_report(rows)
 
 
 def test_strict_gate_accepts_a_complete_perfect_report():
     assert _report_passes(passing_report(), min_overall=0.98, min_locale=0.95)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda report: report["totals"].update({"cases": 49}),
+        lambda report: report["totals"].update({"negative_cases": 9}),
+        lambda report: report["by_locale"]["nn"].update(
+            {"denominator": 2}
+        ),
+        lambda report: report["by_family"]["poll_create"].update(
+            {"numerator": 0, "rate": 0.0}
+        ),
+        lambda report: report["by_family"]["birthday"].update(
+            {"defined": False, "denominator": 0, "rate": 0.0}
+        ),
+    ],
+)
+def test_strict_gate_rejects_thin_or_incomplete_coverage(mutate):
+    report = deepcopy(passing_report())
+    mutate(report)
+
+    assert not _report_passes(report, min_overall=0.98, min_locale=0.95)
 
 
 @pytest.mark.parametrize(

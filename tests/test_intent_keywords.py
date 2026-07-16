@@ -57,10 +57,29 @@ EXPECTED_KEYWORDS = {
     "PROFILE_KEYWORDS": (
         "status", "spiller", "ser på", "playing", "watching",
     ),
-    "WORD_OF_DAY_KEYWORDS": ("dagens ord", "word of the day", "lære meg et ord"),
-    "AURORA_KEYWORDS": ("nordlys", "aurora", "nordly"),
-    "SCHOOL_HOLIDAYS_KEYWORDS": ("skoleferie", "skoleferier", "vinterferie", "påskeferie"),
-    "DAILY_DIGEST_KEYWORDS": ("daglig oppsummering", "daily digest", "oppsummering", "summary"),
+    "WORD_OF_DAY_KEYWORDS": (
+        "dagens ord", "word of the day", "lær meg et ord",
+        "lære meg et ord", "teach me a word", "today's word",
+        "today’s word",
+    ),
+    "AURORA_KEYWORDS": (
+        "nordlys", "aurora", "nordly", "nordlysvarsel", "nordlysvarselet",
+        "aurora forecast", "northern lights forecast",
+    ),
+    "SCHOOL_HOLIDAYS_KEYWORDS": (
+        "skoleferie", "skoleferier", "skoleferien", "skoleferiene",
+        "vinterferie", "vinterferien", "påskeferie", "påskeferien",
+        "sommerferie", "sommerferien", "høstferie", "høstferien",
+        "haustferie", "haustferien", "school holiday", "school holidays",
+        "winter holiday", "winter holidays", "winter break",
+        "easter holiday", "easter holidays", "easter break",
+        "summer holiday", "summer holidays", "summer vacation", "summer break",
+        "autumn holiday", "autumn holidays", "autumn break", "fall break",
+    ),
+    "DAILY_DIGEST_KEYWORDS": (
+        "daglig oppsummering", "dagens oppsummering", "daily digest",
+        "daily summary", "oppsummering", "summary",
+    ),
     "POLL_EDIT_KEYWORDS": ("endre poll", "edit poll", "endre avstemning", "rediger poll"),
     "POLL_DELETE_KEYWORDS": ("slett poll", "delete poll", "fjern avstemning", "slett avstemning"),
     "POLL_CLOSE_KEYWORDS": ("lukk poll", "close poll", "avslutt avstemning", "steng poll"),

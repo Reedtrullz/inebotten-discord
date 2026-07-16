@@ -122,8 +122,8 @@ class Localization:
                 'en': '❌ Item #{num} not found'
             },
             'calendar_edit_invalid': {
-                'no': '❌ Ugyldig redigeringsformat. Bruk: endre [nummer] [felt]: [verdi]',
-                'en': '❌ Invalid edit format. Use: edit [number] [field]: [value]'
+                'no': '❌ Jeg trenger både hvilken oppføring du mener og hva du vil endre.',
+                'en': '❌ Tell me which item you mean and what you want to change.'
             },
             'calendar_search_results': {
                 'no': '📅 Søkeresultater:',
@@ -134,8 +134,8 @@ class Localization:
                 'en': '❌ No matches for \'{query}\''
             },
             'invalid_event_num': {
-                'no': '❌ Ugyldig nummer. Bruk: slett 1',
-                'en': '❌ Invalid number. Use: delete 1'
+                'no': '❌ Jeg fant ikke det nummeret. Fortell hvilken oppføring du mener.',
+                'en': '❌ I could not find that number. Tell me which item you mean.'
             },
             'upcoming_events': {
                 'no': '📋 **Kommende arrangementer**',
@@ -310,8 +310,8 @@ class Localization:
                 'en': '{num}. {question}'
             },
             'poll_list_hint': {
-                'no': 'Bruk "@inebotten stem [nummer]" for å stemme',
-                'en': 'Use "@inebotten vote [number]" to vote'
+                'no': 'Fortell hvilket alternativ du vil stemme på. «Stem 1» er nok.',
+                'en': 'Tell me which option you want. “Vote 1” is enough.'
             },
             'poll_no_permission': {
                 'no': '🚫 Du har ikke tilgang til å gjøre dette.',
@@ -336,8 +336,8 @@ class Localization:
                 'en': 'Sorry, no suggestions found right now! 🎬'
             },
             'watchlist_help': {
-                'no': '🎬 Watchlist-kommandoer:\n• "@inebotten hva skal vi se?"\n• "@inebotten filmforslag"\n• "@inebotten watchlist status"',
-                'en': '🎬 Watchlist commands:\n• "@inebotten what should we watch?"\n• "@inebotten movie suggestion"\n• "@inebotten watchlist status"'
+                'no': '🎬 Dette kan du spørre om:\n• «Hva skal vi se?»\n• «Kan du vise watchlista mi?»\n• «Kan du legge Inception på watchlista mi?»',
+                'en': '🎬 Things you can ask:\n• “What should we watch?”\n• “Can you show my watchlist?”\n• “Can you add Inception to my watchlist?”'
             },
             
             # Quote
@@ -374,8 +374,8 @@ class Localization:
                 'en': '❌ Quote #{num} not found'
             },
             'no_quotes': {
-                'no': 'Ingen sitater lagret ennå! 💬\n\nSi "@inebotten husk dette: [noe morsomt]" for å lagre!',
-                'en': 'No quotes saved yet! 💬\n\nSay "@inebotten remember this: [something funny]" to save!'
+                'no': 'Ingen sitater lagret ennå! 💬\n\nDu kan for eksempel si: «Husk dette: noe morsomt.»',
+                'en': 'No quotes saved yet! 💬\n\nFor example, say: “Remember this: something funny.”'
             },
             
             # Word of Day
@@ -448,34 +448,34 @@ class Localization:
                 'en': '⏳ I\'m sending too many messages. Wait a bit...'
             },
             'unknown_command': {
-                'no': '🤔 Jeg forstod ikke helt. Prøv "@inebotten hjelp"',
-                'en': '🤔 I didn\'t quite understand. Try "@inebotten help"'
+                'no': '🤔 Jeg forstod ikke helt. Beskriv gjerne målet med egne ord, eller spør «hva kan du hjelpe meg med?»',
+                'en': '🤔 I did not quite understand. Describe the goal in your own words, or ask “what can you do?”'
             },
             
             # Help
             'help_title': {
-                'no': '🤖 **Inebotten Kommandoer**',
-                'en': '🤖 **Inebotten Commands**'
+                'no': '🤖 **Inebotten – eksempler og muligheter**',
+                'en': '🤖 **Inebotten – examples and capabilities**'
             },
             'help_events': {
-                'no': '📅 **Arrangementer:**\n• "@inebotten kamp i kveld kl 20"\n• "@inebotten arrangementer" / "events"\n• "@inebotten slett 1" / "delete 1"',
-                'en': '📅 **Events:**\n• "@inebotten match tonight at 8pm"\n• "@inebotten events" / "arrangementer"\n• "@inebotten delete 1" / "slett 1"'
+                'no': '📅 **Arrangementer:** Opprett, finn og endre kalenderoppføringer.',
+                'en': '📅 **Events:** Create, find, and change calendar entries.'
             },
             'help_reminders': {
-                'no': '⏰ **Påminnelser:**\n• "@inebotten påminnelse kjøpe melk"\n• "@inebotten ferdig påminnelse 1" / "done reminder 1"\n• "@inebotten påminnelser" / "reminders"',
-                'en': '⏰ **Reminders:**\n• "@inebotten reminder buy milk"\n• "@inebotten done reminder 1" / "ferdig påminnelse 1"\n• "@inebotten reminders" / "påminnelser"'
+                'no': '⏰ **Påminnelser:** Opprett og følg opp personlige påminnelser.',
+                'en': '⏰ **Reminders:** Create and follow up personal reminders.'
             },
             'help_birthdays': {
-                'no': '🎂 **Bursdager:**\n• "@inebotten bursdag 15.05"\n• "@inebotten bursdager" / "birthdays"',
-                'en': '🎂 **Birthdays:**\n• "@inebotten birthday May 15"\n• "@inebotten birthdays" / "bursdager"'
+                'no': '🎂 **Bursdager:** Registrer og vis bursdager.',
+                'en': '🎂 **Birthdays:** Register and view birthdays.'
             },
             'help_fun': {
-                'no': '🎉 **Moro:**\n• "@inebotten hvor lenge til jul" / "countdown to christmas"\n• "@inebotten avstemning Pizza eller burger?"\n• "@inebotten filmforslag" / "movie suggestion"\n• "@inebotten sitat" / "quote"\n• "@inebotten dagens ord" / "word of the day"\n• "@inebotten nordlys" / "aurora"\n• "@inebotten skoleferie" / "school holidays"\n• "@inebotten bitcoin pris" / "btc price"\n• "@inebotten kompliment @user" / "compliment @user"\n• "@inebotten horoskop vannmannen" / "horoscope aquarius"\n• "@inebotten regn ut 2+2" / "calculate 2+2"\n• "@inebotten 100 USD til NOK" / "convert 100 USD to NOK"\n• "@inebotten forkort [URL]" / "shorten [URL]"\n• "@inebotten daglig oppsummering" / "daily digest"',
-                'en': '🎉 **Fun:**\n• "@inebotten countdown to christmas" / "hvor lenge til jul"\n• "@inebotten poll Pizza or burger?"\n• "@inebotten movie suggestion" / "filmforslag"\n• "@inebotten quote" / "sitat"\n• "@inebotten word of the day" / "dagens ord"\n• "@inebotten aurora" / "nordlys"\n• "@inebotten school holidays" / "skoleferie"\n• "@inebotten btc price" / "bitcoin pris"\n• "@inebotten compliment @user" / "kompliment @user"\n• "@inebotten horoscope aquarius" / "horoskop vannmannen"\n• "@inebotten calculate 2+2" / "regn ut 2+2"\n• "@inebotten convert 100 USD to NOK" / "100 USD til NOK"\n• "@inebotten shorten [URL]" / "forkort [URL]"\n• "@inebotten daily digest" / "daglig oppsummering"'
+                'no': '🎉 **Moro:** Hent nordlys, priser, horoskop og andre lette funksjoner.',
+                'en': '🎉 **Fun:** Get aurora, prices, horoscopes, and other light features.'
             },
             'help_profile': {
-                'no': '👤 **Profil:**\n• "@inebotten status online/dnd/idle"\n• "@inebotten spiller [spill]" / "ser på [film]"',
-                'en': '👤 **Profile:**\n• "@inebotten status online/dnd/idle"\n• "@inebotten playing [game]" / "watching [movie]"'
+                'no': '👤 **Profil:** Endre Inebotten-status og aktivitet.',
+                'en': '👤 **Profile:** Change Inebotten status and activity.'
             },
             'help_footer_tip': {
                 'no': '\n💡 Jeg forstår både norsk og engelsk!',

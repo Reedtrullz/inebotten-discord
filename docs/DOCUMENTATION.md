@@ -27,7 +27,7 @@
 - **Pålitelighet** - Lokale fallbacks når AI er utilgjengelig
 - **Skalerbarhet** - Enkel å utvide med nye funksjoner
 - **Personalisering** - Husker brukere og tilpasser seg
-- **Naturlig språk** - Ingen rigid kommando-struktur
+- **Naturlig språk** - Målte varianter med konservativ avvisning når beviset er for svakt
 
 ### Teknisk Stack
 
@@ -47,73 +47,24 @@
 
 ### Høynivå Arkitektur
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                                   BRUKERGRENSESNITT                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │   Discord    │  │   Google     │  │   LM Studio  │  │    MET.no    │              │
-│  │   (Chat)     │  │  Calendar    │  │    (AI)      │  │   (Vær)      │              │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘              │
-└─────────┼─────────────────┼─────────────────┼─────────────────┼──────────────────────┘
-          │                 │                 │                 │
-          ▼                 ▼                 ▼                 ▼
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                                      BOT LAG                                         │
-│  ┌───────────────────────────────────────────────────────────────────────────────┐   │
-│  │                         Message Monitor (message_monitor.py)                   │   │
-│  │                         ─────────────────────────────────                      │   │
-│  │  • Mention-deteksjon    • Kommandoruting    • AI-fallback                    │   │
-│  └───────────────────────────────────────────────────────────────────────────────┘   │
-│                                         │                                            │
-│                    ┌────────────────────┼────────────────────┐                        │
-│                    ▼                    ▼                    ▼                        │
-│         ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐               │
-│         │  Natural Lang   │  │  Personality    │  │  Feature        │               │
-│         │  Parser         │  │  System         │  │  Handlers       │               │
-│         └─────────────────┘  └─────────────────┘  └─────────────────┘               │
-└─────────────────────────────────────────────────────────────────────────────────────┘
-                                          │
-┌─────────────────────────────────────────▼────────────────────────────────────────────┐
-│                                      DATA LAG                                        │
-│                                                                                      │
-│   ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐                  │
-│   │  Calendar Store  │  │   User Memory    │  │   GCal Cache     │                  │
-│   │  (JSON)          │  │   (JSON)         │  │   (OAuth)        │                  │
-│   └──────────────────┘  └──────────────────┘  └──────────────────┘                  │
-│                                                                                      │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+```text
+Discord-melding (mention required)
+  -> MessageMonitor
+  -> normalisering + speech-act-sikkerhet
+  -> typede deterministiske kandidater
+  -> felles risiko-arbiter
+     -> policy-autorisert eksplisitt rute -> parse-once handler
+     -> auth/destructive/inferred write -> scoped pending action
+     -> fallback -> LM Studio/OpenRouter chat
+        -> valgfritt inert modellforslag -> samme arbiter/pending
+
+Handlere -> lokale stores / Google Calendar / eksterne lese-API-er
+AI-chat  -> allowlistet brukerminne + rutefiltrert samtalehistorikk
 ```
 
 ### Meldingsflyt
 
-```
-┌─────────┐     ┌─────────────┐     ┌─────────────────┐     ┌──────────────┐
-│  Bruker │────▶│   Discord   │────▶│  Message Monitor │────▶│  Kommando-   │
-│  Input  │     │   Gateway   │     │  (process_msg)  │     │  Deteksjon   │
-└─────────┘     └─────────────┘     └─────────────────┘     └──────┬───────┘
-                                                                   │
-              ┌────────────────────────────────────────────────────┼──────────────┐
-              │                                                    │              │
-        ┌─────▼──────┐  ┌──────────┐  ┌──────────┐         ┌─────▼──────┐  ┌──▼──────┐
-        │   Intent   │  │ Natural  │  │ Kalender │         │   Andre    │  │   AI    │
-        │   Sjekk    │  │ Språk    │  │ Kommando │         │  Kommando  │  │  Chat   │
-        └─────┬──────┘  └────┬─────┘  └────┬─────┘         └─────┬──────┘  └────┬────┘
-              │              │             │                     │            │
-              └──────────────┴─────────────┴─────────────────────┘            │
-                              │                                              │
-                    ┌─────────▼──────────┐                      ┌───────────▼──────────┐
-                    │  Calendar Manager  │                      │   AI Response Flow   │
-                    │  • Legg til/slett  │                      │   • Bygg kontekst    │
-                    │  • Fullfør         │                      │   • Kall bridge      │
-                    │  • Sync til GCal   │                      │   • Returner svar    │
-                    └─────────┬──────────┘                      └───────────┬──────────┘
-                              │                                            │
-                    ┌─────────▼──────────┐                      ┌───────────▼──────────┐
-                    │   JSON Lagring     │                      │   LM Studio (gemma)  │
-                    │  (data/calendar.   │                      │   eller lokal fallback│
-                    │       json)        │                      │                      │
-                    └────────────────────┘                      └──────────────────────┘
-```
+Meldingsflyten følger samme diagram over. Det finnes ikke lenger parallelle kommandosnarveier som kan hoppe over typed payload-validering, arbiter eller bekreftelsesregler.
 
 ---
 
@@ -159,7 +110,7 @@ Du pratar med {author_name}.
 
 ### 3. Message Monitor (`message_monitor.py`)
 
-**Formål:** Kjernen i meldingshåndtering og kommando-ruting (~950 linjer)
+**Formål:** Kjernen i meldingshåndtering, sikker ruting og dispatch
 
 **Nøkkelmetoder:**
 
@@ -167,19 +118,19 @@ Du pratar med {author_name}.
 |--------|-------------|
 | `is_mention()` | Detekterer @inebotten-mentions |
 | `handle_message()` | Hovedprosesseringsrørledning med exception-guard |
-| `_handle_intent()` | Dispatcher med confidence-treshold-sjekk |
-| `_send_ai_response()` | AI-/samtalerespons med routing-kontekst |
-| `_parse_and_execute_actions()` | Parser JSON- og tag-baserte handlinger fra AI |
+| `_process_route()` | Felles autorisasjon, pending-flyt og dispatch |
+| `_send_ai_response()` | AI-/samtalerespons eller ett inert modellforslag |
+| `_parse_and_execute_actions()` | Smal kompatibilitetsrenser; utfører ikke modellhandlinger inline |
 | `handlers["calendar"]` | Kalenderkommandoer (via CalendarHandler) |
 
-**Kommandoprioritet:**
+**Handlingsflyt:**
 
-1. Eksplisitte kommandoer (hjelp, status, kalender-CRUD)
-2. Aktiv avstemning og stemmegivning
-3. Spesifikke funksjoner (nedtelling, watchlist, sitat, etc.)
-4. Konservativ kalender-NLP (>=3 indikatorer kreves)
-5. Søk/dashboard når prompten ber om ekstern kontekst
-6. AI-fallback for generell chat
+1. Mention-gate, normalisering og speech-act-sikkerhet.
+2. Rene funksjonsparsere lager typede kandidater.
+3. Felles arbiter velger én kandidat eller avviser/ber om presisering.
+4. Eksplisitte, komplette ruter som policyen autoriserer kan dispatches direkte, inkludert enkelte avgrensede endringer/fullføringer. Auth, destruktive og inferred skriveruter går til scoped pending.
+5. Ved fallback kan modellen foreslå null eller én streng action. Forslaget går gjennom samme validator, risiko og arbiter.
+6. Handleren bruker det validerte payloadet uten å parse originalmeldingen på nytt.
 
 **Intent-statistikk:**
 
@@ -195,29 +146,17 @@ self.intent_stats = defaultdict(lambda: {
 
 Tallene vises i bot-status og hjelper med å identifisere hvilke intents som ofte faller tilbake til AI.
 
-**Confidence-treshold dispatch:**
-
-```python
-threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
-if route.confidence < threshold:
-    # Fallback til AI-chat i stedet for usikker handling
-    await self._send_ai_response(message)
-    return
-```
+Confidence er ett bevis, ikke en autorisasjon i seg selv. Risiko, speech act, sitat-/kodeområder, negasjon, hypotese, terminal avbrytelse, flere handlingsforespørsler og kontekstkrav kontrolleres før en kandidat kan velges. Destruktive handlinger krever alltid bekreftelse; modellforeslåtte skriveruter bekreftes uansett confidence.
 
 **Structured Action Parsing:**
 
-AI-responser parses for både JSON- og tag-baserte handlinger:
+AI-responser kan inneholde null eller ett forslag som én frittstående kompakt JSON-linje:
 
-```python
-# JSON-format (anbefalt)
-{"action": "SAVE_EVENT", "title": "Møte", "date": "01.05.2025", "time": "14:00"}
-
-# Eldre tag-format (bakoverkompatibelt)
-[SAVE_EVENT: Møte | 01.05.2025 | 14:00]
+```json
+{"action":"CALENDAR_CREATE","confidence":0.96,"slots":{"title":"Møte","date":"17.07.2026","time":"14:00"},"reply":"","clarification":null}
 ```
 
-Begge valideres gjennom `nlp_parser.parse_event()` og gjøres om til en bekreftbar kalenderdraft. Kalenderen endres først når brukeren sender en eksplisitt kalenderkommando.
+Toppnivåfeltene er eksakte, action/slots er allowlistet, og forslaget har ingen executor. `core/action_bridge.py` gjør det om til en vanlig typet kandidat. Eldre `SAVE_EVENT`-JSON og tags er kun `legacy compatibility` i én overgangsutgivelse; de konverteres og må gjennom samme validering og bekreftelse.
 
 ### 4. Kalendersystem
 
@@ -270,7 +209,7 @@ Du kan slette eller fullføre elementer på tre måter:
 **1. Etter nummer:** Se listen med `@inebotten kalender` og bruk nummeret
 ```
 @inebotten slett 2
-@inebotten ferdig 1
+@inebotten kalender ferdig 1
 ```
 
 **2. Etter tittel:** Slett/fullfør ett unikt treff på delvis tittel. Hvis flere matcher, spør boten deg om nummer eller `alle`.
@@ -391,12 +330,12 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 | Type | Eksempler |
 |------|-----------|
 | Småprat (ikke vis dashboard) | "Hei!", "Hvordan går det?", "Hva synes du om RBK?" |
-| Dashboard-forespørsler | "Hva er været?", "Vis meg kalenderen", "Hva skjer i dag?" |
+| Dashboard-forespørsler | "Hva er været?", "Kan du vise meg været?", "Kan du vise meg en oversikt?" |
 
 **Samtalehistorikk:**
-- Lagrer siste 10 meldinger per kanal
+- Holder en avgrenset kanal-/brukerscopet samtalekontekst
 - Utløper etter 30 minutter inaktivitet
-- Gir kontekst til AI for koherente samtaler
+- Gir bare policy-tillatte turer til AI-chat/søk; auth redigeres og lokale/private ruter utelates
 
 #### 5.3 Personality Config (`personality_config.py`)
 
@@ -423,20 +362,20 @@ Kl 09:00:     ☀️ God morgen! tirsdag 12.04.2026
 
 ### 6. Andre funksjoner
 
-| Funksjon | Fil | Kommando |
+| Funksjon | Fil | Eksempel på forespørsel |
 |---------|-----|----------|
-| **Avstemninger** | `poll_manager.py` | `@inebotten avstemning Tittel? Alt1, Alt2`, `@inebotten polls`, `@inebotten slett poll` |
-| **Nedtellinger** | `countdown_manager.py` | `@inebotten nedtelling til [dato]` |
-| **Watchlist** | `watchlist_manager.py` | `@inebotten watchlist`, `@inebotten legg til Inception`, `@inebotten hva skal vi se?` |
-| **Krypto** | `crypto_manager.py` | `@inebotten pris BTC` |
-| **Horoskop** | `horoscope_manager.py` | `@inebotten horoskop [stjernetegn]` |
-| **Kalkulator** | `calculator_manager.py` | `@inebotten kalk 2+2*3` |
-| **Sitater** | `quote_manager.py` | `@inebotten sitat` |
-| **Dagens ord** | `word_of_day.py` | `@inebotten dagens ord` |
-| **Komplimenter** | `compliments_manager.py` | `@inebotten kompliment` |
-| **URL-forkorter** | `url_shortener.py` | `@inebotten shorten [url]` |
-| **Nordlys** | `aurora_forecast.py` | `@inebotten nordlys` |
-| **Profil** | `profile_handler.py` | `@inebotten status [s]`, `@inebotten spiller [t]`, `@inebotten ser på [t]` |
+| **Avstemninger** | `poll_manager.py` | `@inebotten Kan du lage en avstemning: Hva spiser vi? pizza eller taco` |
+| **Nedtellinger** | `countdown_manager.py` | `@inebotten Hvor mange dager er det til jul?` |
+| **Watchlist** | `watchlist_manager.py` | `@inebotten Hva skal vi se?` |
+| **Krypto** | `crypto_manager.py` | `@inebotten Kan du vise prisen på BTC?` |
+| **Horoskop** | `horoscope_manager.py` | `@inebotten Kan du vise horoskopet for Løven?` |
+| **Kalkulator** | `calculator_manager.py` | `@inebotten Kan du regne ut 2,5 + 1?` |
+| **Sitater** | `quote_manager.py` | `@inebotten Kan du vise meg et sitat?` |
+| **Dagens ord** | `word_of_day.py` | `@inebotten Kan du gi meg dagens ord?` |
+| **Komplimenter** | `compliments_manager.py` | `@inebotten Kan du gi meg et kompliment?` |
+| **URL-forkorter** | `url_shortener.py` | `@inebotten Kan du forkorte https://example.invalid?` |
+| **Nordlys** | `aurora_forecast.py` | `@inebotten Kan du vise meg nordlysvarselet?` |
+| **Profil** | `profile_handler.py` | `@inebotten Kan du sette aktiviteten til å spille CS2?` |
 
 ### 7. Utility-komponenter
 
@@ -467,6 +406,8 @@ Botten eksponerer et webbasert dashbord på port 8080 (konfigurerbart via `CONSO
 **Autentisering:**
 
 Console krever autentisering. Standardmodus er API-nøkkel: hvis `CONSOLE_API_KEY` ikke er satt i `.env`, genereres en nøkkel ved første start og lagres i `~/.hermes/discord/data/console/api_key.txt`. Nettleserinnlogging oppretter en egen tidsbegrenset session-cookie; API-nøkkelen lagres ikke som cookie-verdi.
+
+Konsoll-loggen lagres som en rettighetsbegrenset JSONL-tail. Filen komprimeres automatisk til en avgrenset størrelse, og API-et leser bare et begrenset antall komplette poster fra slutten; dashboardet laster derfor ikke en voksende loggfil i minnet.
 
 For produksjon bak Cloudflare Access kan `CONSOLE_AUTH_MODE=cloudflare_access` brukes. Da godtas `Cf-Access-Jwt-Assertion` bare etter signaturvalidering mot `CONSOLE_CF_ACCESS_TEAM_DOMAIN`, audience-sjekk mot `CONSOLE_CF_ACCESS_AUD`, og e-postallowlist i `CONSOLE_CF_ACCESS_ALLOWED_EMAILS`. API-key-headeren beholdes for eksplisitte serviceklienter og recovery, men nettleserinnlogging via API-nøkkelskjemaet er deaktivert i Cloudflare Access-modus.
 
@@ -539,51 +480,52 @@ Bruker: @inebotten kalender
 2. calendar_manager.get_upcoming() henter elementer
 3. Formater med statusindikatorer (📅📌✓)
 4. Vis Google Calendar sync-lenker hvis aktivert
-5. Bot svarer med formatert liste + "ferdig [nummer]" hjelp
+5. Bot svarer med formatert liste + "kalender ferdig [nummer]" hjelp
 ```
 
 ---
 
 ## Kalendersystem
 
-### Kommandoer
+### Bakoverkompatible kortformer
+
+Disse korte formene støttes fortsatt, men er ikke en syntaks brukeren må
+pugge. Den verifiserte eksempelbanken i [QUICK_REFERENCE.md](QUICK_REFERENCE.md)
+viser naturlige forespørsler og er den anbefalte inngangen.
 
 ```
 @inebotten kalender                      # List alle kommende elementer
 @inebotten kalender 7                    # List neste 7 dager
 @inebotten møte [tittel] [dato] [tid]    # Legg til event
 @inebotten husk [tittel] [dato]          # Legg til task/påminnelse
-@inebotten ferdig [nummer]               # Marker element som fullført
+@inebotten kalender ferdig [nummer]      # Marker kalenderoppføring som fullført
 @inebotten slett [nummer]                # Slett element
 @inebotten sync                          # Sync til Google Calendar
 ```
 
-### Naturlig Språk (Ingen Kommandostruktur)
+### Naturlige forespørsler
 
 ```
-@inebotten lunsj med teamet på fredag kl 12
-@inebotten husk å betale regninga imårra
-@inebotten tannlege neste tirsdag kl 09:00
-@inebotten RBK-kamp 12.04 kl 18:30 hver uke
-@inebotten bursdag til mamma 15.05 hvert år
+@inebotten Kan du legge inn lunsj med teamet fredag klokka 12?
+@inebotten Kan du minne meg på å betale regninga imårra?
+@inebotten Kan du legge inn tannlegen neste tirsdag klokka 09?
+@inebotten Kan du legge inn RBK-kampen 12.04 klokka 18:30 hver uke?
+@inebotten Kan du legge til bursdagen min 15. mai?
 ```
 
-### Utility-kommandoer
+### Naturlige verktøyforespørsler
 
 ```
-@inebotten vær                          # Nåværende vær (bruker lagret lokasjon)
-@inebotten været i Oslo                 # Vær for spesifikt sted
-@inebotten Jeg bor i Trondheim          # Lagre fast lokasjon
-@inebotten avstemning Pizza eller burger?  # Lag avstemning
-@inebotten stem 1                        # Stem på avstemning
-@inebotten polls                         # Vis aktive avstemninger
-@inebotten slett poll                    # Slett siste avstemning
-@inebotten lukk poll                     # Lukk siste avstemning
-@inebotten nedtelling til 17. mai       # Start nedtelling
-@inebotten dagens ord                    # Norsk ord for dagen
-@inebotten horoskop væren                # Dagens horoskop
-@inebotten pris BTC                      # Kryptopris
-@inebotten kalk (100 * 1.25) / 2         # Kalkulator
+@inebotten Kan du vise meg været?
+@inebotten Jeg bor i Trondheim.
+@inebotten Kan du lage en avstemning: Pizza eller burger? pizza eller burger
+@inebotten Jeg stemmer på alternativ 1.
+@inebotten Kan du vise aktive avstemninger?
+@inebotten Kan du fortelle meg hvor mange dager det er til 17. mai?
+@inebotten Kan du gi meg dagens ord?
+@inebotten Kan du vise horoskopet for Løven?
+@inebotten Hvis du har tid kan du vise prisen på BTC?
+@inebotten Kan du regne ut (100 * 1,25) / 2?
 ```
 
 ---
@@ -643,8 +585,13 @@ Full guide: [deploy/README.md](../deploy/README.md). [VPS_DEPLOYMENT.md](VPS_DEP
 .venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q  # Meldingsflyt
 .venv312/bin/python -m pytest tests/test_false_positives.py -q    # Regresjonstester
 .venv312/bin/python -m pytest tests/test_action_schema.py -q      # AI-handlinger
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json                           # Streng NLU-port
 .venv312/bin/python -m py_compile core/*.py features/*.py cal_system/*.py  # Syntaks-sjekk
 ```
+
+NLU-kontrakten kjører produksjonsparserne deterministisk uten nettverk og måler bokmål, nynorsk, utvalgte dialektnære former og engelsk. Den beviser ikke støtte for alle dialekter eller alle friformuleringer. Live Discord-, LM Studio- og OpenRouter-smoke er separate manuelle bevis.
 
 ### Legge til nye funksjoner
 
@@ -655,9 +602,10 @@ Kortversjon:
 1. Lag manager med ren domenelogikk.
 2. Lag handler hvis funksjonen skal svare i Discord.
 3. Registrer handleren i `MessageMonitor._register_handlers()`.
-4. Legg intent-regel i `core/intent_router.py` når prompten skal rutes direkte.
-5. Legg tester i `tests/test_intent_router.py` og relevante handler-tester.
-6. Oppdater dokumentasjon.
+4. Definer typet payload/validator, ren collector, risikoklassifisering og kandidat i ruteren.
+5. La handleren bruke payloadet direkte; ikke reparse `message.content`.
+6. Legg positive og negative sikkerhetstester, NLU-korpusrader og først deretter en verifisert hjelprad.
+7. Oppdater dokumentasjon.
 
 ---
 
@@ -666,14 +614,15 @@ Kortversjon:
 1. **Modulær design** - Hver funksjon er selvstendig
 2. **Robust fallback** - Fungerer uten AI når lokale svar finnes
 3. **Enhetlig Kalender** - Ett system for events + påminnelser
-4. **Naturlig Språk** - Ingen rigid kommando-syntaks
+4. **Naturlig Språk** - Evaluerte varianter med fail-closed presisering ved tvil
 5. **Google Integrasjon** - Syncer med ekte kalender
 6. **Personlighetssystem** - Kontekstbevisst, personlig tilpasset
-7. **Sentral intent-router** - Én testbar beslutning per prompt
-8. **Confidence-tresholds** - Usikre intents faller tilbake til AI i stedet for å gjette
-9. **Token-aware matching** - Word-boundary matching eliminerer falske positive
-10. **Structured actions** - AI-handlinger parses trygt og blir bekreftbare drafts før kalenderendring
-11. **Kanal-scoped kontekst** - Samtalehistorikk isoleres per kanal for bedre presisjon
+7. **Felles arbiter** - Deterministiske og modellforeslåtte kandidater følger samme regler
+8. **Typede payloads** - Handlere bruker validerte data uten reparsing
+9. **Speech-act-sikkerhet** - Sitert, negert, hypotetisk, avbrutt eller sekvensert skrivetekst blokkeres
+10. **Structured actions** - Modellen leverer bare inerte, allowlistede forslag
+11. **Scoped pending** - Destruktive og inferred skriveruter bekreftes i riktig bruker/kanal
+12. **Historikkpolicy** - Private lokale ruter utelates og auth-kontekst redigeres før senere providerkall
 
 ---
 

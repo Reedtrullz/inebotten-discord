@@ -8,6 +8,111 @@ import random
 import re
 from datetime import datetime
 
+
+_LEADING_INVOCATION = re.compile(
+    r"^\s*(?:@inebotten\b|<@!?\d+>)\s*[:,;-]?\s*",
+    re.IGNORECASE,
+)
+_POLITE_PREFIX = re.compile(
+    r"^(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s+",
+    re.IGNORECASE,
+)
+_NON_REQUEST_PATTERNS = (
+    re.compile(r"\b(?:ikke|ikkje|not|never|don['’]t|do\s+not)\b", re.IGNORECASE),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:sa|skrev|skreiv|leste|las)\b|"
+        r"^i\s+(?:said|wrote|read)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:hva\s+skjer\s+hvis|kva\s+skjer\s+om|ka\s+skjer\s+hvis|"
+        r"what\s+happens\s+if|hvis|om|if)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:eksempel|example|hva\s+betyr|kva\s+tyder|hvordan\s+skriver|"
+        r"korleis\s+skriv|how\s+do\s+i\s+(?:say|write)|"
+        r"what\s+does\b.*\bmean)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:vurderer|tenker\s+på)\b|"
+        r"^i(?:'m|\s+am)\s+(?:considering|thinking\s+about)\b",
+        re.IGNORECASE,
+    ),
+)
+_TRAILING_POLITENESS = re.compile(
+    r"\s*,?\s*(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you)\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_LEADING_COURTESY_REQUEST = re.compile(
+    r"^(?:(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s*"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))|"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*,?\s*"
+    r"(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please))\s*,?\s*",
+    re.IGNORECASE,
+)
+_TRAILING_COURTESY = re.compile(
+    r"(?:\s*,\s*|\s+)(?:(?:om|hvis|viss)\s+du\s+kan|"
+    r"(?:om|hvis|viss)\s+du\s+har\s+tid|når\s+du\s+har\s+tid|"
+    r"if\s+you\s+can|if\s+you\s+have\s+(?:time|a\s+moment)|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_HOROSCOPE_PATTERNS = (
+    re.compile(
+        r"^(?:(?:dagens|mitt|min|today['’]s|my)\s+)?"
+        r"(?:horoskop(?:et)?|horoscope)"
+        r"(?:\s+(?:mitt|min|my))?(?:\s+(?:for|til))?\s+(?P<sign>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:vis(?:e)?|syn(?:e)?|fortell(?:e)?|fortel|gi|gje|sjekk(?:e)?|"
+        r"show|tell|give|check)(?:\s+(?:meg|mæ|me))?\s+"
+        r"(?:(?:det|the)\s+)?(?:(?:dagens|mitt|min|today['’]s|my)\s+)?"
+        r"(?:horoskop(?:et)?|horoscope)(?:\s+(?:mitt|min|my))?"
+        r"(?:\s+(?:for|til))?\s+(?P<sign>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:hva|kva|ka)\s+er\s+(?:(?:dagens|mitt|min)\s+)?"
+        r"horoskop(?:et)?(?:\s+(?:mitt|min))?(?:\s+(?:for|til))?\s+"
+        r"(?P<sign>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^what\s+is\s+(?:(?:today['’]s|my)\s+)?horoscope"
+        r"(?:\s+my)?(?:\s+for)?\s+(?P<sign>.+)$",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _prepare_horoscope_request(message_content):
+    if not isinstance(message_content, str):
+        return None
+    content = _LEADING_INVOCATION.sub("", message_content, count=1).strip()
+    content = _LEADING_COURTESY_REQUEST.sub("", content, count=1).strip()
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = _TRAILING_COURTESY.sub("", content).strip()
+    if not content or any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _POLITE_PREFIX.sub("", content, count=1).strip()
+    if any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = re.sub(r"\bwhat['’]s\b", "what is", content, flags=re.IGNORECASE)
+    return content.rstrip("?!.").strip()
+
+
 class HoroscopeManager:
     """
     Generates daily horoscopes
@@ -15,18 +120,18 @@ class HoroscopeManager:
     
     def __init__(self):
         self.zodiac_signs = {
-            'væren': 'Aries', 'aries': 'Aries', '♈': 'Aries',
+            'væren': 'Aries', 'vêren': 'Aries', 'aries': 'Aries', '♈': 'Aries',
             'tyren': 'Taurus', 'taurus': 'Taurus', '♉': 'Taurus',
-            'tvillingene': 'Gemini', 'gemini': 'Gemini', '♊': 'Gemini',
-            'krepsen': 'Cancer', 'cancer': 'Cancer', '♋': 'Cancer',
-            'løven': 'Leo', 'leo': 'Leo', '♌': 'Leo',
-            'jomfruen': 'Virgo', 'virgo': 'Virgo', '♍': 'Virgo',
-            'vekten': 'Libra', 'libra': 'Libra', '♎': 'Libra',
+            'tvillingene': 'Gemini', 'tvillingane': 'Gemini', 'gemini': 'Gemini', '♊': 'Gemini',
+            'krepsen': 'Cancer', 'kreften': 'Cancer', 'cancer': 'Cancer', '♋': 'Cancer',
+            'løven': 'Leo', 'løva': 'Leo', 'leo': 'Leo', '♌': 'Leo',
+            'jomfruen': 'Virgo', 'jomfrua': 'Virgo', 'virgo': 'Virgo', '♍': 'Virgo',
+            'vekten': 'Libra', 'vekta': 'Libra', 'libra': 'Libra', '♎': 'Libra',
             'skorpionen': 'Scorpio', 'scorpio': 'Scorpio', '♏': 'Scorpio',
             'skytten': 'Sagittarius', 'sagittarius': 'Sagittarius', '♐': 'Sagittarius',
             'steinbukken': 'Capricorn', 'capricorn': 'Capricorn', '♑': 'Capricorn',
-            'vannmannen': 'Aquarius', 'aquarius': 'Aquarius', '♒': 'Aquarius',
-            'fiskene': 'Pisces', 'pisces': 'Pisces', '♓': 'Pisces',
+            'vannmannen': 'Aquarius', 'vassmannen': 'Aquarius', 'aquarius': 'Aquarius', '♒': 'Aquarius',
+            'fiskene': 'Pisces', 'fiskane': 'Pisces', 'pisces': 'Pisces', '♓': 'Pisces',
         }
         
         self.horoscopes_no = [
@@ -72,39 +177,44 @@ class HoroscopeManager:
         - "horoskop vannmannen"
         - "horoscope aquarius"
         """
-        content_lower = message_content.lower()
-        
-        # Remove @inebotten
-        content_lower = content_lower.replace('@inebotten', '').strip()
-        
-        # Check for horoscope keywords (use word boundaries)
-        if not any(re.search(rf"\b{re.escape(word)}\b", content_lower) for word in ['horoskop', 'horoscope']):
+        content = _prepare_horoscope_request(message_content)
+        if not content:
             return None
-        
-        # Look for zodiac sign (use word boundaries)
-        for sign_key, sign_name in self.zodiac_signs.items():
-            if re.search(rf"\b{re.escape(sign_key)}\b", content_lower):
-                return {'sign': sign_name, 'sign_key': sign_key}
+
+        for pattern in _HOROSCOPE_PATTERNS:
+            match = pattern.fullmatch(content)
+            if not match:
+                continue
+            raw_sign = match.group("sign").strip().rstrip("?!.;,: ")
+            if len(raw_sign) >= 2 and (raw_sign[0], raw_sign[-1]) in {
+                ('"', '"'),
+                ("'", "'"),
+                ("“", "”"),
+                ("‘", "’"),
+            }:
+                raw_sign = raw_sign[1:-1].strip()
+            sign_name = self.zodiac_signs.get(raw_sign.casefold())
+            if sign_name:
+                return {'sign': sign_name, 'sign_key': raw_sign}
         
         # If no sign found, return None (we need a sign)
         return None
     
     def get_horoscope(self, sign, lang='no'):
         """Generate horoscope for sign"""
-        # Use date as seed for consistent daily horoscope
+        # Use a local generator for consistent daily output without mutating
+        # process-global randomness used by other features.
         today = datetime.now().strftime('%Y%m%d')
-        random.seed(f"{today}_{sign}")
+        rng = random.Random(f"{today}_{sign}")
         
         horoscopes = self.horoscopes_no if lang == 'no' else self.horoscopes_en
-        text = random.choice(horoscopes)
+        text = rng.choice(horoscopes)
         
         # Generate ratings
-        love = random.randint(3, 10)
-        career = random.randint(3, 10)
-        health = random.randint(3, 10)
-        luck = random.randint(3, 10)
-        
-        random.seed()  # Reset seed
+        love = rng.randint(3, 10)
+        career = rng.randint(3, 10)
+        health = rng.randint(3, 10)
+        luck = rng.randint(3, 10)
         
         return {
             'sign': sign,

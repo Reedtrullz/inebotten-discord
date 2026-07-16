@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import unicodedata
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ from enum import Enum
 from itertools import islice
 from typing import Literal, Protocol
 
-from core.intent_models import BotIntent, IntentResult
+from core.intent_models import BotIntent, IntentResult, IntentSource
 
 
 class ChatContractError(ValueError):
@@ -32,12 +32,13 @@ class ChatTurn:
 class HistoryPolicy(str, Enum):
     FULL = "full"
     REDACT_AUTH = "redact_auth"
+    OMIT = "omit"
 
 
 REDACTED_AUTH_TURN = "[sensitiv autentisering utelatt]"
 _CURRENT_HISTORY_POLICY: ContextVar[HistoryPolicy] = ContextVar(
     "history_policy",
-    default=HistoryPolicy.FULL,
+    default=HistoryPolicy.OMIT,
 )
 _SENSITIVE_PAYLOAD_KEYS = frozenset(
     {
@@ -57,6 +58,12 @@ _FAIL_CLOSED_HISTORY_REASONS = frozenset(
         "credential_shaped_input_blocked",
         "pending_expired",
         "pending_stale",
+    }
+)
+_PROVIDER_CONVERSATION_INTENTS = frozenset(
+    {
+        BotIntent.AI_CHAT,
+        BotIntent.SEARCH,
     }
 )
 
@@ -146,7 +153,18 @@ def history_policy_for_effective_routes(
         for route in routes
     ):
         return HistoryPolicy.REDACT_AUTH
-    return HistoryPolicy.FULL
+    if all(
+        (
+            route.intent in _PROVIDER_CONVERSATION_INTENTS
+            or (
+                route.intent is BotIntent.CLARIFY
+                and route.source is IntentSource.SEMANTIC
+            )
+        )
+        for route in routes
+    ):
+        return HistoryPolicy.FULL
+    return HistoryPolicy.OMIT
 
 
 @contextmanager
@@ -160,12 +178,15 @@ def capture_history_policy(policy: HistoryPolicy) -> Iterator[None]:
         _CURRENT_HISTORY_POLICY.reset(token)
 
 
-def history_safe_content(content: str) -> str:
+def history_safe_content(content: str) -> str | None:
     if not isinstance(content, str):
         raise ChatContractError("invalid_history_content")
-    if _CURRENT_HISTORY_POLICY.get() is HistoryPolicy.FULL:
+    policy = _CURRENT_HISTORY_POLICY.get()
+    if policy is HistoryPolicy.FULL:
         return content
-    return REDACTED_AUTH_TURN
+    if policy is HistoryPolicy.REDACT_AUTH:
+        return REDACTED_AUTH_TURN
+    return None
 
 
 def sanitize_chat_turn_content(
@@ -392,6 +413,118 @@ def build_context_prompt(
     return serialize({"truncated": True})
 
 
+def fit_context_prompt_in_wrapper(
+    context_prompt: str,
+    *,
+    serialize_wrapper: Callable[[str], str],
+    max_chars: int,
+) -> str:
+    """Fit context into a wrapper without corrupting nested JSON text.
+
+    Provider metadata stores the already-serialized context document as a JSON
+    string.  Cutting that string at an arbitrary character keeps the outer
+    wrapper valid but can leave the nested document invalid.  Valid object
+    context is therefore parsed and rebuilt through ``build_context_prompt``;
+    legacy plain text retains the prior bounded-prefix behavior.
+    """
+
+    if not isinstance(context_prompt, str):
+        raise ChatContractError("invalid_context_prompt")
+    if not callable(serialize_wrapper):
+        raise ChatContractError("invalid_context_wrapper")
+    if (
+        isinstance(max_chars, bool)
+        or not isinstance(max_chars, int)
+        or max_chars < 64
+    ):
+        raise ChatContractError("invalid_context_limit")
+
+    def fits(candidate: str) -> bool:
+        rendered = serialize_wrapper(candidate)
+        if not isinstance(rendered, str):
+            raise ChatContractError("invalid_context_wrapper")
+        return len(rendered) <= max_chars
+
+    if fits(context_prompt):
+        return context_prompt
+
+    try:
+        decoded = json.loads(context_prompt)
+    except (json.JSONDecodeError, RecursionError):
+        decoded = None
+        was_json = False
+    else:
+        was_json = True
+
+    if isinstance(decoded, Mapping):
+        fallback = json.dumps(
+            {"truncated": True},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if not fits(fallback):
+            raise ChatContractError("context_wrapper_too_large")
+        best = fallback
+        low = 64
+        high = min(len(context_prompt), max_chars)
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = build_context_prompt(decoded, max_chars=middle)
+            if fits(candidate):
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        return best
+
+    if was_json and isinstance(decoded, str):
+        def encode_prefix(length: int) -> str:
+            return json.dumps(
+                decoded[:length],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+        best = encode_prefix(0)
+        if not fits(best):
+            raise ChatContractError("context_wrapper_too_large")
+        low = 0
+        high = len(decoded)
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = encode_prefix(middle)
+            if fits(candidate):
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        return best
+
+    if was_json:
+        fallback = json.dumps(
+            {"truncated": True},
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if not fits(fallback):
+            raise ChatContractError("context_wrapper_too_large")
+        return fallback
+
+    low = 0
+    high = len(context_prompt)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(context_prompt[:middle]):
+            low = middle
+        else:
+            high = middle - 1
+    if not fits(context_prompt[:low]):
+        raise ChatContractError("context_wrapper_too_large")
+    return context_prompt[:low]
+
+
 class AIConnector(Protocol):
     async def generate_response(
         self,
@@ -417,6 +550,7 @@ __all__ = [
     "_SENSITIVE_PAYLOAD_KEYS",
     "build_context_prompt",
     "capture_history_policy",
+    "fit_context_prompt_in_wrapper",
     "history_policy_for_effective_routes",
     "history_safe_content",
     "prepare_history",

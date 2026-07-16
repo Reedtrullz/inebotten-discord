@@ -6,6 +6,7 @@ Provides centralized logging configuration for the Inebotten Discord bot
 
 import logging
 import sys
+import threading
 from collections import deque
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -100,9 +101,11 @@ def set_log_level(level: str):
 
 
 class LogBuffer:
-    def __init__(self, maxlen: int = 2000):
+    def __init__(self, maxlen: int = 2000, *, store=None):
         self._buffer: deque[str] = deque(maxlen=maxlen)
-        self._store = None
+        self._pending: deque[str] = deque(maxlen=maxlen)
+        self._store = store
+        self._lock = threading.RLock()
 
     def _lazy_store(self):
         if self._store is None:
@@ -114,19 +117,36 @@ class LogBuffer:
         return self._store
 
     def append(self, line: str) -> None:
-        self._buffer.append(line)
-        store = self._lazy_store()
-        if store is not None:
-            store.append_logs([line])
+        with self._lock:
+            self._buffer.append(line)
+            self._pending.append(line)
+            store = self._lazy_store()
+            if store is None:
+                return
+
+            # Flush one record per persistence call. A failed multi-line file
+            # append could otherwise write a prefix and make a later retry
+            # duplicate that prefix. Normal operation still performs exactly
+            # one store call because the pending deque is usually empty.
+            while self._pending:
+                if not store.append_logs([self._pending[0]]):
+                    break
+                self._pending.popleft()
 
     def get_lines(self, count: int = 200) -> list[str]:
-        store = self._lazy_store()
-        if store is not None:
-            persisted = store.load_logs(count)
-            live = list(self._buffer)
-            combined = persisted + live
-            return combined[-count:]
-        return list(self._buffer)[-count:]
+        count = max(0, count)
+        if count == 0:
+            return []
+        with self._lock:
+            store = self._lazy_store()
+            if store is not None:
+                persisted = store.load_logs(count)
+                # Successfully persisted lines are already present in the
+                # JSONL store. Only merge writes that are still waiting for
+                # persistence; combining the whole live buffer duplicates
+                # every current-process line in the console.
+                return (persisted + list(self._pending))[-count:]
+            return list(self._buffer)[-count:]
 
 
 class BufferHandler(logging.Handler):

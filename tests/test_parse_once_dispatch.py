@@ -303,6 +303,16 @@ VALID_PAYLOAD_CASES = [
         {"action": "get", "author": " Kari ", "lang": "no"},
         {"action": "get", "author": "Kari", "lang": "no"},
     ),
+    (
+        BotIntent.PROFILE,
+        {"action": "playing", "value": "  Life is Strange  "},
+        {"action": "playing", "value": "Life is Strange"},
+    ),
+    (
+        BotIntent.PROFILE,
+        {"action": "status", "value": " DND "},
+        {"action": "status", "value": "dnd"},
+    ),
 ]
 
 
@@ -410,6 +420,10 @@ INVALID_PAYLOAD_CASES = [
     (BotIntent.REMINDER_CREATE, {"action": "add", "text": "x", "recurrence": "weekly"}, IntentSource.DETERMINISTIC, "invalid_recurrence"),
     (BotIntent.POLL_CREATE, {"question": "x", "options": ["Ja", " ja "]}, IntentSource.DETERMINISTIC, "invalid_options"),
     (BotIntent.POLL_CREATE, {"question": "x" * 301, "options": ["Ja", "Nei"]}, IntentSource.DETERMINISTIC, "value_too_long"),
+    (BotIntent.PROFILE, {"action": "playing", "value": ""}, IntentSource.DETERMINISTIC, "blank_value"),
+    (BotIntent.PROFILE, {"action": "watching", "value": "x" * 101}, IntentSource.DETERMINISTIC, "value_too_long"),
+    (BotIntent.PROFILE, {"action": "status", "value": "busy"}, IntentSource.DETERMINISTIC, "wrong_action"),
+    (BotIntent.PROFILE, {"action": "playing", "value": "CS2", "raw": "secret"}, IntentSource.SEMANTIC, "unknown_key"),
     (BotIntent.HELP, {}, IntentSource.DETERMINISTIC, "unsupported_intent"),
 ]
 
@@ -569,6 +583,7 @@ def test_action_envelope_map_is_complete_and_stable():
     assert ENVELOPE_KEYS[BotIntent.BIRTHDAY_EDIT] == "birthday"
     assert ENVELOPE_KEYS[BotIntent.WATCHLIST] == "watchlist"
     assert ENVELOPE_KEYS[BotIntent.QUOTE_DELETE] == "quote"
+    assert ENVELOPE_KEYS[BotIntent.PROFILE] == "profile"
     assert BotIntent.CALENDAR_SEARCH not in ENVELOPE_KEYS
 
 

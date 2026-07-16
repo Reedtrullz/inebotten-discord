@@ -38,6 +38,10 @@ class CalendarTargetPayload(TypedDict, total=False):
     all: bool
 
 
+class CalendarListPayload(TypedDict, total=False):
+    date: str
+
+
 class CalendarEditPayload(TypedDict):
     target: str
     changes: CalendarChanges
@@ -58,6 +62,7 @@ class ReminderTargetPayload(TypedDict):
     number: NotRequired[int]
     reminder_id: NotRequired[str]
     query: NotRequired[str]
+    due_date: NotRequired[str]
 
 
 class ReminderChanges(TypedDict, total=False):
@@ -143,8 +148,14 @@ class MemoryPayload(TypedDict):
     action: Literal["view", "export", "delete"]
 
 
+class ProfilePayload(TypedDict):
+    action: Literal["status", "playing", "watching"]
+    value: str
+
+
 PayloadValue: TypeAlias = (
     CalendarCreatePayload
+    | CalendarListPayload
     | CalendarEditPayload
     | CalendarTargetPayload
     | ReminderCreatePayload
@@ -160,6 +171,7 @@ PayloadValue: TypeAlias = (
     | WatchlistPayload
     | QuotePayload
     | MemoryPayload
+    | ProfilePayload
 )
 
 
@@ -551,7 +563,10 @@ def _reminder_target(
     *,
     source: IntentSource,
 ) -> dict[str, Any]:
-    value = _mapping(raw, frozenset({"action", "number", "reminder_id", "query"}))
+    value = _mapping(
+        raw,
+        frozenset({"action", "number", "reminder_id", "query", "due_date"}),
+    )
     expected = _REMINDER_ACTIONS[intent]
     if value.get("action") != expected:
         _fail("wrong_action")
@@ -566,7 +581,12 @@ def _reminder_target(
     if expected == "list":
         if selector_count or "query" in value:
             _fail("ambiguous_target")
+        if "due_date" in value:
+            canonical_date, _ = _date_time(value["due_date"])
+            result["due_date"] = canonical_date
         return result
+    if "due_date" in value:
+        _fail("wrong_action")
     if expected == "search":
         if selector_count:
             _fail("ambiguous_target")
@@ -736,7 +756,11 @@ def _birthday(
         if value.get("action") != "list":
             _fail("wrong_action")
         scope = value.get("scope", "all")
-        if not isinstance(scope, str) or scope not in {"all", "upcoming"}:
+        if not isinstance(scope, str) or scope not in {
+            "all",
+            "upcoming",
+            "self",
+        }:
             _fail("wrong_action")
         return {"action": "list", "scope": scope}
     allowed = {"action", "user_id", "day", "month", "year"}
@@ -761,6 +785,24 @@ def _birthday(
     if year is not None:
         result["year"] = year
     return result
+
+
+def _profile(raw: Mapping[str, Any], *, source: IntentSource) -> dict[str, Any]:
+    del source
+    value = _mapping(raw, frozenset({"action", "value"}))
+    action = value.get("action")
+    if action not in {"status", "playing", "watching"}:
+        _fail("wrong_action")
+    normalized = _string(value.get("value"))
+    if not isinstance(normalized, str):
+        _fail("blank_value")
+    if len(normalized) > 100:
+        _fail("value_too_long")
+    if action == "status":
+        normalized = normalized.casefold()
+        if normalized not in {"online", "offline", "idle", "dnd", "invisible"}:
+            _fail("wrong_action")
+    return {"action": action, "value": normalized}
 
 
 def _watchlist(raw: Mapping[str, Any], *, source: IntentSource) -> dict[str, Any]:
@@ -897,8 +939,20 @@ def _memory(
 Validator: TypeAlias = Callable[..., dict[str, Any]]
 
 
+def _calendar_list(
+    raw: Mapping[str, Any], *, source: IntentSource
+) -> dict[str, Any]:
+    del source
+    value = _mapping(raw, frozenset({"date"}))
+    if "date" not in value:
+        return {}
+    canonical_date, _ = _date_time(value["date"])
+    return {"date": canonical_date}
+
+
 INTENT_VALIDATORS: dict[BotIntent, Validator] = {
     BotIntent.CALENDAR_ITEM: _calendar_create,
+    BotIntent.CALENDAR_LIST: _calendar_list,
     BotIntent.CALENDAR_EDIT: _calendar_edit,
     BotIntent.CALENDAR_DELETE: lambda raw, *, source: _calendar_target(
         BotIntent.CALENDAR_DELETE, raw, source=source
@@ -957,11 +1011,13 @@ INTENT_VALIDATORS: dict[BotIntent, Validator] = {
     BotIntent.MEMORY_DELETE: lambda raw, *, source: _memory(
         BotIntent.MEMORY_DELETE, raw, source=source
     ),
+    BotIntent.PROFILE: _profile,
 }
 
 
 ENVELOPE_KEYS: dict[BotIntent, str] = {
     BotIntent.CALENDAR_ITEM: "calendar_item",
+    BotIntent.CALENDAR_LIST: "calendar_list",
     BotIntent.CALENDAR_EDIT: "calendar_edit",
     BotIntent.CALENDAR_DELETE: "calendar_target",
     BotIntent.CALENDAR_COMPLETE: "calendar_target",
@@ -988,6 +1044,7 @@ ENVELOPE_KEYS: dict[BotIntent, str] = {
     BotIntent.MEMORY_VIEW: "memory",
     BotIntent.MEMORY_EXPORT: "memory",
     BotIntent.MEMORY_DELETE: "memory",
+    BotIntent.PROFILE: "profile",
 }
 
 

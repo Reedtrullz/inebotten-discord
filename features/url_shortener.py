@@ -9,16 +9,47 @@ import asyncio
 import http.client
 import urllib.parse
 
+
+_COURTESY = (
+    r"(?:(?:hvis|om|når)\s+du\s+har\s+tid|hvis\s+det\s+passer|"
+    r"(?:hvis|om)\s+du\s+kan|"
+    r"(?:if|when)\s+you\s+have\s+time|"
+    r"if\s+(?:it(?:'s|\s+is)\s+)?convenient|if\s+you\s+can|"
+    r"if\s+possible)"
+)
+_POLITE = (
+    r"(?:kan\s+du|kunne\s+du|vil\s+du|can\s+you|could\s+you|"
+    r"would\s+you|will\s+you|vennligst|please)"
+)
+_SHORTEN_REQUEST = re.compile(
+    rf"^(?:{_COURTESY}\s*,?\s+)?"
+    rf"(?:{_POLITE}(?:\s*,?\s*{_COURTESY}\s*,?)?\s+)?"
+    r"(?:(?:forkort|forkorte|kort\s+ned|korte\s+ned|shorten)\s+"
+    r"(?:(?:denne|this)\s+(?:url(?:-en)?|lenk(?:e|en)|link)"
+    r"(?:\s+for\s+me)?\s*[:?]?\s*)?"
+    r"(?P<direct>https?://[^\s]+?)|"
+    r"make\s+this\s+url\s+shorter\s*:?\s*"
+    r"(?P<make>https?://[^\s]+?)|"
+    r"(?:lag|lage|make)\s+(?:en|ei|a)\s+"
+    r"(?:kort\s+lenke|short\s+link)\s+(?:av|for|from)\s+"
+    rf"(?P<link>https?://[^\s]+?))"
+    rf"(?:\s*,?\s+{_COURTESY})?"
+    r"(?:\s*[,;]?\s+(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you)\s*[.!?]*)?$",
+    re.IGNORECASE,
+)
+
 class URLShortener:
     """
     Shortens URLs using TinyURL API
     """
-    
+
     def __init__(self):
         self.url_pattern = re.compile(
-            r'http[s]?://(?:[a-zA-Z]|[0-9]|[$\-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+            r"https?://[^\s<>\"']+",
+            re.IGNORECASE,
         )
-    
+
     def parse_shorten_command(self, message_content):
         """
         Parse shorten command
@@ -26,20 +57,28 @@ class URLShortener:
         - "shorten https://very-long-url.com/..."
         - "forkort https://example.com/very/long/path"
         """
-        content_lower = message_content.lower()
+        # Remove only a real leading invocation.  The same bytes inside a URL
+        # path/query are user data and must remain lossless.
+        content = re.sub(
+            r"^\s*@inebotten\b\s*[,;:]?\s*",
+            "",
+            message_content,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip()
         
-        # Remove @inebotten
-        content = message_content.replace('@inebotten', '').strip()
-        
-        # Check for shorten keywords (use word boundaries)
-        keywords = ['shorten', 'forkort', 'kort url', 'short url']
-        if not any(re.search(rf"\b{re.escape(word)}\b", content_lower) for word in keywords):
+        request = _SHORTEN_REQUEST.fullmatch(content)
+        if request is None:
             return None
-        
-        # Find URL
-        match = self.url_pattern.search(content)
-        if match:
-            return {'url': match.group(0)}
+        # URL punctuation is ambiguous with prose punctuation. Preserve the
+        # exact request token rather than changing a legal path/query/fragment.
+        url = (
+            request.group("direct")
+            or request.group("make")
+            or request.group("link")
+        )
+        if urllib.parse.urlsplit(url).netloc:
+            return {'url': url}
         
         return None
     

@@ -241,7 +241,9 @@ class InebottenPersonality:
         parts.append(f"\n{self.get_signoff()}")
         
         if not events and not reminders:
-            parts.append(f"\n💡 *Nevn noe som skjer så legger jeg det til! F.eks. \"@inebotten kamp i kveld kl 20\"*")
+            parts.append(
+                "\n💡 *Fortell hva som skal skje og når, så prøver jeg å legge det inn.*"
+            )
         
         return "\n".join(parts)
     
@@ -249,10 +251,10 @@ class InebottenPersonality:
         """Random helpful hint"""
         hints = [
             "Spør meg om været, skoleferier, eller nordlys!",
-            "Jeg kan huske bursdager også - bare si \"bursdag 15.05\"!",
-            "Skriv \"ferdig 1\" for å fullføre en påminnelse!",
-            "Si \"slett arrangement 1\" for å fjerne noe!",
-            "Jeg skjønner naturlig språk - prøv \"møte i morgen kl 14\"!",
+            "Jeg kan huske bursdager også – fortell meg når du har bursdag!",
+            "Fortell hvilken påminnelse du har gjort ferdig, så krysser jeg den av!",
+            "Vil du fjerne noe, kan du beskrive oppføringen med tittel eller nummer.",
+            "Jeg skjønner naturlig språk – prøv å beskrive hva som skal skje og når!",
         ]
         return random.choice(hints)
     

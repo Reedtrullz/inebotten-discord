@@ -6,18 +6,89 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core.nlu_metrics import NLUMetrics
 from utils.json_storage import hermes_discord_data_path
+from web_console.console_store import (
+    INTENT_STAT_NAMES,
+    STORE_ERROR_CODES,
+    STATS_SCHEMA_VERSION,
+    ConsoleStore,
+    get_console_store,
+    sanitize_reminder_runtime,
+)
 
 _JSON_READ_ERRORS: dict[str, str] = {}
 _TASK_STATES = frozenset(
     {"running", "completed", "cancelled", "degraded", "failed", "other"}
 )
+DEGRADED_REASON_CODES = frozenset(
+    {
+        "discord_user_missing",
+        "discord_not_ready",
+        "discord_closed",
+        "tasks_degraded",
+        "persistence_degraded",
+        "calendar_sync_degraded",
+    }
+)
+BOT_STATUS_VALUES = frozenset({"starting", "online", "degraded", "unknown"})
+COMPONENT_STATUS_VALUES = frozenset(
+    {
+        "starting",
+        "ok",
+        "healthy",
+        "degraded",
+        "disabled",
+        "stopped",
+        "unknown",
+        "error",
+        "unavailable",
+        "unhealthy",
+    }
+)
+CONNECTION_STATUS_VALUES = frozenset({"connected", "disconnected", "unknown"})
+AI_PROVIDER_VALUES = frozenset({"lm_studio", "openrouter", "unknown"})
+PUBLIC_REMINDER_KEYS = ("status", "running", "stale", "last_success_at")
+
+
+def _bounded_value(value: object, allowed: frozenset[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unknown"
+
+
+def _nonnegative_int(value: object) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )
+
+
+def _nonnegative_number_or_none(value: object) -> int | float | None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        return None
+    return value
+
+
+def _iso_or_none(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
 
 
 def _read_json_file(path: Path, default: Any) -> Any:
@@ -151,6 +222,77 @@ def _collect_task_health(monitor: object | None = None) -> dict[str, Any]:
         return {"status": "degraded", "counts": counts}
 
 
+def _bot_projection(raw: Mapping[str, object]) -> dict[str, object]:
+    reasons = raw.get("degraded_reasons")
+    reason_values = reasons if isinstance(reasons, list) else []
+    return {
+        "status": _bounded_value(raw.get("status"), BOT_STATUS_VALUES),
+        "monitor_ready": raw.get("monitor_ready") is True,
+        "discord_connected": raw.get("discord_connected") is True,
+        "discord_ready": raw.get("discord_ready") is True,
+        "discord_closed": raw.get("discord_closed") is True,
+        "uptime_seconds": _nonnegative_int(raw.get("uptime_seconds")),
+        "guilds": _nonnegative_int(raw.get("guilds")),
+        "users": _nonnegative_int(raw.get("users")),
+        "latency": _nonnegative_number_or_none(raw.get("latency")),
+        "degraded_reasons": sorted(
+            {
+                value
+                for value in reason_values
+                if isinstance(value, str) and value in DEGRADED_REASON_CODES
+            }
+        ),
+    }
+
+
+def _task_projection(raw: Mapping[str, object]) -> dict[str, object]:
+    raw_counts = raw.get("counts")
+    counts = {
+        state: _nonnegative_int(
+            raw_counts.get(state) if isinstance(raw_counts, Mapping) else 0
+        )
+        for state in sorted(_TASK_STATES)
+    }
+    return {
+        "status": _bounded_value(raw.get("status"), COMPONENT_STATUS_VALUES),
+        "counts": counts,
+    }
+
+
+def _persistence_projection(raw: Mapping[str, object]) -> dict[str, object]:
+    error = raw.get("error_code")
+    return {
+        "status": _bounded_value(raw.get("status"), COMPONENT_STATUS_VALUES),
+        "stats_schema_version": STATS_SCHEMA_VERSION,
+        "last_stats_saved_at": _iso_or_none(raw.get("last_stats_saved_at")),
+        "last_log_write_at": _iso_or_none(raw.get("last_log_write_at")),
+        "error_code": (
+            error if isinstance(error, str) and error in STORE_ERROR_CODES else None
+        ),
+        "last_error_at": _iso_or_none(raw.get("last_error_at")),
+    }
+
+
+def _calendar_projection(raw: Mapping[str, object]) -> dict[str, object]:
+    has_error = raw.get("last_error") is not None or raw.get("error_code") is not None
+    return {
+        "status": _bounded_value(raw.get("status"), COMPONENT_STATUS_VALUES),
+        "gcal_enabled": raw.get("gcal_enabled") is True,
+        "error_code": "sync_failed" if has_error else None,
+    }
+
+
+def _bridge_projection(raw: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "status": _bounded_value(raw.get("status"), COMPONENT_STATUS_VALUES),
+        "lm_studio": _bounded_value(
+            raw.get("lm_studio"), CONNECTION_STATUS_VALUES
+        ),
+        "requests": _nonnegative_int(raw.get("requests")),
+        "errors": _nonnegative_int(raw.get("errors")),
+    }
+
+
 def _collect_public_reminder_runtime(
     monitor: object | None = None,
 ) -> dict[str, object] | None:
@@ -203,38 +345,51 @@ def _collect_public_reminder_runtime(
         return safe_degraded
 
 
-def _collect_persistence_health() -> dict[str, Any]:
+def _collect_persistence_health(
+    store: ConsoleStore | None = None,
+) -> dict[str, object]:
     read_errors = _probe_json_files()
     try:
-        from web_console.console_store import get_console_store
-
-        store = get_console_store()
-        if hasattr(store, "health"):
-            health = dict(store.health())
-            if read_errors:
-                health["status"] = "degraded"
-                health["read_errors"] = read_errors
-            return health
-    except Exception as exc:
-        return {"status": "degraded", "last_error": str(exc)}
-    return {"status": "degraded", "read_errors": read_errors} if read_errors else {"status": "unknown"}
+        active_store = store if store is not None else get_console_store()
+        health = active_store.health()
+        bounded = _persistence_projection(
+            health if isinstance(health, Mapping) else {}
+        )
+        if read_errors:
+            bounded["status"] = "degraded"
+            bounded["error_code"] = "read_error"
+        return bounded
+    except Exception:
+        return _persistence_projection(
+            {"status": "degraded", "error_code": "read_error"}
+        )
 
 
 def _collect_calendar_sync_health(monitor: object | None = None) -> dict[str, Any]:
     calendar = getattr(monitor, "calendar", None)
     if calendar is None:
-        return {"status": "unknown", "gcal_enabled": False}
+        return _calendar_projection(
+            {"status": "unknown", "gcal_enabled": False}
+        )
 
     last_error = getattr(calendar, "last_gcal_sync_error", None)
     gcal_enabled = bool(getattr(calendar, "gcal_enabled", False))
-    return {
-        "status": "degraded" if last_error else ("ok" if gcal_enabled else "disabled"),
-        "gcal_enabled": gcal_enabled,
-        "last_error": last_error,
-    }
+    return _calendar_projection(
+        {
+            "status": (
+                "degraded" if last_error else ("ok" if gcal_enabled else "disabled")
+            ),
+            "gcal_enabled": gcal_enabled,
+            "last_error": last_error,
+        }
+    )
 
 
-def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
+def collect_bot_status(
+    monitor: object | None = None,
+    *,
+    store: ConsoleStore | None = None,
+) -> dict[str, Any]:
     reminder_runtime = _collect_public_reminder_runtime(monitor)
     if monitor is None:
         return {"status": "starting", "monitor_ready": False}
@@ -262,10 +417,8 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         uptime_seconds = 0
         if start_time:
             try:
-                session_uptime = max(0, int((datetime.now() - start_time).total_seconds()))
-                from web_console.console_store import get_console_store
-                store = get_console_store()
-                first_start = store.first_start_time()
+                active_store = store if store is not None else get_console_store()
+                first_start = active_store.first_start_time()
                 total_uptime = max(0, int((datetime.now() - first_start).total_seconds()))
                 uptime_seconds = total_uptime
             except Exception:
@@ -288,7 +441,11 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
             users = 1
 
         tasks = _collect_task_health(monitor)
-        persistence = _collect_persistence_health()
+        persistence = (
+            _collect_persistence_health(store)
+            if store is not None
+            else _collect_persistence_health()
+        )
         calendar_sync = _collect_calendar_sync_health(monitor)
         discord_connected = bool(user is not None and is_ready and not is_closed)
         degraded_reasons = []
@@ -338,41 +495,150 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         return result
 
 
-async def collect_console_health(monitor: object | None = None, *, port: int | None = None) -> dict[str, Any]:
-    bot = collect_bot_status(monitor)
-    reminder_runtime = _collect_public_reminder_runtime(monitor)
-    bridge = await collect_bridge_health(monitor)
-    persistence = bot.get("persistence") or _collect_persistence_health()
-    tasks = bot.get("tasks") or _collect_task_health(monitor)
-    ai_provider = _configured_ai_provider(monitor)
-    bridge_required = ai_provider == "lm_studio"
-    bridge_degraded = bridge.get("status") in {"error", "unavailable", "unhealthy", "degraded"} or bridge.get("lm_studio") == "disconnected"
+def collect_nlu_stats(
+    monitor: object | None,
+    *,
+    store: ConsoleStore,
+) -> dict[str, dict[str, int]]:
+    metrics = getattr(monitor, "nlu_metrics", None)
+    try:
+        raw = (
+            metrics.snapshot()
+            if isinstance(metrics, NLUMetrics)
+            else store.load_nlu_stats()
+        )
+    except Exception:
+        raw = {}
+    sanitized = NLUMetrics()
+    sanitized.merge_snapshot(raw if isinstance(raw, Mapping) else {})
+    return sanitized.snapshot()
 
-    if bot.get("status") == "starting":
-        status = "starting"
-    elif (
-        bot.get("status") == "degraded"
-        or persistence.get("status") == "degraded"
-        or tasks.get("status") == "degraded"
-        or (bridge_required and bridge_degraded)
+
+def collect_reminder_runtime(
+    monitor: object | None,
+    *,
+    store: ConsoleStore,
+    public: bool = False,
+    reference: datetime | None = None,
+) -> dict[str, object]:
+    try:
+        checker = getattr(monitor, "reminder_checker", None)
+        get_health = getattr(checker, "get_health", None)
+        live = callable(get_health)
+        raw = get_health() if live else store.load_reminder_runtime()
+    except Exception:
+        live = False
+        raw = {
+            "status": "degraded",
+            "running": False,
+            "stale": True,
+            "last_error_code": "cycle_error",
+        }
+    full = sanitize_reminder_runtime(raw if isinstance(raw, Mapping) else {})
+    if not live:
+        now = reference or datetime.now().astimezone()
+        last_success = full["last_success_at"]
+        try:
+            parsed_success = (
+                datetime.fromisoformat(last_success.replace("Z", "+00:00"))
+                if isinstance(last_success, str)
+                else None
+            )
+        except ValueError:
+            parsed_success = None
+        full["running"] = False
+        full["stale"] = (
+            parsed_success is None
+            or (
+                now.astimezone(timezone.utc)
+                - parsed_success.astimezone(timezone.utc)
+            )
+            > timedelta(seconds=150)
+        )
+        full["status"] = "starting" if monitor is None else "degraded"
+    if not public:
+        return full
+    return {key: full[key] for key in PUBLIC_REMINDER_KEYS}
+
+
+def collect_authenticated_status(
+    monitor: object | None,
+    *,
+    store: ConsoleStore,
+) -> dict[str, object]:
+    raw_bot = collect_bot_status(monitor, store=store)
+    bot = _bot_projection(raw_bot)
+    return {
+        "status": bot["status"],
+        "bot": bot,
+        "tasks": _task_projection(_collect_task_health(monitor)),
+        "persistence": _collect_persistence_health(store),
+        "calendar_sync": _collect_calendar_sync_health(monitor),
+        "nlu": collect_nlu_stats(monitor, store=store),
+        "reminder_runtime": collect_reminder_runtime(
+            monitor,
+            store=store,
+            public=False,
+        ),
+    }
+
+
+async def collect_console_health(
+    monitor: object | None = None,
+    *,
+    port: int | None = None,
+    store: ConsoleStore | None = None,
+) -> dict[str, Any]:
+    active_store = store if store is not None else get_console_store()
+    raw_bot = collect_bot_status(monitor, store=active_store)
+    bot = _bot_projection(raw_bot)
+    tasks = _task_projection(_collect_task_health(monitor))
+    persistence = (
+        _collect_persistence_health(active_store)
+        if store is not None
+        else _collect_persistence_health()
+    )
+    calendar_sync = _collect_calendar_sync_health(monitor)
+    bridge = _bridge_projection(await collect_bridge_health(monitor))
+    reminder_runtime = collect_reminder_runtime(
+        monitor,
+        store=active_store,
+        public=True,
+    )
+    provider = _configured_ai_provider(monitor)
+    starting = bot["status"] == "starting" or reminder_runtime["status"] == "starting"
+    degraded = any(
+        value["status"] in {"degraded", "error", "unavailable", "unhealthy"}
+        for value in (bot, tasks, persistence, calendar_sync)
+    )
+    if (
+        reminder_runtime["status"] in {"degraded", "stopped"}
+        or reminder_runtime["stale"] is True
+        or reminder_runtime["running"] is False
     ):
-        status = "degraded"
-    else:
-        status = "healthy"
-
-    result = {
-        "status": status,
+        degraded = True
+    if provider == "lm_studio" and bridge["status"] in {
+        "degraded",
+        "error",
+        "unavailable",
+        "unhealthy",
+    }:
+        degraded = True
+    return {
+        "status": "starting" if starting else ("degraded" if degraded else "healthy"),
         "timestamp": datetime.now().isoformat(),
-        "console": {"status": "running", "port": port},
-        "ai_provider": ai_provider,
+        "console": {
+            "status": "running",
+            "port": port if isinstance(port, int) and 0 <= port <= 65535 else None,
+        },
+        "ai_provider": provider if provider in AI_PROVIDER_VALUES else "unknown",
         "bot": bot,
         "bridge": bridge,
         "persistence": persistence,
         "tasks": tasks,
+        "calendar_sync": calendar_sync,
+        "reminder_runtime": reminder_runtime,
     }
-    if reminder_runtime is not None:
-        result["reminder_runtime"] = reminder_runtime
-    return result
 
 
 async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
@@ -498,97 +764,159 @@ def collect_poll_data(monitor: object | None = None) -> dict[str, Any]:
     return {"active_polls": total_active, "polls": active_polls}
 
 
-def collect_rate_limits(monitor: object | None = None) -> dict[str, Any]:
-    from web_console.console_store import get_console_store
+def _flat_rate_counts(raw: object) -> dict[str, int]:
+    if not isinstance(raw, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for raw_user, raw_value in raw.items():
+        user = str(raw_user)
+        if len(user) > 32 or not user.isascii() or not user.isdecimal():
+            continue
+        value = (
+            raw_value.get("requests", 0)
+            if isinstance(raw_value, Mapping)
+            else raw_value
+        )
+        count = _nonnegative_int(value)
+        if count:
+            result[user] = count
+    return result
 
-    store = get_console_store()
-    persisted = store.load_rate_limit_stats()
 
-    if monitor is None:
+def collect_rate_limits(
+    monitor: object | None = None,
+    *,
+    store: ConsoleStore | None = None,
+) -> dict[str, Any]:
+    active_store = store if store is not None else get_console_store()
+    persisted = _flat_rate_counts(active_store.load_rate_limit_stats())
+
+    def render(counts: Mapping[str, int]) -> dict[str, Any]:
         return {
-            "user_stats": _anonymize_user_ids({u: {"requests": c} for u, c in persisted.items()}),
-            "summary": {"total_requests": sum(persisted.values())},
+            "user_stats": _anonymize_user_ids(
+                {user: {"requests": count} for user, count in counts.items()}
+            ),
+            "summary": {"total_requests": sum(counts.values())},
         }
 
+    if monitor is None:
+        return render(persisted)
+
     try:
+        get_unsaved = getattr(monitor, "get_unsaved_rate_stats", None)
+        if callable(get_unsaved):
+            unsaved = _flat_rate_counts(get_unsaved())
+            merged = dict(persisted)
+            for user, count in unsaved.items():
+                merged[user] = merged.get(user, 0) + count
+            return render(merged)
+
         rate_limiter = getattr(monitor, "rate_limiter", None)
         if rate_limiter is None:
-            return {
-                "user_stats": _anonymize_user_ids({u: {"requests": c} for u, c in persisted.items()}),
-                "summary": {"total_requests": sum(persisted.values())},
-            }
+            return render(persisted)
 
         overall_stats = rate_limiter.get_stats() if hasattr(rate_limiter, "get_stats") else {}
-        user_stats: dict[str, dict[str, int]] = {}
+        live: dict[str, int] = {}
 
         for attr in ("user_stats", "per_user_stats", "stats_by_user", "user_counters", "user_limits"):
             candidate = getattr(rate_limiter, attr, None)
-            if isinstance(candidate, dict):
-                user_stats = _sanitize_user_stats(candidate)
+            if isinstance(candidate, Mapping):
+                live = _flat_rate_counts(candidate)
                 break
 
-        if not user_stats and isinstance(overall_stats, dict):
+        if not live and isinstance(overall_stats, Mapping):
             for key in ("user_stats", "per_user", "users"):
                 candidate = overall_stats.get(key)
-                if isinstance(candidate, dict):
-                    user_stats = _sanitize_user_stats(candidate)
+                if isinstance(candidate, Mapping):
+                    live = _flat_rate_counts(candidate)
                     break
-
-        merged: dict[str, int] = {}
-        for user, stats in user_stats.items():
-            count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
-            merged[user] = merged.get(user, 0) + count
-        for user, count in persisted.items():
-            merged[user] = merged.get(user, 0) + count
-
-        return {
-            "user_stats": _anonymize_user_ids({u: {"requests": c} for u, c in merged.items()}),
-            "summary": overall_stats if isinstance(overall_stats, dict) else {},
-        }
+        # Without an explicit unsaved-delta API, a live snapshot is already a
+        # full current-process total. Prefer it over persisted data rather than
+        # counting the flushed prefix twice.
+        return render(live or persisted)
     except Exception:
-        return {"user_stats": {}}
+        return render(persisted)
 
 
-def collect_intent_stats(monitor: object | None = None) -> dict[str, Any]:
-    from web_console.console_store import get_console_store
-
-    store = get_console_store()
-    persisted = store.load_intent_stats()
+def collect_intent_stats(
+    monitor: object | None = None,
+    *,
+    store: ConsoleStore | None = None,
+) -> dict[str, Any]:
+    active_store = store if store is not None else get_console_store()
+    persisted = active_store.load_intent_stats()
 
     if monitor is None:
-        intent_counts = {k: v.get("count", 0) for k, v in persisted.items()}
-        fallback_count = sum(v.get("low_confidence", 0) for v in persisted.values())
+        intent_counts = {
+            str(name): _nonnegative_int(stats.get("count", 0))
+            for name, stats in persisted.items()
+            if name in INTENT_STAT_NAMES and isinstance(stats, Mapping)
+        }
+        fallback_count = sum(
+            _nonnegative_int(stats.get("low_confidence", 0))
+            for name, stats in persisted.items()
+            if name in INTENT_STAT_NAMES and isinstance(stats, Mapping)
+        )
         return {"intent_counts": intent_counts, "fallback_count": fallback_count}
 
     try:
         raw_stats = {}
+        is_delta = False
         get_unsaved_intent_stats = getattr(monitor, "get_unsaved_intent_stats", None)
         get_intent_stats = getattr(monitor, "get_intent_stats", None)
         if callable(get_unsaved_intent_stats):
             raw_stats = get_unsaved_intent_stats()
+            is_delta = True
         elif callable(get_intent_stats):
             raw_stats = get_intent_stats()
         else:
             raw_stats = getattr(monitor, "intent_stats", {})
 
-        intent_counts: dict[str, int] = {}
-        fallback_count = 0
+        intent_counts: dict[str, int] = (
+            {
+                str(intent_name): _nonnegative_int(stats.get("count", 0))
+                for intent_name, stats in persisted.items()
+                if intent_name in INTENT_STAT_NAMES
+                and isinstance(stats, Mapping)
+            }
+            if is_delta or not raw_stats
+            else {}
+        )
+        fallback_count = (
+            sum(
+                _nonnegative_int(stats.get("low_confidence", 0))
+                for name, stats in persisted.items()
+                if name in INTENT_STAT_NAMES and isinstance(stats, Mapping)
+            )
+            if is_delta or not raw_stats
+            else 0
+        )
 
-        for intent_name, stats in persisted.items():
-            intent_counts[str(intent_name)] = int(stats.get("count", 0))
-            fallback_count += int(stats.get("low_confidence", 0))
-
-        if isinstance(raw_stats, dict):
+        if isinstance(raw_stats, Mapping):
             for intent_name, stats in raw_stats.items():
-                if not isinstance(stats, dict):
+                if (
+                    intent_name not in INTENT_STAT_NAMES
+                    or not isinstance(stats, Mapping)
+                ):
                     continue
-                count = int(stats.get("count", 0) or 0)
-                intent_counts[str(intent_name)] = intent_counts.get(str(intent_name), 0) + count
-                fallback_count += int(stats.get("low_confidence", 0) or 0)
+                count = _nonnegative_int(stats.get("count", 0))
+                intent_counts[intent_name] = intent_counts.get(intent_name, 0) + count
+                fallback_count += _nonnegative_int(stats.get("low_confidence", 0))
 
         return {"intent_counts": intent_counts, "fallback_count": fallback_count}
     except Exception:
-        return {"intent_counts": {}, "fallback_count": 0}
+        return {
+            "intent_counts": {
+                str(name): _nonnegative_int(stats.get("count", 0))
+                for name, stats in persisted.items()
+                if name in INTENT_STAT_NAMES and isinstance(stats, Mapping)
+            },
+            "fallback_count": sum(
+                _nonnegative_int(stats.get("low_confidence", 0))
+                for name, stats in persisted.items()
+                if name in INTENT_STAT_NAMES and isinstance(stats, Mapping)
+            ),
+        }
 
 
 def collect_memory_stats(monitor: object | None = None) -> dict[str, int]:
@@ -616,7 +944,13 @@ def collect_memory_stats(monitor: object | None = None) -> dict[str, int]:
         return {"user_count": 0, "conversation_count": 0}
 
 
-def collect_logs(count: int = 200) -> dict[str, Any]:
+def collect_logs(
+    count: int = 200,
+    *,
+    store: ConsoleStore | None = None,
+) -> dict[str, Any]:
+    if store is not None:
+        return {"logs": store.load_logs(count)}
     from utils.logger import get_log_buffer
     return {"logs": get_log_buffer().get_lines(count)}
 
@@ -703,19 +1037,25 @@ def generate_mock_data() -> dict[str, Any]:
 
 
 class StateCollector:
-    def __init__(self, monitor: object | None = None):
+    def __init__(
+        self,
+        monitor: object | None = None,
+        *,
+        store: ConsoleStore | None = None,
+    ):
         self.monitor = monitor
+        self.store = store if store is not None else get_console_store()
 
     async def collect_all(self) -> dict[str, Any]:
         result = {
-            "status": collect_bot_status(self.monitor),
+            "status": collect_bot_status(self.monitor, store=self.store),
             "bridge": await collect_bridge_health(self.monitor),
             "calendar": collect_calendar_data(self.monitor),
             "polls": collect_poll_data(self.monitor),
-            "rate_limits": collect_rate_limits(self.monitor),
-            "intents": collect_intent_stats(self.monitor),
+            "rate_limits": collect_rate_limits(self.monitor, store=self.store),
+            "intents": collect_intent_stats(self.monitor, store=self.store),
             "memory": collect_memory_stats(self.monitor),
-            "logs": collect_logs(),
+            "logs": collect_logs(store=self.store),
         }
         reminder_runtime = _collect_public_reminder_runtime(self.monitor)
         if reminder_runtime is not None:

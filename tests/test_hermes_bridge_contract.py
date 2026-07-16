@@ -183,6 +183,27 @@ def test_context_budget_truncates_values_before_serializing_valid_json():
         )
 
 
+def test_context_budget_preserves_valid_nested_json_at_boundary():
+    context = json.dumps(
+        {"allowed": "MEMORY-CANARY", "padding": "x" * 3_900},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert len(context) <= MAX_CONTEXT_CHARS
+
+    serialized = build_untrusted_context_data(
+        author_name="Ola",
+        channel_type="DM",
+        context_prompt=context,
+    )
+    wrapped = json.loads(serialized)
+    nested = json.loads(wrapped["context"])
+
+    assert len(serialized) <= MAX_CONTEXT_CHARS
+    assert isinstance(nested, dict)
+    assert nested.get("allowed") == "MEMORY-CANARY"
+
+
 @pytest.mark.parametrize(
     ("field", "code"),
     [

@@ -17,7 +17,12 @@ import time
 from datetime import datetime, date
 from urllib.parse import unquote, urlparse, parse_qs
 
-from ai.chat_contract import ChatContractError, ChatTurn, prepare_history
+from ai.chat_contract import (
+    ChatContractError,
+    ChatTurn,
+    fit_context_prompt_in_wrapper,
+    prepare_history,
+)
 from ai.response_cleaner import MAX_CLEANER_INPUT_BYTES
 
 # Configure logging
@@ -118,19 +123,15 @@ def build_untrusted_context_data(
             sort_keys=True,
         )
 
-    serialized = serialize(context_prompt)
-    if len(serialized) <= MAX_CONTEXT_CHARS:
-        return serialized
-
-    low = 0
-    high = len(context_prompt)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if len(serialize(context_prompt[:middle])) <= MAX_CONTEXT_CHARS:
-            low = middle
-        else:
-            high = middle - 1
-    return serialize(context_prompt[:low])
+    try:
+        fitted_context = fit_context_prompt_in_wrapper(
+            context_prompt,
+            serialize_wrapper=serialize,
+            max_chars=MAX_CONTEXT_CHARS,
+        )
+    except ChatContractError as exc:
+        raise BridgeContractError(exc.code) from None
+    return serialize(fitted_context)
 
 
 def parse_bridge_history(raw: object) -> tuple[ChatTurn, ...]:

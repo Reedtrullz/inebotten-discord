@@ -30,10 +30,23 @@ from core.intent_payloads import (
     validate_intent_payload,
 )
 from core.intent_policy import classify_intent_risk
+from core.list_read_filters import (
+    filtered_list_read_family,
+    is_supported_calendar_read_date,
+    looks_like_list_read_request,
+    unfiltered_list_read_family,
+)
 from core.message_context import RoutingContext
 from core.nlu_metrics import NLUMetrics
 from core.utterance import NormalizedUtterance
-from core.utterance_semantics import analyze_utterance
+from core.utterance_semantics import (
+    analyze_utterance,
+    bounded_english_calendar_create_head,
+    bounded_english_reminder_create_head,
+    has_future_weather_request,
+    has_sequenced_action_request,
+    has_unsupported_poll_mutation_request,
+)
 
 
 BRIDGE_TEMPORAL_ERROR_CODES = frozenset(
@@ -43,7 +56,6 @@ BRIDGE_TEMPORAL_ERROR_CODES = frozenset(
         "conflicting_temporal_fields",
     }
 )
-
 
 @dataclass(frozen=True, slots=True)
 class ActionBridgeContext:
@@ -93,6 +105,8 @@ def validate_route_payload(
     key = ENVELOPE_KEYS.get(intent)
     if key is None:
         return copy.deepcopy(payload)
+    if intent is BotIntent.CALENDAR_LIST and payload == {}:
+        return {}
     if key not in payload:
         raise PayloadValidationError("missing_payload")
     normalized = copy.deepcopy(payload)
@@ -113,6 +127,80 @@ def _simple(intent: BotIntent, payload: dict[str, object]) -> RouteBuilder:
         return intent, payload
 
     return build
+
+
+def _list_date_filter(
+    slots: Mapping[str, JsonValue],
+    slot_name: str,
+    family: str,
+    context: ActionBridgeContext,
+) -> tuple[bool, str | None]:
+    """Resolve one semantic list date without trusting a model-invented slot."""
+
+    try:
+        resolved = context.temporal_resolver.resolve(
+            context.utterance.control_text,
+            reference=context.reference_time,
+        )
+    except (TypeError, ValueError):
+        return False, None
+    if (
+        resolved.errors
+        or resolved.time is not None
+        or resolved.due_at is not None
+        or (resolved.matched_text and resolved.date is None)
+    ):
+        return False, None
+    matched_family = (
+        filtered_list_read_family(context.utterance.control_text)
+        if resolved.date is not None
+        else unfiltered_list_read_family(context.utterance.control_text)
+    )
+    if matched_family != family:
+        return False, None
+
+    proposed = slots.get(slot_name)
+    if proposed is not None and (
+        not isinstance(proposed, str) or proposed != resolved.date
+    ):
+        return False, None
+    return True, resolved.date
+
+
+def _calendar_list(
+    slots: Mapping[str, JsonValue],
+    context: ActionBridgeContext,
+) -> tuple[BotIntent, dict[str, object]] | None:
+    valid, date_filter = _list_date_filter(
+        slots, "date", "calendar", context
+    )
+    if not valid:
+        return None
+    if date_filter is None:
+        return BotIntent.CALENDAR_LIST, {}
+    if not is_supported_calendar_read_date(
+        date_filter,
+        reference_time=context.reference_time,
+    ):
+        return None
+    return BotIntent.CALENDAR_LIST, {"calendar_list": {"date": date_filter}}
+
+
+def _reminder_list(
+    slots: Mapping[str, JsonValue],
+    context: ActionBridgeContext,
+) -> tuple[BotIntent, dict[str, object]] | None:
+    valid, date_filter = _list_date_filter(
+        slots, "due_date", "reminder", context
+    )
+    if not valid:
+        return None
+    return BotIntent.REMINDER_LIST, {
+        "reminder": {
+            "action": "list",
+            **({"due_date": date_filter} if date_filter else {}),
+        }
+    }
 
 
 def _calendar_create(
@@ -413,7 +501,7 @@ ACTION_ROUTE_BUILDERS: dict[ActionName, RouteBuilder] = {
     ),
     ActionName.HELP: _simple(BotIntent.HELP, {}),
     ActionName.CALENDAR_CREATE: _calendar_create,
-    ActionName.CALENDAR_LIST: _simple(BotIntent.CALENDAR_LIST, {}),
+    ActionName.CALENDAR_LIST: _calendar_list,
     ActionName.CALENDAR_SEARCH: lambda slots, context: (
         BotIntent.CALENDAR_SEARCH,
         {"query": slots["query"]},
@@ -435,10 +523,7 @@ ACTION_ROUTE_BUILDERS: dict[ActionName, RouteBuilder] = {
         "timezone",
         "recurrence",
     ),
-    ActionName.REMINDER_LIST: _simple(
-        BotIntent.REMINDER_LIST,
-        {"reminder": {"action": "list"}},
-    ),
+    ActionName.REMINDER_LIST: _reminder_list,
     ActionName.REMINDER_SEARCH: _reminder(
         "search", BotIntent.REMINDER_SEARCH, "query"
     ),
@@ -464,6 +549,15 @@ ACTION_ROUTE_BUILDERS: dict[ActionName, RouteBuilder] = {
         {"birthday": {"action": "list", "scope": slots.get("scope", "all")}},
     ),
     ActionName.BIRTHDAY_EDIT: _birthday_edit,
+    ActionName.PROFILE_STATUS: _umbrella(
+        BotIntent.PROFILE, "profile", "status", "value"
+    ),
+    ActionName.PROFILE_PLAYING: _umbrella(
+        BotIntent.PROFILE, "profile", "playing", "value"
+    ),
+    ActionName.PROFILE_WATCHING: _umbrella(
+        BotIntent.PROFILE, "profile", "watching", "value"
+    ),
     ActionName.WATCHLIST_ADD: _umbrella(
         BotIntent.WATCHLIST,
         "watchlist",
@@ -516,6 +610,14 @@ _ACTION_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
         "lagre",
         "opprett",
         "planlegg",
+        "planlegge",
+        "planleggje",
+        "sette opp",
+        "setje opp",
+        "set up",
+        "book",
+        "booke",
+        "put",
         "schedule",
         "add",
         "create",
@@ -552,12 +654,20 @@ _ACTION_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
         "delete all",
     ),
     ActionName.REMINDER_CREATE: (
+        "create",
+        "add",
+        "make",
+        "set",
+        "put",
         "påminn",
         "minn",
         "minne",
         "husk",
         "hugs",
         "huske",
+        "glemme",
+        "gløyme",
+        "forget",
         "sørg for",
         "pass på",
         "remind",
@@ -628,6 +738,9 @@ _ACTION_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
         "edit",
         "change",
     ),
+    ActionName.PROFILE_STATUS: (),
+    ActionName.PROFILE_PLAYING: (),
+    ActionName.PROFILE_WATCHING: (),
     ActionName.WATCHLIST_ADD: (
         "legg til",
         "legg",
@@ -736,6 +849,23 @@ _DOMAIN_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
     },
     **{
         action: (
+            "profil",
+            "profile",
+            "status",
+            "statusen",
+            "aktivitet",
+            "aktiviteten",
+            "activity",
+            "spiller",
+            "playing",
+            "ser på",
+            "watching",
+        )
+        for action in ActionName
+        if action.value.startswith("PROFILE_")
+    },
+    **{
+        action: (
             "watchlist",
             "se-liste",
             "se-lista",
@@ -766,6 +896,23 @@ _DOMAIN_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
 
 
 _ANCHORED_ACTION_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
+    ActionName.CALENDAR_CREATE: (
+        "jeg vil gjerne ha et møte",
+        "jeg vil gjerne ha en avtale",
+        "eg vil gjerne ha eit møte",
+        "eg vil gjerne ha ein avtale",
+        "i would like a meeting",
+        "i would like an appointment",
+        "would you mind putting a meeting",
+        "would you mind putting an appointment",
+        "could you please put a meeting",
+        "could you please put an appointment",
+        "could you put",
+        "could you book",
+        "could you set up",
+        "kan du sette opp",
+        "kan du booke",
+    ),
     ActionName.CALENDAR_EDIT: (
         "i need the meeting moved",
         "i need my meeting moved",
@@ -774,6 +921,32 @@ _ANCHORED_ACTION_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
         "i need my appointment moved",
         "i need appointment moved",
     ),
+    ActionName.REMINDER_CREATE: (
+        "jeg trenger å bli minnet",
+        "jeg treng å bli minna",
+        "eg treng å bli minna",
+        "jeg vil gjerne bli minnet",
+        "eg vil gjerne bli minna",
+        "would you mind reminding me",
+        "i need to be reminded",
+        "i need to remember",
+        "don't let me forget",
+        "don’t let me forget",
+        "ikke la meg glemme",
+        "i'd like a reminder to",
+        "i’d like a reminder to",
+        "i would like a reminder to",
+    ),
+    ActionName.WATCHLIST_ADD: (
+        "husk at jeg vil se",
+        "husk at jeg skal se",
+        "huske at jeg vil se",
+        "huske at jeg skal se",
+        "hugs at eg vil sjå",
+        "hugs at eg skal sjå",
+        "hugse at eg vil sjå",
+        "hugse at eg skal sjå",
+    ),
     ActionName.BIRTHDAY_EDIT: (
         "bursdagen min er",
         "min bursdag er",
@@ -781,6 +954,34 @@ _ANCHORED_ACTION_EVIDENCE: dict[ActionName, tuple[str, ...]] = {
         "eg har bursdag",
         "fødselsdagen min er",
         "my birthday is",
+    ),
+    ActionName.PROFILE_STATUS: (
+        "sett statusen",
+        "set status",
+        "kan du sette statusen",
+        "kan du setje statusen",
+        "kunne du sette statusen",
+        "could you set your status",
+        "would you set your status",
+        "please set your status",
+    ),
+    ActionName.PROFILE_PLAYING: (
+        "vis at du spiller",
+        "vis at du spelar",
+        "show that you are playing",
+        "kan du vise at du spiller",
+        "kan du vise at du spelar",
+        "could you show that you are playing",
+        "would you show that you are playing",
+        "please set your activity to playing",
+    ),
+    ActionName.PROFILE_WATCHING: (
+        "vis at du ser på",
+        "show that you are watching",
+        "kan du vise at du ser på",
+        "could you show that you are watching",
+        "would you show that you are watching",
+        "please set your activity to watching",
     ),
 }
 
@@ -835,8 +1036,6 @@ _WATCHLIST_REMEMBER_ACTIONS = frozenset(
         "remember to watch",
     }
 )
-
-
 _WORD = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?|\d+", re.UNICODE)
 _INFLECTED_EVIDENCE_FORMS: dict[str, frozenset[str]] = {
     "appointment": frozenset({"appointments"}),
@@ -970,6 +1169,15 @@ def _present_anchored_evidence(
     return tuple(present)
 
 
+def _bounded_calendar_create_head_evidence(
+    utterance: NormalizedUtterance,
+) -> tuple[str, ...]:
+    """Trust ambiguous English create verbs only in directive position."""
+
+    head = bounded_english_calendar_create_head(utterance)
+    return (head,) if head is not None else ()
+
+
 class ActionBridge:
     """Validate and arbitrate one model proposal without executing it."""
 
@@ -998,6 +1206,66 @@ class ActionBridge:
                 requires_confirmation=False,
             )
 
+        deterministic_sequence_guard = (
+            context.deterministic_route is not None
+            and context.deterministic_route.intent is BotIntent.CLARIFY
+            and context.deterministic_route.reason
+            == "multiple_actions_require_split"
+        )
+        if (
+            deterministic_sequence_guard
+            or has_sequenced_action_request(context.utterance)
+        ):
+            if self.metrics is not None:
+                self.metrics.record_rejection(RejectionCode.CONFLICT)
+            return None
+
+        if has_unsupported_poll_mutation_request(context.utterance):
+            if self.metrics is not None:
+                self.metrics.record_rejection(RejectionCode.INVALID_CONTEXT)
+            return None
+
+        if (
+            proposal.action is ActionName.SHOW_DASHBOARD
+            and has_future_weather_request(context.utterance)
+        ):
+            # SHOW_DASHBOARD fetches current conditions only.  Do not let a
+            # model reinterpret a dated forecast question as current weather.
+            if self.metrics is not None:
+                self.metrics.record_rejection(RejectionCode.INVALID_TEMPORAL)
+            return None
+
+        control = context.utterance.control_text.strip()
+        exact_list_family = (
+            filtered_list_read_family(control)
+            or unfiltered_list_read_family(control)
+        )
+        expected_list_action = {
+            "calendar": ActionName.CALENDAR_LIST,
+            "reminder": ActionName.REMINDER_LIST,
+        }.get(exact_list_family)
+        if expected_list_action is not None:
+            if proposal.action not in {
+                expected_list_action,
+                ActionName.CLARIFY,
+            }:
+                # A model may not reinterpret an inventory request as SEARCH
+                # and silently discard its requested date/filter.
+                if self.metrics is not None:
+                    self.metrics.record_rejection(
+                        RejectionCode.INVALID_CONTEXT
+                    )
+                return None
+        elif (
+            proposal.action is not ActionName.CLARIFY
+            and looks_like_list_read_request(control)
+        ):
+            # The utterance has an unsupported qualifier/range.  No typed
+            # action currently carries that complete meaning, so fail closed.
+            if self.metrics is not None:
+                self.metrics.record_rejection(RejectionCode.INVALID_TEMPORAL)
+            return None
+
         built = ACTION_ROUTE_BUILDERS[proposal.action](proposal.slots, context)
         if built is None:
             if self.metrics is not None:
@@ -1019,6 +1287,27 @@ class ActionBridge:
             context.utterance,
             _ANCHORED_ACTION_EVIDENCE.get(proposal.action, ()),
         )
+        if proposal.action is ActionName.CALENDAR_CREATE:
+            action_terms = tuple(
+                term
+                for term in action_terms
+                if term
+                not in {"book", "schedule", "put", "add", "create"}
+            )
+            action_terms += _bounded_calendar_create_head_evidence(
+                context.utterance
+            )
+        if proposal.action is ActionName.REMINDER_CREATE:
+            action_terms = tuple(
+                term
+                for term in action_terms
+                if term not in {"create", "add", "make", "set", "put"}
+            )
+            reminder_head = bounded_english_reminder_create_head(
+                context.utterance
+            )
+            if reminder_head is not None:
+                action_terms += (reminder_head,)
         if (
             proposal.action is ActionName.WATCHLIST_ADD
             and _present_evidence(

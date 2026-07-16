@@ -796,8 +796,14 @@ def parse_watchlist_command(
         }
 
     if re.fullmatch(
-        r"(?:vis|list|show)?\s*(?:min |the )?(?:watchlist|watchlista|"
-        r"watch list)|hva har vi (?:på|i) watchlist",
+        r"(?:vis|list|show)?\s*(?:min |my |the )?(?:watchlist|watchlista|"
+        r"watch list)|hva har vi (?:på|i) watchlist|"
+        r"hva\s+har\s+(?:jeg|eg|æ)\s+(?:på|i)\s+"
+        r"(?:watchlist|watchlista|watchlisten)(?:\s+min)?|"
+        r"show\s+me\s+my\s+(?:watchlist|watch\s+list)|"
+        r"(?:what\s+is|what['’]s)\s+on\s+my\s+(?:watchlist|watch\s+list)|"
+        r"which\s+(?:movies|films|series|shows)\s+are\s+on\s+my\s+"
+        r"(?:watchlist|watch\s+list)",
         folded,
         re.I,
     ):
@@ -809,7 +815,23 @@ def parse_watchlist_command(
         re.I,
     )
     if media_add:
-        title = clean_title(media_add.group(2))
+        raw_title = media_add.group(2)
+        same_day_suffix = re.fullmatch(
+            r"(?P<title>.+?)\s+(?:i\s+dag|idag|today)",
+            raw_title,
+            re.I,
+        )
+        if same_day_suffix and not re.match(
+            r"^(?:på|om|til)\b|^(?:the\s+)?(?:kids|children)\b",
+            normalize_utterance(same_day_suffix.group("title")).control_text,
+            re.I,
+        ):
+            # In a media frame, a bare same-day suffix describes what the user
+            # wants to watch, not a sufficiently precise reminder schedule.
+            # Keep the canonical media title and let explicit clock/future
+            # temporal forms retain reminder ownership.
+            raw_title = same_day_suffix.group("title")
+        title = clean_title(raw_title)
         if title is None or is_reminder_media_body(title):
             return None
         return {
@@ -835,9 +857,49 @@ def parse_watchlist_command(
             "lang": "no",
         }
 
+    indirect_norwegian_add = re.fullmatch(
+        r"(?:(?:kan|kunne|vil)\s+du\s+|vennligst\s+)?"
+        r"(?:husk|huske|hugs|hugse)\s+at\s+(?:jeg|eg|æ)\s+"
+        r"(?:vil|skal)\s+(?:se|sjå)(?:\s+på)?\s+"
+        r"(?:(film|filmen|serie|serien)\s+)?(?P<title>.+)",
+        surface,
+        re.I,
+    )
+    if indirect_norwegian_add:
+        raw_title = indirect_norwegian_add.group("title").strip()
+        is_quoted = (
+            len(raw_title) >= 2
+            and (raw_title[0], raw_title[-1])
+            in {
+                ('"', '"'),
+                ("'", "'"),
+                ("“", "”"),
+                ("‘", "’"),
+                ("«", "»"),
+            }
+        )
+        # Without an explicit media noun, require title-shaped evidence so
+        # ordinary tasks such as "se legen" retain reminder ownership.
+        if (
+            indirect_norwegian_add.group(1) is None
+            and not is_quoted
+            and (not raw_title or not raw_title[0].isupper())
+        ):
+            return None
+        title = clean_title(raw_title)
+        if title is None or is_reminder_media_body(title):
+            return None
+        return {
+            "action": "add",
+            "title": title,
+            "type": item_type(indirect_norwegian_add.group(1) or ""),
+            "lang": "no",
+        }
+
     norwegian_action_add = re.fullmatch(
         r"(?:(?:kan|kunne|vil)\s+du\s+|vennligst\s+)?"
-        r"(?:legg|legge)(?:\s+til)?\s+(.+?)\s+(?:på|i)\s+watchlist",
+        r"(?:legg|legge)(?:\s+til)?\s+(.+?)\s+(?:på|i|til)\s+"
+        r"(?:watchlist(?:a|en)?|watch\s+list)(?:\s+min)?",
         surface,
         re.I,
     )
@@ -852,25 +914,9 @@ def parse_watchlist_command(
             "lang": "no",
         }
 
-    norwegian_suffix_add = re.fullmatch(
-        r"(.+?)\s+(?:på|i)\s+watchlist",
-        surface,
-        re.I,
-    )
-    if norwegian_suffix_add:
-        title = clean_title(norwegian_suffix_add.group(1))
-        if (
-            title is None
-            or is_reserved_action_title(title)
-            or re.match(r"^(?:add|legg\s+til)\b", title, re.I)
-            or is_descriptive_suffix(title, suffix_lang="no")
-        ):
-            return None
-        return {"action": "add", "title": title, "type": None, "lang": "no"}
-
     english_action_add = re.fullmatch(
         r"(?:(?:can|could|would|will)\s+you\s+|please\s+)?"
-        r"add\s+(.+?)\s+to\s+(?:the\s+)?watchlist",
+        r"add\s+(.+?)\s+to\s+(?:(?:the|my)\s+)?watchlist",
         surface,
         re.I,
     )
@@ -880,25 +926,9 @@ def parse_watchlist_command(
             return None
         return {"action": "add", "title": title, "type": None, "lang": "en"}
 
-    english_suffix_add = re.fullmatch(
-        r"(.+?)\s+to\s+(?:the\s+)?watchlist",
-        surface,
-        re.I,
-    )
-    if english_suffix_add:
-        title = clean_title(english_suffix_add.group(1))
-        if (
-            title is None
-            or is_reserved_action_title(title)
-            or re.match(r"^(?:legg\s+til)\b", title, re.I)
-            or is_descriptive_suffix(title, suffix_lang="en")
-        ):
-            return None
-        return {"action": "add", "title": title, "type": None, "lang": "en"}
-
     remove_no = re.fullmatch(
         r"(?:fjern|fjerne|slett|slette)\s+"
-        r"(film|filmen|serie|serien|watchlist)\s+"
+        r"(film|filmen|serie|serien|watchlist(?:a)?)\s+"
         r"(?:(?:nummer|nr\.?|#)\s*)?(\d+)",
         surface,
         re.I,
@@ -925,7 +955,7 @@ def parse_watchlist_command(
         }
 
     for pattern, remove_lang in (
-        (r"(?:fjern|fjerne|slett|slette)\s+(?:(?:nummer|nr\.?|#)\s*)?(\d+)\s+fra\s+watchlist", "no"),
+        (r"(?:fjern|fjerne|slett|slette)\s+(?:(?:nummer|nr\.?|#)\s*)?(\d+)\s+fra\s+watchlist(?:a)?", "no"),
         (r"(?:remove|delete)\s+(?:(?:number|no\.?|#)\s*)?(\d+)\s+from\s+watchlist", "en"),
     ):
         remove_from = re.fullmatch(pattern, surface, re.I)
@@ -938,7 +968,7 @@ def parse_watchlist_command(
 
     edit = re.fullmatch(
         r"(?P<action>endre|rediger|edit|change)\s+"
-        r"(?P<domain>film|filmen|serie|serien|movie|show|watchlist)\s+"
+        r"(?P<domain>film|filmen|serie|serien|movie|show|watchlist(?:a)?)\s+"
         r"(?:(?:nummer|number|nr\.?|no\.?|#)\s*)?(?P<index>\d+)\s+"
         r"(?P<body>.+)",
         surface,
@@ -951,7 +981,14 @@ def parse_watchlist_command(
             else "en"
         )
         allowed_domains = (
-            {"film", "filmen", "serie", "serien", "watchlist"}
+            {
+                "film",
+                "filmen",
+                "serie",
+                "serien",
+                "watchlist",
+                "watchlista",
+            }
             if edit_lang == "no"
             else {"movie", "show", "watchlist"}
         )

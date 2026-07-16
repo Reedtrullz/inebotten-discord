@@ -168,6 +168,15 @@ class FalsePositiveTests(unittest.TestCase):
         result = self.route("vær i Trondheim")
         self.assertEqual(result.intent, BotIntent.DASHBOARD)
 
+    def test_dashboard_location_suffix_is_exact_and_known(self):
+        for text in (
+            "weather in Oslo is lovely",
+            "vær i Trondheim er fint",
+            "vær i Neverland",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
     def test_nynorsk_conversational(self):
         result = self.route("Kva meiner du om RBK?")
         self.assertNotEqual(result.intent, BotIntent.SEARCH)

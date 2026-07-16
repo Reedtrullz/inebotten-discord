@@ -237,6 +237,32 @@ def test_openrouter_metadata_json_budgets_context_before_serialization() -> None
     assert decoded["author_name"] == "Ola"
 
 
+def test_openrouter_metadata_preserves_valid_nested_json_at_budget_boundary() -> None:
+    context = json.dumps(
+        {"allowed": "MEMORY-CANARY", "padding": "x" * 3_900},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert len(context) <= 4_000
+
+    messages = build_openrouter_messages(
+        message_content="hei",
+        system_prompt="TRUSTED",
+        context_prompt=context,
+        model="openai/gpt-4.1-mini",
+        author_name="Ola",
+        channel_type="GUILD_TEXT",
+        is_mention=True,
+    )
+    serialized = messages[1]["content"].split("\n", 1)[1]
+    wrapped = json.loads(serialized)
+    nested = json.loads(wrapped["context"])
+
+    assert len(serialized) <= 4_000
+    assert isinstance(nested, dict)
+    assert nested.get("allowed") == "MEMORY-CANARY"
+
+
 def test_hermes_payload_is_pure_and_preserves_every_caller_value() -> None:
     kwargs = {
         "message_content": " \nhei\n ",

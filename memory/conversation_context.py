@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from ai.chat_contract import ChatTurn, prepare_history
+from ai.chat_contract import (
+    REDACTED_AUTH_TURN,
+    ChatTurn,
+    HistoryPolicy,
+    prepare_history,
+)
 from core.message_context import ConversationKey
 
 
@@ -119,6 +124,10 @@ class ConversationContext:
             list[_StoredTurn | dict[str, object]],
         ] = defaultdict(list)
         self.last_bot_message: dict[ConversationKey | int, datetime] = {}
+        # One source id per exact conversation may temporarily own an extra
+        # slot while a provider response is being classified.  No turn copy or
+        # private content is duplicated outside ``threads``.
+        self._staged_source_turns: dict[ConversationKey, int] = {}
 
     def _now(self) -> datetime:
         value = self._now_provider()
@@ -181,10 +190,40 @@ class ConversationContext:
             if stored is not None and stored.timestamp > cutoff:
                 kept.append(stored)
         if kept:
-            self.threads[key] = kept[-self.max_history :]
+            staged_source = (
+                self._staged_source_turns.get(key)
+                if isinstance(key, ConversationKey)
+                else None
+            )
+            staged_present = staged_source is not None and any(
+                isinstance(value, _StoredTurn)
+                and value.turn.role == "user"
+                and value.turn.source_message_id == staged_source
+                for value in kept
+            )
+            bounded = kept[
+                -(
+                    self.max_history + 1
+                    if staged_present
+                    else self.max_history
+                ) :
+            ]
+            if staged_present and not any(
+                isinstance(value, _StoredTurn)
+                and value.turn.role == "user"
+                and value.turn.source_message_id == staged_source
+                for value in bounded
+            ):
+                staged_present = False
+                bounded = kept[-self.max_history :]
+            if isinstance(key, ConversationKey) and not staged_present:
+                self._staged_source_turns.pop(key, None)
+            self.threads[key] = bounded
         else:
             self.threads.pop(key, None)
             self.last_bot_message.pop(key, None)
+            if isinstance(key, ConversationKey):
+                self._staged_source_turns.pop(key, None)
 
     def add_turn(self, key: ConversationKey, turn: ChatTurn) -> None:
         if not isinstance(key, ConversationKey):
@@ -200,10 +239,120 @@ class ConversationContext:
             return
         self._clean_old_messages(key)
         stored = _StoredTurn(validated[0], self._now())
-        self.threads[key].append(stored)
-        self.threads[key] = self.threads[key][-self.max_history :]
+        existing = list(self.threads.get(key, ()))
+        self._staged_source_turns.pop(key, None)
+        self.threads[key] = (existing + [stored])[-self.max_history :]
         if stored.turn.role == "assistant":
             self.last_bot_message[key] = stored.timestamp
+
+    def stage_source_turn(
+        self,
+        key: ConversationKey,
+        turn: ChatTurn,
+    ) -> bool:
+        """Stage one inbound turn in a single bounded reversible slot."""
+
+        if not isinstance(key, ConversationKey):
+            raise TypeError("scoped_history_requires_conversation_key")
+        if not isinstance(turn, ChatTurn):
+            raise TypeError("scoped_history_requires_chat_turn")
+        source_message_id = turn.source_message_id
+        if turn.role != "user" or source_message_id is None:
+            raise ValueError("staged_history_requires_source_user_turn")
+        validated = prepare_history(
+            (turn,),
+            max_turns=1,
+            max_chars=4_000,
+        )
+        if not validated:
+            return False
+
+        self._clean_old_messages(key)
+        stored = _StoredTurn(validated[0], self._now())
+        # A stale unfinished stage becomes an ordinary prior turn before the
+        # next source is staged.  The exact conversation lock ensures normal
+        # monitor traffic has at most one active stage per key.
+        existing = list(self.threads.get(key, ()))
+        self._staged_source_turns.pop(key, None)
+        existing = existing[-self.max_history :]
+        self.threads[key] = existing + [stored]
+        self._staged_source_turns[key] = source_message_id
+        return True
+
+    def reclassify_source_turn(
+        self,
+        key: ConversationKey,
+        source_message_id: int,
+        policy: HistoryPolicy,
+    ) -> bool:
+        """Apply one final provider-history policy to an exact inbound turn.
+
+        Natural-language actions begin as conversational provider requests, so
+        their inbound turn may be staged before the model returns a typed local
+        route.  This exact-scope operation lets the monitor retain, redact, or
+        remove only that source message once the final route is known.
+        """
+
+        if not isinstance(key, ConversationKey):
+            raise TypeError("scoped_history_requires_conversation_key")
+        if isinstance(source_message_id, bool) or not isinstance(
+            source_message_id,
+            int,
+        ):
+            raise ValueError("invalid_source_message_id")
+        if not isinstance(policy, HistoryPolicy):
+            raise TypeError("invalid_history_policy")
+
+        self._clean_old_messages(key)
+        staged_source = self._staged_source_turns.get(key)
+        if (
+            staged_source is not None
+            and staged_source != source_message_id
+        ):
+            return False
+        existing = self.threads.get(key, ())
+        if not existing:
+            return False
+
+        matched = False
+        updated: list[_StoredTurn | dict[str, object]] = []
+        for value in existing:
+            stored = self._coerce_entry(value)
+            if stored is None:
+                continue
+            turn = stored.turn
+            if (
+                turn.role != "user"
+                or turn.source_message_id != source_message_id
+            ):
+                updated.append(stored)
+                continue
+
+            matched = True
+            if policy is HistoryPolicy.OMIT:
+                continue
+            if policy is HistoryPolicy.REDACT_AUTH:
+                stored = _StoredTurn(
+                    ChatTurn(
+                        "user",
+                        REDACTED_AUTH_TURN,
+                        source_message_id,
+                    ),
+                    stored.timestamp,
+                    legacy_user_id=stored.legacy_user_id,
+                    legacy_username=stored.legacy_username,
+                )
+            updated.append(stored)
+
+        if matched and staged_source == source_message_id:
+            self._staged_source_turns.pop(key, None)
+        if updated:
+            self.threads[key] = updated[-self.max_history :]
+        else:
+            self.threads.pop(key, None)
+            self.last_bot_message.pop(key, None)
+            self._staged_source_turns.pop(key, None)
+        return matched
 
     def get_prompt_history(
         self,

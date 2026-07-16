@@ -500,6 +500,7 @@ def _birthday_manager():
         edit_birthday_by_user_id_result=AsyncMock(),
         format_birthday_list=Mock(return_value="Alle bursdager"),
         format_upcoming_birthdays=Mock(return_value="Kommende bursdager"),
+        format_birthday_for_user=Mock(return_value="Din bursdag"),
         birthdays={},
     )
 
@@ -655,4 +656,21 @@ async def test_birthday_upcoming_list_selects_exact_formatter_and_is_read_only()
         days=30,
         reference_time=NOW,
     )
+    manager.format_birthday_list.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_birthday_self_list_reads_only_the_message_author():
+    manager = _birthday_manager()
+    handler, _ = _birthday_handler(manager)
+
+    outcome = await handler.handle_birthday_list(
+        StrictMessage(),
+        {"action": "list", "scope": "self"},
+        reference_time=NOW,
+    )
+
+    assert outcome.ok is True and outcome.mutated is False
+    manager.format_birthday_for_user.assert_called_once_with(123, 7)
+    manager.format_upcoming_birthdays.assert_not_called()
     manager.format_birthday_list.assert_not_called()

@@ -33,13 +33,13 @@ class SchoolHolidaysHandler(BaseHandler):
             if not fylke:
                 if lang == "no":
                     response_text += (
-                        '\n\n💡 *Tips: Nevn byen din for å se ferier i ditt fylke '
-                        '(f.eks. "skoleferie Tromsø")*'
+                        '\n\n💡 *Fortell gjerne hvilken by eller hvilket '
+                        'fylke oversikten skal gjelde.*'
                     )
                 else:
                     response_text += (
-                        '\n\n💡 *Tip: Mention your city to see holidays in your county '
-                        '(e.g. "school holidays Tromsø")*'
+                        '\n\n💡 *Tell me which city or county the overview '
+                        'should cover.*'
                     )
 
             await self.send_response(message, response_text)

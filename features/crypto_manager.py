@@ -9,6 +9,182 @@ import aiohttp
 import asyncio
 from datetime import datetime
 
+
+_LEADING_INVOCATION = re.compile(
+    r"^\s*(?:@inebotten\b|<@!?\d+>)\s*[:,;-]?\s*",
+    re.IGNORECASE,
+)
+_POLITE_PREFIX = re.compile(
+    r"^(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s+",
+    re.IGNORECASE,
+)
+_NON_REQUEST_PATTERNS = (
+    re.compile(r"\b(?:ikke|ikkje|not|never|don['’]t|do\s+not)\b", re.IGNORECASE),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:sa|skrev|skreiv|leste|las)\b|"
+        r"^i\s+(?:said|wrote|read)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:hva\s+skjer\s+hvis|kva\s+skjer\s+om|ka\s+skjer\s+hvis|"
+        r"what\s+happens\s+if|hvis|om|if)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:eksempel|example|hva\s+betyr|kva\s+tyder|hvordan\s+skriver|"
+        r"korleis\s+skriv|how\s+do\s+i\s+(?:say|write)|"
+        r"what\s+does\b.*\bmean)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:vurderer|tenker\s+på)\b|"
+        r"^i(?:'m|\s+am)\s+(?:considering|thinking\s+about)\b",
+        re.IGNORECASE,
+    ),
+)
+_TRAILING_POLITENESS = re.compile(
+    r"\s*,?\s*(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you)\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_LEADING_COURTESY_REQUEST = re.compile(
+    r"^(?:(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s*"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))|"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*,?\s*"
+    r"(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please))\s*,?\s*",
+    re.IGNORECASE,
+)
+_TRAILING_COURTESY = re.compile(
+    r"(?:\s*,\s*|\s+)(?:(?:om|hvis|viss)\s+du\s+kan|"
+    r"(?:om|hvis|viss)\s+du\s+har\s+tid|når\s+du\s+har\s+tid|"
+    r"if\s+you\s+can|if\s+you\s+have\s+(?:time|a\s+moment)|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_MARKET_CONTEXT = r"(?:crypto|krypto|coin|token)"
+_PRICE_PATTERNS = (
+    # Value questions: "what is Bitcoin worth?". Unknown ordinary nouns are
+    # still rejected by the known-asset/explicit-market checks below.
+    re.compile(
+        r"^(?:(?:what\s+is)|(?:(?:hva|kva|ka)\s+er))\s+"
+        r"(?P<asset>.+?)\s+(?:worth|verdt)$",
+        re.IGNORECASE,
+    ),
+    # Action-first suffix forms: "show the bitcoin price".
+    re.compile(
+        r"^(?:vis(?:e)?|syn(?:e)?|fortell(?:e)?|fortel|show|tell)"
+        rf"(?:\s+(?:meg|mæ|me))?\s+(?:(?:den|the)\s+)?"
+        rf"(?P<asset>.+?)\s+(?:{_MARKET_CONTEXT}\s+)?"
+        r"(?:pris(?:en)?|price|verdi(?:en)?|value|kurs(?:en)?)$",
+        re.IGNORECASE,
+    ),
+    # Question-first suffix forms: "what is the bitcoin price".
+    re.compile(
+        r"^(?:hva|kva|ka|what)\s+(?:er|is)\s+(?:(?:den|the)\s+)?"
+        rf"(?P<asset>.+?)\s+(?:{_MARKET_CONTEXT}\s+)?"
+        r"(?:pris(?:en)?|price|verdi(?:en)?|value|kurs(?:en)?)$",
+        re.IGNORECASE,
+    ),
+    # Direct, compact forms: "bitcoin pris", "the graph price".
+    re.compile(
+        rf"^(?P<asset>.+?)\s+(?:{_MARKET_CONTEXT}\s+)?"
+        r"(?:pris(?:en)?|price|verdi(?:en)?|value|kurs(?:en)?)$",
+        re.IGNORECASE,
+    ),
+    # Noun-first forms: "prisen på bitcoin", "the price of bitcoin".
+    re.compile(
+        r"^(?:(?:hva|kva|ka|what)\s+(?:er|is)\s+)?"
+        rf"(?:(?:den|the)\s+)?(?:{_MARKET_CONTEXT}\s+)?"
+        r"(?:pris(?:en)?|price|verdi(?:en)?|value|kurs(?:en)?)"
+        r"\s+(?:(?:på|for|til|of)\s+)?(?P<asset>.+)$",
+        re.IGNORECASE,
+    ),
+    # Natural show/tell requests after an optional polite prefix is removed.
+    re.compile(
+        r"^(?:vis(?:e)?|syn(?:e)?|fortell(?:e)?|fortel|sjekk(?:e)?|"
+        r"show|tell|check)"
+        r"(?:\s+(?:meg|mæ|me))?\s+(?:(?:den|the)\s+)?"
+        rf"(?:{_MARKET_CONTEXT}\s+)?"
+        r"(?:pris(?:en)?|price|verdi(?:en)?|value|kurs(?:en)?)"
+        r"\s+(?:(?:på|for|til|of)\s+)?(?P<asset>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:hva\s+koster|kva\s+kostar|ka\s+koster|kor\s+mykje\s+kostar|"
+        r"how\s+much\s+(?:is|does))\s+(?P<asset>.+?)(?:\s+cost)?$",
+        re.IGNORECASE,
+    ),
+)
+_BLOCKED_GENERIC_ASSETS = frozenset(
+    {
+        "a",
+        "an",
+        "den",
+        "det",
+        "dette",
+        "en",
+        "et",
+        "flight",
+        "freedom",
+        "happiness",
+        "prediction",
+        "show",
+        "the",
+        "vise",
+        "å",
+    }
+)
+_WRAPPER_ASSET_TOKENS = frozenset(
+    {
+        "den", "det", "the", "a", "an", "en", "et", "ei",
+        "show", "tell", "vis", "vise", "fortell", "fortelle",
+        "me", "meg", "mæ", "what", "hva", "kva", "ka", "is", "er",
+    }
+)
+
+
+def _prepare_price_request(message_content):
+    if not isinstance(message_content, str):
+        return None
+    content = _LEADING_INVOCATION.sub("", message_content, count=1).strip()
+    content = _LEADING_COURTESY_REQUEST.sub("", content, count=1).strip()
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = _TRAILING_COURTESY.sub("", content).strip()
+    if not content or any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _POLITE_PREFIX.sub("", content, count=1).strip()
+    if any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = re.sub(r"\bwhat['’]s\b", "what is", content, flags=re.IGNORECASE)
+    return content.rstrip("?!.").strip()
+
+
+def _clean_asset(raw_asset):
+    asset = raw_asset.strip().rstrip("?!.;,:").strip()
+    if len(asset) >= 2 and (asset[0], asset[-1]) in {
+        ('"', '"'),
+        ("'", "'"),
+        ("“", "”"),
+        ("‘", "’"),
+    }:
+        asset = asset[1:-1].strip()
+    asset = re.sub(
+        rf"^(?:{_MARKET_CONTEXT})\s+|\s+(?:{_MARKET_CONTEXT})$",
+        "",
+        asset,
+        flags=re.IGNORECASE,
+    ).strip()
+    return re.sub(r"\s+", " ", asset)
+
+
 class CryptoManager:
     """
     Manages cryptocurrency price queries using CoinGecko API
@@ -97,58 +273,75 @@ class CryptoManager:
         - "fox price"
         - "vult verdi"
         """
-        content_lower = message_content.lower()
-        
-        # Remove @inebotten
-        content_lower = content_lower.replace('@inebotten', '').strip()
-        
-        # Crypto patterns - expanded to catch more variations
-        crypto_patterns = [
-            r'(\w+)\s+(?:pris|price|verdi|value|kurs)',
-            r'(?:pris|price|verdi|value|kurs)\s+(?:på|for|of|til)?\s*(\w+)',
-            r'hva\s+koster\s+(\w+)',
-            r'kor\s+mykje\s+kostar\s+(\w+)',
-        ]
-        
-        for pattern in crypto_patterns:
-            match = re.search(pattern, content_lower)
+        content = _prepare_price_request(message_content)
+        if not content:
+            return None
+
+        for pattern in _PRICE_PATTERNS:
+            match = pattern.fullmatch(content)
             if match:
-                asset = match.group(1).lower()
-                trigger_text = match.group(0).lower()
+                explicit_crypto_context = re.search(
+                    rf"\b{_MARKET_CONTEXT}\b",
+                    content,
+                    re.IGNORECASE,
+                ) is not None
+                asset = _clean_asset(match.group("asset"))
+                raw_asset_key = asset.casefold()
+                if (
+                    raw_asset_key in self.crypto_mappings
+                    or raw_asset_key in self.stock_symbols
+                ):
+                    normalized_asset = asset
+                else:
+                    normalized_asset = re.sub(
+                        r"^(?:the|a|an|den|det|en|ei|et)\s+",
+                        "",
+                        asset,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    ).strip()
+                asset_key = normalized_asset.casefold()
+                asset_tokens = tuple(re.findall(r"[^\W_]+", asset_key, re.UNICODE))
+                if (
+                    not normalized_asset
+                    or asset_key in _BLOCKED_GENERIC_ASSETS
+                    or (
+                        asset_tokens
+                        and all(token in _WRAPPER_ASSET_TOKENS for token in asset_tokens)
+                    )
+                ):
+                    return None
                 
                 # Check if it's a known crypto
-                if asset in self.crypto_mappings:
+                if asset_key in self.crypto_mappings:
                     return {
                         'type': 'crypto', 
-                        'asset': asset, 
-                        'coin_id': self.crypto_mappings[asset],
-                        'display_name': asset.upper()
+                        'asset': normalized_asset,
+                        'coin_id': self.crypto_mappings[asset_key],
+                        'display_name': normalized_asset.upper()
                     }
 
                 # Check if it's a stock
-                if asset in self.stock_symbols:
-                    return {'type': 'stock', 'asset': asset, 'symbol': self.stock_symbols[asset]}
+                if asset_key in self.stock_symbols:
+                    return {
+                        'type': 'stock',
+                        'asset': normalized_asset,
+                        'symbol': self.stock_symbols[asset_key],
+                    }
 
                 # Unknown crypto - try to search by the name directly
                 # only for explicit market/crypto wording. Generic phrases like
                 # "hva koster det å fly ..." should fall through to web search.
-                explicit_market_query = any(
-                    word in content_lower
-                    for word in ["pris", "price", "verdi", "value", "kurs", "crypto", "krypto", "coin", "token"]
-                )
-                generic_cost_query = trigger_text.startswith("hva koster") or trigger_text.startswith("kor mykje kostar")
-                blocked_generic_asset = asset in {"det", "den", "dette", "å", "a", "an", "en", "et"}
                 if (
-                    len(asset) >= 2
-                    and asset.isalnum()
-                    and explicit_market_query
-                    and not (generic_cost_query and blocked_generic_asset)
+                    len(normalized_asset) >= 2
+                    and re.fullmatch(r"[\w -]+", normalized_asset, re.UNICODE)
+                    and explicit_crypto_context
                 ):
                     return {
                         'type': 'crypto_search',
-                        'asset': asset,
-                        'coin_id': asset,  # Will try to use as-is
-                        'display_name': asset.upper()
+                        'asset': normalized_asset,
+                        'coin_id': asset_key,
+                        'display_name': normalized_asset.upper()
                     }
         
         return None

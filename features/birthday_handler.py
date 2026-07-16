@@ -305,7 +305,13 @@ class BirthdayHandler(BaseHandler):
                 DispatchOutcome.failure("invalid_payload"),
             )
         try:
-            if canonical.get("scope", "all") == "upcoming":
+            scope = canonical.get("scope", "all")
+            if scope == "self":
+                copy = self.birthdays.format_birthday_for_user(
+                    self.get_guild_id(message),
+                    message.author.id,
+                )
+            elif scope == "upcoming":
                 copy = self.birthdays.format_upcoming_birthdays(
                     self.get_guild_id(message),
                     days=30,

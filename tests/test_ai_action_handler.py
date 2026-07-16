@@ -490,7 +490,7 @@ async def test_temporal_correction_restages_new_validated_route(
 
 
 @pytest.mark.asyncio
-async def test_correction_removes_stale_temporal_aliases(
+async def test_correction_recomputes_canonical_due_at(
     action_handler,
     message,
 ):
@@ -516,7 +516,206 @@ async def test_correction_removes_stale_temporal_aliases(
     corrected = outcome.presentation.routes[0].payload["reminder"]
     assert corrected["due_date"] == "15.07.2026"
     assert corrected["time"] == "14:00"
-    assert "due_at" not in corrected
+    assert corrected["due_at"] == "2026-07-15T14:00:00+02:00"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("correction", "expected_date", "expected_time", "expected_due_at"),
+    [
+        (
+            "kl 15",
+            "20.07.2026",
+            "15:00",
+            "2026-07-20T15:00:00+02:00",
+        ),
+        (
+            "i morgen",
+            "15.07.2026",
+            "10:00",
+            "2026-07-15T10:00:00+02:00",
+        ),
+        (
+            "i kveld",
+            "14.07.2026",
+            "19:00",
+            "2026-07-14T19:00:00+02:00",
+        ),
+        (
+            "this evening",
+            "14.07.2026",
+            "19:00",
+            "2026-07-14T19:00:00+02:00",
+        ),
+        (
+            "tonight",
+            "14.07.2026",
+            "19:00",
+            "2026-07-14T19:00:00+02:00",
+        ),
+        (
+            "på kvelden",
+            "20.07.2026",
+            "19:00",
+            "2026-07-20T19:00:00+02:00",
+        ),
+    ],
+)
+async def test_reminder_partial_temporal_correction_merges_frozen_fields(
+    action_handler,
+    message,
+    correction,
+    expected_date,
+    expected_time,
+    expected_due_at,
+):
+    key = conversation_key_from_message(message)
+    original_route = replace(
+        semantic_reminder_route(),
+        payload={
+            "reminder": {
+                "action": "add",
+                "text": "Ringe legen",
+                "due_date": "20.07.2026",
+                "time": "10:00",
+                "timezone": "Europe/Oslo",
+            }
+        },
+    )
+    pending = ready_confirmation(
+        action_handler.store,
+        key,
+        original_route,
+        "Ringe",
+    )
+
+    outcome = await action_handler.correct(
+        message,
+        pending.action_id,
+        normalize_utterance(correction),
+        reference_time=FIXED_NOW,
+    )
+
+    assert outcome.presentation is not None
+    corrected = outcome.presentation.routes[0].payload["reminder"]
+    assert corrected == {
+        "action": "add",
+        "text": "Ringe legen",
+        "due_at": expected_due_at,
+        "due_date": expected_date,
+        "time": expected_time,
+        "timezone": "Europe/Oslo",
+    }
+    unchanged = action_handler.store.peek(key)
+    assert unchanged is not None
+    assert unchanged.action_id == pending.action_id
+    assert unchanged.routes[0].payload == original_route.payload
+    action_handler.dispatch_claimed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("correction", "expected_date", "expected_time"),
+    [
+        ("kl 15", "20.07.2026", "15:00"),
+        ("i morgen", "15.07.2026", "10:00"),
+    ],
+)
+async def test_calendar_partial_temporal_correction_merges_frozen_fields(
+    action_handler,
+    message,
+    correction,
+    expected_date,
+    expected_time,
+):
+    key = conversation_key_from_message(message)
+    original_route = IntentResult(
+        BotIntent.CALENDAR_ITEM,
+        0.99,
+        {
+            "calendar_item": {
+                "title": "Møte med Ola",
+                "date": "20.07.2026",
+                "time": "10:00",
+                "type": "event",
+            }
+        },
+        source=IntentSource.SEMANTIC,
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+    pending = ready_confirmation(
+        action_handler.store,
+        key,
+        original_route,
+        "Møte",
+    )
+
+    outcome = await action_handler.correct(
+        message,
+        pending.action_id,
+        normalize_utterance(correction),
+        reference_time=FIXED_NOW,
+    )
+
+    assert outcome.presentation is not None
+    corrected = outcome.presentation.routes[0].payload["calendar_item"]
+    assert corrected == {
+        "title": "Møte med Ola",
+        "date": expected_date,
+        "time": expected_time,
+        "type": "event",
+    }
+    unchanged = action_handler.store.peek(key)
+    assert unchanged is not None
+    assert unchanged.action_id == pending.action_id
+    assert unchanged.routes[0].payload == original_route.payload
+    action_handler.dispatch_claimed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_named_title_correction_does_not_leak_temporal_defaults(
+    action_handler,
+    message,
+):
+    key = conversation_key_from_message(message)
+    original_route = IntentResult(
+        BotIntent.CALENDAR_ITEM,
+        0.99,
+        {
+            "calendar_item": {
+                "title": "Foreløpig",
+                "date": "20.07.2026",
+                "time": "10:00",
+                "type": "event",
+            }
+        },
+        source=IntentSource.SEMANTIC,
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+    pending = ready_confirmation(
+        action_handler.store,
+        key,
+        original_route,
+        "Møte",
+    )
+
+    outcome = await action_handler.correct(
+        message,
+        pending.action_id,
+        normalize_utterance("tittel: Møte i morgen kl 15"),
+        reference_time=FIXED_NOW,
+    )
+
+    assert outcome.presentation is not None
+    assert outcome.presentation.routes[0].payload["calendar_item"] == {
+        "title": "Møte i morgen kl 15",
+        "date": "20.07.2026",
+        "time": "10:00",
+        "type": "event",
+    }
+    action_handler.dispatch_claimed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -587,9 +786,55 @@ async def test_invalid_correction_is_bounded_and_store_unchanged(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "correction",
+    ["spørsmål: Nytt spørsmål?", "question: New question?"],
+)
+async def test_poll_create_accepts_natural_question_correction_labels(
+    action_handler,
+    message,
+    correction,
+):
+    key = conversation_key_from_message(message)
+    pending = ready_confirmation(
+        action_handler.store,
+        key,
+        IntentResult(
+            BotIntent.POLL_CREATE,
+            0.99,
+            {"poll": {"question": "Mat?", "options": ["Pizza", "Taco"]}},
+            source=IntentSource.SEMANTIC,
+            risk=IntentRisk.ADDITIVE,
+            requires_confirmation=True,
+        ),
+        "Avstemning",
+    )
+
+    outcome = await action_handler.correct(
+        message,
+        pending.action_id,
+        normalize_utterance(correction),
+        reference_time=FIXED_NOW,
+    )
+
+    assert outcome.presentation is not None
+    expected = "New question?" if correction.startswith("question") else "Nytt spørsmål?"
+    assert outcome.presentation.routes[0].payload["poll"]["question"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "correction",
+    [
+        "tittel: Nytt spørsmål?",
+        "spørsmål: Nytt spørsmål?",
+        "question: Nytt spørsmål?",
+    ],
+)
 async def test_poll_edit_question_correction_keeps_frozen_target(
     action_handler,
     message,
+    correction,
 ):
     key = conversation_key_from_message(message)
     poll_guard = guard(
@@ -614,7 +859,7 @@ async def test_poll_edit_question_correction_keeps_frozen_target(
     outcome = await action_handler.correct(
         message,
         pending.action_id,
-        normalize_utterance("tittel: Nytt spørsmål?"),
+        normalize_utterance(correction),
         reference_time=FIXED_NOW,
     )
     assert outcome.presentation is not None
@@ -1038,11 +1283,46 @@ CONFIRMATION_CASES = (
     ),
     confirmation_case(
         BotIntent.PROFILE,
-        {"profile": {"action": "status", "status": "dnd"}},
+        {"profile": {"action": "status", "value": "dnd"}},
         "endre profilstatusen",
         "dnd",
     ),
 )
+
+
+@pytest.mark.asyncio
+async def test_model_profile_paraphrase_is_staged_with_exact_typed_preview(
+    action_handler,
+    message,
+    routing_context,
+):
+    outcome = await action_handler.handle_model_response(
+        raw=action_line(
+            "PROFILE_PLAYING",
+            0.98,
+            {"value": "Life is Strange"},
+        ),
+        utterance=normalize_utterance(
+            "could you show that you are playing Life is Strange?"
+        ),
+        routing=routing_context,
+        reference_time=FIXED_NOW,
+        deterministic_route=None,
+        active_poll_count=0,
+        active_poll_id=None,
+        semantic_action_allowed=True,
+    )
+
+    assert outcome.route is not None
+    assert outcome.route.payload == {
+        "profile": {"action": "playing", "value": "Life is Strange"}
+    }
+    assert outcome.route.requires_confirmation is True
+    staged = action_handler.prepare_confirmation(message, outcome.route)
+    assert staged.presentation is not None
+    assert staged.presentation.routes == (outcome.route,)
+    assert "Life is Strange" in staged.presentation.summary
+    action_handler.dispatch_claimed.assert_not_awaited()
 
 
 @pytest.mark.parametrize("route,target_guard,expected", CONFIRMATION_CASES)

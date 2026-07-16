@@ -38,7 +38,7 @@ from core.message_context import (
 from core.nlu_metrics import NLUMetrics
 from core.pending_actions import PendingActionStore
 from core.utterance import normalize_utterance
-from core.utterance_semantics import analyze_utterance
+from core.utterance_semantics import REJECTIONS, analyze_utterance
 from features.crypto_manager import parse_price_command
 from features.quote_manager import parse_quote_command
 from features.search_manager import detect_search_intent
@@ -67,6 +67,242 @@ def _nested_payload_keys(value):
     elif isinstance(value, list):
         for nested in value:
             yield from _nested_payload_keys(nested)
+
+
+@pytest.mark.parametrize(
+    "read_request",
+    (
+        "show all my reminders",
+        "show my calendar",
+        "show active polls",
+        "show my watchlist",
+        "list quotes",
+        "show upcoming birthdays",
+        "show word of the day",
+        "show aurora",
+        "show school holidays in Oslo",
+        "show weather",
+        "show what you remember about me",
+        "show me what you remember about me",
+        "export my memory",
+        "show bot status",
+        "show profile",
+        "show birthday",
+        "show me a quote",
+    ),
+)
+def test_calendar_create_plus_every_reviewed_read_requires_split(
+    production_router_adapter,
+    read_request,
+):
+    create = production_router_adapter.route_help_example(
+        "create a meeting tomorrow"
+    )
+    combined = production_router_adapter.route_help_example(
+        f"create a meeting tomorrow and {read_request}"
+    )
+
+    assert create.intent is BotIntent.CALENDAR_ITEM
+    assert combined.intent is BotIntent.CLARIFY
+    assert combined.reason == "multiple_actions_require_split"
+    assert "calendar_item" not in combined.payload
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_intent", "payload_path", "expected_value"),
+    (
+        (
+            "search for cats and dogs",
+            BotIntent.SEARCH,
+            ("search", "query"),
+            "cats and dogs",
+        ),
+        (
+            "remind me to buy milk and bread tomorrow",
+            BotIntent.REMINDER_CREATE,
+            ("reminder", "text"),
+            "buy milk and bread",
+        ),
+        (
+            "add Fish and Chips to my watchlist",
+            BotIntent.WATCHLIST,
+            ("watchlist", "title"),
+            "Fish and Chips",
+        ),
+        (
+            "create a meeting with Research and Development tomorrow",
+            BotIntent.CALENDAR_ITEM,
+            ("calendar_item", "title"),
+            "Meeting with Research and Development",
+        ),
+    ),
+)
+def test_sequence_guard_preserves_supported_payload_conjunctions(
+    production_router_adapter,
+    text,
+    expected_intent,
+    payload_path,
+    expected_value,
+):
+    result = production_router_adapter.route_help_example(text)
+    value = result.payload
+    for key in payload_path:
+        value = value[key]
+
+    assert result.intent is expected_intent
+    assert result.reason != "multiple_actions_require_split"
+    assert value == expected_value
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "møte med Ola i morgen kl. 14",
+        "legg inn møte i morgen kl. 14",
+    ),
+)
+def test_sequence_probe_does_not_treat_clock_abbreviation_as_clause_boundary(
+    production_router_adapter,
+    text,
+):
+    result = production_router_adapter.route_help_example(text)
+
+    assert result.intent is BotIntent.CALENDAR_ITEM
+    assert result.reason != "multiple_actions_require_split"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_intent"),
+    (
+        (
+            "shorten https://example.com/a,and/delete?next=remove",
+            BotIntent.SHORTEN_URL,
+        ),
+        (
+            'remind me about "and show weather" tomorrow',
+            BotIntent.REMINDER_CREATE,
+        ),
+    ),
+)
+def test_sequence_probe_preserves_urls_and_quoted_payloads(
+    production_router_adapter,
+    text,
+    expected_intent,
+):
+    result = production_router_adapter.route_help_example(text)
+
+    assert result.intent is expected_intent
+    assert result.reason != "multiple_actions_require_split"
+
+
+def test_contextual_bare_poll_vote_after_write_requires_split_only_with_poll():
+    with_poll = build_production_router(EvalFixture.ACTIVE_POLL)
+    empty = build_production_router(EvalFixture.EMPTY)
+    text = "create a meeting tomorrow and 1"
+
+    guarded = with_poll.route_help_example(text)
+    unguarded = empty.route_help_example(text)
+
+    assert guarded.intent is BotIntent.CLARIFY
+    assert guarded.reason == "multiple_actions_require_split"
+    assert unguarded.intent is BotIntent.CALENDAR_ITEM
+
+
+def test_sequence_probe_budget_overflow_after_write_fails_closed():
+    adapter = build_production_router(EvalFixture.ACTIVE_POLL)
+    payload = " and ".join(["filler"] * 25 + ["1"])
+
+    result = adapter.route_help_example(
+        f"create a meeting tomorrow and {payload}"
+    )
+
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "multiple_actions_require_split"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_intent"),
+    (
+        (EvalFixture.ACTIVE_REMINDER, BotIntent.REMINDER_COMPLETE),
+        (EvalFixture.CALENDAR_TITLE_MEETING, BotIntent.CALENDAR_COMPLETE),
+    ),
+)
+def test_bare_completion_uses_the_only_live_target_domain(
+    fixture,
+    expected_intent,
+):
+    result = build_production_router(fixture).route_help_example("ferdig 1")
+
+    assert result.intent is expected_intent
+
+
+def test_bare_completion_clarifies_when_calendar_and_reminder_indices_overlap():
+    result = build_production_router(
+        EvalFixture.MIXED_STATE
+    ).route_help_example("ferdig 1")
+
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "ambiguous_completion_domain"
+    assert "kalenderoppføring 1" in result.payload["clarification"]
+    assert "påminnelse 1" in result.payload["clarification"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "mark 1 done",
+        "mark 1 complete",
+        "marker 1 ferdig",
+        "marker 1 som ferdig",
+        "Can you mark 1 done?",
+    ),
+)
+def test_unqualified_mark_done_clarifies_when_target_stores_overlap(text):
+    result = build_production_router(
+        EvalFixture.MIXED_STATE
+    ).route_help_example(text)
+
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "ambiguous_completion_domain"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ("mark 1 done", "mark 1 complete", "marker 1 ferdig"),
+)
+def test_unqualified_mark_done_uses_only_live_reminder_store(text):
+    result = build_production_router(
+        EvalFixture.ACTIVE_REMINDER
+    ).route_help_example(text)
+
+    assert result.intent is BotIntent.REMINDER_COMPLETE
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_intent"),
+    (
+        ("kalender ferdig 1", BotIntent.CALENDAR_COMPLETE),
+        ("ferdig påminnelse 1", BotIntent.REMINDER_COMPLETE),
+    ),
+)
+def test_explicit_completion_domain_is_deterministic_in_mixed_state(
+    text,
+    expected_intent,
+):
+    result = build_production_router(
+        EvalFixture.MIXED_STATE
+    ).route_help_example(text)
+
+    assert result.intent is expected_intent
+
+
+def test_bare_number_clarifies_when_poll_and_reminder_are_both_live():
+    result = build_production_router(
+        EvalFixture.MIXED_STATE
+    ).route_help_example("1")
+
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "ambiguous_numeric_domain"
 
 
 class DummyMonitor:
@@ -103,7 +339,7 @@ class DummyMonitor:
         self.parse_calculator_command = self._parse_calculator
         self.parse_shorten_command = self._parse_shorten
 
-    def _parse_countdown(self, content):
+    def _parse_countdown(self, content, *, reference_time=None):
         return {"event": "jul"} if "hvor lenge til jul" in content.lower() else None
 
     def _parse_poll(self, content):
@@ -231,6 +467,101 @@ def test_matching_confirmation_routes_before_collectors(
     assert route.risk is IntentRisk.READ_ONLY
 
 
+def test_expired_pending_prunes_without_swallowing_fresh_calendar_read():
+    current = [NOW]
+    store = PendingActionStore(
+        now_provider=lambda: current[0],
+        ttl=timedelta(minutes=10),
+    )
+    router = IntentRouter(
+        DummyMonitor(),
+        pending_actions=store,
+        now_provider=lambda: current[0],
+    )
+    _present_confirmation(store, ConversationKey(1, 10, 7))
+    current[0] += timedelta(minutes=10)
+
+    route = router.route(
+        "kan du vise meg kalenderen?",
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+
+    assert route.intent is BotIntent.CALENDAR_LIST
+    assert route.reason != "pending_expired"
+    assert store.peek(ConversationKey(1, 10, 7)) is None
+
+
+def test_ambiguous_norwegian_half_clock_clarifies_without_staging_reminder():
+    route = IntentRouter(
+        DummyMonitor(),
+        now_provider=lambda: NOW,
+    ).route(
+        "kan du minne meg på å ringe legen i morgen klokka halv tre?",
+        guild_id=123,
+    )
+
+    assert route.intent is BotIntent.CLARIFY
+    assert route.reason == "reminder_half_clock_ambiguous"
+    assert route.requires_confirmation is False
+    assert "morgenen" in route.payload["clarification"]
+    assert "ettermiddagen" in route.payload["clarification"]
+
+
+def test_invalid_half_clock_does_not_receive_a_false_ambiguity_prompt():
+    route = IntentRouter(
+        DummyMonitor(),
+        now_provider=lambda: NOW,
+    ).route(
+        "kan du minne meg på å ringe legen i morgen klokka halv 25?",
+        guild_id=123,
+    )
+
+    assert route.intent is not BotIntent.REMINDER_CREATE
+    assert route.reason != "reminder_half_clock_ambiguous"
+
+
+def test_polite_infinitive_url_shorten_preserves_full_url_payload():
+    url = "https://example.com/a/delete/calendar?x=1&next=remove#fragment"
+    result = build_production_router(EvalFixture.EMPTY).route_help_example(
+        f"Kan du forkorte {url}"
+    )
+
+    assert result.intent is BotIntent.SHORTEN_URL
+    assert result.payload == {"shorten": {"url": url}}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_time"),
+    (
+        ("møte i morgen kl 14.30", "14:30"),
+        ("møte i morgen klokka 14:30", "14:30"),
+        (
+            "møte i morgen klokka halv tre på ettermiddagen",
+            "14:30",
+        ),
+        (
+            "møte i morgen kvart over to på ettermiddagen",
+            "14:15",
+        ),
+        (
+            "møte i morgen klokka kvart over to på ettermiddagen",
+            "14:15",
+        ),
+    ),
+)
+def test_calendar_route_keeps_minimal_title_after_natural_time_cleanup(
+    text,
+    expected_time,
+):
+    result = build_production_router(EvalFixture.EMPTY).route_help_example(text)
+
+    assert result.intent is BotIntent.CALENDAR_ITEM
+    assert result.payload["calendar_item"]["title"] == "Møte"
+    assert result.payload["calendar_item"]["time"] == expected_time
+
+
 def test_pending_cancel_correction_and_selection_payloads_are_inert_ids(
     pending_router,
     pending_store,
@@ -274,6 +605,287 @@ def test_pending_cancel_correction_and_selection_payloads_are_inert_ids(
         }
     }
     assert "route" not in selected.payload["pending"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "nei takk",
+        "ikke likevel",
+        "glem det",
+        "la oss droppe det",
+    ],
+)
+def test_natural_pending_cancellations_route_before_collectors(
+    pending_router,
+    pending_store,
+    text,
+):
+    pending = _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    route = pending_router.route(
+        text,
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert route.intent is BotIntent.ACTION_CANCEL
+    assert route.payload == {
+        "pending": {"action_id": pending.action_id}
+    }
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["kjør på", "det stemmer", "go ahead", "sure", "yep"],
+)
+def test_natural_pending_confirmations_route_before_collectors(
+    pending_router,
+    pending_store,
+    text,
+):
+    pending = _present_confirmation(
+        pending_store,
+        ConversationKey(1, 10, 7),
+    )
+    route = pending_router.route(
+        text,
+        guild_id=1,
+        channel_id=10,
+        user_id=7,
+    )
+    assert route.intent is BotIntent.ACTION_CONFIRM
+    assert route.payload == {
+        "pending": {"action_id": pending.action_id}
+    }
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "lukk avstemning 1, men ved nærmere ettertanke ikke",
+        "close poll 1, but on second thought do not",
+        "edit poll 1 question: Ny?, but on second thought do not",
+        "lukk avstemning 1, nei takk",
+    ],
+)
+def test_poll_retractions_block_deterministic_mutations(
+    active_poll_router_adapter,
+    text,
+):
+    result, _ = active_poll_router_adapter.evaluate(text, guild_id=123)
+    assert result.intent is BotIntent.AI_CHAT
+    assert result.reason == "unsafe_mutation_blocked"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "opprett møte i morgen, og så slett kalenderen",
+        "opprett møte i morgen, deretter slett kalenderen",
+        "opprett møte i morgen, så slett kalenderen",
+        "opprett møte i morgen, slett kalenderen",
+        "opprett møte i morgen; slett kalenderen",
+        "create a meeting tomorrow, then delete the calendar",
+        "create a meeting tomorrow; after that delete the calendar",
+        "påminn meg om å ringe legen i morgen og slett kalenderen",
+        "lag en avstemning: Mat? Pizza eller taco, så påminn meg om å handle",
+        "lagre sitat Tenk stort. Slett kalenderen",
+        "kalender auth AbC_12, deretter slett kalenderen",
+        "kan du lage en avstemning: Mat? Pizza eller taco, deretter slett kalenderen",
+        "jeg stemmer på alternativ to, deretter slett kalenderen",
+    ],
+)
+def test_production_router_never_selects_or_stages_one_partial_action(
+    production_router_adapter,
+    text,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "multiple_actions_require_split"
+    assert result.risk is IntentRisk.READ_ONLY
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "forkort https://example.com/a",
+        "søk etter katter",
+        "vis prisen på BTC",
+        "regn ut 2+2",
+        "vis horoskopet for løven",
+        "vis status",
+        "gi meg et kompliment",
+        "konverter 100 USD til NOK",
+        "sett status idle",
+        "start nedtelling til jul",
+        "compute 42",
+        "omgjør 10 km til meter",
+        "hvor mange dager er det til jul",
+        "how much is Solana",
+        "could you if you have time search for cats",
+        "if you have time could you shorten https://example.com/a",
+        "kan du huske at jeg vil se Inception",
+        "teach me a word",
+        "can I see aurora tonight",
+    ),
+)
+def test_calendar_create_then_read_action_never_commits_a_partial_title(
+    production_router_adapter,
+    tail,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        f"lag et møte i morgen og {tail}",
+        guild_id=123,
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "multiple_actions_require_split"
+
+
+@pytest.mark.parametrize(
+    "head",
+    (
+        "forkort https://example.com/a",
+        "søk etter katter",
+        "vis prisen på BTC",
+        "regn ut 2+2",
+        "vis horoskopet for løven",
+        "vis status",
+        "gi meg et kompliment",
+        "konverter 100 USD til NOK",
+    ),
+)
+def test_read_action_then_calendar_create_also_requires_one_action_per_turn(
+    production_router_adapter,
+    head,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        f"{head} og lag et møte i morgen",
+        guild_id=123,
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "multiple_actions_require_split"
+
+
+@pytest.mark.parametrize("retraction", sorted(REJECTIONS))
+def test_production_router_never_writes_or_stages_after_terminal_retraction(
+    production_router_adapter,
+    retraction,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        f"påminn meg om å ringe legen i morgen, {retraction}",
+        guild_id=123,
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.AI_CHAT
+    assert result.reason == "unsafe_mutation_blocked"
+    assert result.risk is IntentRisk.READ_ONLY
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "slett poll 1 og 2",
+        "slett poll 1 og poll 2",
+        "slett poll 1, 2",
+        "lukk poll siste og 1",
+    ],
+)
+def test_production_router_never_executes_only_one_of_multiple_poll_targets(
+    active_poll_router_adapter,
+    text,
+):
+    result, parser_names = active_poll_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "multiple_actions_require_split"
+    assert result.risk is IntentRisk.READ_ONLY
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "lukk poll etter 15 minutter",
+        "slett poll kanskje",
+        "lukk poll når alle har stemt",
+        'slett poll "nummer 1 og 2"',
+    ],
+)
+def test_production_router_never_discards_unsupported_poll_mutation_suffix(
+    active_poll_router_adapter,
+    text,
+):
+    result, parser_names = active_poll_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.CLARIFY
+    assert result.reason == "unsupported_poll_mutation_modifier"
+    assert result.risk is IntentRisk.READ_ONLY
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "src/foo/bar",
+        "./src/foo/bar.py",
+        "docs/setup/getting-started.md",
+        "kan du se på src/foo/bar?",
+        "which file is docs/setup/getting-started.md?",
+    ],
+)
+def test_production_router_never_turns_relative_path_into_implicit_poll(
+    production_router_adapter,
+    text,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.AI_CHAT
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_title"),
+    [
+        ("husk å se Glem det aldri", "Glem det aldri"),
+        ("husk å se Love and Thunder", "Love and Thunder"),
+    ],
+)
+def test_production_router_preserves_action_shaped_media_titles(
+    production_router_adapter,
+    text,
+    expected_title,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.WATCHLIST
+    assert result.payload["watchlist"]["action"] == "add"
+    assert result.payload["watchlist"]["title"] == expected_title
 
 
 def test_other_scope_confirmation_is_ordinary_chat(
@@ -597,9 +1209,9 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.POLL_LIST)
         self.assertEqual(result.confidence, 0.95)
 
-    def test_poll_list_falls_through_when_no_active_polls(self):
+    def test_poll_list_routes_even_when_no_active_polls(self):
         result = self.route("polls", active_polls=False)
-        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+        self.assertEqual(result.intent, BotIntent.POLL_LIST)
 
     def test_prompt_priority_examples(self):
         examples = {
@@ -664,6 +1276,35 @@ class IntentRouterTests(unittest.TestCase):
     def test_calendar_clear_phrases_win_over_delete(self):
         self.assertEqual(self.route("kalender slett alt").intent, BotIntent.CALENDAR_CLEAR)
         self.assertEqual(self.route("kalender fjern alt").intent, BotIntent.CALENDAR_CLEAR)
+
+    def test_calendar_clear_accepts_bounded_possessive_natural_phrases(self):
+        for text in (
+            "Kan du tømme kalenderen min?",
+            "Kan du tømme heile kalenderen min?",
+            "Could you clear my calendar?",
+        ):
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.CALENDAR_CLEAR)
+                self.assertEqual(
+                    result.payload,
+                    {"calendar_target": {"all": True}},
+                )
+                self.assertTrue(result.requires_confirmation)
+
+    def test_calendar_clear_possessive_forms_keep_destructive_gate_bounded(self):
+        for text in (
+            "Kan du vise kalenderen min?",
+            "Kan du forklare hvordan jeg tømmer kalenderen min?",
+            "Ikke tøm kalenderen min",
+            "Could you clear my calendar filters?",
+            "Kalenderen min er tom",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNot(
+                    self.route(text).intent,
+                    BotIntent.CALENDAR_CLEAR,
+                )
 
     def test_calendar_delete_still_handles_item_deletion(self):
         self.assertEqual(self.route("kalender slett 2").intent, BotIntent.CALENDAR_DELETE)
@@ -769,6 +1410,17 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.MEMORY_VIEW)
         self.assertEqual(result.payload["memory"]["action"], "view")
 
+    def test_natural_local_state_questions_use_local_read_intents(self):
+        cases = {
+            "Hva vet du om meg?": BotIntent.MEMORY_VIEW,
+            "Kva veit du om meg?": BotIntent.MEMORY_VIEW,
+            "Hva vet du om kalenderen min?": BotIntent.CALENDAR_LIST,
+            "Fortell meg om påminnelsene mine": BotIntent.REMINDER_LIST,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text).intent, expected)
+
     def test_memory_export_routes_strictly(self):
         result = self.route("eksporter minnet mitt")
         self.assertEqual(result.intent, BotIntent.MEMORY_EXPORT)
@@ -793,6 +1445,16 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, BotIntent.CLARIFY)
         self.assertEqual(result.payload, {})
         self.assertEqual(result.reason, "birthday_identity_required")
+
+    def test_natural_birthday_list_is_a_typed_local_read(self):
+        for text in ("vis bursdager", "bursdagar", "show birthdays"):
+            with self.subTest(text=text):
+                result = self.route(text)
+                self.assertEqual(result.intent, BotIntent.BIRTHDAY_LIST)
+                self.assertEqual(
+                    result.payload,
+                    {"birthday": {"action": "list", "scope": "all"}},
+                )
 
     def test_birthday_edit_is_anchored_to_a_direct_frame(self):
         for text in (
@@ -891,6 +1553,41 @@ class IntentRouterTests(unittest.TestCase):
                 }
             },
         )
+
+    def test_natural_calendar_edit_rejects_partial_or_hedged_time_text(self):
+        for text in (
+            "Flytt møtet med Ola til fredag etter lunsj",
+            "Flytt møtet med Ola til fredag en gang på dagen",
+            "Flytt møtet med Ola til kanskje fredag",
+            "Flytt møtet med Ola til fredag hvis det passer",
+            "Move the meeting with Ola to Friday after lunch",
+            "Move the meeting with Ola to maybe Friday",
+        ):
+            with self.subTest(text=text):
+                result = self.route(
+                    text,
+                    calendar_titles=["Møte med Ola"],
+                )
+                self.assertNotEqual(result.intent, BotIntent.CALENDAR_EDIT)
+                self.assertEqual(result.payload, {})
+
+    def test_natural_calendar_edit_can_explicitly_preserve_time(self):
+        cases = (
+            "Flytt møtet med Ola til fredag, men ikke endre tidspunktet",
+            "Flytt møtet med Ola til fredag, men ikkje endre tidspunktet",
+            "Move the meeting with Ola to Friday but do not change the time",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                result = self.route(
+                    text,
+                    calendar_titles=["Møte med Ola"],
+                )
+                self.assertEqual(result.intent, BotIntent.CALENDAR_EDIT)
+                self.assertEqual(
+                    result.payload["calendar_edit"]["changes"],
+                    {"date": "17.07.2026"},
+                )
 
     def test_natural_calendar_edit_uses_rightmost_unquoted_temporal_split(self):
         cases = (
@@ -1081,7 +1778,14 @@ class IntentRouterTests(unittest.TestCase):
             ResolvedMention(7, "Kari"),
         )
 
-        reminder = router.route("ferdig 1", routing_context=routing)
+        active_poll_reader = monitor.poll.get_active_polls
+        monitor.poll.get_active_polls = (
+            lambda scope_id, reference_time=None: (
+                poll_scopes.append(scope_id) or []
+            )
+        )
+        reminder = router.route("1", routing_context=routing)
+        monitor.poll.get_active_polls = active_poll_reader
         poll = router.route("vis poll", routing_context=routing)
         calendar = router.route(
             "slett Styremøte",
@@ -1722,12 +2426,7 @@ class IntentRouterTests(unittest.TestCase):
                     }
                     result = self.route(text, monitor=monitor)
                     self.assertNotEqual(result.intent, BotIntent.POLL_CREATE)
-                    self.assertEqual(
-                        result.intent,
-                        BotIntent.POLL_LIST
-                        if active_polls
-                        else BotIntent.AI_CHAT,
-                    )
+                    self.assertEqual(result.intent, BotIntent.POLL_LIST)
 
     def test_anchored_control_frames_preserve_direct_commands(self):
         cases = {
@@ -1922,17 +2621,24 @@ class IntentRouterTests(unittest.TestCase):
         for temporal in cases:
             text = f"husk å se Arrival {temporal}"
             with self.subTest(temporal=temporal):
-                self.assertIsNone(
-                    parse_watchlist_command(
-                        text,
-                        reference_time=NOW,
-                        temporal_resolver=resolver,
+                direct = parse_watchlist_command(
+                    text,
+                    reference_time=NOW,
+                    temporal_resolver=resolver,
+                )
+                routed = router.route(text, guild_id=123)
+                if temporal in {"i dag", "idag", "today"}:
+                    self.assertEqual(direct["title"], "Arrival")
+                    self.assertEqual(routed.intent, BotIntent.WATCHLIST)
+                    self.assertEqual(
+                        routed.payload["watchlist"]["title"], "Arrival"
                     )
-                )
-                self.assertEqual(
-                    router.route(text, guild_id=123).intent,
-                    BotIntent.REMINDER_CREATE,
-                )
+                else:
+                    self.assertIsNone(direct)
+                    self.assertEqual(
+                        routed.intent,
+                        BotIntent.REMINDER_CREATE,
+                    )
         self.assertTrue(seen)
         self.assertTrue(
             all(item["reference_time"] is NOW for item in seen)
@@ -1941,22 +2647,58 @@ class IntentRouterTests(unittest.TestCase):
             all(item["temporal_resolver"] is resolver for item in seen)
         )
 
-    def test_polite_watchlist_add_preserves_title(self):
+    def test_unsupported_multi_action_forms_never_route_one_partial_write(self):
         cases = (
-            "Kan du legge Arrival på watchlist?",
-            "Kan du legge til Arrival på watchlist?",
-            "Could you add Arrival to watchlist?",
-            "Please add Arrival to the watchlist",
+            "legg til møte i morgen og påminn meg om å ringe legen",
+            "påminn meg om å ringe legen i morgen og slett kalenderen",
+            "påminn meg om å ringe legen og minn meg om å kjøpe melk",
+            "flytt møtet med Ola til fredag og endre tittelen til Nytt møte",
+            "lag en avstemning: Mat? Pizza eller taco og påminn meg om å handle",
         )
+        router = IntentRouter(DummyMonitor(), now_provider=lambda: NOW)
         for text in cases:
             with self.subTest(text=text):
+                result = router.route(text, guild_id=123)
+                self.assertIn(result.intent, {BotIntent.AI_CHAT, BotIntent.CLARIFY})
+                self.assertFalse(result.requires_confirmation)
+
+    def test_polite_watchlist_add_preserves_title(self):
+        cases = (
+            ("Kan du legge Arrival på watchlist?", "Arrival"),
+            ("Kan du legge til Arrival på watchlist?", "Arrival"),
+            ("Could you add Arrival to watchlist?", "Arrival"),
+            ("Please add Arrival to the watchlist", "Arrival"),
+            ("Kan du legge Inception til watchlisten min?", "Inception"),
+            ("Kan du legge til Inception på watchlisten min?", "Inception"),
+            ("Kan du huske at jeg vil se Inception?", "Inception"),
+            ("Kan du huske at jeg skal se Inception?", "Inception"),
+        )
+        for text, title in cases:
+            with self.subTest(text=text):
                 direct = parse_watchlist_command(text)
-                self.assertEqual(direct["title"], "Arrival")
+                self.assertEqual(direct["title"], title)
                 result = self.route(text)
                 self.assertEqual(result.intent, BotIntent.WATCHLIST)
                 self.assertEqual(
-                    result.payload["watchlist"]["title"], "Arrival"
+                    result.payload["watchlist"]["title"], title
                 )
+
+    def test_polite_norwegian_definite_watchlist_add_is_scoped(self):
+        text = "Kan du legge Inception på watchlista?"
+
+        direct = parse_watchlist_command(text)
+        self.assertEqual(direct["title"], "Inception")
+        result = self.route(text)
+        self.assertEqual(result.intent, BotIntent.WATCHLIST)
+        self.assertEqual(
+            result.payload["watchlist"],
+            {
+                "action": "add",
+                "title": "Inception",
+                "type": None,
+                "lang": "no",
+            },
+        )
 
     def test_watchlist_descriptions_and_non_media_tasks_are_not_adds(self):
         descriptions = (
@@ -1967,11 +2709,21 @@ class IntentRouterTests(unittest.TestCase):
             "ikke legg Arrival på watchlist",
             "do not add Arrival to watchlist",
             "legg til i watchlist",
+            "Kan du huske at jeg vil se hvordan dette virker?",
+            "Jeg vil se Inception",
+            "Ola sa at jeg vil se Inception",
         )
         for text in descriptions:
             with self.subTest(text=text):
                 self.assertIsNone(parse_watchlist_command(text))
                 self.assertEqual(self.route(text).intent, BotIntent.AI_CHAT)
+
+        indirect_non_media = "Kan du huske at jeg skal se legen i morgen?"
+        self.assertIsNone(parse_watchlist_command(indirect_non_media))
+        self.assertNotEqual(
+            self.route(indirect_non_media).intent,
+            BotIntent.WATCHLIST,
+        )
 
         reminder_tasks = (
             "husk å se på saken i morgen",
@@ -2280,6 +3032,104 @@ def test_poll_vote_freezes_the_single_active_poll_id(active_poll_router_adapter)
     assert parser_names == ()
     assert result.intent is BotIntent.POLL_VOTE
     assert result.payload == {"vote": {"option": 1, "poll_id": "poll-1"}}
+
+
+@pytest.mark.parametrize(
+    ("text", "option"),
+    [
+        ("stem på alternativ to", 2),
+        ("jeg stemmer på alternativ to", 2),
+        ("I vote for option two", 2),
+    ],
+)
+def test_natural_vote_freezes_the_single_active_poll_id(
+    active_poll_router_adapter,
+    text,
+    option,
+):
+    result, parser_names = active_poll_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.POLL_VOTE
+    assert result.payload == {
+        "vote": {"option": option, "poll_id": "poll-1"}
+    }
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ola stemmer på alternativ to",
+        "jeg stemte på alternativ to",
+        "jeg stemmer på alternativ to, men glem det",
+    ],
+)
+def test_natural_vote_reports_and_retractions_never_write(
+    active_poll_router_adapter,
+    text,
+):
+    result, parser_names = active_poll_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is not BotIntent.POLL_VOTE
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    ("text", "question", "options"),
+    [
+        (
+            "kan du lage en avstemning: Hva spiser vi? Pizza eller taco",
+            "Hva spiser vi?",
+            ["Pizza", "taco"],
+        ),
+        (
+            "can you make a poll: Food? Pizza or tacos",
+            "Food?",
+            ["Pizza", "tacos"],
+        ),
+    ],
+)
+def test_production_router_accepts_bounded_polite_poll_creation(
+    production_router_adapter,
+    text,
+    question,
+    options,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.POLL_CREATE
+    assert result.payload["poll"]["question"] == question
+    assert result.payload["poll"]["options"] == options
+    assert result.requires_confirmation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "jeg lagde en avstemning: Mat? Pizza eller taco",
+        "we discussed a poll: Food? Pizza or tacos",
+    ],
+)
+def test_production_router_keeps_descriptive_poll_mentions_in_chat(
+    production_router_adapter,
+    text,
+):
+    result, parser_names = production_router_adapter.evaluate(
+        text, guild_id=123
+    )
+
+    assert parser_names == ()
+    assert result.intent is BotIntent.AI_CHAT
+    assert result.requires_confirmation is False
 
 
 @pytest.mark.parametrize(

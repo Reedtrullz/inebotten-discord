@@ -2,7 +2,13 @@ import pytest
 
 from core.utterance import normalize_utterance
 from core.utterance_semantics import (
-    SpeechAct, analyze_utterance, evidence_is_quoted_only, is_negated_action,
+    REJECTIONS,
+    SpeechAct,
+    analyze_utterance,
+    evidence_is_quoted_only,
+    has_sequenced_action_request,
+    has_unsupported_poll_mutation_request,
+    is_negated_action,
 )
 
 
@@ -115,6 +121,90 @@ def test_distant_trailing_cancellation_disallows_mutation(text):
 @pytest.mark.parametrize(
     ("text", "action_terms"),
     [
+        (
+            "lukk avstemning 1, men ved nærmere ettertanke ikke",
+            ("lukk", "avstemning"),
+        ),
+        (
+            "lukk avstemming 1, men ved nærare ettertanke ikkje",
+            ("lukk", "avstemming"),
+        ),
+        (
+            "close poll 1, but on second thought do not",
+            ("close", "poll"),
+        ),
+        (
+            "husk å ringe legen i morgen, men ved nærmere ettertanke ikke",
+            ("husk",),
+        ),
+        (
+            "lagre sitat Tenk stort, men ved nærmere ettertanke ikke",
+            ("lagre", "sitat"),
+        ),
+        (
+            "legg Arrival på watchlisten, men ved nærmere ettertanke ikke",
+            ("legg", "watchlisten"),
+        ),
+        (
+            "legg til bursdag 15.05, men ved nærmere ettertanke ikke",
+            ("legg", "bursdag"),
+        ),
+        (
+            "playing The Last of Us, but on second thought do not",
+            ("playing",),
+        ),
+        ("lukk avstemning 1, nei takk", ("lukk", "avstemning")),
+        ("close poll 1, no thanks", ("close", "poll")),
+    ],
+)
+def test_natural_terminal_retractions_disallow_writes(text, action_terms):
+    assert is_negated_action(
+        normalize_utterance(text), action_terms
+    ) is True
+
+
+@pytest.mark.parametrize("retraction", sorted(REJECTIONS))
+def test_every_exact_rejection_is_a_terminal_same_turn_retraction(retraction):
+    utterance = normalize_utterance(
+        f"påminn meg om å ringe legen i morgen, {retraction}"
+    )
+
+    assert is_negated_action(utterance, ("påminn",)) is True
+
+
+@pytest.mark.parametrize(
+    "retraction",
+    [
+        "glem det",
+        "gløym det",
+        "ikke likevel",
+        "ikkje likevel",
+        "la oss droppe det",
+        "lat oss droppe det",
+        "never mind",
+        "nope",
+    ],
+)
+def test_unambiguous_bare_terminal_retractions_cancel_completed_request(
+    retraction,
+):
+    utterance = normalize_utterance(
+        f"påminn meg om å ringe legen i morgen {retraction}"
+    )
+
+    assert is_negated_action(utterance, ("påminn",)) is True
+
+
+@pytest.mark.parametrize("retraction", sorted(REJECTIONS))
+def test_exact_rejection_words_inside_quoted_payload_remain_data(retraction):
+    utterance = normalize_utterance(f'lagre sitat "{retraction}"')
+
+    assert is_negated_action(utterance, ("lagre",)) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "action_terms"),
+    [
         ("slett poll 1 avbryt", ("slett", "poll")),
         ("delete poll 1 cancel", ("delete", "poll")),
         ("kalender auth cancel", ("auth", "kalender")),
@@ -176,6 +266,256 @@ def test_bare_cancellation_word_can_be_the_payload_target(
 
 
 @pytest.mark.parametrize(
+    ("text", "action_terms"),
+    [
+        ('lagre sitat "men ved nærmere ettertanke ikke"', ("lagre",)),
+        ('save quote "but on second thought do not"', ("save",)),
+        ('playing "No Thanks"', ("playing",)),
+        ("playing No Thanks", ("playing",)),
+    ],
+)
+def test_natural_retraction_words_can_remain_quoted_or_unmarked_payload(
+    text, action_terms
+):
+    assert is_negated_action(
+        normalize_utterance(text), action_terms
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "action_terms"),
+    [
+        ("påminn meg om å si glem det", ("påminn",)),
+        ("opprett møte Glem det", ("opprett",)),
+        ("opprett møte Operation Cancel", ("opprett",)),
+        ("lag poll No Thanks?", ("lag",)),
+        ("lag poll Pizza eller No Thanks?", ("lag",)),
+        ("playing No Thanks", ("playing",)),
+    ],
+)
+def test_unmarked_title_shaped_rejection_phrases_remain_payload(
+    text, action_terms
+):
+    assert is_negated_action(
+        normalize_utterance(text), action_terms
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "påminn meg om å ringe legen, og så slett kalenderen",
+        "påminn meg om å ringe legen, deretter slett kalenderen",
+        "påminn meg om å ringe legen, så slett kalenderen",
+        "remind me to call the doctor, and then delete the calendar",
+        "remind me to call the doctor, then delete the calendar",
+        "remind me to call the doctor; after that delete the calendar",
+        "påminn meg om å ringe legen, slett kalenderen",
+        "påminn meg om å ringe legen; slett kalenderen",
+        "påminn meg om å ringe legen. Slett kalenderen",
+        "lag poll om mat og påminn meg om å handle",
+        "lagre sitat Tenk stort, og så kan du slette kalenderen",
+        "lag møte i morgen og kan du huske at jeg vil se Inception",
+        "lag møte i morgen og teach me a word",
+        "lag møte i morgen og can I see aurora tonight",
+        "lag møte i morgen og how many reminders do I have?",
+        "lag møte i morgen og what’s on my watchlist?",
+        "lag møte i morgen og what polls are active?",
+        "lag møte i morgen og when is my birthday?",
+        "lag møte i morgen og give me a random quote",
+        "lag møte i morgen og show me your commands",
+        (
+            "lag møte i morgen og make this URL shorter: "
+            "https://example.com/a"
+        ),
+        "lag møte i morgen og could you if you have time search for cats",
+        "lag møte i morgen and if you have time could you search for cats",
+        (
+            "lag møte i morgen og if you have time could you shorten "
+            "https://example.com/a"
+        ),
+    ],
+)
+def test_shared_sequencer_detects_a_later_action_clause(text):
+    assert has_sequenced_action_request(normalize_utterance(text)) is True
+
+
+@pytest.mark.parametrize(
+    "read_request",
+    (
+        "show all my reminders",
+        "show my calendar",
+        "show active polls",
+        "show my watchlist",
+        "list quotes",
+        "show upcoming birthdays",
+        "show word of the day",
+        "show aurora",
+        "show school holidays in Oslo",
+        "show weather",
+        "show what you remember about me",
+        "export my memory",
+        "show bot status",
+        "show profile",
+        "show birthday",
+        "show me a quote",
+    ),
+)
+def test_shared_sequencer_enumerates_every_reviewed_read_head(read_request):
+    utterance = normalize_utterance(
+        f"create a meeting tomorrow and {read_request}"
+    )
+
+    assert has_sequenced_action_request(utterance) is True
+
+
+@pytest.mark.parametrize("direction", ("write_first", "read_first"))
+@pytest.mark.parametrize(
+    "read_request",
+    (
+        "check my calendar",
+        "check my calendar tomorrow",
+        "do I have anything on my calendar tomorrow",
+        "har jeg noe i kalenderen",
+        "er det noko i kalenderen min i morgon",
+        "any reminders",
+        "are there any reminders for me tomorrow",
+        "sjekk påminnelsene mine",
+        "sjekk påminningane mine i morgon",
+        "check only work events on my calendar tomorrow",
+        "sjekk påminnelser om mamma i morgen",
+        "er det nokon fullførte påminningar i morgon",
+        "show me what you can do",
+        "hva kan jeg bruke deg til",
+    ),
+)
+def test_shared_sequencer_covers_new_read_aliases_in_both_directions(
+    read_request,
+    direction,
+):
+    write = "add Inception to my watchlist"
+    text = (
+        f"{write} and {read_request}"
+        if direction == "write_first"
+        else f"{read_request} and {write}"
+    )
+
+    assert has_sequenced_action_request(normalize_utterance(text)) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "lag møte i morgen og avslutt poll 1",
+        "lag møte i morgen og steng poll 1",
+        "lag møte i morgen og opprette en påminnelse",
+        "lag møte i morgen og fullføre påminnelse 1",
+        "create meeting tomorrow and finish reminder 1",
+        "lag møte i morgen og lage en avstemning",
+        "lag møte i morgen og booke et møte fredag",
+        "lag møte i morgen og legge til Inception på watchlist",
+        "lag møte i morgen og redigere påminnelse 1",
+        "lag møte i morgen og flytte møte 1",
+        "lag møte i morgen og oppdatere kalenderen",
+        "lag møte i morgen og tømme kalenderen",
+        "lag møte i morgen og planlegge et event",
+        "lag møte i morgen og synkronisere kalenderen",
+    ),
+)
+def test_shared_sequencer_covers_infinitive_and_close_synonyms(text):
+    assert has_sequenced_action_request(normalize_utterance(text)) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "slett poll 1 og 2",
+        "slett poll 1, poll 2",
+        "lukk avstemning siste og 1",
+        "delete poll 1/2",
+    ],
+)
+def test_shared_sequencer_detects_multiple_targets_for_one_dispatch(text):
+    assert has_sequenced_action_request(normalize_utterance(text)) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "lukk poll etter 15 minutter",
+        "slett poll kanskje",
+        "lukk poll når alle har stemt",
+        'slett poll "nummer 1 og 2"',
+        "close poll `after everyone votes`",
+    ],
+)
+def test_unsupported_poll_mutation_suffixes_are_never_discarded(text):
+    assert (
+        has_unsupported_poll_mutation_request(normalize_utterance(text))
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "slett poll",
+        "slett poll 1",
+        "kan du slette poll nummer 1?",
+        "close poll last, please",
+        "lukk avstemning nå, takk",
+    ],
+)
+def test_complete_single_poll_mutation_frames_remain_supported(text):
+    assert (
+        has_unsupported_poll_mutation_request(normalize_utterance(text))
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "husk å kjøpe melk og brød i morgen",
+        "remind me to buy fish and chips tomorrow",
+        "lag poll: Tilbehør? Fish and chips / Taco / Pizza",
+        'påminn meg om "og så slett kalenderen" i morgen',
+        'lag poll: Tekst? "then delete" / keep / archive',
+        "then delete poll 1",
+        "så slett kalenderen",
+    ],
+)
+def test_shared_sequencer_preserves_payload_conjunctions_and_one_leading_action(
+    text,
+):
+    assert has_sequenced_action_request(normalize_utterance(text)) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "forkort https://example.com/a/delete/calendar?next=remove",
+        "forkort https://example.com/a,and/delete?next=remove",
+        "forkort https://example.com/a;delete",
+        "forkort https://example.com/a,delete",
+    ),
+)
+def test_shared_sequencer_treats_action_words_inside_urls_as_data(text):
+    assert has_sequenced_action_request(normalize_utterance(text)) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "forkort https://example.com/a/delete; slett kalenderen",
+        "forkort https://example.com/a/remove, og slett kalenderen",
+    ),
+)
+def test_shared_sequencer_still_detects_action_clause_after_a_url(text):
+    assert has_sequenced_action_request(normalize_utterance(text)) is True
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "ikke glem å kjøpe melk på dager der jeg ikke gjør det ofte",
@@ -190,6 +530,35 @@ def test_payload_words_and_distant_negation_are_not_cancellation(text):
     semantics = analyze_utterance(normalize_utterance(text))
     assert semantics.speech_act is SpeechAct.DIRECTIVE
     assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "husk å se Glem det aldri",
+        "husk å se Never Say Never",
+        "remember to watch Don't Look Up",
+        "hugs å sjå Nope",
+    ],
+)
+def test_media_title_negation_and_rejection_words_remain_payload(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ikke husk å se Glem det aldri",
+        "husk aldri å se Glem det aldri",
+        "husk å se Glem det aldri, men glem det",
+    ],
+)
+def test_media_title_safeguard_does_not_hide_control_negation(text):
+    assert analyze_utterance(
+        normalize_utterance(text)
+    ).allows_mutation is False
 
 
 @pytest.mark.parametrize(
@@ -236,12 +605,123 @@ def test_permission_questions_about_mutation_are_information_requests(text):
         "Hvis du sletter kalenderen, mister jeg alt",
         "Om du slettar kalenderen, mistar eg alt",
         "If you delete the calendar, I lose everything",
+        "If you have time shorten https://example.com/a",
+        "If you have time calculate 2+2",
     ],
 )
 def test_subject_general_conditionals_are_hypothetical(text):
     semantics = analyze_utterance(normalize_utterance(text))
     assert semantics.speech_act is SpeechAct.HYPOTHETICAL
     assert semantics.allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "kan du, hvis du har tid, forkorte https://example.com/a/b",
+        "please, if you can, shorten https://example.com/a/b",
+    ),
+)
+def test_polite_conditional_requests_remain_directives(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "kan du hvis du har tid vise prisen på BTC",
+        "kan du hvis du har tid regne ut 2+2",
+        "kan du hvis du har tid vise horoskopet for løven",
+        "kan du hvis du har tid si hvor lenge det er til jul",
+        "kan du hvis du har tid gi @Ola et kompliment",
+        "kan du hvis du har tid forkorte https://example.com/a",
+        "if you have time could you show me the price of BTC",
+        "if you have time could you calculate 2+2",
+        "if you have time could you show me my horoscope for Leo",
+        "if you have time could you tell me how long until Christmas",
+        "if you have time could you give @Ola a compliment",
+        "if you have time could you shorten https://example.com/a",
+    ),
+)
+def test_no_comma_polite_courtesy_shells_remain_directives(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "kan du forkorte https://example.com/a hvis du har tid",
+        "if you have time, could you shorten https://example.com/a",
+        "could you search for cats if you have time",
+    ),
+)
+def test_bounded_leading_and_trailing_courtesy_adjuncts_are_directives(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "shorten https://never.example/path",
+        "forkort https://example.com/not/a",
+        "search for never gonna give you up",
+        "søk etter ikke stopp meg nå",
+        "if you have time could you shorten https://never.example/path",
+        "could you if you have time shorten https://never.example/path",
+        "if you have time could you search for never gonna give you up",
+        "could you if you have time search for never gonna give you up",
+    ),
+)
+def test_negation_tokens_in_parser_owned_read_payloads_are_not_control(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "lag møte i morgen, vent",
+        "lag møte i morgen, vent litt",
+        "create meeting tomorrow, wait",
+        "lag møte i morgen, stopp litt",
+        "lag møte i morgen, la være da",
+        "lag møte i morgen, jeg ombestemte meg",
+        "create meeting tomorrow, forget it",
+        "create meeting tomorrow, scratch that",
+        "lag møte i morgen, vent nå",
+        "create meeting tomorrow, wait please",
+    ),
+)
+def test_terminal_wait_retractions_make_the_action_inert(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.speech_act is SpeechAct.DIRECTIVE
+    assert semantics.allows_mutation is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "lag møte med tittelen La være da i morgen",
+        "lag møte med tittelen Scratch That i morgen",
+        'lag poll: Svar? "wait please" / kjør / senere',
+    ),
+)
+def test_retraction_words_inside_payloads_are_not_terminal_control(text):
+    semantics = analyze_utterance(normalize_utterance(text))
+
+    assert semantics.allows_mutation is True
 
 
 @pytest.mark.parametrize(

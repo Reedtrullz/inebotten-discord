@@ -16,6 +16,18 @@
 
 ---
 
+## Hva modellen gjør — og ikke gjør
+
+LM Studio brukes til samtalesvar og som en valgfri semantisk fallback når den deterministiske ruteren ikke har nok bevis. Mention-gate, normalisering, typede funksjonsparsere, payload-validering, risikovurdering, bekreftelse og selve mutasjonen skjer lokalt i botten. Modellen får aldri manager- eller lagringstilgang.
+
+Hvis modellen foreslår en handling, må den levere null eller én frittstående JSON-linje i det lukkede `action`/`confidence`/`slots`/`reply`/`clarification`-skjemaet. Forslaget går gjennom samme arbiter og pending-flyt som øvrige ruter. Destruktive og inferred skriveruter bekreftes før utførelse.
+
+```json
+{"action":"REMINDER_CREATE","confidence":0.93,"slots":{"text":"Ring legen","due_date":"17.07.2026","time":"09:00"},"reply":"","clarification":null}
+```
+
+Den automatiske NLU-porten måler produksjonsparserne på bokmål, nynorsk, utvalgte dialektnære former og engelsk uten å kontakte LM Studio. Modellscorene nedenfor er historiske samtalestiltester fra mars 2026; de er ikke en fersk live-provider-verifikasjon av denne endringen og dokumenterer ikke full dialektdekning.
+
 ## Anbefalt Modell
 
 ### 🏆 **Gemma 3 12B Instruct** (Mars 2026 - Testet & Anbefalt)
@@ -37,7 +49,7 @@
 **Fordeler:**
 - ✅ Følger system prompt utmerket
 - ✅ Bruker norske ord aktivt: "altså", "kjempe", "supert", "skikkelig", "da vel"
-- ✅ Forstår og bruker dialekt-uttrykk ("Dæven!", "særru")
+- ✅ Ga gode svar på testens utvalgte dialektuttrykk ("Dæven!", "særru")
 - ✅ Naturlig, varm personlighet
 - ✅ Håndterer komplekse setninger
 

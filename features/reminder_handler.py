@@ -324,16 +324,33 @@ class ReminderHandler(BaseHandler):
                 self.loc.t("error_generic"),
                 DispatchOutcome.failure("invalid_payload"),
             )
+        due_date = canonical.get("due_date")
+        if due_date is not None and (
+            not isinstance(due_date, str) or not due_date.strip()
+        ):
+            return await self._finish(
+                message,
+                self.loc.t("error_generic"),
+                DispatchOutcome.failure("invalid_payload"),
+            )
         try:
+            format_kwargs = {
+                "show_completed": True,
+                "reference_time": now,
+            }
+            if due_date is not None:
+                format_kwargs["due_date"] = due_date
             reminders_text = self.reminders.format_reminders_list(
-                self.get_guild_id(message),
-                show_completed=True,
-                reference_time=now,
+                self.get_guild_id(message), **format_kwargs
             )
             response_text = (
                 f"🔔 **Påminnelser:**\n{reminders_text}"
                 if reminders_text
-                else "📭 Ingen aktive påminnelser."
+                else (
+                    f"📭 Ingen aktive påminnelser med frist {due_date}."
+                    if due_date is not None
+                    else "📭 Ingen aktive påminnelser."
+                )
             )
             base = DispatchOutcome.success(mutated=False)
         except Exception:

@@ -33,6 +33,7 @@ _HARD_BLOCK_CODES = {
     RejectionCode.QUOTED_ONLY,
     RejectionCode.META,
     RejectionCode.HYPOTHETICAL,
+    RejectionCode.UNSAFE_SEMANTIC,
 }
 _WORD = re.compile(
     r"[^\W\d_]+(?:['’][^\W\d_]+)?|\d+", re.UNICODE
@@ -86,9 +87,6 @@ def _unsafe_code(
     semantics: UtteranceSemantics,
     candidate: IntentCandidate,
 ) -> RejectionCode | None:
-    if candidate.risk not in _WRITE_RISKS:
-        return None
-
     evidence = candidate.action_terms + candidate.domain_terms
     if evidence_is_quoted_only(utterance, evidence):
         return RejectionCode.QUOTED_ONLY
@@ -98,7 +96,9 @@ def _unsafe_code(
         if _present(utterance.control_text, (term,))
     )
     if not live_evidence:
-        return RejectionCode.MISSING_LIVE_EVIDENCE
+        if candidate.risk in _WRITE_RISKS:
+            return RejectionCode.MISSING_LIVE_EVIDENCE
+        return None
     if semantics.speech_act is SpeechAct.META:
         return RejectionCode.META
     if semantics.speech_act is SpeechAct.HYPOTHETICAL:
@@ -115,8 +115,19 @@ def _unsafe_code(
         allow_positive_forget=allow_positive_forget,
     ):
         return RejectionCode.NEGATED_ACTION
+    if candidate.risk not in _WRITE_RISKS:
+        return None
     if semantics.speech_act is SpeechAct.INFORMATION_REQUEST:
         return RejectionCode.INFORMATION_QUESTION_MUTATION
+    if (
+        not semantics.allows_mutation
+        and (
+            candidate.source is IntentSource.DETERMINISTIC
+            or bool(candidate.action_terms)
+        )
+        and "negated_action" not in semantics.reasons
+    ):
+        return RejectionCode.UNSAFE_SEMANTIC
     if candidate.risk is IntentRisk.DESTRUCTIVE:
         if not candidate.action_terms or not _present(
             utterance.control_text, candidate.action_terms

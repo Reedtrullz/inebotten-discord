@@ -6,6 +6,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 
 import asyncio
 import copy
+import functools
 import inspect
 import os
 import re
@@ -69,7 +70,7 @@ from core.message_context import (
     strip_leading_bot_invocation,
 )
 from core.mutation_coordinator import MEMORY_STORE_SCOPE, MutationCoordinator
-from core.nlu_metrics import NLUMetrics
+from core.nlu_metrics import ALLOWED_METRIC_KEYS, NLUMetrics
 from core.pending_actions import (
     PendingAction,
     PendingActionStore,
@@ -88,6 +89,7 @@ from core.send_receipt import (
     capture_send_receipt,
     current_send_receipt,
 )
+from memory.user_memory import provider_memory_projection
 from core.utterance import NormalizedUtterance, normalize_utterance
 from features.ai_action_handler import (
     AIActionHandler,
@@ -96,6 +98,10 @@ from features.ai_action_handler import (
     ModelDisposition,
     PendingPresentationSpec,
     UnsupportedConfirmationSummary,
+)
+from web_console.console_store import (
+    get_console_store,
+    sanitize_reminder_runtime,
 )
 from web_console.server import ConsoleServer
 
@@ -132,6 +138,10 @@ COMMAND_REGISTRY = [
 
 
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
+_COUNTER_LIMIT = 2**63 - 1
+_RATE_SOURCE_KEYS = ("user_stats", "per_user", "users")
+_INTENT_SNAPSHOT_LIMIT = 256
+_RATE_SNAPSHOT_LIMIT = 1000
 _NO_TYPED_ENVELOPE = object()
 _TRUNCATION_MARKER = "\n\n[svaret er forkortet]"
 _SEARCH_CONTEXT_FIELDS = ("title", "href", "url", "body", "snippet")
@@ -191,47 +201,93 @@ def bounded_discord_text_chunks(
     ) or ("",)
 
 
+def _counter(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return min(max(value, 0), _COUNTER_LIMIT)
+
+
+def _counter_increment(current: object, previous: object) -> int:
+    now = _counter(current)
+    before = _counter(previous)
+    return now - before if now >= before else now
+
+
 def _counter_stats_delta(current, previous):
-    """Return positive per-key counter deltas for nested intent stats."""
-    delta = {}
-    previous = previous or {}
-    for name, stats in current.items():
-        if not isinstance(stats, dict):
+    """Return bounded per-key deltas, retaining producer-reset epochs."""
+    result = {}
+    if not isinstance(current, Mapping):
+        return result
+    old_root = previous if isinstance(previous, Mapping) else {}
+    for name, values in current.items():
+        if not isinstance(name, str) or not isinstance(values, Mapping):
             continue
-        previous_stats = previous.get(name, {}) if isinstance(previous, dict) else {}
-        entry = {}
-        for key in _COUNTER_STAT_KEYS:
-            value = int(stats.get(key, 0) or 0)
-            old_value = int(previous_stats.get(key, 0) or 0) if isinstance(previous_stats, dict) else 0
-            change = value - old_value
-            if change > 0:
-                entry[key] = change
-            else:
-                entry[key] = 0
+        old_values = old_root.get(name, {})
+        if not isinstance(old_values, Mapping):
+            old_values = {}
+        entry = {
+            key: _counter_increment(
+                values.get(key, 0),
+                old_values.get(key, 0),
+            )
+            for key in _COUNTER_STAT_KEYS
+        }
         if any(entry.values()):
-            delta[str(name)] = entry
-    return delta
+            result[name] = entry
+    return result
 
 
 def _flat_counter_delta(current, previous):
-    """Return positive deltas for flat cumulative counters."""
-    delta = {}
-    previous = previous or {}
-    for name, value in current.items():
-        old_value = previous.get(name, 0) if isinstance(previous, dict) else 0
-        change = int(value or 0) - int(old_value or 0)
-        if change > 0:
-            delta[str(name)] = change
-    return delta
+    """Return bounded flat deltas, retaining producer-reset epochs."""
+    if not isinstance(current, Mapping):
+        return {}
+    old_root = previous if isinstance(previous, Mapping) else {}
+    return {
+        name: delta
+        for name, value in current.items()
+        if isinstance(name, str)
+        and (
+            delta := _counter_increment(
+                value,
+                old_root.get(name, 0),
+            )
+        )
+    }
+
+
+def _nested_counter_delta(current, previous):
+    """Return only finite, allowlisted NLU counter deltas."""
+    result: dict[str, dict[str, int]] = {}
+    current_root = current if isinstance(current, Mapping) else {}
+    old_root = previous if isinstance(previous, Mapping) else {}
+    for section in sorted(ALLOWED_METRIC_KEYS):
+        values = current_root.get(section, {})
+        if not isinstance(values, Mapping):
+            continue
+        old_values = old_root.get(section, {})
+        if not isinstance(old_values, Mapping):
+            old_values = {}
+        delta = {
+            key: _counter_increment(
+                values.get(key, 0),
+                old_values.get(key, 0),
+            )
+            for key in sorted(ALLOWED_METRIC_KEYS[section])
+        }
+        nonzero = {key: value for key, value in delta.items() if value}
+        if nonzero:
+            result[section] = nonzero
+    return result
 
 
 def _copy_counter_stats(stats):
-    copied = {}
-    for name, values in stats.items():
-        if not isinstance(values, dict):
-            continue
-        copied[str(name)] = {key: int(values.get(key, 0) or 0) for key in _COUNTER_STAT_KEYS}
-    return copied
+    if not isinstance(stats, Mapping):
+        return {}
+    return {
+        name: {key: _counter(values.get(key, 0)) for key in _COUNTER_STAT_KEYS}
+        for name, values in stats.items()
+        if isinstance(name, str) and isinstance(values, Mapping)
+    }
 
 
 class AuthorizedMessage:
@@ -270,12 +326,16 @@ class MessageMonitor:
         reminder_clock=None,
         reminder_manager=None,
         reminder_checker_factory=ReminderChecker,
+        console_store=None,
     ):
         self.client = client
         self.bot = client
         self.hermes = hermes_connector
         self.rate_limiter = rate_limiter
         self.response_gen = response_generator
+        self.console_store = (
+            console_store if console_store is not None else get_console_store()
+        )
         self.bot_name = bot_name
         self.bot_mention = f"@{bot_name}"
         injected_coordinator = getattr(
@@ -333,13 +393,24 @@ class MessageMonitor:
         def resolve_channel(channel_id):
             return get_channel(channel_id) if callable(get_channel) else None
 
-        self.reminder_checker = reminder_checker_factory(
-            calendar_manager=self.calendar,
-            reminder_manager=self.reminders,
-            get_channel_func=resolve_channel,
-            clock=self.reminder_clock,
-            mutation_coordinator=self.mutation_coordinator,
-        )
+        checker_kwargs = {
+            "calendar_manager": self.calendar,
+            "reminder_manager": self.reminders,
+            "get_channel_func": resolve_channel,
+            "clock": self.reminder_clock,
+            "mutation_coordinator": self.mutation_coordinator,
+            "metrics": self.nlu_metrics,
+        }
+        try:
+            self.reminder_checker = reminder_checker_factory(**checker_kwargs)
+        except TypeError as exc:
+            # Preserve compatibility with narrow injected legacy test adapters;
+            # production ReminderChecker accepts constructor injection above.
+            if "unexpected keyword argument 'metrics'" not in str(exc):
+                raise
+            checker_kwargs.pop("metrics")
+            self.reminder_checker = reminder_checker_factory(**checker_kwargs)
+            self.reminder_checker.metrics = self.nlu_metrics
         self.reminder_checker_task = None
 
         # Initialize personality and memory systems
@@ -377,6 +448,7 @@ class MessageMonitor:
         from features.daily_digest_manager import DailyDigestManager
         from features.search_manager import SearchManager, detect_search_intent
         from features.browser_manager import BrowserManager
+        from features.profile_commands import parse_profile_command
         from features.daily_digest_manager import DailyDigestManager
 
         self.countdown = CountdownManager()
@@ -400,7 +472,7 @@ class MessageMonitor:
         self.search_manager = SearchManager()
         self.browser_manager = BrowserManager()
         self.detect_search_intent = detect_search_intent
-        from features.birthday_manager import BirthdayManager
+        from features.birthday_manager import BirthdayManager, parse_birthday_command
         self.birthdays = BirthdayManager(
             mutation_coordinator=self.mutation_coordinator,
             gcal_manager=gcal,
@@ -424,6 +496,8 @@ class MessageMonitor:
         self.parse_horoscope_command = parse_horoscope_command
         self.parse_calculator_command = parse_calculator_command
         self.parse_shorten_command = parse_shorten_command
+        self.parse_birthday_command = parse_birthday_command
+        self.parse_profile_command = parse_profile_command
 
         # Tracking - use deque with maxlen for automatic dedup cleanup
         self.processed_messages = deque(maxlen=1000)
@@ -433,6 +507,13 @@ class MessageMonitor:
         self.intent_stats = defaultdict(lambda: {"count": 0, "low_confidence": 0, "errors": 0})
         self._last_persisted_intent_stats: dict[str, dict[str, int]] = {}
         self._last_persisted_rate_stats: dict[str, int] = {}
+        self._last_persisted_nlu_stats: dict[str, dict[str, int]] = {}
+        self._last_persisted_reminder_runtime: dict[str, object] = {}
+        self._console_persist_lock = asyncio.Lock()
+        self._console_write_task: asyncio.Task[bool] | None = None
+        self._nlu_metrics_hydrated = False
+        self._final_stats_flushed = False
+        self._provider_history_quarantined = False
         self._background_tasks = set()
         self._tasks_by_name = {}
         self._task_health: dict[str, dict[str, object]] = {}
@@ -546,6 +627,266 @@ class MessageMonitor:
     def get_task_health(self):
         return {name: dict(values) for name, values in self._task_health.items()}
 
+    def _publish_setup_task(self, coro, name):
+        """Publish one startup producer without leaking an unowned coroutine."""
+        try:
+            return self._track_background_task(coro, name)
+        except BaseException:
+            registered = any(
+                task.get_coro() is coro
+                for task in getattr(self, "_background_tasks", ())
+            )
+            if inspect.iscoroutine(coro) and not registered:
+                coro.close()
+            raise
+
+    async def _rollback_setup_tasks_once(self, tasks) -> None:
+        """Perform one setup rollback; the public wrapper owns cancellation."""
+        owned_tasks = tuple(dict.fromkeys(tasks))
+        if not owned_tasks:
+            return
+
+        tasks_by_name = getattr(self, "_tasks_by_name", {})
+        checker_task = tasks_by_name.get("reminder-checker")
+        checker_owned = checker_task in owned_tasks or any(
+            task.get_name() == "reminder-checker" for task in owned_tasks
+        )
+        if checker_owned:
+            reminder_checker = getattr(self, "reminder_checker", None)
+            if reminder_checker is not None:
+                try:
+                    stopped = reminder_checker.stop()
+                    if inspect.isawaitable(stopped):
+                        await stopped
+                except Exception as exc:
+                    self._mark_task_error("reminder-checker", exc)
+
+        for task in owned_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*owned_tasks, return_exceptions=True)
+
+        background_tasks = getattr(self, "_background_tasks", set())
+        for task in owned_tasks:
+            background_tasks.discard(task)
+        for name, task in tuple(tasks_by_name.items()):
+            if task in owned_tasks:
+                tasks_by_name.pop(name, None)
+        if (
+            getattr(self, "reminder_checker_task", None) in owned_tasks
+            or checker_owned
+        ):
+            self.reminder_checker_task = None
+
+    async def _rollback_setup_tasks(self, tasks) -> None:
+        """Settle setup-owned producers even if the rollback caller is canceled."""
+
+        owned_tasks = tuple(dict.fromkeys(tasks))
+        if not owned_tasks:
+            return
+        # Cancel synchronously before the cleanup task gets its first event-loop
+        # turn. A producer whose publication failed must not start merely
+        # because rollback itself needs an independently shielded owner.
+        for task in owned_tasks:
+            if not task.done():
+                task.cancel()
+        cleanup = asyncio.create_task(
+            self._rollback_setup_tasks_once(owned_tasks),
+            name="setup-task-rollback",
+        )
+        current = asyncio.current_task()
+        cancellation_args: tuple[object, ...] | None = None
+        while True:
+            try:
+                await asyncio.shield(cleanup)
+                break
+            except asyncio.CancelledError as exc:
+                if cleanup.done():
+                    # An internally canceled cleanup is a genuine cleanup
+                    # failure, not a caller cancellation to defer.
+                    cleanup.result()
+                    raise
+                cancellation_args = exc.args
+                if current is not None:
+                    current.uncancel()
+
+        # Retrieve any cleanup exception before restoring deferred caller
+        # cancellation.  No setup-owned producer may outlive this boundary.
+        cleanup.result()
+        if cancellation_args is not None:
+            raise asyncio.CancelledError(*cancellation_args)
+
+    def _history_policy_for_route(self, key, route) -> HistoryPolicy:
+        try:
+            effective_routes = self.pending_actions.effective_routes_for_history(
+                key,
+                route,
+            )
+        except Exception:
+            effective_routes = None
+        return history_policy_for_effective_routes(effective_routes)
+
+    def _stage_inbound_history(
+        self,
+        key,
+        turn: ChatTurn,
+    ) -> bool:
+        try:
+            stage = getattr(
+                self.conversation,
+                "stage_source_turn",
+                None,
+            )
+            reclassify = getattr(
+                self.conversation,
+                "reclassify_source_turn",
+                None,
+            )
+        except Exception:
+            self._provider_history_quarantined = True
+            return False
+        if not callable(stage) or not callable(reclassify):
+            return False
+        try:
+            result = stage(key, turn)
+        except Exception:
+            self._provider_history_quarantined = True
+            return False
+        if result is not True:
+            self._provider_history_quarantined = True
+            return False
+        return True
+
+    def _reclassify_inbound_history(
+        self,
+        key,
+        source_message_id: int,
+        policy: HistoryPolicy,
+    ) -> bool:
+        try:
+            reclassify = getattr(
+                self.conversation,
+                "reclassify_source_turn",
+                None,
+            )
+        except Exception:
+            self._provider_history_quarantined = True
+            return False
+        if not callable(reclassify):
+            self._provider_history_quarantined = True
+            return False
+        try:
+            result = reclassify(key, source_message_id, policy)
+        except Exception:
+            self._provider_history_quarantined = True
+            return False
+        if result is not True:
+            self._provider_history_quarantined = True
+            return False
+        return True
+
+    async def _hydrate_nlu_metrics_once(self) -> None:
+        """Merge persisted bounded counters once before producers start."""
+        if getattr(self, "_nlu_metrics_hydrated", False):
+            return
+        lock = getattr(self, "_console_persist_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._console_persist_lock = lock
+        async with lock:
+            if getattr(self, "_nlu_metrics_hydrated", False):
+                return
+            store = getattr(self, "console_store", None)
+            if store is None:
+                store = get_console_store()
+                self.console_store = store
+            try:
+                persisted = await asyncio.to_thread(store.load_nlu_stats)
+            except Exception:
+                persisted = {}
+            persisted_metrics = NLUMetrics()
+            if isinstance(persisted, Mapping):
+                persisted_metrics.merge_snapshot(persisted)
+            persisted_snapshot = persisted_metrics.snapshot()
+            self.nlu_metrics.merge_snapshot(persisted_snapshot)
+            # The baseline represents only what was already durable. Any
+            # live increment that raced the store read remains above it and
+            # is emitted by the next delta flush.
+            self._last_persisted_nlu_stats = persisted_snapshot
+            self._nlu_metrics_hydrated = True
+
+    def _bounded_intent_snapshot(self) -> dict[str, dict[str, int]]:
+        source = getattr(self, "intent_stats", {})
+        if not isinstance(source, Mapping):
+            return {}
+        valid = sorted(
+            (
+                (name, values)
+                for name, values in source.items()
+                if isinstance(name, str)
+                and len(name) <= 64
+                and isinstance(values, Mapping)
+            ),
+            key=lambda item: item[0],
+        )[:_INTENT_SNAPSHOT_LIMIT]
+        return {
+            name: {
+                key: _counter(values.get(key, 0))
+                for key in _COUNTER_STAT_KEYS
+            }
+            for name, values in valid
+        }
+
+    def _bounded_rate_snapshot(self) -> dict[str, int]:
+        getter = getattr(self.rate_limiter, "get_stats", None)
+        try:
+            overall = getter() if callable(getter) else {}
+        except Exception:
+            return {}
+        if not isinstance(overall, Mapping):
+            return {}
+        for source_key in _RATE_SOURCE_KEYS:
+            source = overall.get(source_key)
+            if not isinstance(source, Mapping):
+                continue
+            valid = sorted(
+                (
+                    (raw_user, raw_stats)
+                    for raw_user, raw_stats in source.items()
+                    if isinstance(raw_user, (str, int))
+                    and not isinstance(raw_user, bool)
+                    and len(str(raw_user)) <= 32
+                    and str(raw_user).isascii()
+                    and str(raw_user).isdecimal()
+                ),
+                key=lambda item: (int(str(item[0])), str(item[0])),
+            )[:_RATE_SNAPSHOT_LIMIT]
+            return {
+                str(user): _counter(
+                    raw_stats.get("requests", 0)
+                    if isinstance(raw_stats, Mapping)
+                    else raw_stats
+                )
+                for user, raw_stats in valid
+            }
+        return {}
+
+    def _bounded_reminder_runtime_snapshot(self) -> dict[str, object]:
+        checker = getattr(self, "reminder_checker", None)
+        getter = getattr(checker, "get_health", None)
+        try:
+            raw = getter() if callable(getter) else {}
+        except Exception:
+            raw = {
+                "status": "degraded",
+                "running": False,
+                "stale": True,
+                "last_error_code": "cycle_error",
+            }
+        return sanitize_reminder_runtime(
+            raw if isinstance(raw, Mapping) else {}
+        )
+
     async def setup(self):
         if not hasattr(self, "_setup_lock"):
             self._setup_lock = asyncio.Lock()
@@ -555,6 +896,7 @@ class MessageMonitor:
             if getattr(self, "_closed", False) or self._setup_complete:
                 return
 
+            await self._hydrate_nlu_metrics_once()
             await self.calendar.setup()
             await self.user_memory.setup()
 
@@ -562,16 +904,11 @@ class MessageMonitor:
             # constructor I/O.  Keep the injected manager even when initially
             # unconfigured so an auth flow can enable it later in this process.
             gcal_status = await self.calendar.ensure_gcal_configured()
+            reference_time = None
             if gcal_status.ok:
                 print("[MONITOR] Google Calendar integration enabled")
                 print("[MONITOR] Performing initial Google Calendar sync...")
                 reference_time = self.reminder_clock.now()
-                self._track_background_task(
-                    self.calendar.sync_from_gcal_result(
-                        reference_time=reference_time,
-                    ),
-                    "initial-gcal-sync",
-                )
             elif gcal_status.state is ExternalCommitState.UNKNOWN:
                 self._set_task_health(
                     "initial-gcal-sync",
@@ -579,35 +916,59 @@ class MessageMonitor:
                     last_error="external_commit_unknown",
                 )
 
-            self._track_background_task(
-                self._console_persistence_loop(),
-                "console-persistence",
-            )
             reminder_checker = getattr(self, "reminder_checker", None)
             if reminder_checker is not None:
                 await reminder_checker.setup()
-                self.reminder_checker_task = self._track_background_task(
-                    reminder_checker.start(),
-                    "reminder-checker",
-                )
-                print("[MONITOR] Calendar reminder checker started")
-            self._setup_complete = True
 
-            print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
+            # Complete every fallible setup step before publishing long-lived
+            # producers. If publication itself fails, this attempt retains
+            # ownership until every task it created has settled.
+            preexisting_tasks = set(getattr(self, "_background_tasks", ()))
+            try:
+                if reference_time is not None:
+                    self._publish_setup_task(
+                        self.calendar.sync_from_gcal_result(
+                            reference_time=reference_time,
+                        ),
+                        "initial-gcal-sync",
+                    )
+                self._publish_setup_task(
+                    self._console_persistence_loop(),
+                    "console-persistence",
+                )
+                if reminder_checker is not None:
+                    self.reminder_checker_task = self._publish_setup_task(
+                        reminder_checker.start(),
+                        "reminder-checker",
+                    )
+                    print("[MONITOR] Calendar reminder checker started")
+
+                print(
+                    "[MONITOR] Async managers "
+                    "(Calendar, Memory, Birthdays) initialized"
+                )
+                self._setup_complete = True
+            except BaseException:
+                attempt_tasks = tuple(
+                    task
+                    for task in getattr(self, "_background_tasks", ())
+                    if task not in preexisting_tasks
+                )
+                await self._rollback_setup_tasks(attempt_tasks)
+                self._setup_complete = False
+                raise
 
     async def close(self):
-        """Stop the checker, then settle every monitor-owned task once."""
+        """Stop every producer before one retry-safe final stats flush."""
         if not hasattr(self, "_setup_lock"):
             self._setup_lock = asyncio.Lock()
         if not hasattr(self, "_close_lock"):
             self._close_lock = asyncio.Lock()
-        if not hasattr(self, "_closed"):
-            self._closed = False
         # Serialize shutdown behind any in-flight setup. Once ``_closed`` is
         # published under this boundary, a later setup cannot start new work.
         async with self._setup_lock:
             async with self._close_lock:
-                if self._closed:
+                if getattr(self, "_final_stats_flushed", False):
                     return
 
                 reminder_checker = getattr(self, "reminder_checker", None)
@@ -629,6 +990,8 @@ class MessageMonitor:
                 getattr(self, "_tasks_by_name", {}).clear()
                 if hasattr(self, "reminder_checker_task"):
                     self.reminder_checker_task = None
+                await self._persist_console_stats_once()
+                self._final_stats_flushed = True
                 self._closed = True
 
     async def _console_persistence_loop(self) -> None:
@@ -641,38 +1004,80 @@ class MessageMonitor:
                 except Exception as exc:
                     self._mark_task_error("console-persistence", exc)
         except asyncio.CancelledError:
-            pass
+            raise
 
     async def _persist_console_stats_once(self) -> None:
-        """Persist one stats delta batch and update health only after success."""
-        from web_console.console_store import get_console_store
-
-        store = get_console_store()
-        rate_stats: dict[str, int] = {}
-        overall = self.rate_limiter.get_stats() if hasattr(self.rate_limiter, "get_stats") else {}
-        if isinstance(overall, dict):
-            for key in ("user_stats", "per_user", "users"):
-                candidate = overall.get(key)
-                if isinstance(candidate, dict):
-                    for user, stats in candidate.items():
-                        count = stats.get("requests", 0) if isinstance(stats, dict) else int(stats)
-                        rate_stats[user] = rate_stats.get(user, 0) + count
-                    break
-        intent_snapshot = _copy_counter_stats(dict(self.intent_stats))
-        intent_delta = _counter_stats_delta(
-            intent_snapshot,
-            getattr(self, "_last_persisted_intent_stats", {}),
-        )
-        rate_delta = _flat_counter_delta(
-            rate_stats,
-            getattr(self, "_last_persisted_rate_stats", {}),
-        )
-        if intent_delta or rate_delta:
-            if not store.save_stats(intent_delta, rate_delta):
-                raise RuntimeError("console stats save failed")
-        self._last_persisted_intent_stats = intent_snapshot
-        self._last_persisted_rate_stats = dict(rate_stats)
-        self._mark_task_ok("console-persistence")
+        """Persist one atomic delta batch and advance baselines after success."""
+        lock = getattr(self, "_console_persist_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._console_persist_lock = lock
+        async with lock:
+            store = getattr(self, "console_store", None)
+            if store is None:
+                store = get_console_store()
+                self.console_store = store
+            intent_snapshot = self._bounded_intent_snapshot()
+            rate_snapshot = self._bounded_rate_snapshot()
+            nlu_snapshot = self.nlu_metrics.snapshot()
+            reminder_snapshot = self._bounded_reminder_runtime_snapshot()
+            intent_delta = _counter_stats_delta(
+                intent_snapshot,
+                getattr(self, "_last_persisted_intent_stats", {}),
+            )
+            rate_delta = _flat_counter_delta(
+                rate_snapshot,
+                getattr(self, "_last_persisted_rate_stats", {}),
+            )
+            nlu_delta = _nested_counter_delta(
+                nlu_snapshot,
+                getattr(self, "_last_persisted_nlu_stats", {}),
+            )
+            reminder_changed = reminder_snapshot != getattr(
+                self,
+                "_last_persisted_reminder_runtime",
+                {},
+            )
+            saved = True
+            cancellation_requested = False
+            if intent_delta or rate_delta or nlu_delta or reminder_changed:
+                save = functools.partial(
+                    store.save_stats,
+                    intent_delta,
+                    rate_delta,
+                    nlu_stats=nlu_delta,
+                    reminder_runtime=reminder_snapshot,
+                )
+                write_task = asyncio.create_task(
+                    asyncio.to_thread(save),
+                    name="console-stats-write",
+                )
+                self._console_write_task = write_task
+                try:
+                    while True:
+                        try:
+                            saved = await asyncio.shield(write_task)
+                            break
+                        except asyncio.CancelledError:
+                            cancellation_requested = True
+                            if write_task.cancelled():
+                                saved = False
+                                break
+                        except BaseException:
+                            saved = False
+                            break
+                finally:
+                    self._console_write_task = None
+                if saved:
+                    self._last_persisted_intent_stats = intent_snapshot
+                    self._last_persisted_rate_stats = rate_snapshot
+                    self._last_persisted_nlu_stats = nlu_snapshot
+                    self._last_persisted_reminder_runtime = reminder_snapshot
+            if cancellation_requested:
+                raise asyncio.CancelledError
+            if not saved:
+                raise RuntimeError("console_stats_save_failed") from None
+            self._mark_task_ok("console-persistence")
 
     def is_mention(self, message):
         """Check if message explicitly mentions the bot."""
@@ -810,39 +1215,26 @@ class MessageMonitor:
                         f"[MONITOR] Intent matched: {route.intent.value} "
                         f"({route.reason}, {route.confidence:.2f})"
                     )
-                    try:
-                        effective_routes = (
-                            self.pending_actions.effective_routes_for_history(
-                                key,
-                                route,
-                            )
-                        )
-                    except Exception:
-                        effective_routes = None
-                    history_policy = history_policy_for_effective_routes(
-                        effective_routes
-                    )
+                    history_policy = self._history_policy_for_route(key, route)
                     with capture_history_policy(history_policy):
-                        add_turn = getattr(
-                            self.conversation,
-                            "add_turn",
-                            None,
-                        )
-                        if callable(add_turn):
-                            try:
-                                add_turn(
+                        try:
+                            history_content = history_safe_content(
+                                utterance.raw
+                            )
+                            if history_content is not None:
+                                self._stage_inbound_history(
                                     key,
                                     ChatTurn(
                                         "user",
-                                        history_safe_content(utterance.raw),
+                                        history_content,
                                         source_message_id=message.id,
                                     ),
                                 )
-                            except Exception:
-                                print(
-                                    "[MONITOR] Inbound conversation "
-                                    "recording degraded"
-                                )
+                        except Exception:
+                            print(
+                                "[MONITOR] Inbound conversation "
+                                "recording degraded"
+                            )
                         processed = await self._process_route(
                             message,
                             utterance=utterance,
@@ -1994,14 +2386,19 @@ class MessageMonitor:
                 lambda: self._send_status_response(message)
             )
         elif route.intent == BotIntent.PROFILE:
-            return await self._invoke_legacy_read(
-                lambda: self.handlers["profile"].handle_profile_command(
-                    message
-                )
+            return await self.handlers["profile"].handle_profile_command(
+                message,
+                typed_payload,
             )
         elif route.intent == BotIntent.CALENDAR_LIST:
+            if not typed_payload:
+                return await self.handlers["calendar"].handle_list(
+                    message,
+                    reference_time=reference_time,
+                )
             return await self.handlers["calendar"].handle_list(
                 message,
+                typed_payload,
                 reference_time=reference_time,
             )
         elif route.intent == BotIntent.CALENDAR_SYNC:
@@ -2414,17 +2811,12 @@ class MessageMonitor:
 
         try:
             snapshot = self.user_memory.snapshot_user(message.author.id)
-            user_snapshot = (
-                copy.deepcopy(snapshot)
-                if isinstance(snapshot, Mapping)
-                else {}
-            )
+            user_snapshot = provider_memory_projection(snapshot)
         except Exception:
             user_snapshot = {}
 
         context_data = {
             "author": {
-                "id": routing_context.author.user_id,
                 "display_name": routing_context.author.display_name,
             },
             "channel_type": channel_type,
@@ -2452,6 +2844,11 @@ class MessageMonitor:
                     exclude_source_message_id=message.id,
                 )
                 if callable(get_prompt_history)
+                and not getattr(
+                    self,
+                    "_provider_history_quarantined",
+                    False,
+                )
                 else ()
             )
         except Exception:
@@ -2547,15 +2944,25 @@ class MessageMonitor:
                 decision_route,
                 decision_outcome,
             )
-        return await self._process_route(
-            message,
-            utterance=utterance,
-            routing_context=routing_context,
-            route=model_outcome.route,
-            reference_time=reference_time,
-            visible_text=model_outcome.visible_text,
-            model_origin=True,
+        semantic_history_policy = self._history_policy_for_route(
+            routing_context.key,
+            model_outcome.route,
         )
+        self._reclassify_inbound_history(
+            routing_context.key,
+            message.id,
+            semantic_history_policy,
+        )
+        with capture_history_policy(semantic_history_policy):
+            return await self._process_route(
+                message,
+                utterance=utterance,
+                routing_context=routing_context,
+                route=model_outcome.route,
+                reference_time=reference_time,
+                visible_text=model_outcome.visible_text,
+                model_origin=True,
+            )
 
     async def _parse_and_execute_actions(self, response_text, message):
         """Compatibility cleaner; model proposals remain inert on this path."""
@@ -2809,9 +3216,12 @@ class MessageMonitor:
     def record_outbound(self, message, content: str) -> None:
         """Record one definitely delivered response in the exact turn scope."""
 
+        history_content = history_safe_content(content)
+        if history_content is None:
+            return
         self.conversation.add_turn(
             conversation_key_from_message(message),
-            ChatTurn("assistant", history_safe_content(content)),
+            ChatTurn("assistant", history_content),
         )
 
     def _record_monitor_delivery(
@@ -2919,6 +3329,14 @@ class MessageMonitor:
             getattr(self, "_last_persisted_intent_stats", {}),
         )
 
+    def get_unsaved_rate_stats(self):
+        """Return only current-process rate deltas not already persisted."""
+
+        return _flat_counter_delta(
+            self._bounded_rate_snapshot(),
+            getattr(self, "_last_persisted_rate_stats", {}),
+        )
+
     def get_handlers_status(self):
         """Get status of all handlers"""
         status = {}
@@ -2980,6 +3398,7 @@ class SelfbotClient(discord.Client):
         self.rate_limiter = rate_limiter
         self.hermes = hermes_connector
         self.response_gen = response_generator
+        self.console_store = get_console_store()
 
         self.monitor = None
         self.console_server = None
@@ -2994,14 +3413,19 @@ class SelfbotClient(discord.Client):
     async def _ensure_runtime_started(self):
         """Create and attach the single monitor retained across reconnects."""
         async with self._runtime_lock:
-            if self.monitor is None:
-                self.monitor = MessageMonitor(
+            monitor = self.monitor
+            if monitor is None:
+                monitor = MessageMonitor(
                     client=self,
                     hermes_connector=self.hermes,
                     rate_limiter=self.rate_limiter,
                     response_generator=self.response_gen,
+                    console_store=self.console_store,
                 )
-            await self.monitor.setup()
+            await monitor.setup()
+            # Do not publish a half-hydrated monitor to on_message. This also
+            # keeps live NLU increments from racing the persisted baseline.
+            self.monitor = monitor
             await self.start_console()
             if self.console_server is not None:
                 self.console_server.monitor = self.monitor
@@ -3031,6 +3455,7 @@ class SelfbotClient(discord.Client):
                 cloudflare_access_team_domain=self.config.console_cf_access_team_domain,
                 cloudflare_access_audiences=self.config.console_cf_access_audiences,
                 cloudflare_access_allowed_emails=self.config.console_cf_access_allowed_emails,
+                store=self.console_store,
             )
             await self.console_server.start()
             print(f"[BOT] Web console started on http://{self.config.console_host}:{self.config.console_port}")

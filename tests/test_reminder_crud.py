@@ -10,10 +10,38 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
+
 from cal_system.reminder_manager import ReminderManager, parse_reminder_command
 from cal_system.temporal_resolver import DATE_ALIASES, TemporalResolver
 from core.dispatch_result import DeliveryState, MessageSendResult
+from core.eval_fixtures import EvalFixture
+from core.intent_models import BotIntent
 from features.reminder_handler import ReminderHandler
+from tests.nlu_harness import build_production_router
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "how many reminders do I have?",
+        "show me all my reminders",
+        "do I have any reminders?",
+    ),
+)
+def test_natural_reminder_inventory_questions_parse_as_one_list(text):
+    assert parse_reminder_command(text) == {"action": "list"}
+
+
+def test_reminder_search_connector_is_clean_end_to_end():
+    result = build_production_router(
+        EvalFixture.MIXED_STATE
+    ).route_help_example("search reminders for watchlist")
+
+    assert result.intent is BotIntent.REMINDER_SEARCH
+    assert result.payload == {
+        "reminder": {"action": "search", "query": "watchlist"}
+    }
 
 
 OSLO_NOW = datetime.fromisoformat("2026-07-14T12:00:00+02:00")
@@ -40,10 +68,86 @@ class ReminderParserContractTests(unittest.TestCase):
             },
         )
 
+    def test_search_connector_is_not_part_of_the_query(self):
+        self.assertEqual(
+            self.parse("search reminders for watchlist"),
+            {"action": "search", "query": "watchlist"},
+        )
+
+    def test_temporal_before_infinitive_does_not_leave_orphaned_to(self):
+        cases = (
+            (
+                "remind me tomorrow to watch Inception",
+                "watch Inception",
+            ),
+            (
+                "remind me tomorrow to add Inception to my watchlist",
+                "add Inception to my watchlist",
+            ),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                parsed = self.parse(text)
+                self.assertEqual(parsed["text"], expected)
+                self.assertEqual(parsed["due_date"], "15.07.2026")
+
+        title = self.parse("remind me tomorrow To Kill a Mockingbird")
+        self.assertEqual(title["text"], "To Kill a Mockingbird")
+
     def test_trondelag_relative_create_is_canonical(self):
         parsed = self.parse("minn mæ om å ringe legen om 2 timer")
         self.assertEqual(parsed["text"], "ringe legen")
         self.assertEqual(parsed["due_at"], "2026-07-14T14:00:00+02:00")
+
+    def test_half_hour_and_dotted_time_reminders_are_canonical(self):
+        half_hour = self.parse(
+            "påminn meg om å ringe legen om en halvtime"
+        )
+        dotted = self.parse("påminn meg om å ringe legen kl 14.30")
+
+        self.assertEqual(half_hour["text"], "ringe legen")
+        self.assertEqual(
+            half_hour["due_at"], "2026-07-14T12:30:00+02:00"
+        )
+        self.assertEqual(dotted["text"], "ringe legen")
+        self.assertEqual(dotted["time"], "14:30")
+
+    def test_unresolved_temporal_language_never_becomes_title_text(self):
+        cases = (
+            "påminn meg om å ringe legen senere i dag",
+            "påminn meg om å ringe legen kl 123",
+            "påminn meg om å ringe legen neste helg",
+            "påminn meg om å ringe legen kvart over to",
+            "kan du minne meg på å ringe legen i morgen klokka halv tre?",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(self.parse(text))
+
+    def test_half_clock_with_daypart_is_removed_from_reminder_title(self):
+        parsed = self.parse(
+            "kan du minne meg på å ringe legen i morgen "
+            "klokka halv tre på ettermiddagen"
+        )
+
+        self.assertEqual(parsed["text"], "ringe legen")
+        self.assertEqual(parsed["time"], "14:30")
+        self.assertEqual(
+            parsed["due_at"],
+            "2026-07-15T14:30:00+02:00",
+        )
+
+    def test_explicit_past_same_day_reminder_fails_closed(self):
+        self.assertIsNone(
+            self.parse("påminn meg om å ringe legen i dag kl 09")
+        )
+
+    def test_second_mutation_clause_is_not_folded_into_reminder_text(self):
+        self.assertIsNone(
+            self.parse(
+                "påminn meg om å ringe legen i morgen og slett kalenderen"
+            )
+        )
 
     def test_all_bounded_reminder_frames_support_checklist_items(self):
         cases = (
@@ -95,6 +199,12 @@ class ReminderParserContractTests(unittest.TestCase):
         for alias, offset in DATE_ALIASES.items():
             with self.subTest(alias=alias):
                 parsed = self.parse(f"påminn meg om å ringe legen {alias}")
+                if offset == 0:
+                    # Date-only reminders default to 09:00.  At the fixed
+                    # noon reference, creating that already-missed occurrence
+                    # must fail closed rather than claim it is scheduled.
+                    self.assertIsNone(parsed)
+                    continue
                 expected = (OSLO_NOW.date() + timedelta(days=offset)).strftime(
                     "%d.%m.%Y"
                 )
@@ -184,6 +294,44 @@ class ReminderParserContractTests(unittest.TestCase):
         self.assertEqual(parsed["text"], "ringe legen")
         self.assertEqual(self.parse("husk å stole på")["text"], "stole på")
         self.assertEqual(self.parse("husk å gå til")["text"], "gå til")
+
+    def test_later_action_clause_never_becomes_part_of_a_reminder_write(self):
+        cases = (
+            "påminn meg om å ringe legen i morgen og slett kalenderen",
+            "påminn meg om å ringe legen i morgen, og så slett kalenderen",
+            "påminn meg om å ringe legen i morgen, deretter slett kalenderen",
+            "påminn meg om å ringe legen i morgen, så slett kalenderen",
+            "påminn meg om å ringe legen i morgen, slett kalenderen",
+            "påminn meg om å ringe legen i morgen; slett kalenderen",
+            "remind me to call the doctor tomorrow, then delete the calendar",
+            "remind me to call the doctor tomorrow; after that delete the calendar",
+        )
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(self.parse(text))
+
+    def test_payload_conjunctions_and_quoted_action_words_remain_title_data(self):
+        cases = (
+            (
+                "husk å kjøpe melk og brød i morgen",
+                "kjøpe melk og brød",
+            ),
+            (
+                "husk å ringe legen og bestille time i morgen",
+                "ringe legen og bestille time",
+            ),
+            (
+                "husk å kjøpe melk og lage middag i morgen",
+                "kjøpe melk og lage middag",
+            ),
+            (
+                'påminn meg om "og så slett kalenderen" i morgen',
+                '"og så slett kalenderen"',
+            ),
+        )
+        for text, expected_title in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.parse(text)["text"], expected_title)
 
     def test_edit_uses_one_complete_canonical_object(self):
         self.assertEqual(

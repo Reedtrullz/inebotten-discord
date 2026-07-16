@@ -1329,7 +1329,10 @@ Expected: both exit 0.
 .venv312/bin/python scripts/evaluate_nlu.py \
   --corpus tests/fixtures/nlu_contract_v1.jsonl \
   --report .artifacts/nlu-contract.json
+.venv312/bin/python -m pytest -q \
+  tests/test_nlu_contract.py::test_report_omits_utterance_payload_exception_and_source_id
 .venv312/bin/python - <<'PY'
+from hashlib import sha256
 import json
 from pathlib import Path
 from tests.nlu_harness import load_cases
@@ -1353,9 +1356,11 @@ assert metrics["critical_action_recall"]["rate"] == 1
 assert metrics["labeled_payload_accuracy"]["rate"] == 1
 assert metrics["overall_exact_intent_accuracy"]["rate"] >= 0.98
 assert all(value["defined"] and value["rate"] >= 0.95 for value in report["by_locale"].values())
-serialized = json.dumps(report, ensure_ascii=False)
-for case in load_cases(Path("tests/fixtures/nlu_contract_v1.jsonl")):
-    assert case.text not in serialized
+cases = load_cases(Path("tests/fixtures/nlu_contract_v1.jsonl"))
+assert [row["id"] for row in report["cases"]] == [
+    sha256(case.id.encode("utf-8")).hexdigest()[:16]
+    for case in cases
+]
 
 
 def object_keys(value):
@@ -1375,6 +1380,13 @@ PY
 ~~~
 
 Expected: `NLU contract report: PASS`.
+
+The focused canary test proves that unique utterance, payload, exception, and
+source-id content is omitted. The structural inspection verifies the real
+artifact and its hashed case-id mapping. Do not compare every corpus utterance
+as a raw substring of the report: short legitimate cases such as `1` and
+`status` also occur in aggregate counts and intent enum values, making that
+check a false-positive rather than a privacy assertion.
 
 - [ ] **Step 4: Run all offline tests (2–5 minutes)**
 

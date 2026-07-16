@@ -47,6 +47,9 @@ class ActionName(str, Enum):
     BIRTHDAY_CREATE = "BIRTHDAY_CREATE"
     BIRTHDAY_LIST = "BIRTHDAY_LIST"
     BIRTHDAY_EDIT = "BIRTHDAY_EDIT"
+    PROFILE_STATUS = "PROFILE_STATUS"
+    PROFILE_PLAYING = "PROFILE_PLAYING"
+    PROFILE_WATCHING = "PROFILE_WATCHING"
     WATCHLIST_ADD = "WATCHLIST_ADD"
     WATCHLIST_LIST = "WATCHLIST_LIST"
     WATCHLIST_SUGGEST = "WATCHLIST_SUGGEST"
@@ -60,6 +63,7 @@ class ActionName(str, Enum):
 
 
 class SlotRule(str, Enum):
+    S100 = "S100"
     S200 = "S200"
     S300 = "S300"
     S500 = "S500"
@@ -86,6 +90,7 @@ class SlotRule(str, Enum):
     DAY = "DAY"
     MONTH = "MONTH"
     BIRTHDAY_SCOPE = "BIRTHDAY_SCOPE"
+    PROFILE_STATUS = "PROFILE_STATUS"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +143,9 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType(
             at_least_one=("date", "days_offset"),
             temporal_family="calendar",
         ),
-        ActionName.CALENDAR_LIST: _spec(),
+        ActionName.CALENDAR_LIST: _spec(
+            optional=(("date", SlotRule.DATE),),
+        ),
         ActionName.CALENDAR_SEARCH: _spec(required=(("query", SlotRule.S500),)),
         ActionName.CALENDAR_COMPLETE: _spec(
             optional=(("target", SlotRule.S200), ("number", SlotRule.POS_INT)),
@@ -172,7 +179,9 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType(
             ),
             temporal_family="reminder",
         ),
-        ActionName.REMINDER_LIST: _spec(),
+        ActionName.REMINDER_LIST: _spec(
+            optional=(("due_date", SlotRule.DATE),),
+        ),
         ActionName.REMINDER_SEARCH: _spec(required=(("query", SlotRule.S500),)),
         ActionName.REMINDER_COMPLETE: _spec(required=(("number", SlotRule.POS_INT),)),
         ActionName.REMINDER_EDIT: _spec(
@@ -238,6 +247,15 @@ ACTION_SPECS: Mapping[ActionName, ActionSpec] = MappingProxyType(
             ),
             optional=(("year", SlotRule.YEAR),),
             context_rule="author_or_resolved_mention",
+        ),
+        ActionName.PROFILE_STATUS: _spec(
+            required=(("value", SlotRule.PROFILE_STATUS),),
+        ),
+        ActionName.PROFILE_PLAYING: _spec(
+            required=(("value", SlotRule.S100),),
+        ),
+        ActionName.PROFILE_WATCHING: _spec(
+            required=(("value", SlotRule.S100),),
         ),
         ActionName.WATCHLIST_ADD: _spec(
             required=(("title", SlotRule.S500),),
@@ -357,6 +375,8 @@ _RECURRENCES = frozenset({"daily", "weekly", "biweekly", "monthly", "yearly"})
 
 
 def _validate_slot(name: str, value: object, rule: SlotRule) -> JsonValue:
+    if rule is SlotRule.S100:
+        return _string(value, 100, f"invalid_slot:{name}")
     if rule is SlotRule.S200:
         return _string(value, 200, f"invalid_slot:{name}")
     if rule is SlotRule.S300:
@@ -447,9 +467,14 @@ def _validate_slot(name: str, value: object, rule: SlotRule) -> JsonValue:
             raise ActionValidationError(f"invalid_slot:{name}")
         return result
     if rule is SlotRule.BIRTHDAY_SCOPE:
-        if value not in {"all", "upcoming"}:
+        if value not in {"all", "upcoming", "self"}:
             raise ActionValidationError(f"invalid_slot:{name}")
         return str(value)
+    if rule is SlotRule.PROFILE_STATUS:
+        result = _string(value, 16, f"invalid_slot:{name}").casefold()
+        if result not in {"online", "offline", "idle", "dnd", "invisible"}:
+            raise ActionValidationError(f"invalid_slot:{name}")
+        return result
     raise AssertionError(f"unhandled slot rule: {rule}")
 
 
@@ -1095,6 +1120,7 @@ def is_valid_standalone_action_line(line: str) -> bool:
 
 
 _ATOM_FORMATS = (
+    "S100=nonblank string, max 100 chars; "
     "S200=nonblank string, max 200 chars; "
     "S300=nonblank string, max 300 chars; "
     "S500=nonblank string, max 500 chars; "
@@ -1120,7 +1146,8 @@ _ATOM_FORMATS = (
     "YEAR=integer 1900..2100; "
     "DAY=integer 1..31; "
     "MONTH=integer 1..12; "
-    "BIRTHDAY_SCOPE=literal all or upcoming"
+    "BIRTHDAY_SCOPE=literal all, upcoming, or self; "
+    "PROFILE_STATUS=literal online, offline, idle, dnd, or invisible"
 )
 
 
@@ -1156,6 +1183,16 @@ ACTION_PROTOCOL_PROMPT = "\n".join(
             '"clarification":null}'
         ),
         "A proposal is not execution and is not user confirmation.",
+        (
+            "Classify clear supported requests by meaning; exact command wording "
+            "is not required."
+        ),
+        "Propose only one current, explicit, supported request.",
+        (
+            "For quoted, negated, hypothetical, cancelled, or multi-action "
+            "writes, use NONE or CLARIFY and never propose a partial write."
+        ),
+        "Never claim that a proposal was executed or confirmed.",
         "confidence must be a finite number from 0 through 1; bool is forbidden.",
         "reply must be a string of at most 2000 characters.",
         (

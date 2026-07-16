@@ -20,7 +20,7 @@ from ai.chat_contract import (
     prepare_history,
     sanitize_chat_turn_content,
 )
-from core.intent_models import BotIntent, IntentResult
+from core.intent_models import BotIntent, IntentResult, IntentSource
 
 
 def test_turn_sanitizer_preserves_newlines_unicode_and_action_line():
@@ -83,7 +83,7 @@ def test_sensitive_history_policy_is_recursive_and_fail_closed():
         history_policy_for_effective_routes(
             (IntentResult(BotIntent.HELP, 1.0),)
         )
-        is HistoryPolicy.FULL
+        is HistoryPolicy.OMIT
     )
     sensitive_choice = IntentResult(
         BotIntent.CLARIFY,
@@ -105,11 +105,58 @@ def test_sensitive_history_policy_is_recursive_and_fail_closed():
     )
 
 
+@pytest.mark.parametrize(
+    "intent",
+    [
+        BotIntent.MEMORY_EXPORT,
+        BotIntent.CALENDAR_LIST,
+        BotIntent.REMINDER_LIST,
+        BotIntent.BIRTHDAY_LIST,
+        BotIntent.HELP,
+    ],
+)
+def test_deterministic_feature_routes_are_omitted_from_provider_history(intent):
+    route = IntentResult(intent, 1.0)
+
+    assert history_policy_for_effective_routes((route,)) is HistoryPolicy.OMIT
+    with capture_history_policy(HistoryPolicy.OMIT):
+        assert history_safe_content("PRIVATE-FEATURE-OUTPUT") is None
+
+
+@pytest.mark.parametrize("intent", [BotIntent.AI_CHAT, BotIntent.SEARCH])
+def test_provider_conversation_routes_keep_ordinary_history(intent):
+    assert (
+        history_policy_for_effective_routes((IntentResult(intent, 1.0),))
+        is HistoryPolicy.FULL
+    )
+
+
+def test_only_semantic_clarification_keeps_provider_continuity():
+    semantic = IntentResult(
+        BotIntent.CLARIFY,
+        1.0,
+        {"clarification": "Hvilken dag?"},
+        source=IntentSource.SEMANTIC,
+    )
+    deterministic = IntentResult(
+        BotIntent.CLARIFY,
+        1.0,
+        {"clarification": "Velg ett alternativ."},
+        source=IntentSource.DETERMINISTIC,
+    )
+
+    assert history_policy_for_effective_routes((semantic,)) is HistoryPolicy.FULL
+    assert (
+        history_policy_for_effective_routes((deterministic,))
+        is HistoryPolicy.OMIT
+    )
+
+
 def test_history_policy_context_is_task_local_and_restored():
-    assert history_safe_content("hei") == "hei"
+    assert history_safe_content("hei") is None
     with capture_history_policy(HistoryPolicy.REDACT_AUTH):
         assert history_safe_content("hemmelig") == REDACTED_AUTH_TURN
-    assert history_safe_content("hei igjen") == "hei igjen"
+    assert history_safe_content("hei igjen") is None
 
 
 @pytest.mark.asyncio
@@ -126,7 +173,7 @@ async def test_concurrent_history_policies_never_cross_tasks():
 
     assert redacted == REDACTED_AUTH_TURN
     assert ordinary == "vanlig"
-    assert history_safe_content("etterpå") == "etterpå"
+    assert history_safe_content("etterpå") is None
 
 
 def test_blocked_credential_reason_redacts_without_retaining_secret():

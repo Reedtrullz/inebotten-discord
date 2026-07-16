@@ -8,20 +8,37 @@ Den versjonerte NLU-kontrakten kjører de samme parserinngangene som produksjon,
 men bruker bare avgrenset tilstand i minnet. Den konstruerer ikke Discord,
 filbaserte managere eller utfører nettverks-I/O.
 
-Kjør dagens baseline uten å blokkere på planlagte gjenkjenningsgap:
+Kjør den samme strenge produksjonsporten som CI:
 
 ```bash
 .venv312/bin/python scripts/evaluate_nlu.py \
   --corpus tests/fixtures/nlu_contract_v1.jsonl \
-  --report .artifacts/nlu-contract.json \
-  --report-only
+  --report .artifacts/nlu-contract.json
 ```
 
-Utelat `--report-only` når kontrakten skal brukes som en streng akseptanseport.
 Rapporten har et stabilt, personvernsikkert skjema med toppnivåfeltene
 `schema_version`, `totals`, `metrics`, `by_locale`, `by_family`,
 `parser_errors_by_name` og `cases`. Saks-ID-er hashes, og rapporten inneholder
-aldri ytringstekst, payload-verdier eller unntakstekst.
+bare hashede ID-er og aggregerte enum-/tellingsverdier, aldri ytringstekst,
+payload-verdier, identiteter, URL-er eller unntakstekst.
+
+Den strenge porten krever minst 50 saker, minst 10 negative
+mutasjonssaker, minst tre saker per språk og minst én grønn sak i hver av de
+37 deklarerte funksjonsfamiliene. Total nøyaktighet må være minst 98 prosent,
+hvert språk og hver familie minst 95 prosent, mens payload-nøyaktighet,
+kritisk handlingsgjenkalling og destruktiv presisjon må være 100 prosent.
+Parserfeil, negative mutasjonsfeil og treff på forbudte intents må være null.
+CI kjører porten etter ikke-nettlesertestene, laster alltid opp rapporten, og
+installerer først deretter Playwright før nettlesertestene.
+
+`--report-only` er bare for en eksplisitt diagnostisk baseline; den skriver den
+samme rapporten og samme would-pass/would-fail-beslutning, men returnerer alltid
+exit 0.
+
+## Valgfri modell-kvalitetssjekk
+
+`natural_chat_test.py` bruker en aktiv modell og vurderer samtalestil. Den er en
+valgfri, ikke-deterministisk kvalitetssjekk og erstatter ikke NLU-porten over.
 
 ## Hva dette gjør
 

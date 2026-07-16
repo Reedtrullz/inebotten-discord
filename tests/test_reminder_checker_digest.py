@@ -520,6 +520,7 @@ async def test_digest_storage_failure_keeps_process_local_suppression(
         "state": "sent",
         "at": MORNING.timestamp(),
     }
+    assert checker._sent_log_dirty is True
     assert checker.get_health()["last_error_code"] == "storage_error"
 
 

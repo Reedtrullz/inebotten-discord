@@ -76,7 +76,7 @@ async def _collect_surfaces(monkeypatch, monitor):
     monkeypatch.setattr(
         state_collector,
         "_collect_persistence_health",
-        lambda: {"status": "ok"},
+        lambda *_args, **_kwargs: {"status": "ok"},
     )
     monkeypatch.setattr(
         state_collector,
@@ -96,19 +96,19 @@ async def _collect_surfaces(monkeypatch, monitor):
     monkeypatch.setattr(
         state_collector,
         "collect_rate_limits",
-        lambda _monitor: {},
+        lambda _monitor, **_kwargs: {},
     )
     monkeypatch.setattr(
         state_collector,
         "collect_intent_stats",
-        lambda _monitor: {},
+        lambda _monitor, **_kwargs: {},
     )
     monkeypatch.setattr(
         state_collector,
         "collect_memory_stats",
         lambda _monitor: {},
     )
-    monkeypatch.setattr(state_collector, "collect_logs", lambda: {})
+    monkeypatch.setattr(state_collector, "collect_logs", lambda **_kwargs: {})
 
     return (
         state_collector.collect_bot_status(monitor),
@@ -162,14 +162,18 @@ async def test_all_public_surfaces_expose_only_allowlisted_reminder_health(
         SimpleNamespace(get_health=None),
     ],
 )
-async def test_all_public_surfaces_omit_missing_reminder_health_capability(
+async def test_health_marks_missing_reminder_runtime_degraded_without_guessing_liveness(
     monkeypatch,
     checker,
 ):
-    surfaces = await _collect_surfaces(monkeypatch, _monitor(checker))
+    bot, health, collected = await _collect_surfaces(
+        monkeypatch, _monitor(checker)
+    )
 
-    for surface in surfaces:
-        assert "reminder_runtime" not in surface
+    assert "reminder_runtime" not in bot
+    assert "reminder_runtime" not in collected
+    assert health["reminder_runtime"] == SAFE_DEGRADED_RUNTIME
+    assert health["status"] == "degraded"
 
 
 @pytest.mark.asyncio

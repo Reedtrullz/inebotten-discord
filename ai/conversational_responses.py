@@ -104,7 +104,10 @@ class ConversationalResponseGenerator:
         
         # Subtle hint about capabilities
         if not events and not reminders:
-            lines.append(f"\n💡 Vil du legge til noe? Prøv: \"@inebotten møte i morgen kl 10\"")
+            lines.append(
+                "\n💡 Vil du legge til noe? Si for eksempel: "
+                "«Kan du legge inn et møte i morgen klokka 10?»"
+            )
         
         return "\n".join(lines)
     
@@ -123,7 +126,10 @@ class ConversationalResponseGenerator:
     def format_event_list(self, events):
         """Friendly event list"""
         if not events:
-            return "Ingen arrangementer på kalenderen akkurat nå. 📭\n\nVil du legge til noe? Bare si \"@inebotten [hva som skjer] [når]\"!"
+            return (
+                "Ingen arrangementer på kalenderen akkurat nå. 📭\n\n"
+                "Fortell hva som skal skje og når, så prøver jeg å legge det inn."
+            )
         
         lines = ["Her er hva som kommer opp: 📅", ""]
         
@@ -131,7 +137,9 @@ class ConversationalResponseGenerator:
             time_str = f" kl {event['time']}" if event.get('time') else ""
             lines.append(f"{i}. **{event['title']}** - {event['date']}{time_str}")
         
-        lines.append(f"\n💡 Vil du slette noe? Si \"slett arrangement [nummer]\"")
+        lines.append(
+            "\n💡 Vil du endre eller slette noe? Fortell hvilken oppføring du mener."
+        )
         
         return "\n".join(lines)
     
@@ -146,7 +154,9 @@ class ConversationalResponseGenerator:
             status = "✅" if reminder.get('completed') else "⬜"
             lines.append(f"{status} {i}. {reminder['text']}")
         
-        lines.append(f"\n💡 Si \"ferdig [nummer]\" for å kryssse av!")
+        lines.append(
+            "\n💡 Fortell hvilken påminnelse du har gjort ferdig, så krysser jeg den av."
+        )
         
         return "\n".join(lines)
     
@@ -174,7 +184,10 @@ class ConversationalResponseGenerator:
     def format_birthday_list(self, birthdays):
         """Friendly birthday list"""
         if not birthdays:
-            return "Ingen bursdager registrert ennå. 🎂\n\nLegg til din med: \"@inebotten bursdag DD.MM\""
+            return (
+                "Ingen bursdager registrert ennå. 🎂\n\n"
+                "Du kan for eksempel si: «Bursdagen min er 15.05.»"
+            )
         
         lines = ["Bursdager å feire: 🎉", ""]
         
@@ -235,8 +248,14 @@ class ConversationalResponseGenerator:
     def format_error(self, message="Jeg skjønte ikke helt..."):
         """Friendly error message"""
         responses = [
-            f"{message} 🤔\n\nPrøv noe som:\n• \"@inebotten kamp i kveld kl 20\"\n• \"@inebotten påminnelse ringe mamma\"\n\nSi \"@inebotten kalender hjelp\" for full oversikt!",
-            f"{message} 😅\n\nDu kan si for eksempel:\n• \"@inebotten møte i morgen kl 10\"\n• \"@inebotten bursdag 15.05\"\n\nPrøv \"@inebotten kalender hjelp\" hvis du er usikker!",
+            (
+                f"{message} 🤔\n\nBeskriv gjerne målet med egne ord. "
+                "Du kan også spørre: «Hva kan du hjelpe meg med?»"
+            ),
+            (
+                f"{message} 😅\n\nPrøv å si både hva du vil gjøre og "
+                "hvilken dato, tid eller oppføring du mener."
+            ),
         ]
         return random.choice(responses)
 
@@ -250,20 +269,19 @@ class ConversationalResponseGenerator:
             "Du kan styre kalenderen ved å snakke naturlig til meg. Her er noen eksempler:",
             "",
             "**Legge til:**",
-            "• \"@inebotten møte med Ola i morgen kl 14\"",
-            "• \"@inebotten bursdag til Lise 15. mai\"",
-            "• \"@inebotten husk \"Viktig prosjekt\" på mandag kl 09:00\" (Bruk hermetegn for nøyaktig tittel!)",
-            "• \"@inebotten lønningspils hver siste fredag i måneden\"",
+            "• «Kan du legge inn et møte med Ola i morgen klokka 14?»",
+            "• «Kan du legge til bursdagen min 15. mai?»",
+            "• «Kan du minne meg på \"Viktig prosjekt\" mandag klokka 09?»",
             "",
             "**Se og slette:**",
-            "• \"@inebotten hva skjer denne uka?\" eller bare \"@inebotten kalender\"",
-            "• \"@inebotten slett arrangement 1\"",
-            "• \"@inebotten tøm kalenderen min\" (Sletter alt, både lokalt og i Google Calendar)",
+            "• «Kan du vise kalenderen min?»",
+            "• «Kan du slette møtet med Ola?»",
+            "• «Kan du tømme kalenderen min?» (krever bekreftelse)",
             "",
             "**Huskeliste:**",
-            "• \"@inebotten påminnelse om å kjøpe melk\"",
-            "• \"@inebotten hva har jeg på huskelista?\"",
-            "• \"@inebotten ferdig med oppgave 1\"",
+            "• «Kan du minne meg på å kjøpe melk i morgen?»",
+            "• «Kan du vise påminnelsene mine?»",
+            "• «Kan du markere påminnelse 1 som ferdig?»",
             "",
             "💡 **Tips:** Hvis du vil ha en helt spesifikk tittel, sett den i hermetegn som dette: \"Tittel\". Da skjønner jeg nøyaktig hva du mener!",
             f"\n{self.personality.get_signoff()}"

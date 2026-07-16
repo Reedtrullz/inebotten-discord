@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -791,6 +792,126 @@ async def test_storage_failure_keeps_terminal_memory_and_original_delivery_truth
     captured = capsys.readouterr()
     assert "SECRET_STORAGE_PATH" not in captured.out
     assert "SECRET_STORAGE_PATH" not in captured.err
+
+
+@pytest.mark.asyncio
+async def test_cycle_retries_terminal_ack_and_stays_degraded_until_durable(
+    tmp_path,
+    monkeypatch,
+):
+    coordinator = MutationCoordinator()
+    calendar = _calendar_manager(tmp_path, coordinator)
+    checker, send = _checker(tmp_path, coordinator, calendar=calendar)
+    real_write = checker_module.write_json_atomic
+    attempts = 0
+
+    def fail_twice_then_write(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise OSError("private storage detail")
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(
+        checker_module,
+        "write_json_atomic",
+        fail_twice_then_write,
+    )
+
+    await checker.check_once(reference_time=NOW)
+    first = checker.get_health()
+    assert first["status"] == "degraded"
+    assert first["last_error_code"] == "storage_error"
+    assert checker._sent_log_dirty is True
+    assert not checker.storage_path.exists()
+
+    await checker.check_once(reference_time=NOW + timedelta(minutes=1))
+    second = checker.get_health()
+    assert second["status"] == "degraded"
+    assert second["last_error_code"] == "storage_error"
+    assert checker._sent_log_dirty is True
+    assert not checker.storage_path.exists()
+
+    await checker.check_once(reference_time=NOW + timedelta(minutes=2))
+    recovered = checker.get_health()
+    assert recovered["status"] == "ok"
+    assert recovered["last_error_code"] is None
+    assert checker._sent_log_dirty is False
+    assert checker.storage_path.exists()
+    assert send.await_count == 1
+    persisted = json.loads(checker.storage_path.read_text(encoding="utf-8"))
+    assert persisted == checker.sent_log
+
+
+@pytest.mark.asyncio
+async def test_cancelled_retry_holds_scope_until_old_snapshot_finishes(
+    tmp_path,
+    monkeypatch,
+):
+    coordinator = MutationCoordinator()
+    checker, _ = _checker(tmp_path, coordinator)
+    old_key = "calendar:old:2026-07-15T12:00:00+02:00:due"
+    new_key = "calendar:new:2026-07-15T12:00:00+02:00:due"
+    checker.sent_log = {
+        "reminders_sent": {
+            old_key: {"state": "sent", "at": NOW.timestamp()}
+        },
+        "digest_log": {},
+    }
+    checker._sent_log_dirty = True
+    entered = threading.Event()
+    release = threading.Event()
+    real_write = checker_module.write_json_atomic
+    write_count = 0
+
+    def block_first_write(*args, **kwargs):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 1:
+            entered.set()
+            if not release.wait(timeout=2):
+                raise TimeoutError("test write release timeout")
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(
+        checker_module,
+        "write_json_atomic",
+        block_first_write,
+    )
+
+    retry = asyncio.create_task(
+        checker._retry_dirty_sent_log(reference_time=NOW)
+    )
+    for _ in range(1_000):
+        if entered.is_set():
+            break
+        await asyncio.sleep(0)
+    assert entered.is_set()
+
+    retry.cancel()
+    await asyncio.sleep(0)
+    assert retry.done() is False
+    newer = asyncio.create_task(
+        checker._settle_occurrence(
+            new_key,
+            "due",
+            MessageSendResult(DeliveryState.DELIVERED),
+            reference_time=NOW,
+        )
+    )
+    await asyncio.sleep(0)
+    assert newer.done() is False
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await retry
+    await newer
+
+    persisted = json.loads(checker.storage_path.read_text(encoding="utf-8"))
+    assert persisted == checker.sent_log
+    assert set(persisted["reminders_sent"]) == {old_key, new_key}
+    assert checker._sent_log_dirty is False
+    assert write_count == 2
 
 
 @pytest.mark.asyncio

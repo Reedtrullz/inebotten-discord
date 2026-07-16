@@ -30,6 +30,18 @@ from features.watchlist_manager import WatchlistManager, parse_watchlist_command
 
 
 class WatchlistParserContractTests(unittest.TestCase):
+    def test_owned_watchlist_questions_parse_as_status(self):
+        for text in (
+            "what’s on my watchlist?",
+            "show me my watchlist",
+            "which movies are on my watchlist?",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    parse_watchlist_command(text),
+                    {"action": "status", "lang": "en"},
+                )
+
     def test_add_requires_a_bounded_watchlist_frame_and_preserves_case(self):
         cases = (
             ("husk å se Inception", "Inception"),
@@ -37,6 +49,10 @@ class WatchlistParserContractTests(unittest.TestCase):
             ("remember to watch The Bear", "The Bear"),
             ("legg til film Inception", "Inception"),
             ("add The Bear to watchlist", "The Bear"),
+            ("Kan du legge Inception til watchlisten min?", "Inception"),
+            ("Kan du legge til Inception på watchlisten min?", "Inception"),
+            ("Kan du huske at jeg vil se Inception?", "Inception"),
+            ("Kan du huske at jeg skal se Inception?", "Inception"),
         )
         for text, title in cases:
             with self.subTest(text=text):
@@ -56,6 +72,8 @@ class WatchlistParserContractTests(unittest.TestCase):
             "endre i watchlist",
             "add movie Inception",
             "legg til show The Bear",
+            "Kan du huske at jeg vil se hvordan dette virker?",
+            "Kan du huske at jeg skal se legen i morgen?",
         ):
             with self.subTest(text=text):
                 self.assertIsNone(parse_watchlist_command(text))

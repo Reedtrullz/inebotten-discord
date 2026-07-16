@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 from cal_system.temporal_resolver import TemporalResolver
-from ai.chat_contract import ChatTurn
+from ai.chat_contract import (
+    REDACTED_AUTH_TURN,
+    ChatTurn,
+    HistoryPolicy,
+    capture_history_policy,
+)
 from core.dispatch_result import (
     DeliveryState,
     DispatchOutcome,
@@ -116,6 +121,37 @@ class FakeConversation:
         self.threads.setdefault(key, []).append(turn)
         self.messages.append({"key": key, "turn": turn})
 
+    def stage_source_turn(self, key, turn):
+        self.add_turn(key, turn)
+        return True
+
+    def reclassify_source_turn(self, key, source_message_id, policy):
+        matched = False
+        updated = []
+        for turn in self.threads.get(key, ()):
+            if not (
+                isinstance(turn, ChatTurn)
+                and turn.role == "user"
+                and turn.source_message_id == source_message_id
+            ):
+                updated.append(turn)
+                continue
+            matched = True
+            if policy is HistoryPolicy.OMIT:
+                continue
+            if policy is HistoryPolicy.REDACT_AUTH:
+                turn = ChatTurn(
+                    "user",
+                    REDACTED_AUTH_TURN,
+                    source_message_id,
+                )
+            updated.append(turn)
+        if updated:
+            self.threads[key] = updated
+        else:
+            self.threads.pop(key, None)
+        return matched
+
     def get_prompt_history(
         self,
         key,
@@ -216,6 +252,7 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         monitor._task_health = {}
         monitor._last_persisted_intent_stats = {}
         monitor._last_persisted_rate_stats = {}
+        monitor._provider_history_quarantined = False
         monitor.rate_limiter = FakeRateLimiter()
         monitor.mutation_coordinator = MutationCoordinator()
         monitor.discord_sender = DiscordSendCoordinator(monitor.rate_limiter)
@@ -520,28 +557,31 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         own_offer.guild = SimpleNamespace(id=999)
         own_offer.channel = SimpleNamespace(id=100)
         own_offer.author = SimpleNamespace(id=7, name="Current user")
-        await monitor._send_response(
-            own_offer,
-            "Skal jeg legge inn en påminnelse om å kjøpe melk?",
-        )
+        with capture_history_policy(HistoryPolicy.FULL):
+            await monitor._send_response(
+                own_offer,
+                "Skal jeg legge inn en påminnelse om å kjøpe melk?",
+            )
 
         other_channel_offer = RecordingMessage("ignored")
         other_channel_offer.guild = SimpleNamespace(id=999)
         other_channel_offer.channel = SimpleNamespace(id=200)
         other_channel_offer.author = SimpleNamespace(id=7, name="Current user")
-        await monitor._send_response(
-            other_channel_offer,
-            "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
-        )
+        with capture_history_policy(HistoryPolicy.FULL):
+            await monitor._send_response(
+                other_channel_offer,
+                "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
+            )
 
         other_user_offer = RecordingMessage("ignored")
         other_user_offer.guild = SimpleNamespace(id=999)
         other_user_offer.channel = SimpleNamespace(id=100)
         other_user_offer.author = SimpleNamespace(id=8, name="Other user")
-        await monitor._send_response(
-            other_user_offer,
-            "Skal jeg legge inn en påminnelse om å sende lønnsslippen?",
-        )
+        with capture_history_policy(HistoryPolicy.FULL):
+            await monitor._send_response(
+                other_user_offer,
+                "Skal jeg legge inn en påminnelse om å sende lønnsslippen?",
+            )
 
         followup = RecordingMessage("@inebotten minn meg på det i morgen")
         followup.guild = SimpleNamespace(id=999)
@@ -579,19 +619,21 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         own_offer.guild = None
         own_offer.channel = SimpleNamespace(id=300)
         own_offer.author = SimpleNamespace(id=7, name="Current user")
-        await monitor._send_response(
-            own_offer,
-            "Skal jeg legge inn en påminnelse om å kjøpe melk?",
-        )
+        with capture_history_policy(HistoryPolicy.FULL):
+            await monitor._send_response(
+                own_offer,
+                "Skal jeg legge inn en påminnelse om å kjøpe melk?",
+            )
 
         other_dm_offer = RecordingMessage("ignored")
         other_dm_offer.guild = None
         other_dm_offer.channel = SimpleNamespace(id=301)
         other_dm_offer.author = SimpleNamespace(id=7, name="Current user")
-        await monitor._send_response(
-            other_dm_offer,
-            "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
-        )
+        with capture_history_policy(HistoryPolicy.FULL):
+            await monitor._send_response(
+                other_dm_offer,
+                "Skal jeg legge inn en påminnelse om å dele helsejournalen?",
+            )
 
         followup = RecordingMessage("@inebotten minn meg på det i morgen")
         followup.guild = None
@@ -1207,6 +1249,8 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         monitor.calendar = Calendar()
         monitor.user_memory = UserMemory()
+        monitor.nlu_metrics = NLUMetrics()
+        monitor.console_store = SimpleNamespace(load_nlu_stats=lambda: {})
         monitor.reminder_clock = SimpleNamespace(now=Mock(return_value=NOW))
         monitor._track_background_task = track
         monitor._console_persistence_loop = console_loop
@@ -1263,7 +1307,11 @@ class MessageMonitorRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         message = RecordingMessage("@inebotten hei")
 
-        result = await monitor._send_response_result(message, "Hei tilbake")
+        with capture_history_policy(HistoryPolicy.FULL):
+            result = await monitor._send_response_result(
+                message,
+                "Hei tilbake",
+            )
 
         self.assertIs(result.state, DeliveryState.DELIVERED)
         self.assertEqual(message.replies, ["Hei tilbake"])

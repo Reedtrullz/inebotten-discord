@@ -5,6 +5,8 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from core.help_registry import HelpCategory, HelpExample, catalog_sections
+
 
 _TEMPLATE_DIR = Path(__file__).with_name("templates")
 _BASE_TEMPLATE = (_TEMPLATE_DIR / "base.html").read_text(encoding="utf-8")
@@ -758,230 +760,33 @@ def render_gcal_auth_page(
     )
 
 
+def _render_cmd_section(
+    category: HelpCategory,
+    examples: tuple[HelpExample, ...],
+) -> str:
+    rows = "\n".join(
+        "<tr><td><code>"
+        f"{escape('@inebotten ' + example.display_phrase)}"
+        "</code></td></tr>"
+        for example in examples
+    )
+    return (
+        '<section class="card scroll-mt-24">'
+        f"<h2>{escape(category.title_no)}</h2>"
+        f'<p class="muted">{escape(category.description_no)}</p>'
+        "<table><thead><tr><th>Eksempel på formulering</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></section>"
+    )
+
+
 def render_commands_page() -> str:
-    sections = [
-        (
-            "💬 Samtale & AI",
-            "Naturlige samtaler og AI-assisterte svar.",
-            [
-                ("@inebotten Hei! Hvordan går det?", "Generell AI-samtale"),
-                ("@inebotten Hva synes du om RBK?", "AI-chat med kontekst"),
-                ("@inebotten Fortell en vits", "Be om kreativt innhold"),
-                ("@inebotten Hva er meningen med livet?", "Filosofiske spørsmål"),
-            ],
-        ),
-        (
-            "📅 Kalender",
-            "Opprett, administrer og synkroniser hendelser.",
-            [
-                ("@inebotten møte med Ola i morgen kl 14", "Opprett hendelse med naturlig språk"),
-                ("@inebotten lunsj hver fredag kl 12", "Opprett gjentagende hendelse"),
-                ("@inebotten bursdag til mamma 15.05 hvert år", "Årlig gjentagelse"),
-                ("@inebotten kalender", "Vis alle kommende hendelser (90 dager)"),
-                ("@inebotten søk kalender møte", "Søk etter hendelser"),
-                ("@inebotten endre 1 tittel: Ny tittel dato: 15.05 kl 14", "Rediger hendelse"),
-                ("@inebotten slett 2", "Slett hendelse etter nummer"),
-                ("@inebotten slett spaghetti", "Slett etter delvis tittel"),
-                ("@inebotten slett alle spaghetti", "Slett alle treff"),
-                ("@inebotten slett alt", "Slett alt (krever bekreftelse)"),
-                ("@inebotten ferdig 2", "Marker som fullført"),
-                ("@inebotten ferdig meldekort", "Fullfør etter tittel"),
-                ("@inebotten synk", "Synkroniser med Google Calendar"),
-                ("@inebotten kalender auth", "Start Google Calendar-innlogging"),
-                ("@inebotten kalender kode <kode>", "Fullfør Google Calendar-innlogging"),
-            ],
-        ),
-        (
-            "🔔 Påminnelser",
-            "Opprett og administrer påminnelser.",
-            [
-                ("@inebotten påminnelse Ring lege om 2 timer", "Opprett påminnelse"),
-                ("@inebotten påminnelser", "Vis aktive påminnelser"),
-                ("@inebotten ferdig påminnelse 1", "Fullfør påminnelse"),
-                ("@inebotten endre påminnelse 1 dato: 20.06", "Rediger påminnelse"),
-                ("@inebotten slett påminnelse 1", "Slett påminnelse"),
-                ("@inebotten søk påminnelse lege", "Søk etter påminnelse"),
-            ],
-        ),
-        (
-            "📊 Avstemninger",
-            "Opprett, stem og administrer avstemninger.",
-            [
-                ("@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab", "Opprett avstemning"),
-                ("@inebotten stem 1", "Stem når én avstemning er aktiv"),
-                ("@inebotten polls", "Vis aktive avstemninger"),
-                ("@inebotten endre poll 1", "Rediger avstemning"),
-                ("@inebotten slett poll 1", "Slett avstemning"),
-                ("@inebotten lukk poll 1", "Lukk avstemning"),
-            ],
-        ),
-        (
-            "💬 Sitater",
-            "Inspirerende sitater og administrasjon.",
-            [
-                ("@inebotten sitat", "Tilfeldig sitat"),
-                ("@inebotten sitater", "Vis alle sitater"),
-                ("@inebotten endre sitat 1 tekst: Ny tekst forfatter: Ola", "Rediger sitat"),
-                ("@inebotten slett sitat 1", "Slett sitat"),
-            ],
-        ),
-        (
-            "📺 Watchlist",
-            "Hold styr på filmer og serier dere vil se.",
-            [
-                ("@inebotten watchlist", "Vis watchlist"),
-                ("@inebotten legg til Inception", "Legg til film eller serie"),
-                ("@inebotten hva skal vi se?", "Få et forslag"),
-                ("@inebotten endre watchlist 1 The Matrix", "Endre tittel"),
-                ("@inebotten fjern watchlist 1", "Fjern fra watchlist"),
-            ],
-        ),
-        (
-            "🎂 Bursdager",
-            "Husk bursdager med automatisk daglig oppsummering.",
-            [
-                ("@inebotten bursdag Ola 15.05", "Legg til bursdag"),
-                ("@inebotten endre bursdag Ola 20.05", "Endre bursdag"),
-                ("@inebotten bursdager", "Vis alle bursdager"),
-            ],
-        ),
-        (
-            "🌦️ Vær",
-            "Værmeldinger og lokasjonslagring.",
-            [
-                ("@inebotten vær", "Værmelding for din lokasjon"),
-                ("@inebotten været i Trondheim", "Vær for spesifikt sted"),
-                ("@inebotten Jeg bor i Trondheim", "Lagre faste lokasjon"),
-            ],
-        ),
-        (
-            "💰 Krypto & Priser",
-            "Sjekk kryptovaluta-priser.",
-            [
-                ("@inebotten pris BTC", "Sjekk kryptopris"),
-                ("@inebotten pris ETH", "Støttede symboler: BTC, ETH, SOL, ADA, XRP, DOGE, m.fl."),
-            ],
-        ),
-        (
-            "🧮 Kalkulator",
-            "Utfør matematiske beregninger.",
-            [
-                ("@inebotten kalk (100 * 1.25) / 2", "Regn ut uttrykk"),
-            ],
-        ),
-        (
-            "🔗 URL-forkorter",
-            "Forkort lenker.",
-            [
-                ("@inebotten shorten https://example.com", "Forkort URL"),
-            ],
-        ),
-        (
-            "🔮 Horoskop",
-            "Daglig horoskop.",
-            [
-                ("@inebotten horoskop væren", "Daglig horoskop"),
-            ],
-        ),
-        (
-            "💕 Komplimenter",
-            "Send et kompliment.",
-            [
-                ("@inebotten kompliment", "Tilfeldig kompliment"),
-            ],
-        ),
-        (
-            "🌌 Nordlys",
-            "Nordlysvarsel for ditt område.",
-            [
-                ("@inebotten nordlys", "Sjekk nordlysutsikter"),
-            ],
-        ),
-        (
-            "📖 Dagens ord",
-            "Lær et nytt norsk ord.",
-            [
-                ("@inebotten dagens ord", "Norsk ord med definisjon"),
-            ],
-        ),
-        (
-            "📰 Daglig oppsummering",
-            "Omfattende morgenbrief.",
-            [
-                ("@inebotten daglig oppsummering", "Vær, marked, kalender og bursdager"),
-            ],
-        ),
-        (
-            "⏱️ Nedtelling",
-            "Nedtelling til hendelser.",
-            [
-                ("@inebotten nedtelling til 17. mai", "Nedtelling til dato"),
-                ("@inebotten nedtelling til julaften", "Nedtelling til høytid"),
-            ],
-        ),
-        (
-            "🔍 Søk & Nettleser",
-            "Søk på nettet og les artikler.",
-            [
-                ("@inebotten søk [spørring]", "Søk på nettet"),
-                ("@inebotten les [URL]", "Hent artikkelinnhold"),
-            ],
-        ),
-        (
-            "👤 Profil",
-            "Endre din Discord-status og aktivitet.",
-            [
-                ("@inebotten status", "Vis bot-helse"),
-                ("@inebotten status dnd", "online, idle, dnd, invisible"),
-                ("@inebotten spiller CS2", "Endre aktivitet"),
-                ("@inebotten ser på Netflix", "Endre aktivitet"),
-            ],
-        ),
-        (
-            "🔐 Minne",
-            "Se, eksporter eller slett brukerminnet ditt.",
-            [
-                ("@inebotten vis minnet mitt", "Vis lagret brukerminne"),
-                ("@inebotten eksporter minnet mitt", "Eksporter som JSON"),
-                ("@inebotten slett minnet mitt bekreft", "Slett brukerminnet"),
-            ],
-        ),
-        (
-            "🩺 Drift",
-            "Bot-drift og diagnostikk.",
-            [
-                ("@inebotten bot status", "Uptime, AI-status, handlers, rate-limit"),
-                ("@inebotten health", "Kort helsesjekk"),
-            ],
-        ),
-        (
-            "❓ Hjelp",
-            "Få hjelp med botten.",
-            [
-                ("@inebotten hjelp", "Vis hjelpemelding"),
-                ("@inebotten hva kan du gjøre", "Funksjonsoversikt"),
-            ],
-        ),
-    ]
-
-    def _render_cmd_section(title: str, description: str, commands: list[tuple[str, str]]) -> str:
-        rows = "\n".join(
-            f"<tr><td><code>{escape(cmd)}</code></td><td>{escape(desc)}</td></tr>"
-            for cmd, desc in commands
-        )
-        return f"""<section class="card scroll-mt-24">
-  <h2>{escape(title)}</h2>
-  <p class="muted">{escape(description)}</p>
-  <table>
-    <thead><tr><th>Kommando</th><th>Beskrivelse</th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
-</section>"""
-
-    main_content = "\n".join(_render_cmd_section(t, d, c) for t, d, c in sections)
+    main_content = "\n".join(
+        _render_cmd_section(category, examples)
+        for category, examples in catalog_sections("nb")
+    )
 
     return _BASE_TEMPLATE.format(
-        title="Inebotten - Kommandoer",
+        title="Inebotten - Eksempler",
         header_content="",
         main_content=main_content,
         footer_content="Inebotten &middot; Norsk Discord-selfbot",

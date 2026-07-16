@@ -35,19 +35,17 @@ Discord-melding
   -> renset Discord-svar
 ```
 
-Handlinger fra AI blir validert lokalt og gjort om til bekreftbare drafts. OpenRouter får derfor ikke skrive direkte til kalenderlagring.
+Handlinger fra AI blir validert lokalt og gjort om til typede kandidater. OpenRouter har ingen executor-, manager- eller lagringstilgang og kan derfor ikke skrive direkte.
 
 **Supported action formats:**
 
-```python
-# JSON-format (anbefalt)
-{"action": "SAVE_EVENT", "title": "Møte med Ola", "date": "01.05.2025", "time": "14:00"}
-{"action": "SHOW_DASHBOARD"}
-
-# Eldre tag-format (bakoverkompatibelt)
-[SAVE_EVENT: Møte med Ola | 01.05.2025 | 14:00]
-[SHOW_DASHBOARD]
+```json
+{"action":"CALENDAR_CREATE","confidence":0.96,"slots":{"title":"Møte med Ola","date":"17.07.2026","time":"14:00"},"reply":"","clarification":null}
 ```
+
+Forslaget må være null eller én frittstående kompakt JSON-linje. Toppnivåfeltene er nøyaktig `action`, `confidence`, `slots`, `reply` og `clarification`; actions og slots kommer fra en lukket allowlist. Ekstra felt, duplikatnøkler, kodeblokker, prosa rundt JSON eller ukjente actions er inert/avvist.
+
+`SAVE_EVENT`-JSON og eldre `[SAVE_EVENT: ...]`/`[SHOW_DASHBOARD]` støttes bare som `legacy compatibility` i én overgangsutgivelse. De konverteres til gjeldende skjema og får ingen snarvei rundt validering, risikoklassifisering eller bekreftelse.
 
 **Routing context:**
 
@@ -59,7 +57,14 @@ Systemet har analysert meldingen og bestemt at brukeren vil: brukeren vil bare c
 Hvis dette stemmer, fortsett med handlingen. Hvis ikke, svar naturlig.
 ```
 
-Dette hjelper AI-modellen å forstå hvorfor den ble kalt og unngår å gjette feil.
+Dette hjelper AI-modellen å forstå hvorfor den ble kalt og unngår å gjette feil. Et gyldig semantisk forslag går likevel tilbake til den samme lokale arbiteren som deterministiske kandidater. Destruktive handlinger og alle modellforeslåtte skriveruter går til en kanal- og brukeravgrenset bekreftelse.
+
+## Personvern og samtalehistorikk
+
+- Providerkontekst får bare en allowlist-projeksjon av brukerminnet: lokasjon, interesser, siste temaer og ufarlige stilpreferanser. Discord-ID og vilkårlige lagrede felt sendes ikke.
+- AI-chat, eksplisitt søk og en enkel semantisk presisering kan bruke avgrenset historikk. Det siste gjør at et kort svar på modellens presisering beholder turkonteksten. Deterministiske presiseringer og lokale/private funksjonsruter utelates; autentiseringsflyter får redigert historikk.
+- Hvis en AI-chat-fallback ender i en lokal semantisk handling, reklassifiseres den aktuelle turen til den endelige rutens historikkpolicy før senere providerkall.
+- Kontekst tilpasses strukturelt; vilkårlig nested JSON kuttes ikke midt i et felt.
 
 ## Miljøvariabler
 
@@ -77,8 +82,13 @@ OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```bash
 .venv312/bin/python -m pytest tests/test_intent_router.py -q
 .venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q
-.venv312/bin/python -m pytest -q
+.venv312/bin/python -m pytest tests/test_chat_contract.py tests/test_context_integration.py -q
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json
 ```
+
+Disse testene bruker ikke OpenRouter-nettverket. Et live-provider-smoke med ekte nøkkel er et separat, manuelt bevis og er ikke implisitt bestått av testpakken.
 
 Manuell test:
 

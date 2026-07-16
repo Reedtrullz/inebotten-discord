@@ -21,6 +21,11 @@ QUOTE_EDIT_FIELD = re.compile(
     r"(?<!\w)(?P<label>tekst|text|forfatter|author)\s*:\s*",
     flags=re.IGNORECASE,
 )
+_QUOTE_POLITE_PREFIX = re.compile(
+    r"^(?:(?:kan|kunne|vil|can|could|would|will)\s+(?:du|you)|"
+    r"vennligst|please)\s+",
+    re.IGNORECASE,
+)
 
 
 class QuoteManager:
@@ -323,22 +328,28 @@ def parse_quote_command(message_content):
     content = re.sub(
         r"^\s*@inebotten\b\s*", "", content, flags=re.IGNORECASE
     ).strip()
+    content = _QUOTE_POLITE_PREFIX.sub("", content, count=1).strip()
     if not content:
         return None
     content_lower = content.casefold()
     lang = (
         "no"
         if re.search(
-            r"\b(?:husk|huskes|lagre|gullkorn|sitat|sitater|endre|rediger|"
-            r"slett|fjern|liste|vis|forfatter|tekst|hva|sa)\b",
+            r"\b(?:husk|huskes|lagre|gullkorn|sitat|sitatet|sitater|"
+            r"sitatene|endre|rediger|redigere|slett|slette|fjern|fjerne|"
+            r"liste|vis|vise|forfatter|tekst|hva|sa)\b",
             content_lower,
         )
         else "en"
     )
 
     list_match = re.fullmatch(
-        r"(?:liste\s+sitater|vis\s+sitater|alle\s+sitater|"
-        r"list\s+quotes|show\s+quotes|all\s+quotes)\s*[?.!]*",
+        r"(?:liste\s+sitater|"
+        r"(?:vis|vise)\s+(?:(?:meg|mæ)\s+)?(?:alle\s+)?"
+        r"sitat(?:er|ene)|alle\s+sitater|"
+        r"list\s+quotes|show\s+(?:me\s+)?(?:all\s+)?quotes|"
+        r"all\s+quotes|what\s+quotes\s+have\s+i\s+saved|"
+        r"show\s+me\s+my\s+saved\s+quotes)\s*[?.!]*",
         content,
         re.IGNORECASE,
     )
@@ -346,7 +357,7 @@ def parse_quote_command(message_content):
         return {"action": "list", "lang": lang}
 
     edit = re.fullmatch(
-        r"(?:endre|rediger|edit)\s+(?:sitat|quote)\s+"
+        r"(?:endre|rediger|redigere|edit)\s+(?:sitat|quote)\s+"
         r"(?P<index>\d+)\s+(?P<body>.+?)\s*",
         content,
         re.IGNORECASE,
@@ -386,7 +397,8 @@ def parse_quote_command(message_content):
         return None
 
     delete = re.fullmatch(
-        r"(?:slett|fjern|delete|remove)\s+(?:sitat|quote)\s+"
+        r"(?:slett|slette|fjern|fjerne|delete|remove)\s+"
+        r"(?:sitat|quote)\s+"
         r"(?P<index>\d+)\s*[?.!]*",
         content,
         re.IGNORECASE,
@@ -399,7 +411,8 @@ def parse_quote_command(message_content):
         }
 
     save = re.fullmatch(
-        r"(?:husk\s+dette|lagre\s+dette|dette\s+må\s+huskes|gullkorn|"
+        r"(?:husk\s+dette|lagre\s+dette(?:\s+som\s+(?:et\s+)?sitat)?|"
+        r"dette\s+må\s+huskes|gullkorn|"
         r"remember\s+this|save\s+this|this\s+must\s+be\s+remembered|"
         r"quote\s+this|lagre\s+sitat|save\s+quote)\b"
         r"(?:\s*[:\-\u2013\u2014]\s*|\s+)(?P<text>.+?)\s*",
@@ -433,8 +446,11 @@ def parse_quote_command(message_content):
             "lang": lang,
         }
     if re.fullmatch(
-        r"(?:sitat|quote|random\s+quote|show\s+quote|vis\s+sitat|"
-        r"vis\s+quote|husk\s+hva(?:\s+.+)?)\s*[?.!]*",
+        r"(?:sitat|quote|random\s+quote|"
+        r"give\s+me\s+(?:a\s+)?random\s+quote|"
+        r"(?:show|vis|vise)\s+(?:(?:meg|me|mæ)\s+)?"
+        r"(?:(?:et|eit|a)\s+)?(?:sitat|quote)|"
+        r"husk\s+hva(?:\s+.+)?)\s*[?.!]*",
         content,
         re.IGNORECASE,
     ):

@@ -17,10 +17,64 @@ from zoneinfo import ZoneInfo
 from cal_system.reminder_clock import ReminderClock, SystemReminderClock
 from core.dispatch_result import ManagerMutationCancelled, ManagerMutationError
 from core.mutation_coordinator import MutationCoordinator, POLL_STORE_SCOPE
+from core.utterance import normalize_utterance
+from core.utterance_semantics import has_sequenced_action_request
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 OSLO = ZoneInfo("Europe/Oslo")
+_POLL_NOUN = r"(?:avstemning|avstemming|poll|stemme|vote|avstemnning|voting)"
+_POLL_CREATE_VERB = r"(?:lag|lage|opprett|opprette|ny|create|make)"
+_POLL_ARTICLE = r"(?:(?:en|ei|et|a|an)\s+)?"
+_POLL_POLITE = (
+    r"(?:(?:(?:kan|kunne|vil|can|could|would|will)\s+"
+    r"(?:du|you)\s+)|(?:(?:vennligst|please)\s+))"
+)
+_POLL_CREATE_PREFIX = re.compile(
+    rf"^(?:(?:{_POLL_POLITE})?{_POLL_CREATE_VERB}\s+"
+    rf"{_POLL_ARTICLE}{_POLL_NOUN}|{_POLL_NOUN})"
+    r"(?:\s+om)?\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+_VOTE_NUMBER_WORDS = {
+    "en": 1,
+    "én": 1,
+    "ein": 1,
+    "ett": 1,
+    "one": 1,
+    "to": 2,
+    "two": 2,
+    "tre": 3,
+    "three": 3,
+    "fire": 4,
+    "four": 4,
+    "fem": 5,
+    "five": 5,
+    "seks": 6,
+    "six": 6,
+    "sju": 7,
+    "syv": 7,
+    "seven": 7,
+    "åtte": 8,
+    "eight": 8,
+    "ni": 9,
+    "nine": 9,
+    "ti": 10,
+    "ten": 10,
+}
+_VOTE_NUMBER = "|".join(
+    sorted(map(re.escape, _VOTE_NUMBER_WORDS), key=len, reverse=True)
+)
+_NATURAL_VOTE = re.compile(
+    rf"^(?:"
+    rf"(?:stem|vote)(?:\s+(?:på|for))?"
+    rf"(?:\s+(?:alternativ(?:et)?|valg(?:et)?|option))?\s+|"
+    rf"(?:jeg|eg|æ)\s+stemmer(?:\s+på)?"
+    rf"(?:\s+(?:alternativ(?:et)?|valg(?:et)?|option))?\s+|"
+    rf"i\s+vote(?:\s+for)?(?:\s+option)?\s+"
+    rf")(?P<option>\d{{1,2}}|{_VOTE_NUMBER})\s*[.!?]*$",
+    re.IGNORECASE,
+)
 
 
 class PollManager:
@@ -433,7 +487,12 @@ def parse_poll_command(message_content):
     - "@inebotten poll Pizza or burgers tonight?"
     - "@inebotten stemme Favorittfarge: rød/blå/grønn/gul"
     """
+    if not isinstance(message_content, str):
+        return None
+    utterance = normalize_utterance(message_content)
     content_lower = message_content.lower()
+    if has_sequenced_action_request(utterance):
+        return None
 
     # Remove @inebotten
     content = re.sub(r"@inebotten\s*", "", message_content, flags=re.IGNORECASE).strip()
@@ -446,14 +505,24 @@ def parse_poll_command(message_content):
         else "en"
     )
 
-    # Check for poll keywords - must be more specific to avoid false positives
-    poll_triggers = ["avstemning", "poll", "lag poll", "create poll", "ny poll"]
-    is_explicit = any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in poll_triggers)
+    # A poll noun is not itself a command when it appears in descriptive
+    # prose.  Only one anchored creation prefix owns the rest as poll data.
+    is_explicit = _POLL_CREATE_PREFIX.match(content) is not None
     
-    # Also allow if it has multiple options separated by /
+    # Also allow if it has multiple options separated by /.  URL and local
+    # path shapes are never implicit polls.
     slash_parts = content.split("/")
     has_options = False
-    if len(slash_parts) >= 2:
+    path_like = bool(
+        re.search(r"\b[a-z][a-z0-9+.-]*://", content, re.I)
+        or re.search(r"(?:^|\s)(?:~?/|[A-Za-z]:[\\/])\S+", content)
+        or re.search(
+            r"(?<!\S)(?:~?/|\.{1,2}/)?[A-Za-z0-9_.-]+"
+            r"(?:/[A-Za-z0-9_.-]+){1,}/?(?=$|\s|[?.!,;:])",
+            content,
+        )
+    )
+    if len(slash_parts) >= 2 and not (path_like and not is_explicit):
         if is_explicit:
             has_options = True
         else:
@@ -464,12 +533,8 @@ def parse_poll_command(message_content):
     if not (is_explicit or has_options):
         return None
 
-    # Use the full list for keyword removal
-    poll_keywords = ["avstemning", "poll", "stemme", "vote", "avstemnning", "voting"]
-
-    # Remove poll keyword
-    for keyword in poll_keywords:
-        content = re.sub(f"^{keyword}\\s*", "", content, flags=re.IGNORECASE)
+    # Remove one bounded creation frame while preserving the user's question.
+    content = _POLL_CREATE_PREFIX.sub("", content, count=1).strip()
 
     # Look for options separated by / or eller/or
     # Try slash separator
@@ -477,23 +542,60 @@ def parse_poll_command(message_content):
         parts = content.split("/")
         if len(parts) >= 2:
             question = parts[0].strip()
-            options = [p.strip() for p in parts[1:]]
-            return {"question": question, "options": options, "lang": lang}
+            options = [p.strip() for p in parts[1:] if p.strip()]
+            if question and len(options) >= 2:
+                return {
+                    "question": question,
+                    "options": options,
+                    "lang": lang,
+                }
 
     # Try "eller" or "or" separator
     # Pattern: "question? option1 eller/or option2"
-    eller_pattern = r"(.+?)\?\s*(.+?)(?:\s+(?:eller|or)\s+(.+))+"
-    match = re.search(eller_pattern, content, re.IGNORECASE)
-    if match:
-        question = match.group(1).strip() + "?"
-        # Split remaining by "eller" or "or"
-        rest = content.split("?", 1)[1]
-        options = [
-            opt.strip()
-            for opt in re.split(r"\s+(?:eller|or)\s+", rest, flags=re.IGNORECASE)
-            if opt.strip()
+    if "?" in content:
+        question_head, option_tail = content.split("?", 1)
+        if option_tail.strip():
+            option_parts = re.split(
+                r"\s*(?:/|,|\b(?:eller|or)\b)\s*",
+                option_tail.strip(" .!?"),
+                flags=re.IGNORECASE,
+            )
+            options = [part.strip() for part in option_parts if part.strip()]
+            if len(options) >= 2:
+                return {
+                    "question": question_head.strip() + "?",
+                    "options": options,
+                    "lang": lang,
+                }
+
+    # A natural inline choice ("Pizza eller burger?") is itself the poll
+    # question.  Preserve that question and expose the alternatives as actual
+    # options instead of silently turning it into a yes/no poll.
+    inline = re.fullmatch(
+        r"(?P<left>.+?)\s+(?:eller|or)\s+(?P<right>.+?)\s*[?!.]*",
+        content,
+        re.IGNORECASE,
+    )
+    if inline:
+        left = inline.group("left").strip(" ,;:.!?")
+        right = inline.group("right").strip(" ,;:.!?")
+        left_parts = [
+            part.strip()
+            for part in re.split(r"\s*,\s*", left)
+            if part.strip()
         ]
-        if len(options) >= 2:
+        right = re.sub(
+            r"\s+(?:i\s+kveld|tonight|i\s+dag|today|i\s+morgen|"
+            r"i\s+morgon|tomorrow)$",
+            "",
+            right,
+            flags=re.IGNORECASE,
+        ).strip()
+        options = [*left_parts, right]
+        if len(options) >= 2 and all(options):
+            question = content.strip()
+            if not question.endswith("?"):
+                question += "?"
             return {"question": question, "options": options, "lang": lang}
 
     # Simple yes/no if no options found
@@ -515,9 +617,15 @@ def parse_vote(message_content):
     # Remove @inebotten
     content = re.sub(r"@inebotten\s*", "", content).strip()
 
-    # Check if it's just a number
     if content.isdigit():
         num = int(content)
+        if 1 <= num <= 10:
+            return num
+
+    match = _NATURAL_VOTE.fullmatch(content)
+    if match is not None:
+        option = match.group("option").casefold()
+        num = int(option) if option.isdigit() else _VOTE_NUMBER_WORDS[option]
         if 1 <= num <= 10:
             return num
 

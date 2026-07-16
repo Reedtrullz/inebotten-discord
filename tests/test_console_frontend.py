@@ -206,7 +206,7 @@ def test_nav_links_present(page: Any, console_server: ConsoleServer) -> None:
     nav = page.locator('nav[aria-label="Hovednavigasjon"]')
     assert nav.is_visible()
 
-    links = ["Oversikt", "Status", "Kalender", "Avstemninger", "Diagnostikk", "Minne", "Kommandoer", "Logger"]
+    links = ["Oversikt", "Status", "Kalender", "Avstemninger", "Diagnostikk", "Minne", "Eksempler", "Logger"]
     for text in links:
         assert nav.locator(f'a:has-text("{text}")').is_visible()
 

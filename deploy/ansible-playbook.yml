@@ -3,6 +3,7 @@
   gather_facts: false
   vars:
     compose_dir: "/opt/apps/inebotten-discord"
+    deploy_version: master
 
   tasks:
     - name: Stop any standalone container left over from older deploys
@@ -10,11 +11,11 @@
         name: inebotten
         state: absent
 
-    - name: Pull latest source from origin
+    - name: Pull requested source version from origin
       ansible.builtin.git:
         repo: "https://github.com/Reedtrullz/inebotten-discord.git"
         dest: "{{ compose_dir }}"
-        version: master
+        version: "{{ deploy_version }}"
         update: yes
         force: no
       become: true
@@ -22,13 +23,22 @@
       register: source_pull
 
     - name: Read checked-out source commit
-      ansible.builtin.command: git rev-parse --short HEAD
+      ansible.builtin.command: git rev-parse HEAD
       args:
         chdir: "{{ compose_dir }}"
       become: true
       become_user: deploy
       register: source_commit
       changed_when: false
+
+    - name: Verify exact requested commit was checked out
+      ansible.builtin.assert:
+        that:
+          - source_commit.stdout | length == 40
+          - (deploy_version | length != 40) or (source_commit.stdout == deploy_version)
+        fail_msg: >-
+          Checked out {{ source_commit.stdout | default('unknown') }}, not
+          requested {{ deploy_version }}
 
     - name: Ensure {{ compose_dir }}/.env exists (cannot create silently — must be present)
       ansible.builtin.stat:
@@ -102,7 +112,32 @@
         timeout: 5
         return_content: true
       register: health_check
-      until: health_check is succeeded and (health_check.json.status | default('')) == 'healthy'
+      until: >-
+        health_check is succeeded
+        and (health_check.json.console.status | default('')) == 'running'
+        and (health_check.json.ai_provider | default('')) == 'openrouter'
+        and (health_check.json.bot.discord_connected | default(false) | bool)
+        and (health_check.json.bot.discord_ready | default(false) | bool)
+        and (health_check.json.bot.monitor_ready | default(false) | bool)
+        and not (health_check.json.bot.discord_closed | default(true) | bool)
+        and (health_check.json.tasks.status | default('')) == 'ok'
+        and (health_check.json.persistence.status | default('')) == 'ok'
+        and (health_check.json.reminder_runtime.status | default('')) == 'ok'
+        and (health_check.json.reminder_runtime.running | default(false) | bool)
+        and not (health_check.json.reminder_runtime.stale | default(true) | bool)
+        and (
+          (
+            (health_check.json.status | default('')) == 'healthy'
+            and (health_check.json.calendar_sync.status | default('')) in ['ok', 'disabled']
+            and (health_check.json.bot.degraded_reasons | default([])) == []
+          )
+          or
+          (
+            (health_check.json.status | default('')) == 'degraded'
+            and (health_check.json.calendar_sync.status | default('')) == 'degraded'
+            and (health_check.json.bot.degraded_reasons | default([])) == ['calendar_sync_degraded']
+          )
+        )
       retries: 12
       delay: 5
 

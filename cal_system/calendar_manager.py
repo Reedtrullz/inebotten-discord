@@ -1861,6 +1861,39 @@ class CalendarManager:
             )
         )
 
+    def snapshot_target_items(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> tuple[dict[str, object], ...]:
+        """Return every future target in stable display order, without a horizon."""
+
+        aware = self._require_aware(reference_time)
+        today = aware.astimezone(OSLO).date()
+        bucket = self.items.get(self.SHARED_KEY, [])
+        if not isinstance(bucket, list):
+            raise ValueError("invalid_target_state")
+        rows: list[tuple[datetime, int, dict[str, object]]] = []
+        for position, item in enumerate(bucket):
+            if not isinstance(item, dict):
+                raise ValueError("invalid_target_state")
+            if type(item.get("completed", False)) is not bool:
+                raise ValueError("invalid_target_state")
+            if type(item.get("delete_pending", False)) is not bool:
+                raise ValueError("invalid_target_state")
+            if item.get("completed") or item.get("delete_pending"):
+                continue
+            try:
+                item_date = datetime.strptime(
+                    str(item.get("date", "")), "%d.%m.%Y"
+                )
+            except ValueError:
+                continue
+            if item_date.date() >= today:
+                rows.append((item_date, position, item))
+        rows.sort(key=lambda row: (row[0], row[1]))
+        return tuple(deepcopy(item) for _, _, item in rows)
+
     @staticmethod
     def _canonical_delivery_due_at(item: dict[str, object]) -> datetime | None:
         """Project one stored calendar wall time to one unambiguous Oslo instant."""

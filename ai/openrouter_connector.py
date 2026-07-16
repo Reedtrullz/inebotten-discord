@@ -11,7 +11,11 @@ import os
 from collections.abc import Sequence
 from typing import Optional, Dict, Any
 
-from ai.chat_contract import ChatTurn, prepare_history
+from ai.chat_contract import (
+    ChatTurn,
+    fit_context_prompt_in_wrapper,
+    prepare_history,
+)
 from utils.logger import LoggerMixin
 
 
@@ -47,19 +51,12 @@ def _serialize_untrusted_context(
             sort_keys=True,
         )
 
-    serialized = serialize(context_prompt)
-    if len(serialized) <= MAX_CONTEXT_PROMPT_CHARS:
-        return serialized
-
-    low = 0
-    high = len(context_prompt)
-    while low < high:
-        middle = (low + high + 1) // 2
-        if len(serialize(context_prompt[:middle])) <= MAX_CONTEXT_PROMPT_CHARS:
-            low = middle
-        else:
-            high = middle - 1
-    return serialize(context_prompt[:low])
+    fitted_context = fit_context_prompt_in_wrapper(
+        context_prompt,
+        serialize_wrapper=serialize,
+        max_chars=MAX_CONTEXT_PROMPT_CHARS,
+    )
+    return serialize(fitted_context)
 
 
 def _extract_openrouter_content(response_json: object) -> str:

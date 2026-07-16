@@ -48,6 +48,9 @@ EXPECTED_ACTION_MANIFEST = (
     "BIRTHDAY_CREATE",
     "BIRTHDAY_LIST",
     "BIRTHDAY_EDIT",
+    "PROFILE_STATUS",
+    "PROFILE_PLAYING",
+    "PROFILE_WATCHING",
     "WATCHLIST_ADD",
     "WATCHLIST_LIST",
     "WATCHLIST_SUGGEST",
@@ -83,7 +86,7 @@ EXPECTED_ACTION_SPEC_SNAPSHOT = {
         "calendar",
         None,
     ),
-    "CALENDAR_LIST": ((), (), (), (), None, None),
+    "CALENDAR_LIST": ((), (("date", "DATE"),), (), (), None, None),
     "CALENDAR_SEARCH": ((("query", "S500"),), (), (), (), None, None),
     "CALENDAR_COMPLETE": (
         (),
@@ -130,7 +133,7 @@ EXPECTED_ACTION_SPEC_SNAPSHOT = {
         "reminder",
         None,
     ),
-    "REMINDER_LIST": ((), (), (), (), None, None),
+    "REMINDER_LIST": ((), (("due_date", "DATE"),), (), (), None, None),
     "REMINDER_SEARCH": ((("query", "S500"),), (), (), (), None, None),
     "REMINDER_COMPLETE": ((("number", "POS_INT"),), (), (), (), None, None),
     "REMINDER_EDIT": (
@@ -213,6 +216,30 @@ EXPECTED_ACTION_SPEC_SNAPSHOT = {
         (),
         None,
         "author_or_resolved_mention",
+    ),
+    "PROFILE_STATUS": (
+        (("value", "PROFILE_STATUS"),),
+        (),
+        (),
+        (),
+        None,
+        None,
+    ),
+    "PROFILE_PLAYING": (
+        (("value", "S100"),),
+        (),
+        (),
+        (),
+        None,
+        None,
+    ),
+    "PROFILE_WATCHING": (
+        (("value", "S100"),),
+        (),
+        (),
+        (),
+        None,
+        None,
     ),
     "WATCHLIST_ADD": (
         (("title", "S500"),),
@@ -311,7 +338,36 @@ def test_action_manifest_is_exact_and_ordered():
 
 def test_registry_is_closed_and_exhaustive():
     assert set(ACTION_SPECS) == set(ActionName)
-    assert len(ActionName) == 36
+    assert len(ActionName) == 39
+
+
+@pytest.mark.parametrize(
+    ("action", "value"),
+    (
+        ("PROFILE_STATUS", "online"),
+        ("PROFILE_PLAYING", "Life is Strange"),
+        ("PROFILE_WATCHING", "The Bear"),
+    ),
+)
+def test_profile_action_schema_keeps_one_bounded_typed_value(action, value):
+    proposal = validate_action_object(action_object(action, {"value": value}))
+
+    assert proposal.action.value == action
+    assert proposal.slots == {"value": value}
+
+
+@pytest.mark.parametrize(
+    ("action", "slots"),
+    (
+        ("PROFILE_STATUS", {"value": "busy"}),
+        ("PROFILE_PLAYING", {"value": "x" * 101}),
+        ("PROFILE_WATCHING", {"value": ""}),
+        ("PROFILE_STATUS", {"value": "online", "raw": "secret"}),
+    ),
+)
+def test_profile_action_schema_rejects_invalid_or_extra_slots(action, slots):
+    with pytest.raises(ActionValidationError):
+        validate_action_object(action_object(action, slots))
 
 
 def test_action_specs_match_exact_amended_structural_contract():
@@ -746,6 +802,24 @@ def test_prompt_is_generated_from_every_action():
         assert f"- {action.value}:" in ACTION_PROTOCOL_PROMPT
 
 
+def test_prompt_requires_semantic_not_command_style_action_classification():
+    assert (
+        "Classify clear supported requests by meaning; exact command wording "
+        "is not required."
+    ) in ACTION_PROTOCOL_PROMPT
+    assert "Propose only one current, explicit, supported request." in (
+        ACTION_PROTOCOL_PROMPT
+    )
+    assert (
+        "quoted, negated, hypothetical, cancelled, or multi-action writes"
+        in ACTION_PROTOCOL_PROMPT
+    )
+    assert "never propose a partial write" in ACTION_PROTOCOL_PROMPT
+    assert "Never claim that a proposal was executed or confirmed." in (
+        ACTION_PROTOCOL_PROMPT
+    )
+
+
 def test_prompt_contains_machine_validation_rules_and_exact_shape():
     atom_names = [
         definition.split("=", 1)[0]
@@ -759,7 +833,10 @@ def test_prompt_contains_machine_validation_rules_and_exact_shape():
     assert "DAY_OFFSET=integer -3650..3650 inclusive" in ACTION_PROTOCOL_PROMPT
     assert "EVENT_TYPE=literal event or task" in ACTION_PROTOCOL_PROMPT
     assert "MEDIA_TYPE=literal movie or series" in ACTION_PROTOCOL_PROMPT
-    assert "BIRTHDAY_SCOPE=literal all or upcoming" in ACTION_PROTOCOL_PROMPT
+    assert (
+        "BIRTHDAY_SCOPE=literal all, upcoming, or self"
+        in ACTION_PROTOCOL_PROMPT
+    )
     assert "RECURRENCE=literal daily, weekly, biweekly, monthly, or yearly" in ACTION_PROTOCOL_PROMPT
     assert "OPTIONS=array of 2-10 unique strings" in ACTION_PROTOCOL_PROMPT
     assert "exactly_one=target,number" in ACTION_PROTOCOL_PROMPT

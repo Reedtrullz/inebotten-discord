@@ -8,6 +8,100 @@ import re
 from simpleeval import simple_eval, InvalidExpression
 
 
+_LEADING_INVOCATION = re.compile(
+    r"^\s*(?:@inebotten\b|<@!?\d+>)\s*[:,;-]?\s*",
+    re.IGNORECASE,
+)
+_POLITE_PREFIX = re.compile(
+    r"^(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s+",
+    re.IGNORECASE,
+)
+_NON_REQUEST_PATTERNS = (
+    re.compile(r"\b(?:ikke|ikkje|not|never|don['’]t|do\s+not)\b", re.IGNORECASE),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:sa|skrev|skreiv|leste|las)\b|"
+        r"^i\s+(?:said|wrote|read)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:hva\s+skjer\s+hvis|kva\s+skjer\s+om|ka\s+skjer\s+hvis|"
+        r"what\s+happens\s+if|hvis|om|if)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:eksempel|example|hva\s+betyr|kva\s+tyder|hvordan\s+skriver|"
+        r"korleis\s+skriv|how\s+do\s+i\s+(?:say|write)|"
+        r"what\s+does\b.*\bmean)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:vurderer|tenker\s+på)\b|"
+        r"^i(?:'m|\s+am)\s+(?:considering|thinking\s+about)\b",
+        re.IGNORECASE,
+    ),
+)
+_TRAILING_POLITENESS = re.compile(
+    r"\s*,?\s*(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you)\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_LEADING_COURTESY_REQUEST = re.compile(
+    r"^(?:(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s*"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))|"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*,?\s*"
+    r"(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please))\s*,?\s*",
+    re.IGNORECASE,
+)
+_TRAILING_COURTESY = re.compile(
+    r"(?:\s*,\s*|\s+)(?:(?:om|hvis|viss)\s+du\s+kan|"
+    r"(?:om|hvis|viss)\s+du\s+har\s+tid|når\s+du\s+har\s+tid|"
+    r"if\s+you\s+can|if\s+you\s+have\s+(?:time|a\s+moment)|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_MATH_EXPRESSION = re.compile(r"[\d+\-*/xX×:,().\s]+")
+_QUESTION_MATH_OPERATOR = re.compile(
+    r"(?:[\d)]\s*[+*/xX×]\s*[-+(\d]|[\d)]\s*-\s*[-+(\d])"
+)
+_DATE_LIKE_EXPRESSION = re.compile(
+    r"(?<!\d)(?:"
+    r"(?:19|20|21)\d{2}(?P<ymd_separator>[./-])"
+    r"(?:0?[1-9]|1[0-2])(?P=ymd_separator)"
+    r"(?:0?[1-9]|[12]\d|3[01])|"
+    r"(?:0?[1-9]|[12]\d|3[01])(?P<dmy_separator>[./-])"
+    r"(?:0?[1-9]|1[0-2])(?P=dmy_separator)"
+    r"(?:\d{2}|(?:19|20|21)\d{2})|"
+    r"(?:0?[1-9]|1[0-2])(?P<mdy_separator>[./-])"
+    r"(?:0?[1-9]|[12]\d|3[01])(?P=mdy_separator)"
+    r"(?:\d{2}|(?:19|20|21)\d{2})"
+    r")(?!\d)"
+)
+
+
+def _prepare_calculator_request(message_content):
+    if not isinstance(message_content, str):
+        return None
+    content = _LEADING_INVOCATION.sub("", message_content, count=1).strip()
+    content = _LEADING_COURTESY_REQUEST.sub("", content, count=1).strip()
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = _TRAILING_COURTESY.sub("", content).strip()
+    if not content or any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _POLITE_PREFIX.sub("", content, count=1).strip()
+    if any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = re.sub(r"\bwhat['’]s\b", "what is", content, flags=re.IGNORECASE)
+    return content.rstrip("?!.").strip()
+
+
 class CalculatorManager:
     """
     Handles calculations and unit conversions
@@ -77,63 +171,82 @@ class CalculatorManager:
         """
         Parse calculator or conversion commands
         """
-        content_lower = message_content.lower()
+        content = _prepare_calculator_request(message_content)
+        if not content:
+            return None
+        content_lower = content.casefold()
 
-        # Remove @inebotten
-        content = message_content.replace("@inebotten", "").strip()
-        content_lower = content_lower.replace("@inebotten", "").strip()
-
-        # Currency conversion
-        # Require "konverter" OR recognized currency units to avoid "10 venner til middag"
-        currency_pattern = (
-            r"(?:(?:konverter|convert|omgjør)\s+)?(\d+(?:\.\d+)?)\s*(\w+)\s+(?:til|to)\s+(\w+)"
+        conversion_prefix = (
+            r"(?:(?:konverter(?:e)?|convert|omgjør|gjør\s+om|gjer\s+om)\s+)?"
         )
-        match = re.search(currency_pattern, content_lower)
-        if match:
-            amount = float(match.group(1))
-            from_unit = match.group(2)
-            to_unit = match.group(3)
-            
-            is_recognized = (from_unit in self.exchange_rates or to_unit in self.exchange_rates)
-            is_explicit = any(re.search(rf"\b{re.escape(w)}\b", content_lower) for w in ["konverter", "convert", "omgjør"])
-            
-            if is_recognized or is_explicit:
-                return {
-                    "type": "currency",
-                    "amount": amount,
-                    "from": from_unit,
-                    "to": to_unit,
-                }
+        conversion_connector = r"(?:til|to|i|in)"
+        number = r"-?\d+(?:[.,]\d+)?"
+
+        def decimal_value(raw_value):
+            return float(raw_value.replace(",", "."))
+
+        def unit_alternation(units):
+            return "|".join(
+                re.escape(unit) for unit in sorted(units, key=len, reverse=True)
+            )
 
         # Temperature conversion with explicit temperature units.
-        temp_pattern = r"(?:(?:konverter|convert|omgjør)\s+)?(-?\d+(?:\.\d+)?)\s*(c|celsius|f|fahrenheit|k|kelvin)\b(?:\s+(?:til|to)?\s*(c|celsius|f|fahrenheit|k|kelvin)\b)?"
-        match = re.search(temp_pattern, content_lower)
+        temp_units = unit_alternation(self.temp_units)
+        temp_pattern = (
+            rf"^{conversion_prefix}({number})\s*°?\s*({temp_units})\b"
+            rf"(?:\s+{conversion_connector}?\s*°?\s*({temp_units})\b)?$"
+        )
+        match = re.fullmatch(temp_pattern, content_lower)
         if match:
             return {
                 "type": "temperature",
-                "value": float(match.group(1)),
+                "value": decimal_value(match.group(1)),
                 "from": match.group(2),
                 "to": match.group(3) if match.group(3) else None,
             }
 
         # Length conversion
-        length_pattern = r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(m|km|cm|mm|ft|foot|feet|in|inch|inches|yd|yard|yards|mi|mile|miles)\b\s+(?:til|to)\s+(m|km|cm|mm|ft|foot|feet|in|inch|inches|yd|yard|yards|mi|mile|miles)\b"
-        match = re.search(length_pattern, content_lower)
+        length_units = unit_alternation(self.length_units)
+        length_pattern = (
+            rf"^{conversion_prefix}({number})\s*({length_units})\b"
+            rf"\s+{conversion_connector}\s+({length_units})\b$"
+        )
+        match = re.fullmatch(length_pattern, content_lower)
         if match:
             return {
                 "type": "length",
-                "value": float(match.group(1)),
+                "value": decimal_value(match.group(1)),
                 "from": match.group(2),
                 "to": match.group(3),
             }
 
         # Weight conversion
-        weight_pattern = r"(?:(?:konverter|convert)\s+)?(\d+(?:\.\d+)?)\s*(kg|kilogram|g|gram|lb|pound|pounds|oz|ounce|ounces|stone|stones)\b\s+(?:til|to)\s+(kg|kilogram|g|gram|lb|pound|pounds|oz|ounce|ounces|stone|stones)\b"
-        match = re.search(weight_pattern, content_lower)
+        weight_units = unit_alternation(self.weight_units)
+        weight_pattern = (
+            rf"^{conversion_prefix}({number})\s*({weight_units})\b"
+            rf"\s+{conversion_connector}\s+({weight_units})\b$"
+        )
+        match = re.fullmatch(weight_pattern, content_lower)
         if match:
             return {
                 "type": "weight",
-                "value": float(match.group(1)),
+                "value": decimal_value(match.group(1)),
+                "from": match.group(2),
+                "to": match.group(3),
+            }
+
+        # Currency is intentionally last: both units must be known currencies.
+        # An explicit "convert cats to dogs" is not a command.
+        currency_units = unit_alternation(self.exchange_rates)
+        currency_pattern = (
+            rf"^{conversion_prefix}({number})\s*({currency_units})\b"
+            rf"\s+{conversion_connector}\s+({currency_units})\b$"
+        )
+        match = re.fullmatch(currency_pattern, content_lower)
+        if match:
+            return {
+                "type": "currency",
+                "amount": decimal_value(match.group(1)),
                 "from": match.group(2),
                 "to": match.group(3),
             }
@@ -141,13 +254,41 @@ class CalculatorManager:
         # Math calculation
         # Pattern: "regn ut 2+2", "calculate 150 * 1.25"
         calc_patterns = [
-            r"(?:regn ut|calculate|calc|compute)\s+(.+)",
-            r"(?:hva er|what is)\s+(\d+\s*[-+*/]\s*\d+)",
+            re.compile(
+                r"^(?:regn(?:e)?\s+ut|rekn(?:e)?\s+ut|kalkuler(?:e)?|"
+                r"kalk|calculate|calc|compute|work\s+out)\s+"
+                r"(?P<expression>.+)$",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"^(?:hva|kva|ka)\s+er\s+(?P<expression>.+)$|"
+                r"^what\s+is\s+(?P<expression_en>.+)$",
+                re.IGNORECASE,
+            ),
         ]
-        for pattern in calc_patterns:
-            match = re.search(pattern, content_lower)
+        for index, pattern in enumerate(calc_patterns):
+            match = pattern.fullmatch(content)
             if match:
-                return {"type": "math", "expression": match.group(1)}
+                expression = (
+                    match.groupdict().get("expression")
+                    or match.groupdict().get("expression_en")
+                    or ""
+                ).strip()
+                expression = expression.rstrip("?!.").strip()
+                valid_expression = (
+                    expression
+                    and re.fullmatch(_MATH_EXPRESSION, expression)
+                    and re.search(r"\d", expression)
+                )
+                question_has_operator = (
+                    (
+                        index == 0
+                        or _QUESTION_MATH_OPERATOR.search(expression) is not None
+                    )
+                    and _DATE_LIKE_EXPRESSION.search(expression) is None
+                )
+                if valid_expression and question_has_operator:
+                    return {"type": "math", "expression": expression}
 
         return None
 
@@ -179,7 +320,9 @@ class CalculatorManager:
 
         # Get exchange rate
         rate = 1.0
-        if (
+        if from_curr == to_curr:
+            rate = 1.0
+        elif (
             from_curr in self.exchange_rates
             and to_curr in self.exchange_rates[from_curr]
         ):
@@ -332,7 +475,13 @@ class CalculatorManager:
         expression = cmd["expression"]
 
         # Clean expression
-        expression = expression.replace("x", "*").replace(":", "/")
+        expression = (
+            expression.replace("x", "*")
+            .replace("X", "*")
+            .replace("×", "*")
+            .replace(":", "/")
+            .replace(",", ".")
+        )
 
         # Validate expression
         is_valid, error_msg = self._validate_expression(expression)

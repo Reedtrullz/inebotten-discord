@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 import inspect
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from core.action_bridge import (
     _DOMAIN_EVIDENCE,
     validate_route_payload,
 )
+from core.help_registry import HELP_EXAMPLES
 from core.intent_models import (
     ArbitrationDecision,
     BotIntent,
@@ -35,6 +37,18 @@ from tests.nlu_test_support import (
     FIXED_NOW,
     bridge_context,
     proposal_for,
+)
+from tests.nlu_harness import load_cases
+
+
+_NLU_CORPUS = Path(__file__).parent / "fixtures" / "nlu_contract_v1.jsonl"
+_EXECUTABLE_SEQUENCE_CASES = tuple(
+    case
+    for case in load_cases(_NLU_CORPUS)
+    if case.expected_intent not in {"ai_chat", "clarify"}
+)
+_CONTEXT_FREE_BRIDGE_SEQUENCE_CASES = tuple(
+    case for case in _EXECUTABLE_SEQUENCE_CASES if case.id != "nb-poll-vote"
 )
 
 
@@ -280,6 +294,36 @@ MAPPING_ROWS = (
         id="birthday-edit",
     ),
     pytest.param(
+        ActionName.PROFILE_STATUS,
+        {"value": "dnd"},
+        "kan du sette statusen din til dnd?",
+        BotIntent.PROFILE,
+        {"profile": {"action": "status", "value": "dnd"}},
+        IntentRisk.MUTATING,
+        {},
+        id="profile-status",
+    ),
+    pytest.param(
+        ActionName.PROFILE_PLAYING,
+        {"value": "CS2"},
+        "kan du vise at du spiller CS2?",
+        BotIntent.PROFILE,
+        {"profile": {"action": "playing", "value": "CS2"}},
+        IntentRisk.MUTATING,
+        {},
+        id="profile-playing",
+    ),
+    pytest.param(
+        ActionName.PROFILE_WATCHING,
+        {"value": "Netflix"},
+        "kan du vise at du ser på Netflix?",
+        BotIntent.PROFILE,
+        {"profile": {"action": "watching", "value": "Netflix"}},
+        IntentRisk.MUTATING,
+        {},
+        id="profile-watching",
+    ),
+    pytest.param(
         ActionName.WATCHLIST_ADD,
         {"title": "Dune", "type": "movie"},
         "legg til Dune på filmlista",
@@ -418,6 +462,94 @@ def test_mapping_and_evidence_tables_cover_the_closed_action_manifest():
     }
     assert set(_ACTION_EVIDENCE) == set(ActionName)
     assert set(_DOMAIN_EVIDENCE) == set(ActionName)
+
+
+@pytest.mark.parametrize(
+    ("text", "action", "slots", "expected_action"),
+    (
+        (
+            "kan du setje statusen din til idle?",
+            ActionName.PROFILE_STATUS,
+            {"value": "idle"},
+            "status",
+        ),
+        (
+            "could you show that you are playing Life is Strange?",
+            ActionName.PROFILE_PLAYING,
+            {"value": "Life is Strange"},
+            "playing",
+        ),
+        (
+            "please set your activity to watching The Bear",
+            ActionName.PROFILE_WATCHING,
+            {"value": "The Bear"},
+            "watching",
+        ),
+    ),
+)
+def test_bounded_profile_paraphrases_recover_as_confirmed_semantic_writes(
+    text, action, slots, expected_action
+):
+    result = ActionBridge().to_result(
+        proposal_for(action, slots, confidence=0.99),
+        bridge_context(utterance=normalize_utterance(text)),
+    )
+
+    assert result is not None
+    assert result.intent is BotIntent.PROFILE
+    assert result.payload["profile"]["action"] == expected_action
+    assert result.source is IntentSource.SEMANTIC
+    assert result.risk is IntentRisk.MUTATING
+    assert result.requires_confirmation is True
+
+
+@pytest.mark.parametrize(
+    ("text", "action", "slots"),
+    (
+        (
+            "ikke sett statusen din til dnd",
+            ActionName.PROFILE_STATUS,
+            {"value": "dnd"},
+        ),
+        (
+            "hva skjer hvis du setter statusen til dnd?",
+            ActionName.PROFILE_STATUS,
+            {"value": "dnd"},
+        ),
+        (
+            "hvordan setter man statusen til dnd?",
+            ActionName.PROFILE_STATUS,
+            {"value": "dnd"},
+        ),
+        (
+            "Ola sa at du burde vise at du spiller CS2",
+            ActionName.PROFILE_PLAYING,
+            {"value": "CS2"},
+        ),
+        (
+            "vi snakket om at du ser på Netflix",
+            ActionName.PROFILE_WATCHING,
+            {"value": "Netflix"},
+        ),
+        (
+            "spiller CS2 er et eksempel på en kommando",
+            ActionName.PROFILE_PLAYING,
+            {"value": "CS2"},
+        ),
+        (
+            "status online er teksten jeg skrev",
+            ActionName.PROFILE_STATUS,
+            {"value": "online"},
+        ),
+    ),
+)
+def test_profile_recovery_rejects_negated_hypothetical_meta_and_reported_neighbors(
+    text, action, slots
+):
+    assert ActionBridge().to_result(
+        proposal_for(action, slots, confidence=0.99),
+        bridge_context(utterance=normalize_utterance(text)),
+    ) is None
 
 
 def test_none_and_clarify_are_non_executable_protocol_results():
@@ -731,6 +863,184 @@ def test_natural_semantic_rescue_corpus_requires_confirmation(
 
 
 @pytest.mark.parametrize(
+    "text,action,slots,expected_intent",
+    [
+        (
+            "Jeg trenger å bli minnet på å ringe legen i morgen",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+            BotIntent.REMINDER_CREATE,
+        ),
+        (
+            "Eg treng å bli minna på å ringe legen i morgon",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+            BotIntent.REMINDER_CREATE,
+        ),
+        (
+            "Would you mind reminding me to call the doctor tomorrow?",
+            ActionName.REMINDER_CREATE,
+            {"text": "call the doctor", "due_date": "15.07.2026"},
+            BotIntent.REMINDER_CREATE,
+        ),
+        (
+            "Jeg vil gjerne ha et møte med Ola i kalenderen i morgen",
+            ActionName.CALENDAR_CREATE,
+            {"title": "Møte med Ola", "date": "15.07.2026"},
+            BotIntent.CALENDAR_ITEM,
+        ),
+        (
+            "Eg vil gjerne ha eit møte med Ola i kalenderen i morgon",
+            ActionName.CALENDAR_CREATE,
+            {"title": "Møte med Ola", "date": "15.07.2026"},
+            BotIntent.CALENDAR_ITEM,
+        ),
+        (
+            "Would you mind putting a meeting with Ola in my calendar tomorrow?",
+            ActionName.CALENDAR_CREATE,
+            {"title": "Meeting with Ola", "date": "15.07.2026"},
+            BotIntent.CALENDAR_ITEM,
+        ),
+    ],
+)
+def test_bounded_natural_request_frames_stage_valid_model_proposals(
+    text,
+    action,
+    slots,
+    expected_intent,
+):
+    result = ActionBridge().to_result(
+        proposal_for(action, slots, confidence=0.99),
+        bridge_context(utterance=normalize_utterance(text)),
+    )
+
+    assert result is not None
+    assert result.intent is expected_intent
+    assert result.requires_confirmation is True
+
+
+@pytest.mark.parametrize(
+    "text,action,slots",
+    [
+        (
+            "Jeg trenger ikke å bli minnet på å ringe legen i morgen",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+        ),
+        (
+            "Hva om jeg trenger å bli minnet på å ringe legen i morgen?",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+        ),
+        (
+            "Ola sa at han trenger å bli minnet på å ringe legen",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+        ),
+        (
+            "I would like pizza",
+            ActionName.CALENDAR_CREATE,
+            {"title": "Pizza", "date": "15.07.2026"},
+        ),
+        (
+            "Would you mind explaining how calendars work?",
+            ActionName.CALENDAR_CREATE,
+            {"title": "Calendar lesson", "date": "15.07.2026"},
+        ),
+    ],
+)
+def test_natural_request_neighbors_do_not_authorize_model_writes(
+    text,
+    action,
+    slots,
+):
+    assert (
+        ActionBridge().to_result(
+            proposal_for(action, slots, confidence=0.99),
+            bridge_context(utterance=normalize_utterance(text)),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "text,action,slots",
+    [
+        (
+            "legg til møte i morgen og påminn meg om å ringe legen",
+            ActionName.CALENDAR_CREATE,
+            {"title": "Møte", "date": "15.07.2026"},
+        ),
+        (
+            "påminn meg om å ringe legen og slett kalenderen",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+        ),
+        (
+            "påminn meg om legen og minn meg om å kjøpe melk",
+            ActionName.REMINDER_CREATE,
+            {"text": "ringe legen", "due_date": "15.07.2026"},
+        ),
+        (
+            "flytt møtet til fredag og endre tittelen til Nytt møte",
+            ActionName.CALENDAR_EDIT,
+            {
+                "target": "møtet",
+                "date": "17.07.2026",
+                "title": "Nytt møte",
+            },
+        ),
+        (
+            "lag poll om mat og påminn meg om å handle",
+            ActionName.POLL_CREATE,
+            {"question": "Mat?", "options": ["Pizza", "Taco"]},
+        ),
+        (
+            "slett poll 1 og 2",
+            ActionName.POLL_DELETE,
+            {"target": 1},
+        ),
+    ],
+)
+def test_multi_action_utterances_never_stage_one_partial_model_action(
+    text,
+    action,
+    slots,
+):
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(action, slots, confidence=0.99),
+        bridge_context(utterance=normalize_utterance(text)),
+    )
+
+    assert result is None
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "lukk poll etter 15 minutter",
+        "slett avstemningen kanskje",
+        "close the poll when everyone has voted",
+    ],
+)
+def test_model_bridge_rejects_unsupported_poll_mutation_suffixes(text):
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(ActionName.POLL_CLOSE, {}, confidence=0.99),
+        bridge_context(
+            utterance=normalize_utterance(text),
+            active_poll_count=1,
+            active_poll_id="poll-1",
+        ),
+    )
+
+    assert result is None
+    assert metrics.snapshot()["rejections"] == {"invalid_context": 1}
+
+
+@pytest.mark.parametrize(
     "text,action,slots",
     [
         ("ikke slett kalenderen", ActionName.CALENDAR_DELETE, {"target": "1"}),
@@ -1016,8 +1326,9 @@ def test_remember_to_check_is_not_reinterpreted_as_watchlist_add(text):
     assert result is None
 
 
-def test_check_frame_preserves_a_separate_explicit_watchlist_add_verb():
-    result = ActionBridge().to_result(
+def test_check_frame_and_watchlist_add_never_stage_only_the_later_action():
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
         proposal_for(
             ActionName.WATCHLIST_ADD,
             {"title": "Dune", "type": "movie"},
@@ -1029,9 +1340,150 @@ def test_check_frame_preserves_a_separate_explicit_watchlist_add_verb():
             )
         ),
     )
-    assert result is not None
-    assert result.intent is BotIntent.WATCHLIST
-    assert result.requires_confirmation is True
+    assert result is None
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}
+
+
+@pytest.mark.parametrize(
+    "read_request",
+    ("show all my reminders", "list all my reminders"),
+)
+def test_model_watchlist_write_plus_read_never_stages_only_the_write(
+    read_request,
+):
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(
+            ActionName.WATCHLIST_ADD,
+            {"title": "Inception", "type": "movie"},
+            confidence=0.99,
+        ),
+        bridge_context(
+            utterance=normalize_utterance(
+                "add Inception to my watchlist and " + read_request
+            )
+        ),
+    )
+
+    assert result is None
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}
+
+
+def test_model_calendar_write_plus_pronoun_memory_read_never_stages_write():
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(
+            ActionName.CALENDAR_CREATE,
+            {"title": "Meeting", "date": "17.07.2026"},
+            confidence=0.99,
+        ),
+        bridge_context(
+            utterance=normalize_utterance(
+                "create a meeting tomorrow and "
+                "show me what you remember about me"
+            )
+        ),
+    )
+
+    assert result is None
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}
+
+
+@pytest.mark.parametrize(
+    "case",
+    _CONTEXT_FREE_BRIDGE_SEQUENCE_CASES,
+    ids=lambda case: case.id,
+)
+def test_model_write_plus_every_self_describing_contract_case_is_blocked(case):
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(
+            ActionName.CALENDAR_CREATE,
+            {"title": "Meeting", "date": "17.07.2026"},
+            confidence=0.99,
+        ),
+        bridge_context(
+            utterance=normalize_utterance(
+                "create a meeting tomorrow and " + case.text
+            )
+        ),
+    )
+
+    assert result is None, case.id
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}, case.id
+
+
+def test_bridge_sequence_exemption_is_only_context_dependent_bare_poll_vote():
+    exempt = tuple(
+        case
+        for case in _EXECUTABLE_SEQUENCE_CASES
+        if case not in _CONTEXT_FREE_BRIDGE_SEQUENCE_CASES
+    )
+
+    # A bare numeric choice is not self-describing in the context-free bridge;
+    # IntentRouter's fixture-aware collector probe covers it when an active poll
+    # makes it independently executable.  Treating every "and 1" as an action
+    # here would corrupt ordinary titles, dates, quantities, and list payloads.
+    assert tuple((case.id, case.text) for case in exempt) == (
+        ("nb-poll-vote", "1"),
+    )
+    assert len(_CONTEXT_FREE_BRIDGE_SEQUENCE_CASES) == 295
+
+
+def test_context_dependent_sequence_guard_cannot_be_reopened_by_model_bridge():
+    metrics = NLUMetrics()
+    deterministic = IntentResult(
+        BotIntent.CLARIFY,
+        1.0,
+        {"clarification": "Send én handling om gangen."},
+        "multiple_actions_require_split",
+        risk=IntentRisk.READ_ONLY,
+        requires_confirmation=False,
+    )
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(
+            ActionName.CALENDAR_CREATE,
+            {"title": "Meeting", "date": "17.07.2026"},
+            confidence=0.99,
+        ),
+        bridge_context(
+            utterance=normalize_utterance(
+                "create a meeting tomorrow and 1"
+            ),
+            deterministic_route=deterministic,
+            active_poll_count=1,
+            active_poll_id="poll-1",
+        ),
+    )
+
+    assert result is None
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}
+
+
+@pytest.mark.parametrize(
+    "example",
+    HELP_EXAMPLES,
+    ids=lambda example: example.id,
+)
+def test_model_write_plus_every_executable_help_example_never_stages_write(
+    example,
+):
+    metrics = NLUMetrics()
+    result = ActionBridge(metrics=metrics).to_result(
+        proposal_for(
+            ActionName.CALENDAR_CREATE,
+            {"title": "Meeting", "date": "17.07.2026"},
+            confidence=0.99,
+        ),
+        bridge_context(
+            utterance=normalize_utterance(
+                "create a meeting tomorrow and " + example.route_phrase
+            )
+        ),
+    )
+
+    assert result is None, example.id
+    assert metrics.snapshot()["rejections"] == {"conflict": 1}, example.id
 
 
 def test_norwegian_series_inflections_are_valid_watchlist_domain_evidence():

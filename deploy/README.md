@@ -26,18 +26,66 @@ On the VPS (already configured, here for reference):
 
 ## Deploy
 
+The playbook defaults to `master`:
+
 ```bash
 cd /path/to/inebotten-discord
 ansible-playbook -i deploy/inventory/hosts.yml deploy/ansible-playbook.yml \
   --vault-password-file ~/.vault_pass.txt
 ```
 
+For a release candidate, deploy the exact full SHA that has already been
+pushed. This checks out a detached HEAD on the VPS deliberately, so a moving
+branch cannot change the build while it is being deployed:
+
+```bash
+(
+  set -euo pipefail
+  SHA="$(git rev-parse HEAD)"
+  BRANCH="$(git branch --show-current)"
+  REMOTE_SHA="$(git ls-remote origin "refs/heads/${BRANCH}" | awk 'NR == 1 {print $1}')"
+  test "${#SHA}" -eq 40
+  test "${REMOTE_SHA}" = "${SHA}"
+  scratch="$(mktemp -d /private/tmp/inebotten-ansible.XXXXXX)"
+  trap 'rm -rf "${scratch}"' EXIT
+  ANSIBLE_LOCAL_TEMP="${scratch}" \
+    ansible-playbook -i deploy/inventory/hosts.yml deploy/ansible-playbook.yml \
+    --vault-password-file ~/.vault_pass.txt \
+    -e "deploy_version=${SHA}"
+  test "$(ssh -i ~/.ssh/id_rsa_racknerd deploy@198.23.137.16 \
+    'docker exec inebotten-bot cat /app/commit_hash.txt')" = "${SHA}"
+)
+```
+
+If the candidate must be rolled back, run the same playbook against the last
+known-good full SHA and verify the container marker again:
+
+```bash
+(
+  set -euo pipefail
+  ROLLBACK_SHA="a4b9011ecf6fcbaedf8f4059085be0d73fd67639"
+  scratch="$(mktemp -d /private/tmp/inebotten-ansible.XXXXXX)"
+  trap 'rm -rf "${scratch}"' EXIT
+  ANSIBLE_LOCAL_TEMP="${scratch}" \
+    ansible-playbook -i deploy/inventory/hosts.yml deploy/ansible-playbook.yml \
+    --vault-password-file ~/.vault_pass.txt \
+    -e "deploy_version=${ROLLBACK_SHA}"
+  test "$(ssh -i ~/.ssh/id_rsa_racknerd deploy@198.23.137.16 \
+    'docker exec inebotten-bot cat /app/commit_hash.txt')" = "${ROLLBACK_SHA}"
+)
+```
+
+There is no automatic rollback after the container is recreated. If a
+post-build readiness or commit-marker check fails, inspect the candidate and
+then execute the rollback command above. A later deploy without
+`deploy_version` checks out `master` again.
+
 What the playbook does:
 
 1. **Removes any leftover standalone container** named `inebotten` from
    older deploys.
-2. **Updates source from `origin/master`** on the VPS and records the checked-out
-   commit for Docker build metadata.
+2. **Checks out `deploy_version`** (`master` by default, or an exact full SHA)
+   on the VPS and records the full checked-out commit for Docker build metadata.
 3. **Idempotently writes a managed block to `.env`**:
    ```
    AI_PROVIDER=openrouter
@@ -52,10 +100,13 @@ What the playbook does:
    - remaps the bot's web console to `127.0.0.1:8081` (host Caddy reverse-proxies there)
    - disables the bundled compose `caddy` service (host Caddy already owns 80/443)
 5. **`docker compose up --build`** for the `inebotten` service only.
-6. **Polls `http://127.0.0.1:8081/health`** until it returns HTTP 200 with JSON `status: healthy`.
+6. **Polls `http://127.0.0.1:8081/health`** until Discord and its monitor are
+   ready, task/persistence/reminder health is good, and the overall state is
+   healthy. The only accepted degraded state is the explicitly isolated
+   `calendar_sync_degraded` condition; every other degraded reason fails shut.
 7. **Verifies `/app/commit_hash.txt` inside the running container** matches the
-   checked-out commit, so stale containers fail the deploy instead of looking
-   successful.
+   full checked-out commit exactly, so stale containers fail the deploy instead
+   of looking successful.
 
 ## Secrets
 

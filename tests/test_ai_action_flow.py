@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import discord
@@ -271,6 +272,58 @@ async def test_semantic_natural_language_reminder_is_staged_not_executed(monitor
     assert decisions[
         "intent=reminder_create|source=semantic|outcome=executed"
     ] == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_profile_paraphrase_stages_then_dispatches_typed_payload(
+    monitor,
+):
+    monitor.hermes = type(
+        "Hermes",
+        (),
+        {
+            "generate_response": AsyncMock(
+                return_value=(
+                    True,
+                    action_line(
+                        "PROFILE_PLAYING",
+                        0.99,
+                        {"value": "Life is Strange"},
+                    ),
+                )
+            )
+        },
+    )()
+    handler = AsyncMock(return_value=DispatchOutcome.success(mutated=True))
+    monitor.handlers["profile"] = SimpleNamespace(
+        handle_profile_command=handler
+    )
+    preview = RecordingMessage(
+        "@inebotten could you show that you are playing Life is Strange?"
+    )
+
+    await monitor.handle_message(preview)
+
+    handler.assert_not_awaited()
+    pending = monitor.pending_actions.peek(
+        conversation_key_from_message(preview)
+    )
+    assert pending is not None and pending.status is PendingStatus.READY
+    assert pending.routes[0].intent is BotIntent.PROFILE
+    assert pending.routes[0].payload == {
+        "profile": {"action": "playing", "value": "Life is Strange"}
+    }
+    assert pending.routes[0].requires_confirmation is True
+    assert "Life is Strange" in preview.replies[0]
+
+    await monitor.handle_message(RecordingMessage("@inebotten ja"))
+
+    handler.assert_awaited_once()
+    assert handler.await_args.args[1] == {
+        "action": "playing",
+        "value": "Life is Strange",
+    }
+    assert monitor.pending_actions.counts()["completed"] == 1
 
 
 @pytest.mark.asyncio
@@ -1099,14 +1152,16 @@ async def test_selected_mutation_reuses_guard_then_confirms(monitor):
         route=route,
         reference_time=monitor._reference_time_now(),
     )
-    await monitor.handle_message(RecordingMessage("@inebotten 2"))
+    await monitor.handle_message(
+        RecordingMessage("@inebotten jeg mener den andre")
+    )
 
     staged = monitor.pending_actions.peek(routing.key)
     assert staged is not None and staged.status is PendingStatus.READY
     assert staged.routes[0].intent is BotIntent.CALENDAR_DELETE
     handler.assert_not_awaited()
 
-    await monitor.handle_message(RecordingMessage("@inebotten ja"))
+    await monitor.handle_message(RecordingMessage("@inebotten det kan du"))
     handler.assert_awaited_once()
     assert monitor.pending_actions.counts()["completed"] == 1
 
@@ -1993,6 +2048,104 @@ async def test_guarded_calendar_correction_rebinds_then_confirms(monitor):
     dispatched = handler.await_args.args[1]
     assert dispatched["target"] == "calendar-1"
     assert dispatched["changes"] == {"title": "Endelig navn"}
+
+
+@pytest.mark.asyncio
+async def test_reminder_partial_correction_repreviews_then_executes_once(
+    monitor,
+):
+    handler = AsyncMock(return_value=DispatchOutcome.success(mutated=True))
+    monitor.handlers["reminders"].handle_reminder_create = handler
+    message = RecordingMessage("@inebotten minn meg på å ringe legen")
+    routing = routing_context_from_message(message, bot_user_id=42)
+    route = IntentResult(
+        BotIntent.REMINDER_CREATE,
+        0.99,
+        {
+            "reminder": {
+                "action": "add",
+                "text": "Ringe legen",
+                "due_date": "20.07.2026",
+                "time": "10:00",
+                "timezone": "Europe/Oslo",
+            }
+        },
+        source=IntentSource.SEMANTIC,
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+
+    await monitor._process_route(
+        message,
+        utterance=normalize_utterance("minn meg på å ringe legen"),
+        routing_context=routing,
+        route=route,
+        reference_time=monitor._reference_time_now(),
+    )
+    original = monitor.pending_actions.peek(routing.key)
+    assert original is not None and original.status is PendingStatus.READY
+
+    correction = RecordingMessage("@inebotten kl 15")
+    await monitor.handle_message(correction)
+
+    handler.assert_not_awaited()
+    corrected = monitor.pending_actions.peek(routing.key)
+    assert corrected is not None and corrected.status is PendingStatus.READY
+    assert corrected.action_id != original.action_id
+    assert corrected.routes[0].payload["reminder"] == {
+        "action": "add",
+        "text": "Ringe legen",
+        "due_at": "2026-07-20T15:00:00+02:00",
+        "due_date": "20.07.2026",
+        "time": "15:00",
+        "timezone": "Europe/Oslo",
+    }
+    assert "Bekreftelsesdetaljer" in correction.replies[0]
+
+    await monitor.handle_message(RecordingMessage("@inebotten ja takk"))
+    await monitor.handle_message(RecordingMessage("@inebotten ja takk"))
+
+    handler.assert_awaited_once()
+    dispatched = handler.await_args.args[1]
+    assert dispatched == corrected.routes[0].payload["reminder"]
+    assert monitor.pending_actions.counts()["completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_wrapper_disarms_pending_action_without_dispatch(monitor):
+    handler = AsyncMock(return_value=DispatchOutcome.success(mutated=True))
+    monitor.handlers["reminders"].handle_reminder_create = handler
+    message = RecordingMessage("@inebotten minn meg på å ringe legen")
+    routing = routing_context_from_message(message, bot_user_id=42)
+    route = IntentResult(
+        BotIntent.REMINDER_CREATE,
+        0.99,
+        {
+            "reminder": {
+                "action": "add",
+                "text": "Ringe legen",
+                "due_date": "20.07.2026",
+            }
+        },
+        source=IntentSource.SEMANTIC,
+        risk=IntentRisk.ADDITIVE,
+        requires_confirmation=True,
+    )
+    await monitor._process_route(
+        message,
+        utterance=normalize_utterance("minn meg på å ringe legen"),
+        routing_context=routing,
+        route=route,
+        reference_time=monitor._reference_time_now(),
+    )
+    assert monitor.pending_actions.peek(routing.key) is not None
+
+    cancellation = RecordingMessage("@inebotten nei, avbryt")
+    await monitor.handle_message(cancellation)
+
+    handler.assert_not_awaited()
+    assert monitor.pending_actions.peek(routing.key) is None
+    assert cancellation.replies == ["Avbrutt."]
 
 
 @pytest.mark.asyncio

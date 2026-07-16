@@ -23,6 +23,7 @@ from core.intent_payloads import (
     typed_or_legacy_payload,
     validate_intent_payload,
 )
+from core.list_read_filters import is_supported_calendar_read_date
 from core.intent_router import BotIntent
 from core.mutation_coordinator import CALENDAR_SHARED_SCOPE
 from features.base_handler import BaseHandler
@@ -365,6 +366,15 @@ class CalendarHandler(BaseHandler):
         rows = self.calendar.snapshot_pending_items(reference_time=reference_time)
         return tuple(dict(row) for row in rows)
 
+    def _target_snapshot(
+        self, reference_time: datetime
+    ) -> tuple[dict[str, Any], ...]:
+        snapshot = getattr(self.calendar, "snapshot_target_items", None)
+        if not callable(snapshot):
+            return self._snapshot(reference_time)
+        rows = snapshot(reference_time=reference_time)
+        return tuple(dict(row) for row in rows)
+
     def _resolve_target(
         self,
         payload: dict[str, Any],
@@ -372,7 +382,7 @@ class CalendarHandler(BaseHandler):
         reference_time: datetime,
         allow_legacy_bulk: bool = False,
     ) -> tuple[str, list[dict[str, Any]]]:
-        rows = list(self._snapshot(reference_time))
+        rows = list(self._target_snapshot(reference_time))
         for index, row in enumerate(rows, 1):
             row["_visible_index"] = index
         number = payload.get("number")
@@ -433,9 +443,30 @@ class CalendarHandler(BaseHandler):
             for row in matches
         ]
 
-    def _format_list(self, reference_time: datetime) -> str:
-        rows = self._snapshot(reference_time)
+    def _format_list(
+        self,
+        reference_time: datetime,
+        *,
+        date_filter: str | None = None,
+    ) -> str:
+        snapshot = (
+            self._target_snapshot(reference_time)
+            if date_filter is not None
+            else self._snapshot(reference_time)
+        )
+        rows = tuple(enumerate(snapshot, 1))
+        if date_filter is not None:
+            rows = tuple(
+                (index, item)
+                for index, item in rows
+                if item.get("date") == date_filter
+            )
         if not rows:
+            if date_filter is not None:
+                return (
+                    "📭 **Ingen kalenderoppføringer "
+                    f"{date_filter}.**"
+                )
             return (
                 "📭 **Kalenderen er tom**\n\n"
                 "Du kan bare skrive hva som skal skje og når, for eksempel "
@@ -449,7 +480,7 @@ class CalendarHandler(BaseHandler):
             "monthly": "måned",
             "yearly": "år",
         }
-        for index, item in enumerate(rows[:10], 1):
+        for index, item in rows[:10]:
             time_text = f" kl. {item['time']}" if item.get("time") else ""
             recurrence = (
                 f" 🔄 {recurrence_labels.get(item.get('recurrence'), item.get('recurrence'))}"
@@ -626,12 +657,38 @@ class CalendarHandler(BaseHandler):
     async def handle_list(
         self,
         message,
+        payload: dict[str, Any] | None = None,
         *,
         reference_time: datetime | None = None,
     ) -> DispatchOutcome:
         captured = self._capture_reference(reference_time)
         try:
-            copy = self._format_list(captured)
+            canonical = (
+                validate_intent_payload(BotIntent.CALENDAR_LIST, payload)
+                if payload is not None
+                else {}
+            )
+        except (PayloadValidationError, TypeError, ValueError):
+            return await self._finish(
+                message,
+                "❌ Kalenderfilteret er ugyldig.",
+                DispatchOutcome.failure("invalid_payload"),
+            )
+        date_filter = canonical.get("date")
+        if date_filter is not None and not is_supported_calendar_read_date(
+            date_filter,
+            reference_time=captured,
+        ):
+            return await self._finish(
+                message,
+                (
+                    "📅 Kalenderlisten viser i dag og fremover. "
+                    "Velg en dato fra i dag eller senere."
+                ),
+                DispatchOutcome.failure("invalid_payload"),
+            )
+        try:
+            copy = self._format_list(captured, date_filter=date_filter)
             base = DispatchOutcome.success(mutated=False)
         except Exception:
             copy = "❌ Kalenderen kunne ikke leses akkurat nå."

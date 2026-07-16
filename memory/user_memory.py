@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -16,6 +17,75 @@ from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
 _T = TypeVar("_T")
+
+_PROVIDER_TEXT_LIMIT = 200
+_PROVIDER_LIST_LIMIT = 5
+
+
+def _provider_text(value: object) -> str | None:
+    """Return one bounded stored string without coercing arbitrary objects."""
+
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned[:_PROVIDER_TEXT_LIMIT]
+
+
+def _provider_text_list(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    selected: list[str] = []
+    for raw in value:
+        candidates = raw if isinstance(raw, (list, tuple)) else (raw,)
+        for candidate in candidates:
+            text = _provider_text(candidate)
+            if text is not None:
+                selected.append(text)
+            if len(selected) >= _PROVIDER_LIST_LIMIT:
+                return selected
+    return selected
+
+
+def provider_memory_projection(snapshot: object) -> dict[str, object]:
+    """Project stored memory onto the explicit provider-safe schema.
+
+    Stored records are intentionally open for backward compatibility.  That
+    makes the provider boundary the wrong place to copy a record wholesale:
+    unknown legacy keys can contain secrets or private notes.  Only the fields
+    already used by the historical personalized-context formatter are allowed.
+    """
+
+    if not isinstance(snapshot, Mapping):
+        return {}
+
+    projected: dict[str, object] = {}
+    location = _provider_text(snapshot.get("location"))
+    if location is not None:
+        projected["location"] = location
+
+    interests = _provider_text_list(snapshot.get("interests"))
+    if interests:
+        projected["interests"] = interests
+
+    topics = _provider_text_list(snapshot.get("last_topics"))
+    if topics:
+        projected["last_topics"] = topics
+
+    raw_preferences = snapshot.get("preferences")
+    if isinstance(raw_preferences, Mapping):
+        preferences: dict[str, object] = {}
+        humor_style = _provider_text(raw_preferences.get("humor_style"))
+        if humor_style is not None:
+            preferences["humor_style"] = humor_style
+        use_dialect = raw_preferences.get("use_dialect")
+        if isinstance(use_dialect, bool):
+            preferences["use_dialect"] = use_dialect
+        if preferences:
+            projected["preferences"] = preferences
+
+    return projected
 
 
 class UserMemory:

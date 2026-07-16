@@ -6,11 +6,13 @@ Tracks birthdays for Discord group members with Google Calendar sync
 
 import asyncio
 import json
+import re
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Literal, Required, TypedDict
 
 from core.dispatch_result import (
     ExternalCommitState,
@@ -22,6 +24,7 @@ from cal_system.google_calendar_manager import (
     GoogleCalendarManager,
 )
 from core.mutation_coordinator import BIRTHDAY_STORE_SCOPE, MutationCoordinator
+from core.message_context import RoutingContext
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 # Suppress requests/urllib3 version warnings
@@ -1127,65 +1130,377 @@ class BirthdayManager:
 
         return "\n".join(lines)
 
+    def format_birthday_for_user(self, guild_id, user_id):
+        """Format one caller-owned birthday without exposing another user."""
 
-def parse_birthday_command(message_content):
-    """
-    Parse birthday command
+        record = self.birthdays.get(str(guild_id), {}).get(str(user_id))
+        if not isinstance(record, dict):
+            return (
+                "🎂 Bursdagen din er ikke registrert ennå. "
+                "Du kan lagre den med for eksempel `bursdagen min er 15.05`."
+            )
+        months = (
+            "",
+            "januar",
+            "februar",
+            "mars",
+            "april",
+            "mai",
+            "juni",
+            "juli",
+            "august",
+            "september",
+            "oktober",
+            "november",
+            "desember",
+        )
+        try:
+            day = int(record["day"])
+            month = int(record["month"])
+            validate_birthday_date(day, month, record.get("year"))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("invalid_stored_birthday") from None
+        date_text = f"{day}. {months[month]}"
+        if record.get("year") is not None:
+            date_text += f" {int(record['year'])}"
+        return f"🎂 Bursdagen din er **{date_text}**."
 
-    Formats:
-    - "@inebotten bursdag 15.05 1990" - set own birthday
-    - "@inebotten bursdag @user 15.05" - set someone's birthday
-    - "@inebotten bursdager" - list birthdays
 
-    Returns:
-        dict or None
-    """
-    import re
+class BirthdayCommand(TypedDict, total=False):
+    action: Required[Literal["add", "edit", "list", "clarify"]]
+    user_id: int
+    display_name: str
+    day: int
+    month: int
+    year: int
+    scope: Literal["all", "upcoming", "self"]
+    reason: str
 
-    content = message_content.lower()
 
-    # Remove Discord mention formats and @inebotten text
-    content = re.sub(
-        r"<@!?\d+>", "", content
-    )  # Remove Discord mentions like <@123> or <@!123>
-    content = content.replace("@inebotten", "").strip()
+_BIRTHDAY_BOT_INVOCATION = re.compile(
+    r"^\s*@inebotten\b\s*[,;:]?\s*", re.I
+)
+_BIRTHDAY_MONTHS = {
+    "januar": 1,
+    "january": 1,
+    "jan": 1,
+    "februar": 2,
+    "february": 2,
+    "feb": 2,
+    "mars": 3,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "mai": 5,
+    "may": 5,
+    "juni": 6,
+    "june": 6,
+    "jun": 6,
+    "juli": 7,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "oktober": 10,
+    "october": 10,
+    "okt": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "desember": 12,
+    "december": 12,
+    "des": 12,
+    "dec": 12,
+}
+_BIRTHDAY_MONTH_NAME = "|".join(
+    sorted(map(re.escape, _BIRTHDAY_MONTHS), key=len, reverse=True)
+)
+_BIRTHDAY_NUMERIC_DATE_PATTERN = (
+    r"\d{1,2}[.]\d{1,2}(?:[.](?:\d{2}|\d{4}))?"
+)
+_BIRTHDAY_DAY_FIRST_PATTERN = (
+    rf"\d{{1,2}}(?:[.]\s*|\s+)(?:{_BIRTHDAY_MONTH_NAME})[.]?"
+    r"(?:\s*,?\s*(?:\d{2}|\d{4}))?"
+)
+_BIRTHDAY_MONTH_FIRST_PATTERN = (
+    rf"(?:{_BIRTHDAY_MONTH_NAME})[.]?\s+\d{{1,2}}"
+    r"(?:\s*,?\s*(?:\d{2}|\d{4}))?"
+)
+_BIRTHDAY_DATE_PATTERN = (
+    rf"(?:{_BIRTHDAY_NUMERIC_DATE_PATTERN}|"
+    rf"{_BIRTHDAY_DAY_FIRST_PATTERN}|{_BIRTHDAY_MONTH_FIRST_PATTERN})"
+)
+_BIRTHDAY_NUMERIC_DATE = re.compile(
+    r"(?<!\d)(?P<day>\d{1,2})[.](?P<month>\d{1,2})"
+    r"(?:[.](?P<year>\d{2}|\d{4}))?(?!\d)"
+)
+_BIRTHDAY_DAY_FIRST_DATE = re.compile(
+    rf"(?<!\d)(?P<day>\d{{1,2}})(?:[.]\s*|\s+)"
+    rf"(?P<month_name>{_BIRTHDAY_MONTH_NAME})[.]?"
+    r"(?:\s*,?\s*(?P<year>\d{2}|\d{4}))?(?!\w)",
+    re.I,
+)
+_BIRTHDAY_MONTH_FIRST_DATE = re.compile(
+    rf"(?<!\w)(?P<month_name>{_BIRTHDAY_MONTH_NAME})[.]?\s+"
+    r"(?P<day>\d{1,2})(?:\s*,?\s*(?P<year>\d{2}|\d{4}))?(?!\d)",
+    re.I,
+)
+_BIRTHDAY_EDIT = r"endre|rediger|oppdater|edit|update|change"
+_BIRTHDAY_ADD = (
+    r"legg\s+til|legge\s+til|legg\s+inn|legge\s+inn|"
+    r"lagre|add|save|register"
+)
+_BIRTHDAY_POLITE = (
+    r"(?:(?:(?:kan|kunne)\s+du|(?:could|would)\s+you|please)\s+)?"
+)
+_BIRTHDAY_DOMAIN = re.compile(
+    r"\b(?:bursdag(?:en|er|ene|ar|ane)?|birthday(?:s)?)\b", re.I
+)
+_BIRTHDAY_UPCOMING_LIST = re.compile(
+    r"^(?:(?:hvem|kven)\s+har\s+bursdag|who\s+has\s+(?:a\s+)?birthday)"
+    r"\s+(?:snart|kommende|komande|soon|upcoming|coming\s+up)\s*\??$|"
+    rf"^{_BIRTHDAY_POLITE}(?:vis|vise|list|show)\s+"
+    r"(?:(?:meg|mæ|me)\s+)?(?:kommende|komande|upcoming)\s+"
+    r"(?:bursdager|bursdagar|birthdays)\s*\??$",
+    re.I,
+)
+_BIRTHDAY_ALL_LIST = re.compile(
+    r"^(?:(?:vis|list|show)\s+)?(?:alle\s+|all\s+)?"
+    r"(?:bursdager|bursdagar|birthdays)\s*\??$|"
+    r"^(?:(?:hvem|kven)\s+har\s+bursdag|who\s+has\s+(?:a\s+)?birthday)"
+    r"\s*\??$",
+    re.I,
+)
+_BIRTHDAY_SELF_LIST = re.compile(
+    r"^(?:(?:når|kva\s+tid|hva\s+tid)\s+er\s+bursdagen\s+min|"
+    r"når\s+har\s+(?:jeg|eg|æ)\s+bursdag|"
+    r"(?:when|what)(?:\s+is|['’]s)\s+my\s+birthday)\s*\??$",
+    re.I,
+)
 
-    # Check if it's a birthday command
-    if not (
-        content.startswith("bursdag")
-        or content.startswith("bursdager")
-        or content.startswith("birthday")
+
+def validate_birthday_date(
+    day: int,
+    month: int,
+    year: int | None = None,
+) -> None:
+    """Raise ValueError for an impossible or unsupported birthday date."""
+
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (day, month)
     ):
+        raise ValueError("invalid_birthday_date")
+    if year is not None and (
+        isinstance(year, bool) or not isinstance(year, int) or not 1900 <= year <= 2100
+    ):
+        raise ValueError("invalid_birthday_date")
+    try:
+        date(year or 2000, month, day)
+    except (OverflowError, ValueError):
+        raise ValueError("invalid_birthday_date") from None
+
+
+def _birthday_date_fields(match: re.Match[str]) -> dict[str, int]:
+    day = int(match.group("day"))
+    raw_month = match.groupdict().get("month")
+    month_name = match.groupdict().get("month_name")
+    month = (
+        int(raw_month)
+        if raw_month is not None
+        else _BIRTHDAY_MONTHS[month_name.casefold()]
+    )
+    raw_year = match.group("year")
+    year = int(raw_year) if raw_year is not None else None
+    if year is not None and year < 100:
+        year += 1900 if year >= 50 else 2000
+    validate_birthday_date(day, month, year)
+    fields = {"day": day, "month": month}
+    if year is not None:
+        fields["year"] = year
+    return fields
+
+
+def _birthday_date_matches(content: str) -> tuple[re.Match[str], ...]:
+    matches = [
+        *list(_BIRTHDAY_NUMERIC_DATE.finditer(content)),
+        *list(_BIRTHDAY_DAY_FIRST_DATE.finditer(content)),
+        *list(_BIRTHDAY_MONTH_FIRST_DATE.finditer(content)),
+    ]
+    matches.sort(
+        key=lambda value: (
+            value.start(),
+            -(value.end() - value.start()),
+        )
+    )
+    accepted: list[re.Match[str]] = []
+    for match in matches:
+        if any(
+            match.start() < existing.end()
+            and existing.start() < match.end()
+            for existing in accepted
+        ):
+            continue
+        accepted.append(match)
+    return tuple(accepted)
+
+
+def parse_birthday_command(
+    message_content: str,
+    *,
+    routing_context: RoutingContext | None = None,
+) -> BirthdayCommand | None:
+    """Parse one birthday operation without guessing a user's identity."""
+
+    if not isinstance(message_content, str):
+        return None
+    content = _BIRTHDAY_BOT_INVOCATION.sub("", message_content, count=1).strip()
+    if _BIRTHDAY_SELF_LIST.fullmatch(content):
+        return {"action": "list", "scope": "self"}
+    if _BIRTHDAY_UPCOMING_LIST.fullmatch(content):
+        return {"action": "list", "scope": "upcoming"}
+    if _BIRTHDAY_ALL_LIST.fullmatch(content):
+        return {"action": "list", "scope": "all"}
+    if _BIRTHDAY_DOMAIN.search(content) is None:
         return None
 
-    # List command
-    if content.startswith("bursdager") or content.startswith("birthdays"):
-        return {"action": "list"}
-
-    # Remove command word
-    content = content.replace("bursdag", "").replace("birthday", "").strip()
-
-    # Try to parse DD.MM or DD.MM.YYYY or DD.MM.YY
-    date_match = re.search(r"(\d{1,2})[.](\d{1,2})(?:[.](\d{2,4}))?", content)
-
-    if not date_match:
+    date_pattern = _BIRTHDAY_DATE_PATTERN
+    direct_edit = re.match(
+        rf"^{_BIRTHDAY_POLITE}(?:{_BIRTHDAY_EDIT})\s+"
+        r"(?:bursdag(?:en)?|birthday)\b",
+        content,
+        re.I,
+    )
+    direct_add = re.match(
+        rf"^{_BIRTHDAY_POLITE}(?:{_BIRTHDAY_ADD})\s+"
+        r"(?:bursdagen\s+min|min\s+bursdag|my\s+birthday)\b",
+        content,
+        re.I,
+    )
+    direct_named_add = re.match(
+        rf"^{_BIRTHDAY_POLITE}(?:{_BIRTHDAY_ADD})\s+"
+        r"(?:(?:en|ein|a)\s+)?(?:bursdag|birthday)\b",
+        content,
+        re.I,
+    )
+    direct_frame = bool(
+        direct_edit
+        or direct_add
+        or direct_named_add
+        or re.match(
+            r"^(?:bursdag(?:en)?|birthday)\b", content, re.I
+        )
+        or re.match(
+            r"^(?:min\s+bursdag|(?:jeg|eg)\s+har\s+bursdag|"
+            r"my\s+birthday)\b",
+            content,
+            re.I,
+        )
+        or re.fullmatch(
+            rf"^.+?\s+(?:har\s+bursdag|has\s+(?:a\s+)?birthday)"
+            rf"\s*[:=]?\s*{date_pattern}\s*[.!?]?$",
+            content,
+            re.I,
+        )
+        or re.fullmatch(
+            rf"^(?:bursdagen\s+til\s+.+?\s+er|"
+            rf"my\s+.+?\s+birthday\s+is)\s*[:=]?\s*"
+            rf"{date_pattern}\s*[.!?]?$",
+            content,
+            re.I,
+        )
+    )
+    if not direct_frame:
         return None
 
-    day = int(date_match.group(1))
-    month = int(date_match.group(2))
-    year_str = date_match.group(3)
-    year = None
+    matches = _birthday_date_matches(content)
+    if len(matches) != 1:
+        return {"action": "clarify", "reason": "unresolved_target"}
+    try:
+        date_fields = _birthday_date_fields(matches[0])
+    except ValueError:
+        return {"action": "clarify", "reason": "unresolved_target"}
 
-    if year_str:
-        year = int(year_str)
-        # Handle 2-digit years
-        if year < 100:
-            if year >= 50:
-                year = 1900 + year  # 95 -> 1995
-            else:
-                year = 2000 + year  # 15 -> 2015
+    mention_tokens = tuple(re.findall(r"<@!?(\d+)>", content))
+    is_edit = direct_edit is not None
+    if mention_tokens:
+        mention_frame = re.fullmatch(
+            rf"^(?:{_BIRTHDAY_POLITE}(?:{_BIRTHDAY_EDIT})\s+)?"
+            rf"(?:bursdag(?:en)?|birthday)\s+<@!?\d+>"
+            rf"\s*[:=]?\s*{date_pattern}\s*[.!?]?$|"
+            rf"^<@!?\d+>\s+(?:har\s+bursdag|has\s+(?:a\s+)?birthday)"
+            rf"\s*[:=]?\s*{date_pattern}\s*[.!?]?$|"
+            rf"^(?:bursdagen\s+til\s+<@!?\d+>\s+er|"
+            rf"<@!?\d+>'s\s+birthday\s+is)\s*[:=]?\s*"
+            rf"{date_pattern}\s*[.!?]?$",
+            content,
+            re.I,
+        )
+        if (
+            mention_frame is None
+            or len(mention_tokens) != 1
+            or routing_context is None
+        ):
+            return {"action": "clarify", "reason": "unresolved_target"}
+        mentioned_id = int(mention_tokens[0])
+        resolved = [
+            mention
+            for mention in routing_context.mentions
+            if mention.user_id == mentioned_id
+        ]
+        if len(resolved) != 1:
+            return {"action": "clarify", "reason": "unresolved_target"}
+        action: Literal["add", "edit"] = "edit" if is_edit else "add"
+        result: BirthdayCommand = {
+            "action": action,
+            "user_id": mentioned_id,
+            **date_fields,
+        }
+        if action == "add":
+            result["display_name"] = resolved[0].display_name
+        return result
 
-    return {"action": "add", "day": day, "month": month, "year": year}
+    optional_edit = (
+        rf"(?:{_BIRTHDAY_POLITE}(?:(?P<edit>{_BIRTHDAY_EDIT})|"
+        rf"(?:{_BIRTHDAY_ADD}))\s+)?"
+    )
+    self_patterns = (
+        re.compile(
+            rf"^{optional_edit}(?:bursdagen\s+min|min\s+bursdag|bursdag(?:en)?)"
+            rf"(?:\s+(?:er|til))?\s*[:=]?\s*{date_pattern}\s*[.!?]?$",
+            re.I,
+        ),
+        re.compile(
+            rf"^{optional_edit}(?:jeg|eg)\s+har\s+bursdag"
+            rf"\s*[:=]?\s*{date_pattern}\s*[.!?]?$",
+            re.I,
+        ),
+        re.compile(
+            rf"^{optional_edit}my\s+birthday(?:\s+(?:is|to))?"
+            rf"\s*[:=]?\s*{date_pattern}\s*[.!?]?$",
+            re.I,
+        ),
+    )
+    self_match = None
+    for pattern in self_patterns:
+        self_match = pattern.fullmatch(content)
+        if self_match is not None:
+            break
+    if self_match is None or routing_context is None:
+        return {"action": "clarify", "reason": "unresolved_target"}
+    action = "edit" if self_match.group("edit") else "add"
+    result: BirthdayCommand = {
+        "action": action,
+        "user_id": routing_context.author.user_id,
+        **date_fields,
+    }
+    if action == "add":
+        result["display_name"] = routing_context.author.display_name
+    return result
 
 
 if __name__ == "__main__":

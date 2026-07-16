@@ -12,6 +12,14 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional
 
+
+_BARE_TEMPORAL_WHAT_HAPPENS = re.compile(
+    r"(?:hva|kva|ka)\s+skjer\s+i\s+"
+    r"(?:dag|morgen|morgon|morra|overmorgen|overmorgon)\s*[?.!]*",
+    re.IGNORECASE,
+)
+
+
 class SearchManager:
     """
     Manages web search queries using multiple providers for maximum reliability.
@@ -194,6 +202,53 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
     or opinion questions.
     """
     content_lower = content.lower()
+    temporal_probe = re.sub(
+        r"(?:@inebotten|<@!?\d+>)",
+        "",
+        content_lower,
+        flags=re.IGNORECASE,
+    ).strip()
+    if _BARE_TEMPORAL_WHAT_HAPPENS.fullmatch(temporal_probe):
+        logging.debug("search_intent_rejected reason=bare_temporal_complement")
+        return None
+
+    # Explicit web language remains authoritative.  The local-knowledge guard
+    # below exists only for generic epistemic phrases such as "what do you
+    # know about ...", which otherwise steal questions that should be answered
+    # from the bot's own memory and feature state.
+    explicit_web_pattern = (
+        r"\b(?:søk(?:\s+opp)?|slå\s+opp|search|look\s+up)\b"
+        r"[^.!?\n]{0,120}\b(?:på\s+nett(?:et)?|web(?:en)?|"
+        r"(?:on\s+)?the\s+web)\b"
+    )
+    explicit_web_request = re.search(
+        explicit_web_pattern,
+        content_lower,
+    ) is not None
+
+    local_subject = (
+        r"(?:meg|mæ|me|"
+        r"(?:min|mitt|mine|my)\s+"
+        r"(?:kalender|calendar|profil|profile|minne|memory|"
+        r"påminnelser?|påminningar?|reminders?)|"
+        r"(?:kalender(?:en)?|calendar|profil(?:en)?|profile|"
+        r"minn(?:et|e)?|memory|påminnels(?:en|er|ene)|"
+        r"påminning(?:a|ar|ane)|reminders?)\s+"
+        r"(?:min|mitt|mine|mi|my))"
+    )
+    local_knowledge_patterns = (
+        rf"\b(?:hva|kva|ka|what)\s+"
+        rf"(?:vet|veit|know|husker|hugsar|remember)\s+"
+        rf"(?:du|you)\s+(?:om|about)\s+{local_subject}\b",
+        rf"\b(?:fortell|fortel|tell)\s+(?:meg|mæ|me)\s+"
+        rf"(?:om|about)\s+{local_subject}\b",
+    )
+    if not explicit_web_request and any(
+        re.search(pattern, content_lower)
+        for pattern in local_knowledge_patterns
+    ):
+        logging.debug("search_intent_rejected reason=local_knowledge")
+        return None
 
     # News triggers
     news_triggers = [
@@ -216,7 +271,7 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
         r"tror du", r"bor du", r"kommer du fra", r"er du",
     ]
 
-    query_type = None
+    query_type = "web" if explicit_web_request else None
     matched_pattern = None
 
     for pattern in news_triggers:
@@ -234,14 +289,35 @@ def detect_search_intent(content: str) -> Optional[Dict[str, str]]:
 
     if query_type:
         for opinion in opinion_blocklist:
-            if re.search(opinion, content_lower):
+            if not explicit_web_request and re.search(opinion, content_lower):
                 logging.debug(
                     "search_intent_rejected reason=opinion_pattern"
                 )
                 return None
 
         query = re.sub(r"@inebotten", "", content, flags=re.IGNORECASE)
-        query = re.sub(matched_pattern, "", query, flags=re.IGNORECASE)
+        if explicit_web_request:
+            query = re.sub(
+                r"\b(?:søk(?:\s+opp)?|slå\s+opp|search|look\s+up)\b",
+                "",
+                query,
+                flags=re.IGNORECASE,
+            )
+            query = re.sub(
+                r"\b(?:på\s+nett(?:et)?|web(?:en)?|"
+                r"(?:on\s+)?the\s+web)\b",
+                "",
+                query,
+                flags=re.IGNORECASE,
+            )
+            query = re.sub(
+                r"^\s*(?:etter|for)\s+",
+                "",
+                query,
+                flags=re.IGNORECASE,
+            )
+        elif matched_pattern is not None:
+            query = re.sub(matched_pattern, "", query, flags=re.IGNORECASE)
         query = query.strip("? .!,").strip()
 
         if len(query) < 3:

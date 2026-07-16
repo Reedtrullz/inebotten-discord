@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 import json
 import math
@@ -12,10 +13,16 @@ from pathlib import Path
 import re
 from types import SimpleNamespace
 from typing import Literal, Protocol, TypeAlias, cast, get_args
+from zoneinfo import ZoneInfo
 
 from cal_system.natural_language_parser import NaturalLanguageParser
 from core.eval_fixtures import EvalFixture
 from core.intent_router import BotIntent, IntentResult, IntentRouter
+from core.message_context import (
+    ConversationKey,
+    ResolvedMention,
+    RoutingContext,
+)
 from core.utterance import normalize_utterance
 
 
@@ -161,6 +168,8 @@ class EvaluationRouter(Protocol):
         self, text: str, *, guild_id: int | None
     ) -> tuple[IntentResult, tuple[ParserName, ...]]: ...
 
+    def route_help_example(self, text: str) -> IntentResult: ...
+
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"invalid JSON constant: {value}")
@@ -177,6 +186,49 @@ def _validate_payload_value(value: object) -> bool:
         isinstance(value, list)
         and all(_is_json_scalar(item) for item in value)
     )
+
+
+def _critical_destructive_payload_is_labeled(
+    expected_intent: str,
+    expected_payload: Mapping[str, object],
+) -> bool:
+    """Require the exact action and target evidence used for precision."""
+
+    if expected_intent == "calendar_delete":
+        return any(
+            path in expected_payload
+            for path in ("calendar_target.number", "calendar_target.target")
+        )
+    if expected_intent == "calendar_clear":
+        return expected_payload.get("calendar_target.all") is True
+    if expected_intent == "poll_delete":
+        return any(
+            path in expected_payload
+            for path in ("poll_delete.target", "poll_delete.poll_id")
+        )
+    if expected_intent == "quote_delete":
+        return "quote.index" in expected_payload
+    if expected_intent == "memory_delete":
+        return expected_payload.get("memory.action") == "delete"
+    if expected_intent == "reminder_delete":
+        return (
+            expected_payload.get("reminder.action") == "delete"
+            and any(
+                path in expected_payload
+                for path in ("reminder.number", "reminder.reminder_id")
+            )
+        )
+    if (
+        expected_intent == "watchlist"
+        and expected_payload.get("watchlist.action") == "remove"
+    ):
+        return any(
+            path in expected_payload
+            for path in ("watchlist.index", "watchlist.title")
+        )
+    if expected_intent in DESTRUCTIVE:
+        return False
+    return True
 
 
 def load_cases(path: Path) -> tuple[EvalCase, ...]:
@@ -265,6 +317,13 @@ def load_cases(path: Path) -> tuple[EvalCase, ...]:
             action = expected_payload.get("quote.action")
             if not isinstance(action, str) or action not in {"get", "save"}:
                 raise ValueError("invalid quote.action")
+        if decoded["critical"] and not _critical_destructive_payload_is_labeled(
+            expected_intent,
+            expected_payload,
+        ):
+            raise ValueError(
+                "critical destructive case requires action and target payload"
+            )
 
         try:
             fixture = EvalFixture(decoded["fixture"])
@@ -432,15 +491,50 @@ class ParserProbe:
         return tuple(dict.fromkeys(self._names))
 
 
+_HELP_REFERENCE_TIME = datetime(
+    2026,
+    7,
+    14,
+    12,
+    0,
+    tzinfo=ZoneInfo("Europe/Oslo"),
+)
+
+
 class ProductionRouterAdapter:
     def __init__(self, monitor: object) -> None:
-        self._router = IntentRouter(monitor)
+        self._router = IntentRouter(
+            monitor,
+            now_provider=lambda captured=_HELP_REFERENCE_TIME: captured,
+        )
+        self._routing_context = RoutingContext(
+            key=ConversationKey(
+                guild_id=monitor.guild_id,
+                channel_id=monitor.channel_id,
+                user_id=monitor.author_id,
+            ),
+            author=ResolvedMention(monitor.author_id, monitor.author_name),
+            mentions=tuple(
+                ResolvedMention(user_id, display_name)
+                for user_id, display_name in monitor.resolved_mentions.items()
+            ),
+        )
 
     def evaluate(
         self, text: str, *, guild_id: int | None
     ) -> tuple[IntentResult, tuple[ParserName, ...]]:
+        use_context = guild_id == self._routing_context.key.guild_id
         routed = self._router.evaluate_utterance(
-            normalize_utterance(text), guild_id=guild_id
+            normalize_utterance(text),
+            guild_id=guild_id,
+            channel_id=(
+                self._routing_context.key.channel_id if use_context else None
+            ),
+            user_id=(
+                self._routing_context.key.user_id if use_context else None
+            ),
+            routing_context=self._routing_context if use_context else None,
+            reference_time=_HELP_REFERENCE_TIME,
         )
         parser_names = tuple(
             name
@@ -448,6 +542,16 @@ class ProductionRouterAdapter:
             if name in PARSER_NAME_VALUES
         )
         return routed.result, parser_names
+
+    def route_help_example(self, text: str) -> IntentResult:
+        return self._router.route_utterance(
+            normalize_utterance(text),
+            guild_id=self._routing_context.key.guild_id,
+            channel_id=self._routing_context.key.channel_id,
+            user_id=self._routing_context.key.user_id,
+            routing_context=self._routing_context,
+            reference_time=_HELP_REFERENCE_TIME,
+        )
 
 
 def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
@@ -461,6 +565,7 @@ def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
     from features.crypto_manager import parse_price_command
     from features.horoscope_manager import parse_horoscope_command
     from features.poll_manager import parse_poll_command, parse_vote
+    from features.profile_commands import parse_profile_command
     from features.quote_manager import parse_quote_command
     from features.search_manager import detect_search_intent
     from features.url_shortener import parse_shorten_command
@@ -520,6 +625,7 @@ def build_production_router(fixture: EvalFixture) -> EvaluationRouter:
         detect_search_intent=detect_search_intent,
         parse_reminder_command=parse_reminder_command,
         parse_birthday_command=parse_birthday_command,
+        parse_profile_command=parse_profile_command,
         conversation=ConversationContext(),
         calendar=SimpleNamespace(
             get_upcoming=lambda guild_id, days=365, reference_time=None: list(
@@ -623,7 +729,8 @@ def aggregate_intent_report(
     destructive_precision_count = sum(
         result.expected_risk == "destructive"
         and result.intent_match
-        and (not result.payload_labeled or result.payload_match)
+        and result.payload_labeled
+        and result.payload_match
         for result in actual_destructive
     )
 

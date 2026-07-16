@@ -4,10 +4,33 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from core.intent_router import BotIntent, IntentRouter
 from core.send_receipt import DiscordSendCoordinator
 from features.quote_handler import QuoteHandler
 from features.quote_manager import QuoteManager, parse_quote_command
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        (
+            "what quotes have I saved?",
+            {"action": "list", "lang": "en"},
+        ),
+        (
+            "show me my saved quotes",
+            {"action": "list", "lang": "en"},
+        ),
+        (
+            "give me a random quote",
+            {"action": "get", "lang": "en"},
+        ),
+    ),
+)
+def test_natural_quote_inventory_and_random_requests_parse(text, expected):
+    assert parse_quote_command(text) == expected
 
 
 class QuoteParserTests(unittest.TestCase):

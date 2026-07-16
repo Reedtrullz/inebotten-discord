@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from cal_system.temporal_resolver import OSLO, TemporalResolution, TemporalResolver
 from core.intent_utils import has_keyword
+from core.utterance import normalize_utterance
+from core.utterance_semantics import bounded_english_calendar_create_head
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,20 @@ _QUOTED_TITLE_RE = re.compile(
     r'‘(?P<curly_single>[^’\n]*)’|'
     r'«(?P<guillemet>[^»\n]*)»|'
     r"(?<!\w)'(?P<single>[^'\n]+)'(?!\w)"
+)
+_CALENDAR_CREATE_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:(?:(?:kan|kunne|vil|can|could|would|will)\s+"
+    r"(?:du|you)|vennligst|please)\s+)?"
+    r"(?:(?:legg|legge)\s+(?:inn|til)|(?:sette|setje)\s+opp|set\s+up|"
+    r"lag|lage|opprett|opprette|planlegg|planlegge|planleggje|"
+    r"(?:book|booke)(?:\s+me)?|"
+    r"put(?!\s+(?:differently|another\s+way)\b)|"
+    r"make(?=\s+(?:a|an)\s+[^?!.]{0,80}?appointment\b)|"
+    r"create|add|schedule)|"
+    r"(?:i['’]d|i\s+would)\s+like\s+to\s+(?:add|put|book|schedule))"
+    r"(?:\s+(?:en|ei|et|a|an))?\s+",
+    re.IGNORECASE,
 )
 
 
@@ -244,6 +260,7 @@ class NaturalLanguageParser:
         )
         return bool(
             self._extract_recurrence(content)
+            or _CALENDAR_CREATE_PREFIX_RE.match(content)
             or any(has_keyword(content, value) for value in self.event_indicators)
             or any(has_keyword(content, value) for value in strong_task_markers)
         )
@@ -263,12 +280,25 @@ class NaturalLanguageParser:
         quoted_title = self._quoted_title(_QUOTED_TITLE_RE.search(message_content))
         if quoted_title is not None and title == quoted_title:
             return raw
-        cleaned = self.temporal_resolver.strip_temporal_evidence(
-            title,
+        stripped_source = self.temporal_resolver.strip_temporal_evidence(
+            message_content,
             reference=reference_time,
         ).strip()
+        cleaned = self._extract_title(
+            stripped_source,
+            None,
+            None,
+            self._extract_recurrence(message_content),
+        )
+        if not cleaned:
+            cleaned = self.temporal_resolver.strip_temporal_evidence(
+                title,
+                reference=reference_time,
+            ).strip()
         if len(cleaned) < 2:
             return None
+        if cleaned.casefold() == title.casefold():
+            cleaned = title
         if cleaned == title:
             return raw
         normalized = dict(raw)
@@ -334,6 +364,8 @@ class NaturalLanguageParser:
         )
         if resolution.errors:
             return NaturalParseResult(None, resolution.errors)
+        if self._has_conflicting_recurrence(message_content):
+            return NaturalParseResult(None, ("conflicting_recurrence",))
         raw = self._parse_event_legacy(message_content, captured)
         recurrence_data = self._extract_recurrence(message_content)
         if (
@@ -386,6 +418,8 @@ class NaturalLanguageParser:
         )
         if resolution.errors:
             return NaturalParseResult(None, resolution.errors)
+        if self._has_conflicting_recurrence(message_content):
+            return NaturalParseResult(None, ("conflicting_recurrence",))
         task_request = self._has_task_request(message_content)
         raw = self._parse_task_with_recurrence_legacy(message_content, captured)
         if raw is None and task_request:
@@ -787,7 +821,7 @@ class NaturalLanguageParser:
                 strong_indicators += 2
 
         # 3. Explicit time patterns (kl 14, 14:00, kveld, morgen)
-        if re.search(r'(?:kl\.?|klokken)\s*\d{1,2}', content_lower):
+        if re.search(r'(?:kl\.?|klokka|klokken)\s*\d{1,2}', content_lower):
             strong_indicators += 2
         if re.search(r'\b\d{1,2}:\d{2}\b', content):
             strong_indicators += 2
@@ -839,6 +873,19 @@ class NaturalLanguageParser:
     def _is_conversational_false_positive(self, content):
         """Reject future-tense chat that mentions time without asking for scheduling."""
         content_lower = content.lower().strip()
+        english_calendar_head = re.match(
+            r"^(?:(?:(?:can|could|would|will)\s+you|please)\s+)?"
+            r"(?:put|book|make|create|add|set\s+up|schedule)\b",
+            content_lower,
+        )
+        if (
+            english_calendar_head is not None
+            and bounded_english_calendar_create_head(
+                normalize_utterance(content)
+            )
+            is None
+        ):
+            return True
         conversational_patterns = [
             r'\b(jeg|eg)\s+skal\s+bare\s+(høre|spørre|sjekke|prate|snakke|fortelle|vise|dele|si|spørre\s+deg|høre\s+hva)\b',
             r'\b(hva|kva)\s+(synes|mener|tenker)\s+du(\s+om)?\b',
@@ -950,7 +997,10 @@ class NaturalLanguageParser:
         content_lower = content.lower()
         
         # Check for explicit time with "kl" or "klokken"
-        time_match = re.search(r'(?:kl\.?|klokken)\s*(\d{1,2})(?::(\d{2}))?', content_lower)
+        time_match = re.search(
+            r'(?:kl\.?|klokka|klokken)\s*(\d{1,2})(?::(\d{2}))?',
+            content_lower,
+        )
         if time_match:
             hour = time_match.group(1)
             minute = time_match.group(2) if time_match.group(2) else '00'
@@ -992,7 +1042,18 @@ class NaturalLanguageParser:
         """
         Extract event title by removing date/time indicators
         """
-        title = content
+        title = _CALENDAR_CREATE_PREFIX_RE.sub("", content, count=1)
+
+        # A bounded calendar destination is request framing, not title data.
+        # Quoted titles bypass this cleanup in the caller and remain exact.
+        title = re.sub(
+            r"\s+(?:(?:on|in|to)\s+(?:my|the)\s+calendar|"
+            r"i\s+(?:kalenderen\s+min|kalenderen))\b(?:\s+for\b)?",
+            "",
+            title,
+            count=1,
+            flags=re.IGNORECASE,
+        )
         
         # Remove recurrence patterns first
         if recurrence_data:
@@ -1067,7 +1128,7 @@ class NaturalLanguageParser:
         title = re.sub(r'\s+(på|om|å|at)\s*$', '', title, flags=re.IGNORECASE)
         
         # Clean up
-        title = re.sub(r'\s+', ' ', title).strip()
+        title = re.sub(r'\s+', ' ', title).strip(" \t\r\n.,!?;:")
         title = re.sub(r'^[-–—\s]+', '', title)
         title = re.sub(r'[-–—\s]+$', '', title)
         
@@ -1119,6 +1180,38 @@ class NaturalLanguageParser:
                 return {'type': self.recurrence_patterns[pattern]}
 
         return None
+
+    def _has_conflicting_recurrence(self, content: str) -> bool:
+        """Reject requests containing more than one recurrence schedule.
+
+        The legacy extractor deliberately returns one match.  That is useful
+        for ordinary requests, but silently picking the last/first schedule is
+        unsafe when the user supplied two different schedules (for example,
+        ``hver uke og hver måned``).
+        """
+        content_lower = content.casefold()
+        schedules: set[tuple[str, str | None]] = set()
+
+        for pattern_prefix in sorted(
+            self.day_recurrence_patterns,
+            key=len,
+            reverse=True,
+        ):
+            for day_name, rrule_day in self.day_name_to_rrule.items():
+                full_pattern = f"{pattern_prefix} {day_name}"
+                if re.search(rf"\b{re.escape(full_pattern)}\b", content_lower):
+                    schedules.add(
+                        (
+                            self.day_recurrence_patterns[pattern_prefix],
+                            rrule_day,
+                        )
+                    )
+
+        for pattern, recurrence_type in self.recurrence_patterns.items():
+            if re.search(rf"\b{re.escape(pattern)}\b", content_lower):
+                schedules.add((recurrence_type, None))
+
+        return len(schedules) > 1
 
 
 def parse_natural_event(message_content):

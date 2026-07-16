@@ -11,10 +11,10 @@ from urllib.parse import parse_qs, urlparse
 
 from web_console.dashboard import render_commands_page, render_dashboard, render_gcal_auth_page, render_login_page  # pyright: ignore[reportUnknownVariableType]
 from web_console.cloudflare_access import CloudflareAccessVerifier
-from web_console.console_store import get_console_store
+from web_console.console_store import ConsoleStore, get_console_store
 from web_console.state_collector import (
     StateCollector,
-    collect_bot_status,
+    collect_authenticated_status,
     collect_bridge_health,
     collect_calendar_data,
     collect_console_health,
@@ -66,13 +66,14 @@ class ConsoleServer:
         cloudflare_access_audiences: list[str] | None = None,
         cloudflare_access_allowed_emails: list[str] | None = None,
         cloudflare_access_verifier: object | None = None,
+        store: ConsoleStore | None = None,
     ):
         self.host = host
         self.port = port
         self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
         self.monitor = monitor
         self._server = None
-        self.store = get_console_store()
+        self.store = store if store is not None else get_console_store()
         self.session_ttl_seconds = max(
             1,
             int(session_ttl_days if session_ttl_days is not None else os.getenv("CONSOLE_SESSION_TTL_DAYS", "30")) * 86400,
@@ -545,10 +546,17 @@ class ConsoleServer:
                 await self._send_response(
                     writer,
                     200,
-                    await collect_console_health(self.monitor, port=self.port),
+                    await collect_console_health(
+                        self.monitor,
+                        port=self.port,
+                        store=self.store,
+                    ),
                 )
             elif path == "/":
-                data = await StateCollector(self.monitor).collect_all()
+                data = await StateCollector(
+                    self.monitor,
+                    store=self.store,
+                ).collect_all()
                 html = render_dashboard(data)
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/gcal-auth":
@@ -563,7 +571,11 @@ class ConsoleServer:
                 html = render_dashboard(generate_mock_data(), is_demo=True)
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/api/status":
-                await self._send_response(writer, 200, collect_bot_status(self.monitor))
+                await self._send_response(
+                    writer,
+                    200,
+                    collect_authenticated_status(self.monitor, store=self.store),
+                )
             elif path == "/api/bridge":
                 bridge = await collect_bridge_health(self.monitor)
                 bridge.setdefault("lm_studio", "unknown")
@@ -575,9 +587,17 @@ class ConsoleServer:
             elif path == "/api/polls":
                 await self._send_response(writer, 200, collect_poll_data(self.monitor))
             elif path == "/api/rate-limits":
-                await self._send_response(writer, 200, collect_rate_limits(self.monitor))
+                await self._send_response(
+                    writer,
+                    200,
+                    collect_rate_limits(self.monitor, store=self.store),
+                )
             elif path == "/api/intents":
-                await self._send_response(writer, 200, collect_intent_stats(self.monitor))
+                await self._send_response(
+                    writer,
+                    200,
+                    collect_intent_stats(self.monitor, store=self.store),
+                )
             elif path == "/api/memory":
                 await self._send_response(writer, 200, collect_memory_stats(self.monitor))
             elif path == "/api/gcal/credentials":
@@ -595,7 +615,11 @@ class ConsoleServer:
                             except ValueError:
                                 pass
                 query_lines = max(1, min(query_lines, 2000))
-                await self._send_response(writer, 200, collect_logs(query_lines))
+                await self._send_response(
+                    writer,
+                    200,
+                    collect_logs(query_lines, store=self.store),
+                )
             else:
                 await self._send_response(writer, 404, {"error": "Not found"})
         except Exception:

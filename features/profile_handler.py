@@ -3,8 +3,22 @@
 ProfileHandler - Handles commands for managing Inebotten's own Discord profile.
 """
 
+from collections.abc import Mapping
+
 import discord
+from core.dispatch_result import (
+    DispatchCancelled,
+    DispatchOutcome,
+    MessageSendCancelled,
+)
+from core.intent_models import BotIntent
+from core.intent_payloads import (
+    PayloadValidationError,
+    ProfilePayload,
+    validate_intent_payload,
+)
 from features.base_handler import BaseHandler
+
 
 class ProfileHandler(BaseHandler):
     """Handler for profile management commands"""
@@ -14,7 +28,19 @@ class ProfileHandler(BaseHandler):
         self.client = monitor.client
         self.token = monitor.client.config.DISCORD_TOKEN
 
-    async def handle_status(self, message, status: str) -> None:
+    async def _finish(
+        self,
+        message,
+        response_text: str,
+        base: DispatchOutcome,
+    ) -> DispatchOutcome:
+        try:
+            delivery = await self.send_response_result(message, response_text)
+        except MessageSendCancelled as exc:
+            raise DispatchCancelled(base.with_delivery(exc.result)) from None
+        return base.with_delivery(delivery)
+
+    async def handle_status(self, message, status: str) -> DispatchOutcome:
         """
         Change Inebotten's online status.
         Args:
@@ -29,19 +55,40 @@ class ProfileHandler(BaseHandler):
             "offline": discord.Status.offline
         }
         
-        target_status = status_map.get(status.lower())
+        normalized = status.strip().casefold() if isinstance(status, str) else ""
+        target_status = status_map.get(normalized)
         if not target_status:
-            await self.send_response(message, "⚠️ Ugyldig status. Bruk: online, idle, dnd, eller invisible.")
-            return
+            return await self._finish(
+                message,
+                "⚠️ Ugyldig status. Bruk: online, offline, idle, dnd, eller invisible.",
+                DispatchOutcome.failure("invalid_payload", retryable=False),
+            )
 
         try:
             await self.client.change_presence(status=target_status)
-            await self.send_response(message, f"✅ Status endret til **{status}**.")
-        except Exception as e:
-            self.log(f"Error changing status: {e}")
-            await self.send_response(message, "❌ Kunne ikke endre status.")
+        except Exception as exc:
+            self.log(f"Error changing status: {type(exc).__name__}")
+            return await self._finish(
+                message,
+                "⚠️ Det er uklart om statusendringen ble fullført.",
+                DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    retryable=False,
+                    commit_unknown=True,
+                ),
+            )
+        return await self._finish(
+            message,
+            f"✅ Status endret til **{normalized}**.",
+            DispatchOutcome.success(mutated=True),
+        )
 
-    async def handle_activity(self, message, activity_type: str, text: str) -> None:
+    async def handle_activity(
+        self,
+        message,
+        activity_type: str,
+        text: str,
+    ) -> DispatchOutcome:
         """
         Change Inebotten's custom activity.
         Args:
@@ -56,41 +103,77 @@ class ProfileHandler(BaseHandler):
             "competing": discord.ActivityType.competing
         }
         
-        target_type = type_map.get(activity_type.lower())
-        if not target_type:
-            await self.send_response(message, "⚠️ Ugyldig aktivitetstype. Bruk: playing, watching, listening, eller competing.")
-            return
+        normalized_type = (
+            activity_type.strip().casefold()
+            if isinstance(activity_type, str)
+            else ""
+        )
+        normalized_text = text.strip() if isinstance(text, str) else ""
+        target_type = type_map.get(normalized_type)
+        if (
+            normalized_type not in {"playing", "watching"}
+            or target_type is None
+            or not normalized_text
+            or len(normalized_text) > 100
+        ):
+            return await self._finish(
+                message,
+                "⚠️ Ugyldig profilaktivitet.",
+                DispatchOutcome.failure("invalid_payload", retryable=False),
+            )
 
         try:
-            activity = discord.Activity(type=target_type, name=text)
+            activity = discord.Activity(type=target_type, name=normalized_text)
+        except Exception:
+            return await self._finish(
+                message,
+                "⚠️ Ugyldig profilaktivitet.",
+                DispatchOutcome.failure("invalid_payload", retryable=False),
+            )
+        try:
             await self.client.change_presence(activity=activity)
-            await self.send_response(message, f"✅ Aktivitet endret til: **{activity_type} {text}**")
-        except Exception as e:
-            self.log(f"Error changing activity: {e}")
-            await self.send_response(message, "❌ Kunne ikke endre aktivitet.")
+        except Exception as exc:
+            self.log(f"Error changing activity: {type(exc).__name__}")
+            return await self._finish(
+                message,
+                "⚠️ Det er uklart om aktivitetsendringen ble fullført.",
+                DispatchOutcome.failure(
+                    "commit_state_unknown",
+                    retryable=False,
+                    commit_unknown=True,
+                ),
+            )
+        return await self._finish(
+            message,
+            f"✅ Aktivitet endret til: **{normalized_type} {normalized_text}**",
+            DispatchOutcome.success(mutated=True),
+        )
 
-    async def handle_profile_command(self, message) -> bool:
-        """
-        Main entry point for profile commands.
-        Returns True if a command was handled.
-        """
-        content = message.content.lower()
-        
-        # Status command: "status online", "status dnd", etc.
-        if "status" in content:
-            for s in ["online", "idle", "dnd", "invisible", "offline"]:
-                if s in content:
-                    await self.handle_status(message, s)
-                    return True
-        
-        # Activity command: "spiller [x]", "ser på [x]", etc.
-        if "spiller" in content or "playing" in content:
-            text = message.content.split(None, 2)[-1]
-            await self.handle_activity(message, "playing", text)
-            return True
-        if "ser på" in content or "watching" in content:
-            text = message.content.split("på", 1)[-1].strip()
-            await self.handle_activity(message, "watching", text)
-            return True
-            
-        return False
+    async def handle_profile_command(
+        self,
+        message,
+        payload: ProfilePayload,
+    ) -> DispatchOutcome:
+        """Dispatch one already parsed profile payload without reading content."""
+
+        if not isinstance(payload, Mapping):
+            return await self._finish(
+                message,
+                "⚠️ Ugyldig profilkommando.",
+                DispatchOutcome.failure("invalid_payload", retryable=False),
+            )
+        try:
+            canonical = validate_intent_payload(BotIntent.PROFILE, payload)
+        except PayloadValidationError:
+            return await self._finish(
+                message,
+                "⚠️ Ugyldig profilkommando.",
+                DispatchOutcome.failure("invalid_payload", retryable=False),
+            )
+        if canonical["action"] == "status":
+            return await self.handle_status(message, canonical["value"])
+        return await self.handle_activity(
+            message,
+            canonical["action"],
+            canonical["value"],
+        )

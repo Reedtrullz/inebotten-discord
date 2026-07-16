@@ -902,17 +902,25 @@ class ReminderManager:
         show_completed=False,
         *,
         reference_time=None,
+        due_date=None,
     ):
         """Format reminders for display"""
         active = self.get_active_reminders(guild_id)
+        numbered_active = list(enumerate(active, 1))
+        if due_date is not None:
+            numbered_active = [
+                (index, reminder)
+                for index, reminder in numbered_active
+                if reminder.get("due_date") == due_date
+            ]
 
         if not active and not show_completed:
             return None  # No reminders to show
 
         lines = []
 
-        if active:
-            for i, r in enumerate(active[:8], 1):  # Show max 8
+        if numbered_active:
+            for i, r in numbered_active[:8]:  # Show max 8
                 checkbox = "⬜"
                 due = f" (frist: {r['due_date']})" if r.get("due_date") else ""
 
@@ -940,7 +948,7 @@ class ReminderManager:
                 if r.get("gcal_link"):
                     lines.append(f"   🔗 [Åpne i Google Calendar]({r['gcal_link']})")
 
-        if show_completed:
+        if show_completed and due_date is None:
             completed = self.get_completed_reminders(
                 guild_id,
                 days=3,
@@ -1408,11 +1416,16 @@ def _strip_reminder_temporal_data(text, resolver, now):
             flags=re.I,
         )
         cleaned = re.sub(
-            rf"(?:[\s,;:-]*{connector}\b)+$",
+            rf"(?:[\s,;:-]*(?<!\w){connector}\b)+$",
             "",
             cleaned,
             flags=re.I,
         )
+        # Remove an infinitive marker stranded by a leading temporal phrase
+        # ("tomorrow to call mom") for any lowercase verb.  Keeping this
+        # case-sensitive preserves title-shaped data such as
+        # "To Kill a Mockingbird".
+        cleaned = re.sub(r"^to\s+(?=[a-zæøå])", "", cleaned)
     return cleaned.strip()
 
 
@@ -1601,13 +1614,38 @@ def parse_reminder_command(
     """Parse one bounded reminder frame into a complete canonical object."""
     from cal_system.temporal_resolver import TemporalResolver
     from core.utterance import normalize_utterance
+    from core.utterance_semantics import (
+        bounded_english_reminder_create_head,
+        has_sequenced_action_request,
+    )
 
     if not isinstance(message_content, str):
         return None
     resolver = temporal_resolver or TemporalResolver()
     cleaned = re.sub(r"<@!?\d+>", "", message_content)
     cleaned = re.sub(r"^\s*@inebotten\b", "", cleaned, flags=re.I).strip()
-    control = normalize_utterance(cleaned).control_text.strip()
+    utterance = normalize_utterance(cleaned)
+    control = utterance.control_text.strip()
+    if has_sequenced_action_request(utterance):
+        # One parsed object may own one mutation only.  Returning no parse
+        # prevents both direct legacy callers and the central router from
+        # committing only the first instruction.
+        return None
+
+    english_noun_create = re.match(
+        rf"^{_POLITE_PREFIX}(?:create|add|make|set|put|set\s+up)\s+"
+        r"(?:a\s+)?reminder\b",
+        control,
+        re.I,
+    )
+    if (
+        english_noun_create is not None
+        and bounded_english_reminder_create_head(utterance) is None
+    ):
+        # ``make a reminder sound friendlier`` is an edit/style request, not
+        # a reminder creation.  English noun-create frames require an
+        # explicit content connector (``to``/``about``).
+        return None
 
     # A plain media-title frame belongs to the watchlist parser. Temporal or
     # caretaking/checking forms remain reminders ("se på saken", "watch the
@@ -1621,6 +1659,17 @@ def parse_reminder_command(
         media_body = normalize_utterance(
             media_frame.group(1).strip()
         ).control_text
+        same_day_media = re.fullmatch(
+            r"(?P<title>.+?)\s+(?:i\s+dag|idag|today)",
+            media_body,
+            re.I,
+        )
+        if same_day_media and not re.match(
+            r"^(?:på|om|til)\b|^(?:the\s+)?(?:kids|children)\b",
+            same_day_media.group("title"),
+            re.I,
+        ):
+            return None
         media_temporal = resolver.resolve(media_body, reference=now)
         reminder_media_shape = bool(
             media_temporal.date
@@ -1635,7 +1684,8 @@ def parse_reminder_command(
             return None
 
     edit = re.match(
-        rf"^{_POLITE_PREFIX}(?:endre|rediger|edit)\s+{_REMINDER_NOUN}\s+"
+        rf"^{_POLITE_PREFIX}(?:endre|rediger|redigere|edit)\s+"
+        rf"{_REMINDER_NOUN}\s+"
         r"(\d+|(?:id\s*[:#]?\s*)?[a-z0-9][a-z0-9_-]{5,79})\s+(.+)$",
         cleaned,
         re.I,
@@ -1648,9 +1698,26 @@ def parse_reminder_command(
         key, value = selector
         return {"action": "edit", key: value, "changes": changes}
 
+    marked_complete = re.fullmatch(
+        rf"{_POLITE_PREFIX}(?:marker|markere|mark)\s+(?:the\s+)?"
+        rf"{_REMINDER_NOUN}\s+(?P<selector>.+?)\s+"
+        r"(?:som\s+)?(?:ferdig|fullført|done|complete|completed)\s*[?.!]*",
+        cleaned,
+        re.I,
+    )
+    if marked_complete:
+        selector = _parse_reminder_selector(
+            marked_complete.group("selector")
+        )
+        if selector is None:
+            return None
+        key, value = selector
+        return {"action": "complete", key: value}
+
     target = re.fullmatch(
-        rf"{_POLITE_PREFIX}(?P<verb>slett|fjern|delete|remove|ferdig|fullfør|"
-        rf"fullført|done|complete|gjort)\s+(?:the\s+)?{_REMINDER_NOUN}\s+"
+        rf"{_POLITE_PREFIX}(?P<verb>slett|slette|fjern|fjerne|delete|remove|"
+        rf"ferdig|fullfør|fullføre|fullført|done|complete|gjort)\s+"
+        rf"(?:the\s+)?{_REMINDER_NOUN}\s+"
         rf"(?P<selector>.+?)\s*[?.!]*",
         cleaned,
         re.I,
@@ -1663,36 +1730,119 @@ def parse_reminder_command(
         action = (
             "delete"
             if target.group("verb").casefold()
-            in {"slett", "fjern", "delete", "remove"}
+            in {"slett", "slette", "fjern", "fjerne", "delete", "remove"}
             else "complete"
         )
         return {"action": action, key: value}
 
     search = re.fullmatch(
         r"(?:søk|search)\s+(?:påminnelse|påminnelser|påminning|"
-        r"påminningar|reminder|reminders)\s+(.+?)\s*[?.!]*",
+        r"påminningar|reminder|reminders)\s+"
+        r"(?:(?:etter|for|om|about)\s+)?(.+?)\s*[?.!]*",
         cleaned,
         re.I,
     )
+    if search is None:
+        search = re.fullmatch(
+            r"(?:finn|find)\s+(?:påminnelsen|påminninga|the\s+reminder|"
+            r"reminder)\s+(?:om|about)\s+(.+?)\s*[?.!]*",
+            cleaned,
+            re.I,
+        )
     if search and search.group(1).strip():
         return {"action": "search", "query": search.group(1).strip()}
 
     if re.fullmatch(
+        rf"(?:{_POLITE_PREFIX}(?:vis|vise|list|show)\s+"
+        r"(?:(?:meg|mæ|me)\s+)?(?:(?:alle|all)\s+)?(?:påminnelsene\s+mine|"
+        r"påminningane\s+mine|my\s+reminders)|"
+        r"how\s+many\s+reminders\s+do\s+i\s+have|"
+        r"what\s+reminders\s+do\s+i\s+have|"
+        r"what\s+do\s+i\s+need\s+to\s+remember|"
+        r"(?:is\s+there\s+)?anything\s+i\s+need\s+to\s+remember|"
+        r"do\s+i\s+have\s+any\s+reminders|"
+        r"any\s+reminders\s+for\s+me|"
+        r"can\s+i\s+see\s+my\s+reminders|"
+        r"could\s+i\s+see\s+my\s+reminders|"
+        r"kan\s+(?:jeg|eg|æ)\s+(?:se|sjå)\s+"
+        r"(?:påminnelsene|påminningane)\s+mine|"
+        r"(?:hva|kva|ka)\s+må\s+(?:jeg|eg|æ)\s+(?:huske|hugse)|"
+        r"(?:hva|kva|ka)\s+står\s+på\s+(?:huskelista|hugselista)|"
+        r"har\s+(?:jeg|eg|æ)\s+(?:noen|nokon)\s+"
+        r"(?:påminnelser|påminningar)|"
+        r"vis\s+(?:meg|mæ)\s+(?:påminnelsene|påminningane)|"
         r"(?:(?:vis|list|show)\s+)?(?:påminnelser|påminningar|reminders|"
-        r"gjøremål|todos|huskeliste)\s*[?.!]*",
+        r"gjøremål|todos|huskeliste))\s*[?.!]*",
         cleaned,
         re.I,
     ):
         return {"action": "list"}
 
+    indirect_media = re.fullmatch(
+        r"(?:(?:kan|kunne|vil)\s+du\s+|vennligst\s+)?"
+        r"(?:husk|huske|hugs|hugse)\s+at\s+(?:jeg|eg|æ)\s+"
+        r"(?:vil|skal)\s+(?:se|sjå)(?:\s+på)?\s+"
+        r"(?:(?P<kind>film|filmen|serie|serien)\s+)?(?P<title>.+)",
+        cleaned,
+        re.I,
+    )
+    if indirect_media is not None:
+        raw_title = indirect_media.group("title").strip()
+        is_quoted = (
+            len(raw_title) >= 2
+            and (raw_title[0], raw_title[-1])
+            in {
+                ('"', '"'),
+                ("'", "'"),
+                ("“", "”"),
+                ("‘", "’"),
+                ("«", "»"),
+            }
+        )
+        temporal = resolver.resolve(
+            normalize_utterance(raw_title).control_text,
+            reference=now,
+        )
+        if (
+            not temporal.date
+            and not temporal.time
+            and (
+                indirect_media.group("kind") is not None
+                or is_quoted
+                or (raw_title and raw_title[0].isupper())
+            )
+        ):
+            return None
+
     frame = re.match(
-        rf"^{_POLITE_PREFIX}(?:påminn(?:e)?\s+meg(?:\s+(?:om|på))?(?:\s+å)?|"
+        rf"^{_POLITE_PREFIX}(?:(?:i['’]d|i\s+would)\s+like\s+"
+        r"(?:a\s+)?reminder(?:\s+for\s+me)?\s+to|"
+        r"(?:i\s+(?:want|need))\s+(?:a\s+)?reminder"
+        r"(?:\s+for\s+me)?\s+(?:to|about)|"
+        r"(?:(?:can|could)\s+i\s+get)\s+(?:a\s+)?reminder"
+        r"(?:\s+for\s+me)?\s+(?:to|about)|"
+        r"give\s+me\s+(?:a\s+)?reminder(?:\s+for\s+me)?\s+"
+        r"(?:to|about)|"
+        r"påminn(?:e)?\s+meg(?:\s+(?:om|på))?(?:\s+å)?|"
         r"minn(?:e)?\s+(?:meg|mæ)(?:\s+(?:om|på))?(?:\s+å)?|"
         r"husk\s+(?:å|at)|hugs\s+(?:å|at)|"
+        r"(?:jeg|eg|æ)\s+må\s+(?:huske|hugse)\s+(?:å|at)|"
+        r"(?:pass\s+på|syt\s+for)\s+at|"
+        r"make\s+sure(?:\s+that)?\s+i(?:\s+remember\s+to)?|"
         r"ikke\s+glem\s+(?:å|at)|ikkje\s+gløym\s+(?:å|at)|"
-        r"(?:don't|don’t)\s+forget\s+(?:to|that)|"
-        r"remind\s+me(?:\s+(?:to|that))?|"
-        r"remember\s+to|"
+        r"ikkje\s+lat\s+meg\s+gløyme\s+(?:å|at)|"
+        r"(?:don't|don’t)\s+(?:let\s+me\s+)?forget\s+(?:to|that)|"
+        r"ikke\s+la\s+meg\s+glemme\s+(?:å|at)|"
+        r"remind\s+me(?:\s+(?:to|that|about))?|"
+        r"(?:i\s+need\s+to\s+)?remember\s+to|"
+        r"(?:(?:opprett|opprette|lag|lage|(?:legg|legge)\s+(?:inn|til)|"
+        r"(?:sette|setje)\s+opp|planlegg|planlegge|planleggje)\s+"
+        r"(?:(?:en|ei|et|a)\s+)?(?:påminnelse|påminning|reminder|"
+        r"gjøremål|gjeremål|todo)"
+        r"(?:\s+for\s+me)?(?:\s+(?:om|about|to))?"
+        r"(?:\s+(?:å|to))?|"
+        r"(?:create|add|make|set|put|set\s+up)\s+"
+        r"(?:a\s+)?reminder(?:\s+for\s+me)?\s+(?:to|about))|"
         r"påminnelse|påminning|reminder|gjøremål|todo)\s+(.+)$",
         cleaned,
         re.I,
@@ -1702,7 +1852,6 @@ def parse_reminder_command(
     body = frame.group(1).strip()
     if not body:
         return None
-
     recurrence, body_without_recurrence, recurrence_conflict = _extract_recurrence(body)
     if recurrence_conflict:
         return None
@@ -1722,10 +1871,30 @@ def parse_reminder_command(
         if resolved.errors:
             return None
 
+    if resolved.due_at is not None and now is not None:
+        try:
+            due_at = datetime.fromisoformat(
+                resolved.due_at.replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            return None
+        if (
+            now.tzinfo is None
+            or now.utcoffset() is None
+            or due_at.astimezone(timezone.utc)
+            <= now.astimezone(timezone.utc)
+        ):
+            return None
+
     title = _strip_reminder_temporal_data(
         body_without_recurrence, resolver, now
     )
     title = title.strip(" -–—,;:.!?")
+    # A temporal fact such as "møtet er i morgen" loses its complement
+    # when date evidence is stripped.  Never create the nonsensical remainder
+    # "møtet er" as a reminder.
+    if re.search(r"\b(?:er|blir|is|was|were)\s*$", title, re.I):
+        return None
     if len(title) < 2:
         return None
     result = {"action": "add", "text": title}

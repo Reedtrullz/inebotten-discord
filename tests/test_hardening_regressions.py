@@ -333,7 +333,8 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
                 self.assertEqual(store.load_intent_stats(), {})
 
             self.assertEqual(store.health()["status"], "degraded")
-            self.assertIn("load_stats", store.health()["last_error"])
+            self.assertEqual(store.health()["error_code"], "read_error")
+            self.assertNotIn("last_error", store.health())
 
     def test_console_store_health_clears_repaired_load_stats_error(self):
         from web_console.console_store import ConsoleStore, STATS_SCHEMA_VERSION
@@ -362,7 +363,8 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
                 health = store.health()
 
             self.assertEqual(health["status"], "ok")
-            self.assertIsNone(health["last_error"])
+            self.assertIsNone(health["error_code"])
+            self.assertNotIn("last_error", health)
 
     def test_bot_status_requires_discord_readiness_not_just_user(self):
         client = SimpleNamespace(
@@ -641,7 +643,15 @@ class BridgeConfigHardeningTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_openrouter_console_health_does_not_require_lm_bridge(self):
         monitor = SimpleNamespace(
-            client=SimpleNamespace(config=SimpleNamespace(AI_PROVIDER="openrouter"))
+            client=SimpleNamespace(config=SimpleNamespace(AI_PROVIDER="openrouter")),
+            reminder_checker=SimpleNamespace(
+                get_health=lambda: {
+                    "status": "ok",
+                    "running": True,
+                    "stale": False,
+                    "last_success_at": "2026-07-16T01:00:00+02:00",
+                }
+            ),
         )
         bot_status = {
             "status": "online",

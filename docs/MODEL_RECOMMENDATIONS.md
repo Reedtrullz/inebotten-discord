@@ -2,6 +2,12 @@
 
 > Tester og erfaringer med ulike AI-modeller for norsk språk
 
+## Omfang og bevis
+
+Modellvalget påvirker først og fremst samtalestil og hvor ofte en vanskelig formulering kan gi et nyttig semantisk forslag. Deterministisk ruting, typede payloads, validering, risikoklassifisering, bekreftelse og mutasjon ligger utenfor modellen. Et modellforslag er inert og må gjennom samme lokale arbiter; modellen kan ikke kalle funksjoner direkte.
+
+Scorene i dette dokumentet er historiske samtalestiltester fra mars 2026 og er ikke kjørt på nytt som live LM Studio-/OpenRouter-test i den nåværende NLU-endringen. Den nåværende deterministiske kontrakten evaluerer bokmål, nynorsk, utvalgte dialektnære former og engelsk. Verken den eller de historiske modelltestene beviser støtte for alle norske dialekter eller alle friformuleringer.
+
 ## 🏆 TOPP ANBEFALING
 
 ### **Gemma 3 12B Instruct** ⭐⭐⭐ (Beste valg for norsk - testet mars 2026)
@@ -13,7 +19,7 @@
 - **Fordeler:** 
   - Følger system prompt utmerket
   - Bruker norske ord aktivt: "altså", "kjempe", "supert", "skikkelig", "da vel"
-  - Forstår og bruker dialekt-uttrykk
+  - Håndterte testens utvalgte dialektuttrykk
   - Håndterer komplekse setninger (82% på 100 test-setninger)
 - **Ulemper:** Tregere enn 4B-modeller (men verdt det!)
 - **Best for:** RTX 3080/4070 eller bedre
@@ -78,7 +84,7 @@
 → **Gemma 3 12B** - 🏆 Beste norske resultater noensinne testet!
 - 82/100 poeng på norsk språktest
 - Naturlig bruk av "altså", "kjempe", "supert", "da vel"
-- Forstår og bruker dialekt
+- Håndterte de utvalgte dialektpromptene i den historiske testen
 
 ### Hvis du har 6GB VRAM:
 → **Qwen 2.5 4B** - God balanse mellom kvalitet og størrelse
@@ -187,6 +193,6 @@ Bruker `respond_to_dialect()` i `ai/personality.py` som sjekker for:
 
 **Gemma 3 12B er vår nye standard for norsk språk!**
 
-Med 82/100 poeng, naturlig bruk av norske uttrykk, og evne til å håndtere alt fra enkle setninger til kompleks dialekt, er dette den beste modellen vi har testet.
+Med 82/100 poeng, naturlig bruk av norske uttrykk og gode svar på testens utvalgte dialektprompter var dette den beste modellen i den historiske testen.
 
 **Anbefaling:** Hvis du har RTX 3080 eller bedre, bruk Gemma 3 12B!

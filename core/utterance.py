@@ -86,7 +86,15 @@ def _inline_code_spans(
             end_run += 1
         marker = value[index:end_run]
         close = value.find(marker, end_run)
-        while close >= 0 and _overlaps(fenced, close, close + len(marker)):
+        while close >= 0 and any(
+            close < span_end
+            and close + len(marker) > span_start
+            and not (
+                close == span_start
+                and span_end == close + len(marker)
+            )
+            for span_start, span_end in fenced
+        ):
             close = value.find(marker, close + len(marker))
         if close < 0:
             newline = value.find("\n", end_run)
@@ -150,7 +158,20 @@ def normalize_utterance(raw: str) -> NormalizedUtterance:
         _mask_span(control_chars, match.start(), match.end())
     for match in _MENTION.finditer(normalized):
         _mask_span(control_chars, match.start(), match.end())
-    control_text = _collapse("".join(control_chars)).casefold()
+    # Preserve user-authored line breaks as hard discourse boundaries in the
+    # control surface.  The display/parser text remains whitespace-collapsed;
+    # this sentinel exists so one write cannot absorb a second line's action.
+    boundary_chars = list("".join(control_chars))
+    inert_boundaries = inert_code + blockquotes
+    for index, char in enumerate(normalized):
+        if (
+            char in "\r\n"
+            and not _overlaps(inert_boundaries, index, index + 1)
+        ):
+            boundary_chars[index] = ";"
+    control_text = _collapse("".join(boundary_chars)).casefold()
+    if not control_text.strip(" ;"):
+        control_text = ""
     return NormalizedUtterance(
         raw=raw,
         text=text,

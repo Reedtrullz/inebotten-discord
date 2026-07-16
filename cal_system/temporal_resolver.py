@@ -38,12 +38,46 @@ DAYPART_HOURS = {
     "på kvelden": "19:00",
     "i natt": "22:00",
     "på natten": "22:00",
+    "this morning": "08:00",
+    "this afternoon": "14:00",
+    "this evening": "19:00",
+    "tonight": "19:00",
 }
 _CONTEXT_DAYPART_HOURS = {
+    "på morgenen": "08:00",
+    "på morgonen": "08:00",
+    "om morgenen": "08:00",
+    "om morgonen": "08:00",
+    "morgenen": "08:00",
+    "morgonen": "08:00",
+    "tidlig": "08:00",
+    "early": "08:00",
+    "morning": "08:00",
     "formiddag": "10:00",
     "ettermiddag": "14:00",
+    "afternoon": "14:00",
     "kveld": "19:00",
+    "evening": "19:00",
     "natt": "22:00",
+    "night": "22:00",
+}
+_CONTEXT_DAYPART_KINDS = {
+    "på morgenen": "morges",
+    "på morgonen": "morges",
+    "om morgenen": "morges",
+    "om morgonen": "morges",
+    "morgenen": "morges",
+    "morgonen": "morges",
+    "tidlig": "morges",
+    "early": "morges",
+    "morning": "morges",
+    "formiddag": "formiddag",
+    "ettermiddag": "ettermiddag",
+    "afternoon": "ettermiddag",
+    "kveld": "kveld",
+    "evening": "kveld",
+    "natt": "natt",
+    "night": "natt",
 }
 _DAYPART_KINDS = {
     "i morges": "morges",
@@ -55,7 +89,11 @@ _DAYPART_KINDS = {
     "på kvelden": "kveld",
     "i natt": "natt",
     "på natten": "natt",
-    **{phrase: phrase for phrase in _CONTEXT_DAYPART_HOURS},
+    "this morning": "morges",
+    "this afternoon": "ettermiddag",
+    "this evening": "kveld",
+    "tonight": "kveld",
+    **_CONTEXT_DAYPART_KINDS,
 }
 _DAYPART_MINUTE_RANGES = {
     "morges": ((0, 12 * 60),),
@@ -77,10 +115,35 @@ _HOUR_WORD = (
 NATURAL_TIME_RE = re.compile(
     rf"\b(?P<cue>kl(?:okka|okken)?\.?|at|rundt|about)\s+"
     rf"(?P<hour>-?\d{{1,2}}|{_HOUR_WORD})"
-    r"(?::(?P<minute>\d{2}))?"
+    r"(?:(?::|\.)(?P<minute>\d{2}))?"
     r"(?:\s*(?P<suffix>am|pm)\b"
     r"|\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden)\b)?"
     r"(?![\w:])",
+    re.IGNORECASE,
+)
+NATURAL_QUARTER_RE = re.compile(
+    rf"\b(?:(?:kl(?:okka|okken)?\.?)\s+)?"
+    rf"(?:kvart\s+over|quarter\s+past)\s+"
+    rf"(?P<hour>\d{{1,2}}|{_HOUR_WORD})"
+    r"(?:\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden)\b)?"
+    r"(?![\w:])",
+    re.IGNORECASE,
+)
+NATURAL_NORWEGIAN_HALF_RE = re.compile(
+    rf"\b(?:(?:kl(?:okka|okken)?\.?)\s+)?halv\s+"
+    rf"(?P<hour>\d{{1,2}}|{_HOUR_WORD})"
+    r"(?:\s+på\s+(?P<daypart>morgenen|morgonen|ettermiddagen|kvelden)\b)?"
+    r"(?![\w:])",
+    re.IGNORECASE,
+)
+MALFORMED_CUE_TIME_RE = re.compile(
+    r"\b(?:kl(?:okka|okken)?\.?|at|rundt|about)\s+"
+    r"[+-]?\d{3,}(?![\d./:])",
+    re.IGNORECASE,
+)
+AMBIGUOUS_TEMPORAL_RE = re.compile(
+    r"(?<!\w)(?:senere\s+i\s+dag|seinare\s+i\s+dag|later\s+today|"
+    r"neste\s+helg|neste\s+weekend|next\s+weekend)(?!\w)",
     re.IGNORECASE,
 )
 RAW_TIME_RE = re.compile(
@@ -246,7 +309,8 @@ _WEEKDAY_PATTERN = "|".join(
     re.escape(value) for value in sorted(WEEKDAYS, key=len, reverse=True)
 )
 _WEEKDAY_RE = re.compile(
-    rf"(?<!\w)(?:(?P<prefix>neste|next|førstkommende)\s+)?"
+    rf"(?<!\w)(?:(?P<prefix>neste|next|førstkommende|"
+    rf"komande|kommande|kommende)\s+)?"
     rf"(?P<weekday>{_WEEKDAY_PATTERN})(?!\w)",
     re.IGNORECASE,
 )
@@ -254,10 +318,13 @@ _NUMBER_PATTERN = "|".join(
     re.escape(value) for value in sorted(NUMBER_WORDS, key=len, reverse=True)
 )
 _RELATIVE_RE = re.compile(
-    rf"(?<!\w)(?P<prefix>om|in)\s+"
+    rf"(?<!\w)(?P<prefix>om|in)\s+(?:"
+    r"(?P<half>(?:en|ein|ei)\s+halv(?:\s*time|time)|"
+    r"half(?:\s+an?)?\s+hour)|"
     rf"(?P<number>\d+|{_NUMBER_PATTERN})\s+"
     r"(?P<unit>minutt(?:er)?|minutt|minutes?|time(?:r)?|hours?|"
-    r"dag(?:er|ar)?|days?|uke(?:r)?|veke(?:r)?|weeks?)(?!\w)",
+    r"dag(?:er|ar)?|days?|uke(?:r)?|veke(?:r)?|weeks?))"
+    r"(?!\w)",
     re.IGNORECASE,
 )
 
@@ -645,7 +712,97 @@ class TemporalResolver:
 
         if not 0 <= hour <= 23:
             return None, "invalid_time"
-        return f"{hour:02d}:{minute:02d}", None
+        canonical = f"{hour:02d}:{minute:02d}"
+        daypart_kind = {
+            "morgenen": "morges",
+            "morgonen": "morges",
+            "ettermiddagen": "ettermiddag",
+            "kvelden": "kveld",
+        }.get(daypart)
+        if daypart_kind and not self._daypart_accepts(
+            canonical,
+            daypart_kind,
+        ):
+            return None, "conflicting_temporal"
+        return canonical, None
+
+    def _natural_quarter(
+        self, match: re.Match[str]
+    ) -> tuple[str | None, str | None]:
+        hour_text = match.group("hour")
+        hour = (
+            int(hour_text)
+            if hour_text.isdigit()
+            else self._parse_number(hour_text)
+        )
+        daypart = (match.group("daypart") or "").casefold()
+        if hour is None:
+            return None, None
+        if daypart:
+            if not 0 <= hour <= 12:
+                return None, "invalid_time"
+            if daypart in {"ettermiddagen", "kvelden"} and 1 <= hour <= 11:
+                hour += 12
+        elif 0 <= hour <= 12:
+            return None, "ambiguous_time"
+        if not 0 <= hour <= 23:
+            return None, "invalid_time"
+        canonical = f"{hour:02d}:15"
+        daypart_kind = {
+            "morgenen": "morges",
+            "morgonen": "morges",
+            "ettermiddagen": "ettermiddag",
+            "kvelden": "kveld",
+        }.get(daypart)
+        if daypart_kind and not self._daypart_accepts(
+            canonical,
+            daypart_kind,
+        ):
+            return None, "conflicting_temporal"
+        return canonical, None
+
+    def _natural_norwegian_half(
+        self,
+        match: re.Match[str],
+    ) -> tuple[str | None, str | None]:
+        """Resolve Norwegian ``halv tre`` as half an hour before three."""
+
+        hour_text = match.group("hour")
+        next_hour = (
+            int(hour_text)
+            if hour_text.isdigit()
+            else self._parse_number(hour_text)
+        )
+        daypart = (match.group("daypart") or "").casefold()
+        if next_hour is None:
+            return None, None
+        if daypart:
+            if not 1 <= next_hour <= 12:
+                return None, "invalid_time"
+            if daypart == "kvelden" and next_hour == 12:
+                next_hour = 24
+            elif daypart in {"ettermiddagen", "kvelden"} and next_hour <= 11:
+                next_hour += 12
+        elif 1 <= next_hour <= 12:
+            # Both numeric and word-hour 12-hour clock forms omit AM/PM. Do
+            # not silently choose the early candidate.
+            return None, "ambiguous_time"
+        elif not 1 <= next_hour <= 24:
+            return None, "invalid_time"
+
+        canonical = f"{(next_hour - 1) % 24:02d}:30"
+        daypart_kind = {
+            "morgenen": "morges",
+            "morgonen": "morges",
+            "ettermiddagen": "ettermiddag",
+            "kvelden": "kveld",
+        }.get(daypart)
+        if daypart_kind and not self._daypart_accepts(
+            canonical,
+            daypart_kind,
+        ):
+            return None, "conflicting_temporal"
+        return canonical, None
 
     def _collect_times(
         self,
@@ -656,11 +813,53 @@ class TemporalResolver:
         evidence: list[_TimeEvidence] = []
         occupied: list[tuple[int, int]] = []
 
+        for match in NATURAL_NORWEGIAN_HALF_RE.finditer(text):
+            canonical, error = self._natural_norwegian_half(match)
+            if canonical is None and error is None:
+                continue
+            evidence.append(
+                _TimeEvidence("natural_time", match.span(), canonical, error)
+            )
+            occupied.append(match.span())
+
         for match in NATURAL_TIME_RE.finditer(text):
+            if self._overlaps(match.span(), occupied):
+                continue
             canonical, error = self._natural_time(match)
             if canonical is None and error is None:
                 continue
             evidence.append(_TimeEvidence("natural_time", match.span(), canonical, error))
+            occupied.append(match.span())
+
+        for match in NATURAL_QUARTER_RE.finditer(text):
+            if self._overlaps(match.span(), occupied):
+                continue
+            canonical, error = self._natural_quarter(match)
+            if canonical is None and error is None:
+                continue
+            evidence.append(
+                _TimeEvidence("natural_time", match.span(), canonical, error)
+            )
+            occupied.append(match.span())
+
+        for match in MALFORMED_CUE_TIME_RE.finditer(text):
+            if self._overlaps(match.span(), occupied):
+                continue
+            evidence.append(
+                _TimeEvidence(
+                    "natural_time", match.span(), None, "invalid_time"
+                )
+            )
+            occupied.append(match.span())
+
+        for match in AMBIGUOUS_TEMPORAL_RE.finditer(text):
+            if self._overlaps(match.span(), occupied):
+                continue
+            evidence.append(
+                _TimeEvidence(
+                    "natural_time", match.span(), None, "ambiguous_time"
+                )
+            )
             occupied.append(match.span())
 
         for match in _BARE_AMPM_RE.finditer(text):
@@ -707,7 +906,11 @@ class TemporalResolver:
                     "daypart",
                     match.span(),
                     DAYPART_HOURS[phrase],
-                    anchor_today=phrase.startswith("i "),
+                    anchor_today=(
+                        phrase.startswith("i ")
+                        or phrase.startswith("this ")
+                        or phrase == "tonight"
+                    ),
                     daypart=_DAYPART_KINDS[phrase],
                 )
             )
@@ -761,6 +964,15 @@ class TemporalResolver:
 
         for match in _NUMERIC_DATE_RE.finditer(text):
             if self._overlaps(match.span(), occupied):
+                continue
+            if "." in match.group(0) and re.search(
+                r"(?:kl(?:okka|okken)?\.?|at|rundt|about)\s*$",
+                text[: match.start()],
+                re.IGNORECASE,
+            ):
+                # In Norwegian prose ``kl 14.30`` is an unambiguous clock
+                # value.  Do not simultaneously reinterpret its scalar as an
+                # impossible day/month pair.
                 continue
             year_text = match.group("year")
             year = int(year_text) if year_text else None
@@ -938,6 +1150,12 @@ class TemporalResolver:
         reference: datetime,
     ) -> datetime | None:
         reference = reference.replace(microsecond=0)
+        if match.group("half") is not None:
+            target = (
+                reference.astimezone(timezone.utc) + timedelta(minutes=30)
+            ).astimezone(self.zone)
+            return target if MIN_YEAR <= target.year <= MAX_YEAR else None
+
         number = self._parse_number(match.group("number"))
         if number is None or not 0 <= number <= 100_000:
             return None
@@ -1102,7 +1320,15 @@ class TemporalResolver:
                 errors=("invalid_date",),
             )
         if time_errors:
-            error = "ambiguous_time" if "ambiguous_time" in time_errors else "invalid_time"
+            error = (
+                "conflicting_temporal"
+                if "conflicting_temporal" in time_errors
+                else (
+                    "ambiguous_time"
+                    if "ambiguous_time" in time_errors
+                    else "invalid_time"
+                )
+            )
             return TemporalResolution(
                 date=canonical_date,
                 time=canonical_time,

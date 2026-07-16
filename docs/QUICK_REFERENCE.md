@@ -1,342 +1,175 @@
-# Inebotten - Hurtigreferanse
+# Inebotten – eksempelbank for naturlig språk
 
-> En rask oversikt over alle kommandoer og funksjoner
+Inebotten er mention-gated. Tagg botten og beskriv målet ditt med vanlige ord;
+du trenger ikke huske en fast kommandosyntaks.
 
----
+```text
+@inebotten Kan du legge inn et møte med Ola i morgen klokka 14?
+```
 
-## 🚀 Komme i Gang
+Eksemplene på denne siden er kjørbare kontrakter mot produksjonsruteren. De
+viser formuleringer som er testet, men er ikke en uttømmende liste over lovlige
+varianter. Bokmål, flere nynorskformer, utvalgte dialektnære former og enkel
+engelsk inngår i den versjonerte NLU-evalueringen.
 
-Inebotten er mention-gated: hun ser og svarer bare på meldinger der hun er eksplisitt tagget, også i DM og gruppe-DM.
+## Kalender og påminnelser
 
-### Starte Botten
+| Mål | Eksempel |
+|---|---|
+| Legge inn en avtale | `@inebotten Kan du legge inn et møte med Ola i morgen klokka 14?` |
+| Se kalenderen | `@inebotten Kan du vise meg kalenderen?` |
+| Flytte en avtale | `@inebotten Kan du flytte møtet med Ola til fredag klokka 10?` |
+| Markere noe ferdig | `@inebotten Kan du markere møtet med Ola ferdig?` |
+| Slette en avtale | `@inebotten Kan du slette møtet med Ola?` |
+| Lage en påminnelse | `@inebotten Kan du minne meg på å ringe legen om to timer?` |
+| Se påminnelser | `@inebotten Kan du vise påminnelsene mine?` |
+| Fullføre en påminnelse | `@inebotten Kan du markere påminnelse 1 som ferdig?` |
+| Søke | `@inebotten Kan du søke i kalenderen etter møte?` |
+
+Tid kan uttrykkes på flere måter, blant annet `i morgen`, `i overmorgen`,
+`imorgen`, `i morra`, `på mandag`, `15. juli`, `klokka 15`, `at 3 pm`,
+`om seks timer` og `day after tomorrow`. Uklare tidspunkter gir en presisering
+i stedet for et skjult standardvalg.
+
+Gjentakelser som `hver fredag`, `annenhver uke`, `hver måned` og `hvert år`
+bevares som strukturerte gjentakelser. Motstridende dato-, tids- eller
+gjentakelsesbevis blir avvist.
+
+## Avstemninger, sitater og watchlist
+
+| Mål | Eksempel |
+|---|---|
+| Lage en avstemning | `@inebotten Kan du lage en avstemning: Hva spiser vi? pizza, burger eller taco` |
+| Se aktive avstemninger | `@inebotten Kan du vise aktive avstemninger?` |
+| Stemme | `@inebotten Jeg stemmer på alternativ 1` |
+| Endre spørsmål | `@inebotten Kan du redigere avstemningen 1 spørsmål: Middag?` |
+| Lukke | `@inebotten Kan du lukke avstemning 1?` |
+| Lagre et sitat | `@inebotten Kan du lagre dette som et sitat: Et klokt sitat` |
+| Se sitater | `@inebotten Kan du vise meg sitatene?` |
+| Legge til noe å se | `@inebotten Kan du huske at jeg vil se Inception?` |
+| Få et forslag | `@inebotten Hva skal vi se?` |
+
+## Bursdager
+
+Førstepersonsformuleringer bindes til Discord-brukeren som skrev meldingen:
+
+```text
+@inebotten Kan du legge til bursdagen min 15. mai?
+@inebotten Kan du endre bursdagen min til 20. mai?
+@inebotten Kven har bursdag snart?
+```
+
+Et fritt navn blir ikke gjettet som Discord-identitet. Bruk en løst Discord-
+mention når forespørselen gjelder en annen bruker; ellers spør botten hvem du
+mener.
+
+## Verktøy
+
+| Mål | Eksempel |
+|---|---|
+| Kryptopris | `@inebotten Hvis du har tid kan du vise prisen på BTC?` |
+| Regne | `@inebotten Kan du regne ut 2,5 + 1?` |
+| Konvertere | `@inebotten Kan du konvertere 10,5 km til meter?` |
+| Temperatur | `@inebotten Kan du konvertere 25 °C til °F?` |
+| Nedtelling | `@inebotten Kan du fortelle meg hvor mange dager det er til jul?` |
+| ISO-dato | `@inebotten How many days until 2026-12-25?` |
+| Horoskop | `@inebotten Kan du vise meg horoskopet for Løven?` |
+| Forkorte lenke | `@inebotten Kan du forkorte https://example.invalid?` |
+| Søke på nettet | `@inebotten Kan du søke etter tog til Trondheim?` |
+| Nordlys | `@inebotten Kan du vise meg nordlysvarselet?` |
+| Dagens ord | `@inebotten Kan du gi meg dagens ord?` |
+
+Høflighet kan stå først eller sist, med eller uten komma:
+
+```text
+@inebotten Kan du hvis du har tid vise prisen på BTC?
+@inebotten Hvis du har tid kan du vise prisen på BTC?
+@inebotten Vis prisen på BTC, hvis du har tid.
+```
+
+Høflighetsfrasen fjernes før payloaden bygges. Den blir derfor ikke en del av
+søkestrengen, tittelen, URL-en eller kryptonavnet.
+
+## Vær, sted og skoleferier
+
+```text
+@inebotten Kan du vise meg været?
+@inebotten Jeg bor i Trondheim.
+@inebotten Kan du vise skoleferiene i Tromsø?
+@inebotten Can you show school holidays in Tromsø?
+```
+
+Skoleferier varierer regionalt. Botten velger fylke fra et avgrenset stedsnavn
+og blander ikke gjensidig utelukkende ferieuker. Den innebygde datatabellen er
+begrenset til verifiserte datoer i skoleåret 2025–2026; etter siste dekningsdato
+sier botten tydelig at den ikke kan bekrefte datoene, i stedet for å påstå at
+ingen ferie er planlagt.
+
+## Profil, status og minne
+
+```text
+@inebotten Kan du vise meg botstatus?
+@inebotten Kan du sette statusen til online?
+@inebotten Kan du sette aktiviteten til å spille CS2?
+@inebotten Kan du vise hva du husker om meg?
+@inebotten Kan du eksportere minnet mitt?
+@inebotten Kan du slette minnet mitt?
+```
+
+Bare allowlistet brukerminne sendes til en ekstern AI-leverandør. Discord-ID,
+rå samtalehistorikk og handlingers strukturerte payload blir ikke brukt som
+vilkårlig modellkontekst.
+
+## Bekreftelse, avbrytelse og rettelser
+
+Eksplisitte, komplette og trygge forespørsler kan behandles direkte. Sletting,
+autentisering og modellforeslåtte skrivehandlinger vises først som en
+kanal- og brukeravgrenset forhåndsvisning.
+
+Naturlige svar på en aktiv forhåndsvisning inkluderer:
+
+```text
+ja takk
+ok, kjør
+nei, avbryt
+don't do it
+jeg ombestemte meg
+jeg mener den andre
+alternativ 2
+i overmorgen klokka 15
+spørsmål: Nytt spørsmål?
+```
+
+En rettelse endrer bare feltene som er uttrykkelig nevnt, lager en ny
+forhåndsvisning og krever ny bekreftelse. En avbrutt handling kan ikke vekkes
+til live av et senere `ja`, og to samtidige bekreftelser kan utføre handlingen
+høyst én gang.
+
+## Når botten lar være å handle
+
+Disse formene skal forbli samtale eller gi en trygg presisering:
+
+- sitert eller kodeformatert handlingstekst;
+- negasjoner som `ikke slett møtet`;
+- hypotetiske og metaspørsmål som `hva skjer hvis jeg sletter møtet?`;
+- flere handlinger i én melding;
+- uklare eller motstridende datoer;
+- fritt skrevne identitetsnavn uten løst Discord-eierskap;
+- vanlige utsagn som bare nevner `aurora`, `sommerferie` eller `daily digest`.
+
+## Hjelp og drift
+
+Spør `@inebotten kva kan du gjere?` eller åpne siden **Eksempler** i
+webkonsollen. Begge rendres fra samme typede hjelpekatalog som testes mot
+produksjonsruteren.
+
+For lokal oppstart og drift:
 
 ```bash
-# 1. Kjør interaktivt oppsett (anbefalt)
 python3 setup.py
-
-# 2. Start botten
 python3 scripts/run_both.py
 ```
 
-### Web Console
-
-Når botten kjører er dashbordet tilgjengelig på `http://localhost:8080` (eller det konfigurerte domenet på VPS).
-
-1. Åpne URL i nettleser
-2. Logg inn med API-nøkkelen. Hvis `CONSOLE_API_KEY` er tom, genereres den ved første start og lagres i `~/.hermes/discord/data/console/api_key.txt`.
-3. Dashboard viser bot-status, bridge, kalender, avstemninger og sanntidslogger
-
-For API-tilgang: send `X-API-Key`-headeren med samme nøkkel.
-
----
-
-## 📅 Kalenderkommandoer
-
-### Opprette Kalender-element
-
-> Du trenger ikke lære kommandoer - bare skriv som du snakker!
-
-```
-@inebotten møte med Ola i morgen kl 14
-@inebotten husk "Viktig møte" på lørdag kl 10:00
-@inebotten "RBK - Bodø/Glimt" — 12.04 kl 18:30
-@inebotten lunsj hver fredag kl 12
-@inebotten bursdag til mamma 15.05 hvert år
-@inebotten tannlege neste tirsdag kl 09:00
-@inebotten test imårra kl 13:37
-@inebotten møte 15. mai kl 10:00
-@inebotten regninger den 5. hver måned
-@inebotten julebord 20 desember
-```
-
-### Se Liste
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten kalender` | Vis alle kommende hendelser (90 dager) | `@inebotten kalender` |
-| `@inebotten søk kalender [tekst]` | Søk etter hendelser | `@inebotten søk kalender møte` |
-
-### Redigere
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten endre [nummer] [felter]` | Endre hendelse | `@inebotten endre 1 tittel: Ny tittel dato: 15.05 kl 14` |
-
-### Slette
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten slett [nummer]` | Slett hendelse etter nummer | `@inebotten slett 2` |
-| `@inebotten slett [tittel]` | Slett ett unikt treff, spør ved flere treff | `@inebotten slett spaghetti` |
-| `@inebotten slett alle [tittel]` | Slett ALLE treff | `@inebotten slett alle spaghetti` |
-| `@inebotten slett alt` / `@inebotten fjern alt` | Slett alt (krever bekreftelse) | `@inebotten slett alt` |
-
-### Fullføre
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten ferdig [nummer]` | Marker som fullført | `@inebotten ferdig 2` |
-| `@inebotten ferdig [tittel]` | Fullfør ett unikt treff, spør ved flere treff | `@inebotten ferdig meldekort` |
-| `@inebotten ferdig alle [tittel]` | Fullfør ALLE treff | `@inebotten ferdig alle meldekort` |
-
-### Gjentagende Oppføringer
-
-Gjentagende elementer (`hver uke`, `annenhver uke`, `hver måned`, `hvert år`) blir ikke slettet når du fullfører dem - de flyttes til neste dato. Bruk `slett` for å fjerne dem permanent.
-
-### 🌍 Delt Kalender
-
-Inebotten bruker nå **én felles kalender** for alle dine kanaler, grupper og DMs. Det betyr at en avtale du legger til i en DM vil være synlig når du skriver `@inebotten kalender` i en gruppechat, og omvendt.
-
-### 💡 Tips for presisjon
-
-Hvis du vil sikre at botten forstår nøyaktig hva som er tittelen på arrangementet ditt, sett det i hermetegn:
-`@inebotten husk "Fisketur med gjengen" i morgen kl 08:00`
-
-### Nøkkelord for Datoer
-
-| Nøkkelord | Betydning | Eksempel |
-|-----------|-----------|----------|
-| `i dag`, `idag` | I dag | `@inebotten møte i dag kl 14` |
-| `i morgen`, `imorgen`, `imårra` | I morgen | `@inebotten test imårra` |
-| `i overmorgen` | I overmorgen | `@inebotten avtale i overmorgen` |
-| `på mandag` | Neste mandag | `@inebotten møte på mandag kl 10` |
-| `neste tirsdag` | Neste tirsdag | `@inebotten tannlege neste tirsdag` |
-| `den 25.03` | 25. mars | `@inebotten frist den 25.03` |
-| `15. mai` | 15. mai (månedsnavn) | `@inebotten møte 15. mai kl 14` |
-| `den 5.` | Den 5. (daglig) | `@inebotten regninger den 5. hver måned` |
-| `20 desember` | 20. desember | `@inebotten julebord 20 desember` |
-
-### Statusikoner
-
-| Ikon | Betydning |
-|------|-----------|
-| 📅 | Synkronisert med Google Calendar |
-| 📌 | Kun lokalt |
-| ✓ | Fullført |
-| 🔄 | Gjentagende |
-
-### Påminnelser (Automatisk)
-
-Boten sender automatisk påminnelser når kalender-elementer nærmer seg:
-
-- **30 minutter før:** Boten pinger deg i kanalen der elementet ble opprettet
-- **Dagens Briefing kl 09:00:** Boten poster dagens plan, vær, markedsoppdatering og bursdager.
-
-Du trenger ikke be om påminnelser - de skjer automatisk!
-
----
-
-## 🔔 Påminnelser
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten påminnelse [tekst] om [tid]` | Opprett påminnelse | `@inebotten påminnelse Ring lege om 2 timer` |
-| `@inebotten påminnelser` | Vis aktive påminnelser | `@inebotten påminnelser` |
-| `@inebotten ferdig påminnelse [nummer]` | Fullfør påminnelse | `@inebotten ferdig påminnelse 1` |
-| `@inebotten endre påminnelse [nummer] [felt]` | Endre påminnelse | `@inebotten endre påminnelse 1 dato: 20.06` |
-| `@inebotten slett påminnelse [nummer]` | Slett påminnelse | `@inebotten slett påminnelse 1` |
-| `@inebotten søk påminnelse [tekst]` | Søk etter påminnelse | `@inebotten søk påminnelse lege` |
-
-## 🌦️ Vær
-
-| Kommando | Beskrivelse |
-|----------|-------------|
-| `@inebotten vær` | Værmelding for din lokasjon |
-| `@inebotten været i [sted]` | Vær for spesifikt sted |
-| `@inebotten Jeg bor i [sted]` | Lagre din faste lokasjon (for brief/dashboard) |
-
-**Eksempel:**
-```
-@inebotten Jeg bor i Trondheim
-@inebotten vær
-```
-
----
-
-## 📊 Avstemninger
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten avstemning [tittel]? [alt1], [alt2]` | Lag avstemning | `@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab` |
-| `@inebotten stem [nummer]` | Stem når én avstemning er aktiv | `@inebotten stem 1` |
-| `@inebotten polls` | Vis aktive avstemninger | `@inebotten polls` |
-| `@inebotten endre poll [nummer]` | Endre avstemning | `@inebotten endre poll 1` |
-| `@inebotten slett poll [nummer]` | Slett avstemning | `@inebotten slett poll 1` |
-| `@inebotten lukk poll [nummer]` | Lukk avstemning | `@inebotten lukk poll 1` |
-
----
-
-## ⏱️ Nedtellinger
-
-| Kommando | Eksempel |
-|----------|----------|
-| `@inebotten nedtelling til [dato]` | `@inebotten nedtelling til 17. mai` |
-| `@inebotten nedtelling til [hendelse]` | `@inebotten nedtelling til julaften` |
-
----
-
-## 💰 Krypto
-
-| Kommando | Eksempel |
-|----------|----------|
-| `@inebotten pris [symbol]` | `@inebotten pris BTC` |
-
-Støttede symboler: BTC, ETH, SOL, ADA, XRP, DOGE, m.fl.
-
----
-
-## 🧮 Kalkulator
-
-| Kommando | Eksempel |
-|----------|----------|
-| `@inebotten kalk [uttrykk]` | `@inebotten kalk (100 * 1.25) / 2` |
-
----
-
-## 🔮 Horoskop
-
-| Kommando | Eksempel |
-|----------|----------|
-| `@inebotten horoskop [stjernetegn]` | `@inebotten horoskop væren` |
-
-Stjernetegn: væren, tyren, tvillingene, kreften, løven, jomfruen, vekten, skorpionen, skytten, steinbukken, vannmannen, fiskene
-
----
-
-## 💬 Sitater
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten sitat` | Tilfeldig sitat | `@inebotten sitat` |
-| `@inebotten sitater` | Vis alle sitater | `@inebotten sitater` |
-| `@inebotten endre sitat [nummer] [felt]` | Endre sitat | `@inebotten endre sitat 1 tekst: Ny tekst forfatter: Ola` |
-| `@inebotten slett sitat [nummer]` | Slett sitat | `@inebotten slett sitat 1` |
-
-## 📺 Watchlist
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten watchlist` | Vis nummerert watchlist | `@inebotten watchlist` |
-| `@inebotten legg til [tittel]` | Legg til film eller serie | `@inebotten legg til Inception` |
-| `@inebotten hva skal vi se?` | Få et forslag fra watchlista | `@inebotten hva skal vi se?` |
-| `@inebotten endre watchlist [nummer] [tittel]` | Endre tittel | `@inebotten endre watchlist 1 The Matrix` |
-| `@inebotten fjern watchlist [nummer]` | Fjern fra watchlist | `@inebotten fjern watchlist 1` |
-
-## 🎂 Bursdager
-
-| Kommando | Beskrivelse | Eksempel |
-|----------|-------------|----------|
-| `@inebotten bursdag [navn] [dato]` | Legg til bursdag | `@inebotten bursdag Ola 15.05` |
-| `@inebotten endre bursdag [navn] [dato]` | Endre bursdag | `@inebotten endre bursdag Ola 20.05` |
-| `@inebotten bursdager` | Vis bursdager | `@inebotten bursdager` |
-
-## 🌟 Annet
-
-| Kommando | Beskrivelse |
-|----------|-------------|
-| `@inebotten dagens ord` | Norsk ord med definisjon |
-| `@inebotten daglig oppsummering` | Omfattende briefing (Vær, marked, kalender) |
-| `@inebotten kompliment` | Send et kompliment |
-| `@inebotten shorten [url]` | Forkort en URL |
-| `@inebotten nordlys` | Nordlysvarsel (Aurora) |
-
----
-
-## 👤 Profilhåndtering
-
-| Kommando | Eksempel | Beskrivelse |
-|----------|----------|-------------|
-| `@inebotten status` | `@inebotten status` | Bot-helse og driftstatus |
-| `@inebotten status [s]` | `@inebotten status dnd` | online, idle, dnd, invisible |
-| `@inebotten spiller [t]` | `@inebotten spiller CS2` | Endre aktivitet |
-| `@inebotten ser på [t]` | `@inebotten ser på Netflix` | Endre aktivitet |
-
----
-
-## 🔐 Minne og Personvern
-
-| Kommando | Beskrivelse |
-|----------|-------------|
-| `@inebotten vis minnet mitt` | Vis hva botten har lagret om deg |
-| `@inebotten eksporter minnet mitt` | Eksporter brukerminnet som JSON |
-| `@inebotten slett minnet mitt` | Vis sikker bekreftelse for sletting |
-| `@inebotten slett minnet mitt bekreft` | Slett brukerminnet ditt |
-
----
-
-## 🩺 Drift
-
-| Kommando | Eksempel | Beskrivelse |
-|----------|----------|-------------|
-| `@inebotten bot status` | `@inebotten bot status` | Vis uptime, AI-status, handlers og rate-limit |
-| `@inebotten health` | `@inebotten health` | Kort helsesjekk for botten |
-
-På VPS brukes dagens Ansible-flyt i `deploy/README.md`:
-
-```bash
-ansible-playbook -i deploy/inventory.yml deploy/ansible-playbook.yml \
-  --vault-password-file ~/.vault_pass.txt
-sudo docker compose ps
-```
-
-Se [deploy/README.md](../deploy/README.md) for gjeldende deploy-oppsett. [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) beskriver eldre webhook/systemd-oppsett.
-
----
-
-## 💬 Chatting
-
-> Bare nev @inebotten og snakk naturlig!
-
-```
-@inebotten Hei! Hvordan går det?
-@inebotten Hva synes du om RBK?
-@inebotten Fortell en vits
-@inebotten Hva er meningen med livet?
-```
-
----
-
-## 📁 Filplasseringer
-
-| Data | Plassering |
-|------|------------|
-| Kalender | `~/.hermes/discord/data/calendar.json` |
-| Påminnelser | `~/.hermes/discord/data/reminders.json` |
-| Avstemninger | `~/.hermes/discord/data/polls.json` |
-| Sitater | `~/.hermes/discord/data/quotes.json` |
-| Bursdager | `~/.hermes/discord/data/birthdays.json` |
-| Watchlist | `~/.hermes/discord/data/watchlist.json` |
-| Brukerminne | `~/.hermes/discord/data/user_memory.json` |
-| Google Calendar Credentials | `~/.hermes/credentials.json` locally, `/opt/apps/inebotten-discord/data/credentials.json` on VPS/Docker |
-| Google Calendar Token | `~/.hermes/google_token.json` locally, `/opt/apps/inebotten-discord/data/google_token.json` on VPS/Docker |
-| Console API-nøkkel | `~/.hermes/discord/data/console/api_key.txt` |
-| Konfigurasjon | `.env` (i prosjektmappen) |
-
----
-
-## 🔧 Feilsøking
-
-| Problem | Løsning |
-|---------|---------|
-| Botten svarer ikke | Sjekk at `run_both.py` kjører uten feil |
-| AI svarer ikke | Sjekk at LM Studio kjører på Windows |
-| GCal sync feiler | Sjekk at tokenet finnes i riktig Hermes data-mappe og kan friskes opp |
-| "Fant ikke nummer" | Bruk `@inebotten kalender` først for å se numre |
-| "Ugyldig token" | Hent ny token fra Discord (F12 > Application > Local Storage) |
-| Påminnelser kommer ikke | Sjekk at `reminder_checker.py` logger ved oppstart (`[REMIND] Reminder checker started`) |
-| Ingen morgen-digest | Opprett minst 1 arrangement for dagen via boten |
-
----
-
-## 🆘 Få Hjelp
-
-- 📖 [Full dokumentasjon](DOCUMENTATION.md)
-- 🏗️ [Arkitektur](ARCHITECTURE.md)
-- 🐛 [Rapporter bug](../../issues/new?template=bug_report.md)
-- 💡 [Foreslå feature](../../issues/new?template=feature_request.md)
-
----
-
-<p align="center">
-  <a href="../README.md">⬅️ Tilbake til README</a>
-</p>
+Webkonsollen ligger normalt på `http://localhost:8080`. Se
+[DOCUMENTATION.md](DOCUMENTATION.md), [ARCHITECTURE.md](ARCHITECTURE.md) og
+[VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md) for tekniske detaljer.

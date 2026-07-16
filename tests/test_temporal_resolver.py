@@ -195,7 +195,146 @@ def test_relative_time_preserves_nonzero_clock_seconds_and_revalidates():
 def test_natural_time_match_requires_a_bounded_complete_hour():
     result = RESOLVER.resolve("kl 123", reference=NOW)
     assert (result.date, result.time, result.due_at) == (None, None, None)
-    assert result.matched_text == ()
+    assert result.matched_text == ("natural_time",)
+    assert result.errors == ("invalid_time",)
+
+
+def test_dotted_norwegian_clock_time_is_canonical_with_a_cue():
+    result = RESOLVER.resolve("kl 14.30", reference=NOW)
+
+    assert result.errors == ()
+    assert (result.date, result.time) == ("14.07.2026", "14:30")
+
+
+@pytest.mark.parametrize(
+    ("text", "date", "time"),
+    [
+        ("om en halvtime", "14.07.2026", "12:30"),
+        ("om ein halvtime", "14.07.2026", "12:30"),
+        ("in half an hour", "14.07.2026", "12:30"),
+    ],
+)
+def test_half_hour_relative_forms_resolve_to_one_exact_instant(
+    text,
+    date,
+    time,
+):
+    result = RESOLVER.resolve(text, reference=NOW)
+
+    assert result.errors == ()
+    assert (result.date, result.time) == (date, time)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "senere i dag",
+        "later today",
+        "neste helg",
+        "next weekend",
+        "kvart over to",
+    ],
+)
+def test_vague_or_ambiguous_temporal_phrases_are_live_fail_closed_evidence(
+    text,
+):
+    result = RESOLVER.resolve(text, reference=NOW)
+
+    assert result.errors == ("ambiguous_time",)
+    assert result.matched_text
+
+
+def test_quarter_past_with_daypart_resolves_truthfully():
+    result = RESOLVER.resolve(
+        "kvart over to på ettermiddagen",
+        reference=NOW,
+    )
+
+    assert result.errors == ()
+    assert (result.date, result.time) == ("14.07.2026", "14:15")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "kvart over 3",
+        "klokka kvart over 3",
+        "klokka halv 3",
+        "halv 3",
+    ),
+)
+def test_numeric_twelve_hour_natural_clocks_require_a_daypart(text):
+    result = RESOLVER.resolve(text, reference=NOW)
+
+    assert result.time is None
+    assert result.errors == ("ambiguous_time",)
+
+
+def test_quarter_past_rejects_a_conflicting_evening_daypart():
+    result = RESOLVER.resolve(
+        "kvart over tolv på kvelden",
+        reference=NOW,
+    )
+
+    assert result.time is None
+    assert result.errors == ("conflicting_temporal",)
+
+
+def test_norwegian_half_clock_without_daypart_is_ambiguous():
+    result = RESOLVER.resolve(
+        "i morgen klokka halv tre",
+        reference=NOW,
+    )
+
+    assert result.date == "15.07.2026"
+    assert result.time is None
+    assert result.errors == ("ambiguous_time",)
+    assert "natural_time" in result.matched_text
+
+
+def test_norwegian_half_clock_with_daypart_resolves_before_named_hour():
+    result = RESOLVER.resolve(
+        "i morgen klokka halv tre på ettermiddagen",
+        reference=NOW,
+    )
+
+    assert result.errors == ()
+    assert (result.date, result.time) == ("15.07.2026", "14:30")
+
+
+def test_norwegian_half_clock_without_cue_resolves_with_explicit_daypart():
+    result = RESOLVER.resolve(
+        "i morgen halv 3 på ettermiddagen",
+        reference=NOW,
+    )
+
+    assert result.errors == ()
+    assert (result.date, result.time) == ("15.07.2026", "14:30")
+
+
+def test_half_twelve_in_the_evening_resolves_to_before_midnight():
+    result = RESOLVER.resolve(
+        "i morgen klokka halv tolv på kvelden",
+        reference=NOW,
+    )
+
+    assert result.errors == ()
+    assert (result.date, result.time) == ("15.07.2026", "23:30")
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "klokka 2 på kvelden",
+        "klokka 12 på kvelden",
+        "klokka 0 på kvelden",
+    ),
+)
+def test_plain_clock_rejects_conflicting_explicit_dayparts(text):
+    result = RESOLVER.resolve(text, reference=NOW)
+
+    assert result.time is None
+    assert result.errors == ("conflicting_temporal",)
 
 
 def test_unknown_cue_words_are_not_invalid_temporal_evidence():
@@ -241,6 +380,51 @@ def test_bare_daypart_nouns_are_inert_in_ordinary_text(noun):
     assert result.valid is True
     assert (result.date, result.time, result.due_at) == (None, None, None)
     assert result.matched_text == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "i morgen på morgenen",
+        "i morgon på morgonen",
+        "i morgen tidlig",
+    ),
+)
+def test_morning_context_after_a_live_date_uses_documented_0800_default(text):
+    result = RESOLVER.resolve(text, reference=NOW)
+
+    assert result.valid is True
+    assert (result.date, result.time) == ("15.07.2026", "08:00")
+    assert result.matched_text == ("date_alias", "daypart")
+
+
+@pytest.mark.parametrize(
+    ("text", "canonical"),
+    (
+        ("tomorrow morning", "08:00"),
+        ("tomorrow early", "08:00"),
+        ("tomorrow afternoon", "14:00"),
+        ("tomorrow evening", "19:00"),
+        ("tomorrow night", "22:00"),
+    ),
+)
+def test_english_daypart_after_a_live_date_is_bounded_and_canonical(
+    text,
+    canonical,
+):
+    result = RESOLVER.resolve(text, reference=NOW)
+
+    assert result.valid is True
+    assert (result.date, result.time) == ("15.07.2026", canonical)
+    assert result.matched_text == ("date_alias", "daypart")
+
+
+def test_tonight_uses_the_same_daypart_contract_as_i_kveld():
+    result = RESOLVER.resolve("tonight", reference=NOW)
+
+    assert result.valid is True
+    assert (result.date, result.time) == ("14.07.2026", "19:00")
+    assert result.matched_text == ("daypart",)
 
 
 def test_context_daypart_remains_independent_from_explicit_time():
@@ -599,6 +783,10 @@ def test_public_constant_vocabularies_are_exactly_finite():
         "på kvelden": "19:00",
         "i natt": "22:00",
         "på natten": "22:00",
+        "this morning": "08:00",
+        "this afternoon": "14:00",
+        "this evening": "19:00",
+        "tonight": "19:00",
     }
     assert SPECIAL_HOURS == {"noon": "12:00", "midnatt": "00:00", "midnight": "00:00"}
     assert "day after tomorrow" in DATE_ALIASES

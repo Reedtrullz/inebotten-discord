@@ -451,13 +451,35 @@ def format_choice_label(
 
 
 _TEXT_CHANGE = re.compile(
-    r"^(?:tittel|tekst|navn|kall den|endre tittel til|"
+    r"^(?:tittel|tekst|navn|spørsmål|question|kall den|endre tittel til|"
     r"endre teksten til|endre til|i stedet|isteden|heller)"
     r"\s*[:\-]?\s*(.+)$",
     re.IGNORECASE,
 )
+_NAMED_TEXT_CHANGE = re.compile(
+    r"^(?:tittel|tekst|navn|spørsmål|question|kall den|endre tittel til|"
+    r"endre teksten til)\b",
+    re.IGNORECASE,
+)
 _OPTIONS_CHANGE = re.compile(
     r"^(?:alternativer?|valg|options?)\s*[:\-]?\s*(.+)$",
+    re.IGNORECASE,
+)
+_DATE_EVIDENCE_LABELS = frozenset(
+    {
+        "date_alias",
+        "numeric_date",
+        "month_date",
+        "day_of_month",
+        "weekday",
+    }
+)
+_TIME_EVIDENCE_LABELS = frozenset(
+    {"natural_time", "raw_time", "special_hour", "daypart"}
+)
+_ANCHOR_TODAY_DAYPART = re.compile(
+    r"(?<!\w)(?:i\s+(?:morges|formiddag|ettermiddag|kveld|natt)|"
+    r"this\s+(?:morning|afternoon|evening)|tonight)(?!\w)",
     re.IGNORECASE,
 )
 
@@ -476,25 +498,46 @@ def _apply_temporal(
     resolver: TemporalResolver,
     reference: datetime,
 ) -> bool:
+    stripped = utterance.text.strip()
+    if (
+        _NAMED_TEXT_CHANGE.search(stripped) is not None
+        or _OPTIONS_CHANGE.fullmatch(stripped) is not None
+    ):
+        return False
     resolved = resolver.resolve(utterance.text, reference=reference)
     if not resolved.matched_text:
         return False
     if not resolved.valid:
         raise PendingCorrectionError("invalid_temporal")
+    labels = frozenset(resolved.matched_text)
+    explicit_date = bool(labels & _DATE_EVIDENCE_LABELS) or (
+        "relative" in labels
+    )
+    if "daypart" in labels and _ANCHOR_TODAY_DAYPART.search(utterance.text):
+        explicit_date = True
+    explicit_time = bool(labels & _TIME_EVIDENCE_LABELS) or (
+        "relative" in labels
+    )
+    if explicit_date and resolved.date is None:
+        raise PendingCorrectionError("invalid_temporal")
+    if explicit_time and resolved.time is None:
+        raise PendingCorrectionError("invalid_temporal")
+    if not (explicit_date or explicit_time):
+        raise PendingCorrectionError("invalid_temporal")
     if route.intent is BotIntent.CALENDAR_ITEM:
         item = _child_mapping(payload, "calendar_item")
-        if resolved.date is not None:
+        if explicit_date:
             item["date"] = resolved.date
             item.pop("days_offset", None)
-        if resolved.time is not None:
+        if explicit_time:
             item["time"] = resolved.time
         return True
     if route.intent is BotIntent.CALENDAR_EDIT:
         edit = _child_mapping(payload, "calendar_edit")
         changes = _child_mapping(edit, "changes")
-        if resolved.date is not None:
+        if explicit_date:
             changes["date"] = resolved.date
-        if resolved.time is not None:
+        if explicit_time:
             changes["time"] = resolved.time
         return True
     if route.intent in {BotIntent.REMINDER_CREATE, BotIntent.REMINDER_EDIT}:
@@ -504,17 +547,62 @@ def _apply_temporal(
             if reminder.get("action") == "edit"
             else reminder
         )
+        existing_date = target.get("due_date")
+        existing_time = target.get("time")
+        due_at = target.get("due_at")
+        aliases_incomplete = not isinstance(
+            existing_date,
+            str,
+        ) or not isinstance(existing_time, str)
+        if aliases_incomplete and isinstance(due_at, str):
+            try:
+                parsed_due_at = datetime.fromisoformat(
+                    due_at.replace("Z", "+00:00")
+                )
+            except ValueError as exc:
+                raise PendingCorrectionError("invalid_temporal") from exc
+            if (
+                parsed_due_at.tzinfo is None
+                or parsed_due_at.utcoffset() is None
+            ):
+                raise PendingCorrectionError("invalid_temporal")
+            local_due_at = parsed_due_at.astimezone(resolver.zone)
+            if not isinstance(existing_date, str):
+                existing_date = local_due_at.strftime("%d.%m.%Y")
+            if not isinstance(existing_time, str):
+                existing_time = local_due_at.strftime("%H:%M")
+
+        merged_date = resolved.date if explicit_date else existing_date
+        merged_time = resolved.time if explicit_time else existing_time
         for name in ("due_date", "time", "due_at", "timezone"):
             target.pop(name, None)
-        if resolved.date is not None or resolved.time is not None:
-            if resolved.date is not None:
-                target["due_date"] = resolved.date
-            if resolved.time is not None:
-                target["time"] = resolved.time
+
+        if isinstance(merged_date, str):
+            if merged_time is not None and not isinstance(merged_time, str):
+                raise PendingCorrectionError("invalid_temporal")
+            canonical = resolver.validate_fields(
+                merged_date,
+                merged_time,
+                reference=reference,
+            )
+            if not canonical.valid or canonical.date is None:
+                raise PendingCorrectionError("invalid_temporal")
+            target["due_date"] = canonical.date
+            if canonical.time is not None:
+                target["time"] = canonical.time
+            if canonical.due_at is not None:
+                target["due_at"] = canonical.due_at
             target["timezone"] = "Europe/Oslo"
-        elif resolved.due_at is not None:
-            target["due_at"] = resolved.due_at
+        elif isinstance(merged_time, str):
+            if route.intent is BotIntent.REMINDER_CREATE:
+                raise PendingCorrectionError("missing_date")
+            canonical_time = resolver.validate_time(merged_time)
+            if canonical_time is None:
+                raise PendingCorrectionError("invalid_temporal")
+            target["time"] = canonical_time
             target["timezone"] = "Europe/Oslo"
+        else:
+            raise PendingCorrectionError("invalid_temporal")
         return True
     return False
 

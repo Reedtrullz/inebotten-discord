@@ -26,6 +26,7 @@ from core.pending_actions import (
     PendingTargetFamily,
     PendingTargetGuard,
 )
+from core.utterance_semantics import TRAILING_CANCELLATIONS
 
 
 OSLO = ZoneInfo("Europe/Oslo")
@@ -291,7 +292,31 @@ def test_target_guards_are_copied_across_store_and_selection_boundaries():
 
 @pytest.mark.parametrize(
     "text",
-    ["ja", "Ja!", "jepp", "japp", "ok", "okay", "bekreft", "gjør det", "gjer det", "yes"],
+    [
+        "ja",
+        "Ja!",
+        "jepp",
+        "japp",
+        "ok",
+        "okay",
+        "bekreft",
+        "gjør det",
+        "gjer det",
+        "kjør på",
+        "køyr på",
+        "det stemmer",
+        "yes",
+        "go ahead",
+        "sure",
+        "yep",
+        "ja takk",
+        "ja, gjør det",
+        "ja, gjer det",
+        "yes please",
+        "ok, kjør",
+        "ok, køyr",
+        "det kan du",
+    ],
 )
 def test_natural_confirmation_resolution(text):
     store = PendingActionStore(now_provider=Clock())
@@ -299,14 +324,75 @@ def test_natural_confirmation_resolution(text):
     assert store.resolve(key(), text).kind is PendingResolutionKind.CONFIRM
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["nei", "avbryt", "stopp", "dropp det", "ikke gjør det", "ikkje gjer det", "nope"],
-)
+NATURAL_CANCEL_REPLIES = tuple(sorted(set(TRAILING_CANCELLATIONS).union({
+    "nei",
+    "nei takk",
+    "ikke likevel",
+    "ikkje likevel",
+    "glem det",
+    "gløym det",
+    "la oss droppe det",
+    "lat oss droppe det",
+    "avbryt",
+    "stopp",
+    "dropp det",
+    "ikke gjør det",
+    "ikkje gjer det",
+    "nope",
+    "no thanks",
+    "never mind",
+    "nei, avbryt",
+    "avbryt, takk",
+    "cancel please",
+    "vent litt",
+    "stopp litt",
+    "vent nå",
+    "wait please",
+    "la være da",
+    "jeg ombestemte meg",
+    "forget it",
+    "scratch that",
+})))
+
+
+@pytest.mark.parametrize("text", NATURAL_CANCEL_REPLIES)
 def test_natural_cancel_resolution(text):
     store = PendingActionStore(now_provider=Clock())
     ready_confirmation(store, key(), reminder_route())
     assert store.resolve(key(), text).kind is PendingResolutionKind.CANCEL
+
+
+@pytest.mark.parametrize("text", NATURAL_CANCEL_REPLIES)
+def test_natural_cancel_does_not_leave_destructive_action_armed(text):
+    store = PendingActionStore(now_provider=Clock())
+    destructive = replace(
+        reminder_route(),
+        intent=BotIntent.REMINDER_DELETE,
+        risk=IntentRisk.DESTRUCTIVE,
+    )
+    pending = ready_confirmation(store, key(), destructive)
+
+    canceled = store.resolve(key(), text)
+    assert canceled.kind is PendingResolutionKind.CANCEL
+    assert store.cancel(key(), pending.action_id) is True
+    assert store.claim(key(), pending.action_id) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ja takk, men kanskje ikke",
+        "yes please explain",
+        "det kan du kanskje",
+        "ok, kjør og slett noe annet",
+        "avbryt takk senere",
+        "jeg tror vi bør stoppe litt",
+    ],
+)
+def test_confirmation_and_cancel_wrappers_remain_anchored(text):
+    store = PendingActionStore(now_provider=Clock())
+    ready_confirmation(store, key(), reminder_route())
+    assert store.resolve(key(), text).kind is PendingResolutionKind.NONE
 
 
 @pytest.mark.parametrize(
@@ -317,6 +403,16 @@ def test_natural_cancel_resolution(text):
         ("første", 0),
         ("den andre", 1),
         ("andre alternativet", 1),
+        ("alternativ 2", 1),
+        ("valg 2", 1),
+        ("option 2", 1),
+        ("2 takk", 1),
+        ("jeg velger 2", 1),
+        ("jeg mener den andre", 1),
+        ("jeg velger den andre", 1),
+        ("I choose the second", 1),
+        ("I mean the second", 1),
+        ("den andre, takk", 1),
     ],
 )
 def test_natural_choice_resolution(text, index):
@@ -327,11 +423,37 @@ def test_natural_choice_resolution(text, index):
     assert resolved.choice_index == index
 
 
-@pytest.mark.parametrize("text", ["tredje", "nummer 5", "0", "nummer 02", "siste"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "tredje",
+        "nummer 5",
+        "0",
+        "nummer 02",
+        "siste",
+        "begge",
+        "both",
+        "alternativ 2 og 1",
+        "jeg tror alternativ 2 passer",
+        "jeg velger den andre fordi den passer",
+        "I choose the second option because it is best",
+        "2 takk, fordi det er best",
+        "ordre 2 skal til rom 1",
+    ],
+)
 def test_out_of_range_or_unrecognized_choice_is_inert(text):
     store = PendingActionStore(now_provider=Clock())
     ready_choices(store, key(), list_routes())
     assert store.resolve(key(), text).kind is PendingResolutionKind.NONE
+
+
+def test_cancel_wrapper_precedes_choice_resolution():
+    store = PendingActionStore(now_provider=Clock())
+    ready_choices(store, key(), list_routes())
+    assert (
+        store.resolve(key(), "nei, avbryt").kind
+        is PendingResolutionKind.CANCEL
+    )
 
 
 def test_temporal_correction_requires_exposed_temporal_slot():
@@ -348,6 +470,53 @@ def test_temporal_correction_requires_exposed_temporal_slot():
         "Hjelp",
     )
     assert store.resolve(key(), "i morgen kl 14").kind is PendingResolutionKind.NONE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "kan vi snakke om i morgen?",
+        "jeg gleder meg til i morgen",
+        "hva skjer kl 15?",
+        "møtet var i går, men i morgen passer kanskje",
+        "og i morgen",
+        "i morgen og",
+    ],
+)
+def test_conversational_temporal_mentions_are_not_pending_corrections(text):
+    store = PendingActionStore(now_provider=Clock())
+    ready_confirmation(store, key(), reminder_route())
+    assert store.resolve(key(), text).kind is PendingResolutionKind.NONE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "kl 15",
+        "i morgen",
+        "i morgen kl 15",
+        "rettelse: i morgen",
+        "endre til kl 15",
+        "i kveld",
+        "this evening",
+        "tonight",
+        "på kvelden",
+        "på mandag",
+        "i overmorgen",
+        "overmorgen",
+        "imorgen",
+        "i morra",
+        "day after tomorrow",
+        "at 3 pm",
+        "15 July",
+        "om seks timer",
+        "in six hours",
+    ],
+)
+def test_bounded_temporal_correction_frames_are_recognized(text):
+    store = PendingActionStore(now_provider=Clock())
+    ready_confirmation(store, key(), reminder_route())
+    assert store.resolve(key(), text).kind is PendingResolutionKind.CORRECT
 
 
 @pytest.mark.parametrize("text", ["vær i Oslo", "hjelp", "vis kalenderen", "hei igjen"])
@@ -523,6 +692,22 @@ def test_expiry_is_reported_once_and_removed():
     assert expired.action_id == pending.action_id
     assert store.resolve(key(), "ja").kind is PendingResolutionKind.NONE
     assert metrics.snapshot()["pending"]["expired"] == 1
+
+
+def test_expired_pending_does_not_consume_a_fresh_explicit_request():
+    clock = Clock()
+    store = PendingActionStore(
+        now_provider=clock,
+        ttl=timedelta(minutes=10),
+    )
+    ready_confirmation(store, key(), reminder_route())
+    clock.advance(timedelta(minutes=10))
+
+    fresh = store.resolve(key(), "kan du vise meg kalenderen?")
+
+    assert fresh.kind is PendingResolutionKind.NONE
+    assert store.peek(key()) is None
+    assert store.resolve(key(), "ja").kind is PendingResolutionKind.NONE
 
 
 def test_executing_claim_does_not_expire_while_manager_is_awaited():

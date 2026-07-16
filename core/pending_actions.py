@@ -13,11 +13,12 @@ from enum import Enum
 
 from discord.utils import escape_markdown
 
+from cal_system.temporal_resolver import TemporalResolver
 from core.dispatch_result import DispatchOutcome
 from core.intent_models import BotIntent, IntentResult
 from core.message_context import ConversationKey
 from core.nlu_metrics import NLUMetrics
-from core.utterance_semantics import REJECTIONS
+from core.utterance_semantics import CONFIRMATIONS, TRAILING_CANCELLATIONS
 
 
 class PendingKind(str, Enum):
@@ -269,20 +270,26 @@ class PendingBusyError(RuntimeError):
     """Raised when a visible presentation or dispatch already owns a key."""
 
 
-_CONFIRM = frozenset(
-    {
-        "ja",
-        "jepp",
-        "japp",
-        "ok",
-        "okay",
-        "bekreft",
-        "gjør det",
-        "gjer det",
-        "yes",
-    }
+_CONFIRM = CONFIRMATIONS
+_CANCEL = frozenset(TRAILING_CANCELLATIONS)
+_CONFIRM_WRAPPER = re.compile(
+    r"(?:"
+    r"(?:ja|yes)\s*,?\s*(?:takk|please)|"
+    r"ja\s*,?\s*(?:gjør|gjer)\s+det|"
+    r"(?:ok|okay)\s*,?\s*(?:kjør|køyr)(?:\s+på)?|"
+    r"det\s+kan\s+du"
+    r")",
+    re.IGNORECASE,
 )
-_CANCEL = frozenset(REJECTIONS | {"nope"})
+_CANCEL_WRAPPER = re.compile(
+    r"(?:"
+    r"(?:nei|no)\s*,?\s*(?:avbryt|cancel)"
+    r"(?:\s*,?\s*(?:takk|please))?|"
+    r"(?:avbryt|cancel)\s*,?\s*(?:takk|please)|"
+    r"(?:vent|stopp)\s+litt"
+    r")",
+    re.IGNORECASE,
+)
 _ORDINALS = {
     "første": 0,
     "fyrste": 0,
@@ -298,19 +305,14 @@ _ORDINALS = {
     "fifth": 4,
 }
 _EXPLICIT_CORRECTION = re.compile(
-    r"^(?:(?:endre til|i stedet|isteden|heller)\b|"
-    r"(?:endring|rettelse|korreksjon)\s*:)",
+    r"^(?:(?:endre til|i stedet|isteden|heller)\b\s*[:\-]?|"
+    r"(?:endring|rettelse|korreksjon)\s*:)\s*\S(?:.*\S)?$",
     re.IGNORECASE,
 )
-_TEMPORAL_EVIDENCE = re.compile(
-    r"\b(?:i morgen|i morgon|imårra|tomorrow|"
-    r"mandag|tirsdag|onsdag|torsdag|fredag|lørdag|laurdag|søndag|"
-    r"kl(?:okka|okken)?\.?\s*\d{1,2}(?::\d{2})?|"
-    r"\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\b",
-    re.IGNORECASE,
-)
+_PENDING_TEMPORAL_RESOLVER = TemporalResolver()
+_PENDING_TEMPORAL_REFERENCE = datetime(2000, 1, 1, tzinfo=timezone.utc)
 _TITLE_EVIDENCE = re.compile(
-    r"^(?:tittel|tekst|navn|kall den|endre tittel til|"
+    r"^(?:tittel|tekst|navn|spørsmål|question|kall den|endre tittel til|"
     r"endre teksten til)\s*[:\-]?\s*\S+",
     re.IGNORECASE,
 )
@@ -323,6 +325,48 @@ _OPTION_EVIDENCE = re.compile(
 def _normalize_reply(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return re.sub(r"\s+", " ", normalized).strip(" \t\r\n.!?")
+
+
+def _is_confirmation_reply(normalized: str) -> bool:
+    return normalized in _CONFIRM or bool(
+        _CONFIRM_WRAPPER.fullmatch(normalized)
+    )
+
+
+def _is_cancel_reply(normalized: str) -> bool:
+    return (
+        normalized in _CANCEL
+        or bool(_CANCEL_WRAPPER.fullmatch(normalized))
+    )
+
+
+def _is_bare_temporal_correction(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text).casefold().strip()
+    normalized = normalized.strip(" \t\r\n,;:.!?")
+    if not normalized:
+        return False
+
+    # A conjunction is safe only between two temporal fragments.  Keeping it
+    # away from either edge prevents conversational continuations such as
+    # ``og i morgen`` and ``i morgen og`` from claiming a pending action.
+    if re.match(r"^(?:og|and)\b", normalized, re.IGNORECASE):
+        return False
+    if re.search(r"\b(?:og|and)$", normalized, re.IGNORECASE):
+        return False
+
+    remaining = _PENDING_TEMPORAL_RESOLVER.strip_temporal_evidence(
+        normalized,
+        reference=_PENDING_TEMPORAL_REFERENCE,
+    )
+    if remaining == normalized:
+        return False
+    return (
+        re.fullmatch(
+            r"(?:(?:på|at)\s*)?(?:(?:og|and)\s*)*",
+            remaining,
+        )
+        is not None
+    )
 
 
 def _clone_route(route: IntentResult) -> IntentResult:
@@ -455,7 +499,7 @@ class PendingActionStore:
     def _read(
         self,
         key: ConversationKey,
-    ) -> tuple[PendingAction | None, str | None]:
+    ) -> tuple[PendingAction | None, PendingAction | None]:
         now = self._now()
         self._prune_terminal(now)
         pending = self._items.get(key)
@@ -467,7 +511,7 @@ class PendingActionStore:
         ):
             del self._items[key]
             self.metrics.record_pending("expired")
-            return None, pending.action_id
+            return None, pending
         return pending, None
 
     def _begin(
@@ -669,11 +713,27 @@ class PendingActionStore:
         return True
 
     def resolve(self, key: ConversationKey, text: str) -> PendingResolution:
-        pending, expired_id = self._read(key)
-        if expired_id is not None:
+        pending, expired = self._read(key)
+        if expired is not None and isinstance(text, str):
+            normalized = _normalize_reply(text)
+            targets_expired = bool(
+                _is_confirmation_reply(normalized)
+                or _is_cancel_reply(normalized)
+                or (
+                    expired.kind is PendingKind.CHOICE
+                    and (choice := self._choice_index(normalized)) is not None
+                    and choice < len(expired.routes)
+                )
+                or (
+                    expired.kind is PendingKind.CONFIRMATION
+                    and self._looks_like_correction(expired.routes[0], text)
+                )
+            )
+            if not targets_expired:
+                return PendingResolution(PendingResolutionKind.NONE)
             return PendingResolution(
                 PendingResolutionKind.EXPIRED,
-                action_id=expired_id,
+                action_id=expired.action_id,
             )
         if (
             pending is None
@@ -685,27 +745,27 @@ class PendingActionStore:
             PendingStatus.COMPLETED,
             PendingStatus.FAILED,
         }:
-            if normalized in _CONFIRM:
-                return PendingResolution(
-                    PendingResolutionKind.CONFIRM,
-                    action_id=pending.action_id,
-                )
-            if normalized in _CANCEL:
+            if _is_cancel_reply(normalized):
                 return PendingResolution(
                     PendingResolutionKind.CANCEL,
+                    action_id=pending.action_id,
+                )
+            if _is_confirmation_reply(normalized):
+                return PendingResolution(
+                    PendingResolutionKind.CONFIRM,
                     action_id=pending.action_id,
                 )
             return PendingResolution(PendingResolutionKind.NONE)
         if pending.status is not PendingStatus.READY:
             return PendingResolution(PendingResolutionKind.NONE)
-        if normalized in _CANCEL:
+        if _is_cancel_reply(normalized):
             return PendingResolution(
                 PendingResolutionKind.CANCEL,
                 action_id=pending.action_id,
             )
         if (
             pending.kind is PendingKind.CONFIRMATION
-            and normalized in _CONFIRM
+            and _is_confirmation_reply(normalized)
         ):
             return PendingResolution(
                 PendingResolutionKind.CONFIRM,
@@ -732,13 +792,28 @@ class PendingActionStore:
 
     @staticmethod
     def _choice_index(normalized: str) -> int | None:
-        numeric = re.fullmatch(r"(?:nummer\s*)?([1-5])", normalized)
+        if re.search(r"(?<!\w)(?:begge|both)(?!\w)", normalized):
+            return None
+        numeric = re.fullmatch(
+            r"(?:(?:nummer|alternativ|valg|option)\s*)?([1-5])"
+            r"(?:\s*,?\s*(?:takk|please))?",
+            normalized,
+        )
+        if numeric is None:
+            numeric = re.fullmatch(
+                r"(?:(?:jeg|eg)\s+velger|i\s+choose)\s+"
+                r"(?:(?:nummer|alternativ|valg|option)\s*)?([1-5])",
+                normalized,
+            )
         if numeric:
             return int(numeric.group(1)) - 1
         for word, index in _ORDINALS.items():
             if re.fullmatch(
-                rf"(?:den\s+)?{re.escape(word)}"
-                rf"(?:\s+(?:ene|alternativet|valget))?",
+                rf"(?:(?:(?:jeg|eg)\s+(?:mener|meiner|velger|vel)|"
+                rf"i\s+(?:mean|choose))\s+)?"
+                rf"(?:(?:den|the)\s+)?{re.escape(word)}"
+                rf"(?:\s+(?:ene|alternativet|valget|option))?"
+                rf"(?:\s*,?\s*(?:takk|please))?",
                 normalized,
             ):
                 return index
@@ -747,11 +822,11 @@ class PendingActionStore:
     @staticmethod
     def _looks_like_correction(route: IntentResult, text: str) -> bool:
         stripped = text.strip()
-        if _EXPLICIT_CORRECTION.search(stripped):
+        if _EXPLICIT_CORRECTION.fullmatch(stripped):
             return True
         keys = _payload_keys(route.payload)
         if keys & {"date", "time", "due_at", "due_date"}:
-            if _TEMPORAL_EVIDENCE.search(text):
+            if _is_bare_temporal_correction(text):
                 return True
         if keys & {"title", "text", "question", "description"}:
             if _TITLE_EVIDENCE.search(stripped):

@@ -2,7 +2,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, cast
 
-from ai.chat_contract import ChatTurn
+from ai.chat_contract import (
+    REDACTED_AUTH_TURN,
+    ChatTurn,
+    HistoryPolicy,
+)
 from core.message_context import ConversationKey
 from memory.conversation_context import ConversationContext, _StoredTurn
 
@@ -187,6 +191,88 @@ class ConversationContextTests(unittest.TestCase):
                 )
             ],
             ["forrige", "svar"],
+        )
+
+    def test_reclassify_source_turn_applies_all_history_policies(self):
+        key = ConversationKey(1, 10, 7)
+        other = ConversationKey(1, 10, 8)
+        prior = (
+            ChatTurn("user", "eldste spørsmål", 1),
+            ChatTurn("assistant", "tidligere svar"),
+            ChatTurn("user", "nyeste spørsmål", 2),
+        )
+        cases = (
+            (
+                HistoryPolicy.FULL,
+                (
+                    prior[1],
+                    prior[2],
+                    ChatTurn("user", "privat inngang", 99),
+                ),
+            ),
+            (
+                HistoryPolicy.REDACT_AUTH,
+                (
+                    prior[1],
+                    prior[2],
+                    ChatTurn("user", REDACTED_AUTH_TURN, 99),
+                ),
+            ),
+            (HistoryPolicy.OMIT, prior),
+        )
+
+        for policy, expected in cases:
+            with self.subTest(policy=policy):
+                ctx = ConversationContext(max_history=3)
+                for turn in prior:
+                    ctx.add_turn(key, turn)
+                ctx.add_turn(other, ChatTurn("user", "annen bruker", 99))
+                self.assertTrue(
+                    ctx.stage_source_turn(
+                        key,
+                        ChatTurn("user", "privat inngang", 99),
+                    )
+                )
+                self.assertEqual(len(ctx.threads[key]), 4)
+                self.assertEqual(ctx._staged_source_turns, {key: 99})
+                self.assertEqual(
+                    ctx.get_prompt_history(
+                        key,
+                        exclude_source_message_id=99,
+                    ),
+                    prior,
+                )
+
+                self.assertTrue(
+                    ctx.reclassify_source_turn(key, 99, policy)
+                )
+
+                self.assertEqual(ctx.get_prompt_history(key), expected)
+                self.assertNotIn(key, ctx._staged_source_turns)
+                self.assertLessEqual(len(ctx.threads[key]), 3)
+                self.assertEqual(
+                    ctx.get_prompt_history(other),
+                    (ChatTurn("user", "annen bruker", 99),),
+                )
+
+    def test_reclassify_source_turn_is_exact_and_reports_no_match(self):
+        ctx = ConversationContext()
+        key = ConversationKey(1, 10, 7)
+        ctx.add_turn(key, ChatTurn("user", "behold", 1))
+
+        self.assertFalse(
+            ctx.reclassify_source_turn(
+                ConversationKey(1, 11, 7),
+                1,
+                HistoryPolicy.OMIT,
+            )
+        )
+        self.assertFalse(
+            ctx.reclassify_source_turn(key, 2, HistoryPolicy.OMIT)
+        )
+        self.assertEqual(
+            ctx.get_prompt_history(key),
+            (ChatTurn("user", "behold", 1),),
         )
 
     def test_typed_context_and_summary_inspect_only_exact_key(self):

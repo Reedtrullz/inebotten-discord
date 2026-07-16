@@ -26,6 +26,11 @@ from core.intent_models import (
     RoutedIntent,
 )
 from core.intent_policy import classify_intent_risk
+from core.list_read_filters import (
+    filtered_list_read_family,
+    is_supported_calendar_read_date,
+    unfiltered_list_read_family,
+)
 from core.intent_payloads import (
     ENVELOPE_KEYS,
     PayloadValidationError,
@@ -42,7 +47,21 @@ from core.pending_actions import (
     PendingResolutionKind,
 )
 from core.utterance import NormalizedUtterance, normalize_utterance
-from core.utterance_semantics import UtteranceSemantics, analyze_utterance
+from core.utterance_semantics import (
+    MAX_SEQUENCE_CLAUSE_PROBES,
+    SpeechAct,
+    UtteranceSemantics,
+    analyze_utterance,
+    bounded_english_calendar_create_head,
+    bounded_english_reminder_create_head,
+    has_bounded_future_weather_request,
+    has_sequenced_action_request,
+    has_unsupported_poll_mutation_request,
+    is_independent_conversational_request,
+    is_standalone_action_retraction,
+    sequenced_clause_candidates,
+    strip_bounded_request_courtesy,
+)
 
 from core.intent_keywords import (
     AURORA_KEYWORDS,
@@ -106,6 +125,349 @@ COLLECTOR_ORDER = (
     "_collect_fallback_candidates",
 )
 
+
+def _resolve_single_date_read_filter(
+    resolver: TemporalResolver,
+    text: str,
+    *,
+    reference_time: datetime,
+) -> str | None:
+    """Resolve one bounded date-only read against the turn's frozen clock."""
+
+    try:
+        resolved = resolver.resolve(text, reference=reference_time)
+    except (TypeError, ValueError):
+        return None
+    if (
+        resolved.errors
+        or resolved.date is None
+        or resolved.time is not None
+        or resolved.due_at is not None
+    ):
+        return None
+    return resolved.date
+
+
+_SCHOOL_HOLIDAY_POLITE_HEAD = re.compile(
+    r"^(?:(?:kan|kunne|vil|can|could|would|will)\s+(?:du|you)|"
+    r"vennligst|please)\s+",
+    re.IGNORECASE,
+)
+_SCHOOL_HOLIDAY_SHOW_HEAD = re.compile(
+    r"^(?:vis|vise|show|list|liste|fortell|fortelje|tell)"
+    r"(?:\s+(?:meg|mæ|me))?\s+",
+    re.IGNORECASE,
+)
+_SCHOOL_HOLIDAY_ARTICLE = re.compile(
+    r"^(?:den|det|de|the|a|an)\s+",
+    re.IGNORECASE,
+)
+_SCHOOL_HOLIDAY_DESCRIPTORS = frozenset(
+    {
+        "dato",
+        "datoen",
+        "datoer",
+        "datoene",
+        "oversikt",
+        "kalender",
+        "date",
+        "dates",
+        "overview",
+        "calendar",
+        "schedule",
+    }
+)
+
+_SCHOOL_HOLIDAY_TERMINAL_DATE_WORDS = frozenset(
+    {
+        "begin",
+        "begins",
+        "begynne",
+        "begynner",
+        "end",
+        "ends",
+        "slutt",
+        "slutter",
+        "start",
+        "starts",
+        "starter",
+    }
+)
+
+
+def _school_holiday_topic_suffix(text: str) -> tuple[str, str] | None:
+    cleaned = text.strip().rstrip("?!.,")
+    for keyword in sorted(
+        SCHOOL_HOLIDAYS_KEYWORDS,
+        key=len,
+        reverse=True,
+    ):
+        if cleaned == keyword:
+            return keyword, ""
+        if cleaned.startswith(f"{keyword} "):
+            return keyword, cleaned[len(keyword):].strip()
+    return None
+
+
+def _is_compact_school_holiday_request(control: str) -> bool:
+    """Accept only a bare holiday topic or topic plus a known location."""
+
+    split = _school_holiday_topic_suffix(control)
+    if split is None:
+        return False
+    _, suffix = split
+    if not suffix:
+        return True
+
+    from features.school_holidays import get_fylke_from_exact_location
+
+    return get_fylke_from_exact_location(suffix) is not None
+
+
+def _is_school_holiday_show_request(control: str) -> bool:
+    cleaned = control.strip().rstrip("?!.,")
+    without_polite = _SCHOOL_HOLIDAY_POLITE_HEAD.sub("", cleaned, count=1)
+    without_action = _SCHOOL_HOLIDAY_SHOW_HEAD.sub(
+        "",
+        without_polite,
+        count=1,
+    )
+    if without_action == without_polite:
+        return False
+    topic_text = _SCHOOL_HOLIDAY_ARTICLE.sub("", without_action, count=1)
+    split = _school_holiday_topic_suffix(topic_text)
+    if split is None:
+        return False
+    _, suffix = split
+    if not suffix:
+        return True
+
+    from features.school_holidays import get_fylke_from_exact_location
+
+    if get_fylke_from_exact_location(suffix) is not None:
+        return True
+    descriptor, _, location = suffix.partition(" ")
+    return (
+        descriptor in _SCHOOL_HOLIDAY_DESCRIPTORS
+        and (
+            not location
+            or get_fylke_from_exact_location(location) is not None
+        )
+    )
+
+
+def _is_bounded_school_holiday_suffix(
+    suffix: str,
+    *,
+    allow_empty: bool,
+) -> bool:
+    """Allow only date words or one exact location after a holiday topic."""
+
+    cleaned = suffix.strip().rstrip("?!.,")
+    if not cleaned:
+        return allow_empty
+    if cleaned in _SCHOOL_HOLIDAY_TERMINAL_DATE_WORDS:
+        return True
+
+    from features.school_holidays import get_fylke_from_exact_location
+
+    if get_fylke_from_exact_location(cleaned) is not None:
+        return True
+    descriptor, _, location = cleaned.partition(" ")
+    return (
+        descriptor in _SCHOOL_HOLIDAY_DESCRIPTORS
+        and (
+            not location
+            or get_fylke_from_exact_location(location) is not None
+        )
+    )
+
+
+def _topic_after_school_question_head(
+    text: str,
+    pattern: str,
+) -> tuple[str, str] | None:
+    match = re.match(pattern, text, re.IGNORECASE)
+    if match is None:
+        return None
+    topic_text = _SCHOOL_HOLIDAY_ARTICLE.sub(
+        "",
+        match.group("topic").strip(),
+        count=1,
+    )
+    return _school_holiday_topic_suffix(topic_text)
+
+
+def _is_school_holiday_date_question(control: str) -> bool:
+    """Recognize bounded date/list questions with the topic in request slot."""
+
+    # The topic must begin immediately after the question shell. This keeps
+    # media titles such as "when is Summer Vacation showing?" conversational.
+    split = _topic_after_school_question_head(
+        control,
+        r"^(?:når|when)\s+(?:er|is|are|starter|start|begynner|begins|does)"
+        r"\s+(?P<topic>.+)$",
+    )
+    if split is not None:
+        _, suffix = split
+        return _is_bounded_school_holiday_suffix(suffix, allow_empty=True)
+
+    duration = re.match(
+        r"^(?:(?:hvor|kor)\s+(?:lenge|mange\s+dag(?:er|ar))\b.*?"
+        r"\b(?:til|før)\b|how\s+(?:long|many\s+days)\b.*?"
+        r"\b(?:to|until|till)\b)\s+(?P<topic>.+)$",
+        control,
+        re.IGNORECASE,
+    )
+    if duration is not None:
+        split = _school_holiday_topic_suffix(duration.group("topic"))
+        return bool(
+            split is not None
+            and _is_bounded_school_holiday_suffix(
+                split[1],
+                allow_empty=True,
+            )
+        )
+
+    # "What are the school holidays in Oslo?" is a location lookup, while
+    # the unscoped definitional question "what are school holidays?" belongs
+    # in conversation. A date descriptor also makes the request executable.
+    split = _topic_after_school_question_head(
+        control,
+        r"^(?:(?:hva|kva|ka)\s+(?:er|blir)|what\s+(?:is|are))\s+"
+        r"(?P<topic>.+)$",
+    )
+    if split is not None:
+        _, suffix = split
+        return _is_bounded_school_holiday_suffix(
+            suffix,
+            allow_empty=False,
+        )
+
+    split = _topic_after_school_question_head(
+        control,
+        r"^(?:hvilke|kva\s+for|which)\s+(?P<topic>.+)$",
+    )
+    if split is not None:
+        _, suffix = split
+        owned_location = re.fullmatch(
+            r"(?:does\s+(.+?)\s+have|har\s+(.+))",
+            suffix,
+            re.IGNORECASE,
+        )
+        if owned_location is not None:
+            location = next(
+                group for group in owned_location.groups() if group
+            )
+            return _is_bounded_school_holiday_suffix(
+                location,
+                allow_empty=False,
+            )
+        suffix = re.sub(
+            r"^(?:er\s+det|finnes\s+det|are(?:\s+there)?)\s+",
+            "",
+            suffix,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return _is_bounded_school_holiday_suffix(suffix, allow_empty=True)
+
+    # English/Norwegian topic-first variants: "what school holidays are
+    # there in Oslo?". Requiring the exact existential tail avoids treating
+    # opinions or planning questions as feature calls.
+    existential = re.match(
+        r"^(?:what|hva|kva|ka)\s+(?P<topic>.+?)\s+"
+        r"(?:are\s+there|er\s+det|finnes\s+det)\s+"
+        r"(?P<location>.+)$",
+        control,
+        re.IGNORECASE,
+    )
+    if existential is not None:
+        split = _school_holiday_topic_suffix(existential.group("topic"))
+        return bool(
+            split is not None
+            and not split[1]
+            and _is_bounded_school_holiday_suffix(
+                existential.group("location"),
+                allow_empty=False,
+            )
+        )
+    return False
+
+
+def _is_bounded_school_holiday_request(control: str) -> bool:
+    control = strip_bounded_request_courtesy(control)
+    return (
+        _is_compact_school_holiday_request(control)
+        or _is_school_holiday_show_request(control)
+        or _is_school_holiday_date_question(control)
+    )
+
+
+_READ_TOPIC_POLITE_HEAD = re.compile(
+    r"^(?:(?:kan|kunne|vil|can|could|would|will)\s+(?:du|you)|"
+    r"vennligst|please)\s+",
+    re.IGNORECASE,
+)
+_READ_TOPIC_ACTION_HEAD = re.compile(
+    r"^(?:vis|vise|show|hent|get|gi|gje|give|fortell|fortelje|tell)"
+    r"(?:\s+(?:meg|mæ|me))?\s+",
+    re.IGNORECASE,
+)
+_READ_TOPIC_ARTICLE = re.compile(
+    r"^(?:den|det|et|eit|en|ei|the|a|an)\s+",
+    re.IGNORECASE,
+)
+_READ_TOPIC_QUESTION_HEAD = re.compile(
+    r"^(?:(?:hva|kva|ka)\s+er|what\s+is|what['’]s)\s+",
+    re.IGNORECASE,
+)
+_WORD_OF_DAY_NATURAL_REQUEST = re.compile(
+    r"^(?:(?:(?:kan|kunne|vil|can|could|would|will)\s+(?:du|you)\s+)?"
+    r"(?:lær|lære|teach)(?:\s+(?:meg|mæ|me))?\s+"
+    r"(?:(?:et|eit|a)\s+(?:ord|word)|dagens\s+ord)|"
+    r"(?:what\s+is|what['’]s)\s+today['’]s\s+word)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+_AURORA_NATURAL_REQUEST = re.compile(
+    r"^(?:(?:kan|vil)\s+(?:jeg|eg|æ)\s+(?:se|sjå)\s+"
+    r"(?:nordlys|aurora)(?:\s+i\s+kveld)?|"
+    r"(?:blir|er)\s+det\s+(?:nordlys|aurora)(?:\s+i\s+kveld)?|"
+    r"(?:will|can|could)\s+i\s+see\s+(?:the\s+)?"
+    r"(?:aurora|northern\s+lights)(?:\s+tonight)?|"
+    r"(?:is\s+there|will\s+there\s+be)\s+(?:an?\s+|the\s+)?"
+    r"(?:aurora|northern\s+lights)(?:\s+tonight)?)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_bounded_read_topic_request(
+    control: str,
+    keywords: tuple[str, ...],
+    *,
+    information_keywords: tuple[str, ...] = (),
+) -> bool:
+    """Match an exact topic, optionally wrapped in one bounded read request."""
+
+    cleaned = strip_bounded_request_courtesy(control)
+    if cleaned in keywords:
+        return True
+    without_question = _READ_TOPIC_QUESTION_HEAD.sub("", cleaned, count=1)
+    if without_question != cleaned:
+        topic = _READ_TOPIC_ARTICLE.sub("", without_question, count=1)
+        return topic in information_keywords
+    without_polite = _READ_TOPIC_POLITE_HEAD.sub("", cleaned, count=1)
+    without_action = _READ_TOPIC_ACTION_HEAD.sub(
+        "",
+        without_polite,
+        count=1,
+    )
+    if without_action == without_polite:
+        return False
+    topic = _READ_TOPIC_ARTICLE.sub("", without_action, count=1)
+    return topic in keywords
+
+
 _PARSER_NAMES = frozenset(
     {
         "parse_task_with_recurrence",
@@ -146,12 +508,76 @@ _PARSER_METRIC_FAMILY = {
 }
 
 CAPABILITY_HELP = re.compile(
-    r"^(?:hva|kva|ka|what)\s+(?:kan|can)\s+(?:du|you)\s+"
-    r"(?:gjøre|gjere|gjør|do)\s*\??$",
+    r"^(?:(?:hva|kva|ka|what)\s+(?:kan|can)\s+(?:du|you)\s+"
+    r"(?:gjøre|gjere|gjør|do)|what\s+can\s+you\s+help\s+me\s+with|"
+    r"tell\s+me\s+what\s+you\s+can\s+do|"
+    r"show\s+me\s+what\s+you\s+can\s+do|"
+    r"how\s+can\s+you\s+help(?:\s+me)?|"
+    r"what\s+(?:are\s+you\s+capable\s+of|"
+    r"capabilities\s+do\s+you\s+have|features\s+do\s+you\s+have)|"
+    r"(?:hva|kva|ka)\s+kan\s+du\s+hjelpe"
+    r"(?:\s+(?:meg|mæ))?\s+med|"
+    r"(?:hva|kva|ka)\s+kan\s+(?:jeg|eg|æ)\s+bruke\s+"
+    r"(?:deg|dæ)\s+til|"
+    r"hvilke\s+ting\s+kan\s+du\s+(?:gjøre|gjere))\s*\??$",
     re.IGNORECASE,
 )
+_COURTESY_CONDITION = (
+    r"(?:(?:hvis|om|når)\s+du\s+har\s+tid|hvis\s+det\s+passer|"
+    r"(?:hvis|om)\s+du\s+kan|"
+    r"(?:if|when)\s+you\s+have\s+time|"
+    r"if\s+(?:it(?:'s|\s+is)\s+)?convenient|if\s+you\s+can|"
+    r"if\s+possible)"
+)
+_POLITE_REQUEST_HEAD = (
+    r"(?:kan\s+du|kunne\s+du|vil\s+du|can\s+you|could\s+you|"
+    r"would\s+you|will\s+you|vennligst|please)"
+)
+_BOUNDED_SEARCH_REQUEST_SHELL = (
+    r"(?:(?:"
+    rf"{_POLITE_REQUEST_HEAD}(?:(?:\s*,\s*|\s+)"
+    rf"{_COURTESY_CONDITION}\s*,?)?\s+|"
+    rf"{_COURTESY_CONDITION}(?:(?:\s*,\s*|\s+)"
+    rf"{_POLITE_REQUEST_HEAD}\s+|\s*,\s*)"
+    r"))?"
+)
+_SEARCH_ACTION = r"(?:søk|søke|søkje|search|look\s+up)"
+_BOUNDED_BARE_SEARCH_REQUEST = re.compile(
+    rf"^{_BOUNDED_SEARCH_REQUEST_SHELL}{_SEARCH_ACTION}\s+"
+    r"(?:(?:etter|for)\s+)?(?P<query>.+?)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+_TRAILING_SEARCH_COURTESY = re.compile(
+    rf"(?:(?:\s*,\s*|\s+){_COURTESY_CONDITION}|"
+    r"(?:\s*,\s*|\s+)(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you))\s*[?.!]*$",
+    re.IGNORECASE,
+)
+_EXACT_SEARCH_COURTESY_QUERIES = frozenset(
+    {
+        "please",
+        "takk",
+        "takk skal du ha",
+        "thank you",
+        "thanks",
+        "tusen takk",
+    }
+)
 EXPLICIT_SHORTEN = re.compile(
-    r"\b(?:forkort|shorten)\b.*\bhttps?://[^\s]+", re.IGNORECASE
+    rf"^(?:{_COURTESY_CONDITION}(?:\s*,\s*|"
+    rf"\s+(?={_POLITE_REQUEST_HEAD}\b)))?"
+    rf"(?:{_POLITE_REQUEST_HEAD}"
+    rf"(?:(?:\s*,\s*|\s+){_COURTESY_CONDITION}\s*,?)?\s+)?"
+    r"(?:(?:forkort|forkorte|kort\s+ned|korte\s+ned|shorten)\s+"
+    r"(?:(?:denne|this)\s+(?:url(?:-en)?|lenk(?:e|en)|link)"
+    r"(?:\s+for\s+me)?\s*[:?]?\s*)?https?://[^\s]+?|"
+    r"make\s+this\s+url\s+shorter\s*:?\s*https?://[^\s]+?|"
+    r"(?:lag|lage|make)\s+(?:en|ei|a)\s+"
+    r"(?:kort\s+lenke|short\s+link)\s+(?:av|for|from)\s+"
+    rf"https?://[^\s]+?)(?:\s*,?\s+{_COURTESY_CONDITION})?"
+    r"(?:\s*[,;]?\s+(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you)\s*[.!?]*)?$",
+    re.IGNORECASE,
 )
 INFORMATION_TRANSIT = re.compile(
     r"^(?:når|when|hva tid|kva tid|ka tid)\b.*\b"
@@ -166,10 +592,50 @@ _POLITE_COMMAND_PREFIX = (
     r"(?:(?:(?:kan|kunne|vil|can|could|would|will)\s+(?:du|you)\s+)|"
     r"(?:(?:vennligst|please)\s+))?"
 )
+_CALENDAR_EDIT_KEEP_TIME = re.compile(
+    r"^(?:(?:men|but|og|and)\s+)?(?:ikke|ikkje|do\s+not|don't|don’t)\s+"
+    r"(?:endre|change)\s+(?:tidspunktet|tiden|tida|klokkeslettet|"
+    r"the\s+time|time)$",
+    re.IGNORECASE,
+)
+_CALENDAR_EDIT_TEMPORAL_FILLERS = frozenset(
+    {"", "på", "on", "den", "takk", "please", "thanks"}
+)
+_ENGLISH_BARE_CLOCK_TIME = re.compile(
+    r"(?<!\w)at\s+(?:[1-9]|1[0-2])"
+    r"(?:(?::|\.)(?:[0-5]\d))?(?![\d:])"
+    r"(?!\s*(?:am|pm|in\s+the\s+morning|in\s+the\s+afternoon|"
+    r"in\s+the\s+evening|at\s+night)\b)",
+    re.IGNORECASE,
+)
+_ENGLISH_CALENDAR_TIME_FRAME = re.compile(
+    r"\b(?:meeting|appointment|event|calendar|schedule|book|put|add)\b",
+    re.IGNORECASE,
+)
+_ENGLISH_REMINDER_TIME_FRAME = re.compile(
+    r"\b(?:remind\s+me|remember|don['’]?t\s+(?:let\s+me\s+)?forget|"
+    r"i\s+need\s+to|reminder)\b",
+    re.IGNORECASE,
+)
 _CALENDAR_FAMILY = r"møte|avtale|kalender|påminnelse|reminder|event"
 _CALENDAR_ITEM_FAMILY = (
     r"møte|møtet|avtale|avtalen|arrangement|arrangementet|"
-    r"meeting|event|eventet"
+    r"meeting|appointment|event|eventet"
+)
+_FOREIGN_CALENDAR_CREATE_DOMAIN = re.compile(
+    r"\b(?:"
+    r"påminnelse(?:n|r|ne)?|påminning(?:a|ar|ane)?|reminders?|"
+    r"gjøremål|gjeremål|todos?|"
+    r"bursdag(?:en|er|ene|ar|ane)?|"
+    r"fødselsdag(?:en|er|ene|ar|ane)?|birthdays?|"
+    r"watch\s*list|watchlist(?:a|en)?|filmlist(?:a|e|en)?|"
+    r"serielist(?:a|e|en)?|"
+    r"se[-\s]?list(?:a|e|en)?|sjå[-\s]?list(?:a|e|en)?|"
+    r"avstemning(?:a|en|er|ar|ane)?|avstemming(?:a|en|er|ar|ane)?|"
+    r"avstemnning|polls?|stemme|vote|voting|"
+    r"sitat(?:et|er|ene|a)?|quotes?|profil(?:en)?|profiles?"
+    r")\b",
+    re.IGNORECASE,
 )
 _CALENDAR_MUTATION_FAMILY = (
     rf"{_CALENDAR_FAMILY}|arrangement|meeting|"
@@ -263,6 +729,7 @@ _PAYLOAD_METRIC_FAMILY = {
         intent: "calendar"
         for intent in (
             BotIntent.CALENDAR_ITEM,
+            BotIntent.CALENDAR_LIST,
             BotIntent.CALENDAR_EDIT,
             BotIntent.CALENDAR_DELETE,
             BotIntent.CALENDAR_COMPLETE,
@@ -312,6 +779,25 @@ def _phrase_present(text: str, phrase: str) -> bool:
 
 def _present_terms(text: str, terms) -> tuple[str, ...]:
     return tuple(term for term in terms if _phrase_present(text, term))
+
+
+def _clean_bounded_search_query(value: str) -> str:
+    """Remove only terminal, bounded courtesy adjuncts from search data."""
+
+    query = value.strip()
+    while query:
+        if query.casefold().rstrip(" ?.! ") in _EXACT_SEARCH_COURTESY_QUERIES:
+            break
+        courtesy = _TRAILING_SEARCH_COURTESY.search(query)
+        if courtesy is None:
+            break
+        cleaned = query[: courtesy.start()].strip()
+        # A courtesy token can itself be the requested lookup.  Remove it
+        # only when substantive query text already precedes the suffix.
+        if re.search(r"[^\W_]", cleaned, re.UNICODE) is None:
+            break
+        query = cleaned
+    return query.rstrip(" ?.! ").strip()
 
 
 def _extract_auth_followup_code(text: str) -> str | None:
@@ -441,6 +927,7 @@ class IntentRouter:
         user_id: int | None = None,
         routing_context: RoutingContext | None = None,
         reference_time: datetime | None = None,
+        _sequence_probe: bool = False,
     ) -> RoutedIntent:
         captured = (
             reference_time
@@ -487,6 +974,67 @@ class IntentRouter:
             user_id=user_id,
             reference_time=captured,
         )
+        sequence_semantics_allowed = (
+            semantics.speech_act not in {SpeechAct.META, SpeechAct.REJECTION}
+        )
+        if sequence_semantics_allowed and (
+            (
+                semantics.speech_act is not SpeechAct.HYPOTHETICAL
+                and "negated_action" not in semantics.reasons
+                and has_sequenced_action_request(utterance)
+            )
+            or (
+                not _sequence_probe
+                and self._has_parser_routed_sequence(context)
+            )
+        ):
+            # The dispatch contract cannot atomically execute multiple
+            # user-visible actions.  Clarify before credentials or collectors
+            # can select or stage only the first clause; the model bridge
+            # enforces the same rule without credential-shaped input.
+            self.metrics.record_rejection(RejectionCode.CONFLICT)
+            return RoutedIntent(
+                IntentResult(
+                    BotIntent.CLARIFY,
+                    1.0,
+                    {
+                        "clarification": (
+                            "Jeg ser flere handlinger i samme melding. "
+                            "Send én handling om gangen, så unngår vi at "
+                            "bare deler av forespørselen blir utført."
+                        )
+                    },
+                    "multiple_actions_require_split",
+                    risk=IntentRisk.READ_ONLY,
+                    requires_confirmation=False,
+                ),
+                RouteDiagnostics(
+                    rejection_counts={RejectionCode.CONFLICT: 1}
+                ),
+            )
+
+        if has_unsupported_poll_mutation_request(utterance):
+            self.metrics.record_rejection(RejectionCode.INVALID_CONTEXT)
+            return RoutedIntent(
+                IntentResult(
+                    BotIntent.CLARIFY,
+                    1.0,
+                    {
+                        "clarification": (
+                            "Jeg kan bare lukke eller slette én avstemning "
+                            "med én gang. Oppgi én avstemning uten "
+                            "tidsforsinkelse, vilkår eller ekstra tekst."
+                        )
+                    },
+                    "unsupported_poll_mutation_modifier",
+                    risk=IntentRisk.READ_ONLY,
+                    requires_confirmation=False,
+                ),
+                RouteDiagnostics(
+                    rejection_counts={RejectionCode.INVALID_CONTEXT: 1}
+                ),
+            )
+
         credential_code = _extract_auth_followup_code(utterance.text)
         if credential_code is not None:
             explicit_auth = _EXPLICIT_AUTH_FOLLOWUP.search(
@@ -610,6 +1158,67 @@ class IntentRouter:
             ),
         )
 
+    def _has_parser_routed_sequence(
+        self,
+        context: CollectorContext,
+    ) -> bool:
+        """Fail closed when a write is followed by another routed request.
+
+        The lexical grammar catches common forms before any parser work.  This
+        bounded fallback uses the same production collectors and live routing
+        fixture to cover valid natural paraphrases without maintaining a
+        second exhaustive verb list.  Probes have isolated metrics, ignore
+        pending-action state, and never dispatch or persist anything.
+        """
+
+        sequence_surface = strip_bounded_request_courtesy(
+            context.utterance.control_text
+        )
+        pairs = sequenced_clause_candidates(
+            normalize_utterance(sequence_surface)
+        )
+        if not pairs:
+            return False
+        probe = IntentRouter(
+            self.monitor,
+            metrics=NLUMetrics(),
+            pending_actions=None,
+            temporal_resolver=self.temporal_resolver,
+            now_provider=lambda: context.reference_time,
+        )
+        route_kwargs = {
+            "guild_id": context.guild_id,
+            "channel_id": context.channel_id,
+            "user_id": context.user_id,
+            "routing_context": context.routing,
+            "reference_time": context.reference_time,
+            "_sequence_probe": True,
+        }
+        overflow = len(pairs) > MAX_SEQUENCE_CLAUSE_PROBES
+        for index, (left, right) in enumerate(
+            pairs[:MAX_SEQUENCE_CLAUSE_PROBES]
+        ):
+            left_result = probe.evaluate_utterance(
+                normalize_utterance(left),
+                **route_kwargs,
+            ).result
+            if left_result.risk is IntentRisk.READ_ONLY:
+                continue
+            if overflow and index == 0:
+                return True
+            right_result = probe.evaluate_utterance(
+                normalize_utterance(right),
+                **route_kwargs,
+            ).result
+            if right_result.intent is not BotIntent.AI_CHAT:
+                return True
+            right_utterance = normalize_utterance(right)
+            if is_standalone_action_retraction(right_utterance):
+                continue
+            if is_independent_conversational_request(right_utterance):
+                return True
+        return False
+
     @property
     def now_provider(self) -> Callable[[], datetime]:
         return self._now_provider
@@ -680,6 +1289,14 @@ class IntentRouter:
         for candidate in candidates:
             envelope = ENVELOPE_KEYS.get(candidate.intent)
             if envelope is None:
+                valid.append(candidate)
+                continue
+            if (
+                candidate.intent is BotIntent.CALENDAR_LIST
+                and candidate.payload == {}
+            ):
+                # Preserve the long-standing unfiltered read contract while
+                # filtered reads use the new canonical typed envelope.
                 valid.append(candidate)
                 continue
             try:
@@ -860,9 +1477,15 @@ class IntentRouter:
         control = context.utterance.control_text.strip()
         text = context.utterance.text
         candidates: list[IntentCandidate] = []
+        errors: list[str] = []
+        rejections: list[CandidateRejection] = []
 
-        if self._has_calendar_context(control) and has_any_keyword(
-            control, ("hjelp", "help", "guide")
+        if re.fullmatch(
+            r"(?:(?:kalender|calendar|gcal)\s+(?:hjelp|help|guide)|"
+            r"(?:hjelp|help|guide)\s+(?:med|with)\s+"
+            r"(?:kalender(?:en)?|calendar|gcal))\s*[?.!]*",
+            control,
+            re.I,
         ):
             result = IntentResult(
                 BotIntent.CALENDAR_HELP,
@@ -910,7 +1533,14 @@ class IntentRouter:
             "hva er du",
             "hvem er du",
         )
-        if any(_phrase_present(control, term) for term in simple_help):
+        simple_help_control = control.strip(" .!?")
+        natural_help_request = re.fullmatch(
+            r"(?:show|vis|vise)\s+(?:(?:me|meg|mæ)\s+)?"
+            r"(?:(?:your|dine)\s+)?(?:commands|kommandoer)",
+            simple_help_control,
+            re.I,
+        )
+        if simple_help_control in simple_help or natural_help_request:
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -945,24 +1575,72 @@ class IntentRouter:
             )
 
         if self._is_profile_command(control, text):
-            result = IntentResult(
-                BotIntent.PROFILE, 0.95, reason="profile_keyword"
+            parser = getattr(self.monitor, "parse_profile_command", None)
+            if parser is None:
+                from features.profile_commands import (
+                    parse_profile_command as parser,
+                )
+            parsed_profile = self._safe_parse(
+                errors,
+                rejections,
+                "parse_profile_command",
+                "profile",
+                parser,
+                text,
             )
-            candidates.append(
-                self._candidate_from_result(
-                    result,
+            if isinstance(parsed_profile, dict):
+                candidates.append(
+                    self._candidate_from_result(
+                        IntentResult(
+                            BotIntent.PROFILE,
+                            0.95,
+                            {"profile": parsed_profile},
+                            "profile_command",
+                        ),
+                        tier=10,
+                        order=40,
+                        specificity=3,
+                        action_terms=_present_terms(
+                            control,
+                            (
+                                "status",
+                                "spiller",
+                                "playing",
+                                "ser på",
+                                "watching",
+                                "sett",
+                                "sette",
+                                "set",
+                            ),
+                        ),
+                        domain_terms=_present_terms(
+                            control,
+                            (
+                                "status",
+                                "online",
+                                "offline",
+                                "idle",
+                                "dnd",
+                                "invisible",
+                                "spiller",
+                                "playing",
+                                "ser på",
+                                "watching",
+                                "aktivitet",
+                                "aktiviteten",
+                                "activity",
+                            ),
+                        ),
+                    )
+                )
+            elif parsed_profile is not None:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.PROFILE,
+                    family="profile",
                     tier=10,
                     order=40,
-                    specificity=4,
-                    action_terms=_present_terms(
-                        control, ("spiller", "playing", "ser på", "watching")
-                    ),
-                    domain_terms=_present_terms(
-                        control,
-                        ("status", "online", "offline", "idle", "dnd", "invisible"),
-                    ),
                 )
-            )
 
         memory_result = self._route_memory_command(control)
         if memory_result is not None:
@@ -980,7 +1658,16 @@ class IntentRouter:
                     specificity=specificity,
                     action_terms=_present_terms(
                         control,
-                        ("slett", "slette", "delete", "glem"),
+                        (
+                            "slett",
+                            "slette",
+                            "delete",
+                            "glem",
+                            "glemme",
+                            "gløym",
+                            "gløyme",
+                            "forget",
+                        ),
                     ),
                     domain_terms=_present_terms(
                         control,
@@ -990,11 +1677,19 @@ class IntentRouter:
                             "memory",
                             "brukerminne",
                             "glem meg",
+                            "glemme meg",
+                            "gløym meg",
+                            "gløyme meg",
+                            "forget me",
                         ),
                     ),
                 )
             )
-        return CollectorOutput(candidates=tuple(candidates))
+        return CollectorOutput(
+            candidates=tuple(candidates),
+            parser_errors=tuple(errors),
+            rejections=tuple(rejections),
+        )
 
     def _collect_calendar_reminder_candidates(
         self, context: CollectorContext
@@ -1005,12 +1700,31 @@ class IntentRouter:
         errors: list[str] = []
         rejections: list[CandidateRejection] = []
 
-        local_search_gate = re.match(
-            r"^(?:søk|search)\s+(?:påminnelse|påminnelser|påminning|"
-            r"påminningar|reminder|reminders|kalender|calendar|på nett|"
-            r"(?:the )?web)\b",
-            control,
-            re.I,
+        local_search_gate = bool(
+            _BOUNDED_BARE_SEARCH_REQUEST.fullmatch(control)
+            or re.match(
+                r"^(?:søk|search)\s+(?:påminnelse|påminnelser|påminning|"
+                r"påminningar|reminder|reminders|kalender|calendar|på nett|"
+                r"(?:the )?web)\b",
+                control,
+                re.I,
+            )
+            or re.fullmatch(
+                rf"{_POLITE_COMMAND_PREFIX}(?:søk|søke|search)\s+"
+                r"(?:i|in)\s+(?:kalenderen|calendar)\s+"
+                r"(?:etter|for)\s+.+?\s*\??|"
+                r"(?:finn|find)\s+(?:påminnelsen|påminninga|"
+                r"the\s+reminder|reminder)\s+(?:om|about)\s+.+?\s*\??",
+                control,
+                re.I,
+            )
+            or re.fullmatch(
+                rf"{_POLITE_COMMAND_PREFIX}(?:søk|søke|søkje|search|"
+                r"look\s+up)\s+(?:på\s+nett(?:et)?|"
+                r"(?:the\s+)?web)\s+(?:etter|for)\s+.+?\s*[?.!]*",
+                control,
+                re.I,
+            )
         )
         if local_search_gate:
             local_search = self._route_local_search_command(text)
@@ -1027,7 +1741,8 @@ class IntentRouter:
                         order=search_order,
                         specificity=3,
                         action_terms=_present_terms(
-                            control, ("søk", "search")
+                            control,
+                            ("søk", "søke", "søkje", "search", "look up"),
                         ),
                         domain_terms=_present_terms(
                             control,
@@ -1046,7 +1761,9 @@ class IntentRouter:
                 )
 
         bare_search = re.match(
-            r"^(?:søk|search)\s+(.+)$", control, re.I
+            r"^(?:søk|search)\s+(?:(?:etter|for)\s+)?(.+)$",
+            control,
+            re.I,
         )
         if bare_search and not local_search_gate:
             local_search = self._route_local_search_command(text)
@@ -1064,26 +1781,139 @@ class IntentRouter:
                     )
                 )
 
+        date_filtered_reminder_read = (
+            filtered_list_read_family(control) == "reminder"
+        )
+        if date_filtered_reminder_read:
+            date_filter = _resolve_single_date_read_filter(
+                self.temporal_resolver,
+                control,
+                reference_time=context.reference_time,
+            )
+            if date_filter is not None:
+                candidates.append(
+                    self._candidate_from_result(
+                        IntentResult(
+                            BotIntent.REMINDER_LIST,
+                            0.98,
+                            {
+                                "reminder": {
+                                    "action": "list",
+                                    "due_date": date_filter,
+                                }
+                            },
+                            "reminder_list_date_filtered",
+                        ),
+                        tier=30,
+                        order=92,
+                        specificity=3,
+                        action_terms=_present_terms(
+                            control,
+                            ("vis", "vise", "show", "list", "har", "have"),
+                        ),
+                        domain_terms=_present_terms(
+                            control,
+                            (
+                                "påminnelser",
+                                "påminningar",
+                                "påminnelsene",
+                                "påminningane",
+                                "reminders",
+                                "huske",
+                                "hugse",
+                                "remember",
+                            ),
+                        ),
+                    )
+                )
+
         reminder_gate = bool(
-            re.match(
+            bounded_english_reminder_create_head(context.utterance)
+            or re.match(
                 rf"^{_POLITE_COMMAND_PREFIX}(?:"
+                r"(?:i['’]d|i\s+would)\s+like\s+(?:a\s+)?reminder"
+                r"(?:\s+for\s+me)?\s+to|"
                 r"påminn(?:e)?\s+meg|minn(?:e)?\s+(?:meg|mæ)|husk\s+(?:å|at)|"
                 r"hugs\s+(?:å|at)|ikke\s+glem\s+(?:å|at)|"
-                r"ikkje\s+gløym\s+(?:å|at)|(?:don't|don’t)\s+forget\s+(?:to|that)|"
-                r"remind\s+me|remember\s+to|"
-                r"(?:endre|rediger|edit|slett|fjern|delete|remove|"
-                r"ferdig|fullfør|fullført|done|complete|gjort)\s+"
+                r"(?:jeg|eg|æ)\s+må\s+(?:huske|hugse)\s+(?:å|at)|"
+                r"(?:pass\s+på|syt\s+for)\s+at|"
+                r"make\s+sure(?:\s+that)?\s+i(?:\s+remember\s+to)?|"
+                r"ikkje\s+gløym\s+(?:å|at)|"
+                r"ikkje\s+lat\s+meg\s+gløyme\s+(?:å|at)|"
+                r"ikke\s+la\s+meg\s+glemme\s+(?:å|at)|"
+                r"(?:don't|don’t)\s+(?:let\s+me\s+)?forget\s+(?:to|that)|"
+                r"remind\s+me|(?:i\s+need\s+to\s+)?remember\s+to|"
+                r"(?:(?:opprett|opprette|lag|lage|"
+                r"(?:legg|legge)\s+(?:inn|til)|(?:sette|setje)\s+opp|"
+                r"planlegg|planlegge|planleggje)\s+"
+                r"(?:(?:en|ei|et|a)\s+)?(?:påminnelse|påminning|reminder|"
+                r"gjøremål|gjeremål|todo)|"
+                r"(?:create|add|make|set|put|set\s+up)\s+"
+                r"(?:a\s+)?reminder(?:\s+for\s+me)?\s+(?:to|about)|"
+                r"(?:endre|rediger|redigere|edit|slett|slette|fjern|fjerne|"
+                r"delete|remove|ferdig|fullfør|fullføre|fullført|done|"
+                r"complete|gjort|marker|markere|mark)\s+"
                 r"(?:the\s+)?(?:påminnelse|påminnelsen|påminning|"
-                r"påminninga|reminder)|"
+                r"påminninga|reminder))|"
                 r"(?:vis|list|show|søk|search)?\s*"
                 r"(?:påminnelser|påminningar|reminders|gjøremål|todos|"
                 r"huskeliste)|(?:påminnelse|påminning|reminder|gjøremål|todo)\b)",
                 control,
                 re.I,
             )
+            or re.fullmatch(
+                rf"{_POLITE_COMMAND_PREFIX}(?:vis|vise|list|show)\s+"
+                r"(?:(?:meg|mæ|me)\s+)?(?:(?:alle|all)\s+)?(?:påminnelsene\s+mine|"
+                r"påminningane\s+mine|my\s+reminders)\s*\??|"
+                r"how\s+many\s+reminders\s+do\s+i\s+have\s*\??|"
+                r"what\s+reminders\s+do\s+i\s+have\s*\??|"
+                r"what\s+do\s+i\s+need\s+to\s+remember\s*\??|"
+                r"(?:is\s+there\s+)?anything\s+i\s+need\s+to\s+remember\s*\??|"
+                r"do\s+i\s+have\s+any\s+reminders\s*\??|"
+                r"any\s+reminders\s+for\s+me\s*\??|"
+                r"can\s+i\s+see\s+my\s+reminders\s*\??|"
+                r"could\s+i\s+see\s+my\s+reminders\s*\??|"
+                r"kan\s+(?:jeg|eg|æ)\s+(?:se|sjå)\s+"
+                r"(?:påminnelsene|påminningane)\s+mine\s*\??|"
+                r"(?:hva|kva|ka)\s+må\s+(?:jeg|eg|æ)\s+"
+                r"(?:huske|hugse)\s*\??|"
+                r"(?:hva|kva|ka)\s+står\s+på\s+"
+                r"(?:huskelista|hugselista)\s*\??|"
+                r"har\s+(?:jeg|eg|æ)\s+(?:noen|nokon)\s+"
+                r"(?:påminnelser|påminningar)\s*\??|"
+                r"(?:finn|find)\s+(?:påminnelsen|påminninga|"
+                r"the\s+reminder|reminder)\s+(?:om|about)\s+.+?\s*\??",
+                control,
+                re.I,
+            )
         )
         parsed_reminder = None
-        if reminder_gate:
+        ambiguous_english_reminder_time = bool(
+            reminder_gate
+            and _ENGLISH_BARE_CLOCK_TIME.search(control)
+            and _ENGLISH_REMINDER_TIME_FRAME.search(control)
+        )
+        if ambiguous_english_reminder_time:
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CLARIFY,
+                        0.99,
+                        {
+                            "clarification": (
+                                "Mener du om morgenen eller ettermiddagen? "
+                                "Oppgi AM eller PM."
+                            )
+                        },
+                        "reminder_english_time_ambiguous",
+                    ),
+                    tier=30,
+                    order=91,
+                    specificity=3,
+                    domain_terms=("at",),
+                )
+            )
+        elif reminder_gate:
             parser = getattr(
                 self.monitor, "parse_reminder_command", None
             )
@@ -1111,9 +1941,69 @@ class IntentRouter:
             )
             parsed_reminder = None
 
-        explicit_reminder_list = re.fullmatch(
+        half_clock_errors: tuple[str, ...] = ()
+        if (
+            reminder_gate
+            and parsed_reminder is None
+            and re.search(
+                r"\b(?:(?:kl(?:okka|okken)?\.?)\s+)?halv\b",
+                control,
+                re.I,
+            )
+        ):
+            half_clock_errors = self.temporal_resolver.resolve(
+                control,
+                reference=context.reference_time,
+            ).errors
+        ambiguous_half_clock = half_clock_errors == ("ambiguous_time",)
+        if ambiguous_half_clock:
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CLARIFY,
+                        0.99,
+                        {
+                            "clarification": (
+                                "Mener du halv tre om morgenen eller "
+                                "halv tre på ettermiddagen?"
+                            )
+                        },
+                        "reminder_half_clock_ambiguous",
+                    ),
+                    tier=30,
+                    order=92,
+                    specificity=3,
+                    action_terms=_present_terms(
+                        control,
+                        ("påminn", "påminne", "minn", "minne", "husk"),
+                    ),
+                    domain_terms=("halv",),
+                )
+            )
+
+        explicit_reminder_list = (
+            unfiltered_list_read_family(control) == "reminder"
+        ) or re.fullmatch(
             r"(?:(?:vis|list|show)\s+)?(?:påminnelser|påminningar|"
-            r"reminders|gjøremål|todos|huskeliste)\s*\??",
+            r"reminders|gjøremål|todos|huskeliste)\s*\??|"
+            r"(?:show\s+me\s+(?:all\s+)?my\s+reminders|"
+            r"how\s+many\s+reminders\s+do\s+i\s+have|"
+            r"what\s+do\s+i\s+need\s+to\s+remember|"
+            r"(?:is\s+there\s+)?anything\s+i\s+need\s+to\s+remember|"
+            r"do\s+i\s+have\s+any\s+reminders|"
+            r"any\s+reminders\s+for\s+me|"
+            r"can\s+i\s+see\s+my\s+reminders|"
+            r"could\s+i\s+see\s+my\s+reminders|"
+            r"kan\s+(?:jeg|eg|æ)\s+(?:se|sjå)\s+"
+            r"(?:påminnelsene|påminningane)\s+mine|"
+            r"(?:hva|kva|ka)\s+må\s+(?:jeg|eg|æ)\s+(?:huske|hugse)|"
+            r"(?:hva|kva|ka)\s+står\s+på\s+(?:huskelista|hugselista)|"
+            r"har\s+(?:jeg|eg|æ)\s+(?:noen|nokon)\s+"
+            r"(?:påminnelser|påminningar)|"
+            r"vis\s+(?:meg|mæ)\s+(?:påminnelsene|påminningane))\s*\??|"
+            r"(?:fortell|fortel)\s+(?:meg|mæ)\s+om\s+"
+            r"(?:påminnelsene|påminningane)\s+mine\s*\??|"
+            r"tell\s+me\s+about\s+my\s+reminders\s*\??",
             control,
             re.I,
         )
@@ -1130,7 +2020,17 @@ class IntentRouter:
                     order=93,
                     specificity=2,
                     action_terms=_present_terms(
-                        control, ("vis", "list", "show")
+                        control,
+                        (
+                            "vis",
+                            "list",
+                            "show",
+                            "check",
+                            "sjekk",
+                            "sjekke",
+                            "har",
+                            "have",
+                        ),
                     ),
                     domain_terms=_present_terms(
                         control,
@@ -1157,25 +2057,46 @@ class IntentRouter:
                     "minn",
                     "minne",
                     "husk",
+                    "huske",
                     "hugs",
+                    "hugse",
                     "glem",
+                    "glemme",
                     "gløym",
+                    "gløyme",
                     "forget",
                     "remind",
                     "remember",
+                    "pass på",
+                    "syt for",
+                    "make sure",
                     "endre",
                     "rediger",
+                    "redigere",
                     "edit",
                     "slett",
+                    "slette",
                     "fjern",
+                    "fjerne",
                     "delete",
                     "remove",
                     "ferdig",
                     "fullfør",
+                    "fullføre",
                     "fullført",
                     "done",
                     "complete",
                     "gjort",
+                    "marker",
+                    "markere",
+                    "mark",
+                    "opprett",
+                    "opprette",
+                    "lag",
+                    "lage",
+                    "create",
+                    "add",
+                    "set up",
                     "vis",
                     "list",
                     "show",
@@ -1193,6 +2114,7 @@ class IntentRouter:
                     "hugs å",
                     "ikke glem",
                     "ikkje gløym",
+                    "ikkje lat meg gløyme",
                     "don't forget",
                     "don’t forget",
                     "remind me",
@@ -1315,9 +2237,41 @@ class IntentRouter:
                     )
                 )
 
-        if control.isdigit() and self._has_active_reminders(
-            context.domain_scope_id
-        ):
+        bare_number_has_reminders = bool(
+            control.isdigit()
+            and self._has_active_reminders(context.domain_scope_id)
+        )
+        bare_number_has_poll = bool(
+            control.isdigit()
+            and self._has_active_poll(
+                context.domain_scope_id,
+                context.reference_time,
+            )
+        )
+        if bare_number_has_reminders and bare_number_has_poll:
+            number = int(control)
+            if number > 0:
+                candidates.append(
+                    self._candidate_from_result(
+                        IntentResult(
+                            BotIntent.CLARIFY,
+                            1.0,
+                            {
+                                "clarification": (
+                                    f"Mener du å stemme på alternativ {number} "
+                                    f"eller fullføre påminnelse {number}? "
+                                    "Skriv handlingen og området uttrykkelig."
+                                )
+                            },
+                            "ambiguous_numeric_domain",
+                        ),
+                        tier=10,
+                        order=24,
+                        specificity=5,
+                        domain_terms=(control,),
+                    )
+                )
+        elif bare_number_has_reminders:
             number = int(control)
             if number > 0:
                 candidates.append(
@@ -1340,14 +2294,76 @@ class IntentRouter:
                     )
                 )
         active_complete = re.fullmatch(
-            r"(?:ferdig|fullført|fullfør|done|complete|gjort)\s+(\d+)",
+            rf"{_POLITE_COMMAND_PREFIX}(?:(?:ferdig|fullført|fullfør|done|complete|gjort)\s+"
+            r"(?P<prefix_number>\d+)|"
+            r"(?:marker|markere|mark)\s+(?P<mark_number>\d+)\s+"
+            r"(?:som\s+)?(?:ferdig|fullført|done|complete|completed))"
+            r"\s*\??",
             control,
             re.I,
         )
-        if active_complete and self._has_active_reminders(
-            context.domain_scope_id
-        ):
-            number = int(active_complete.group(1))
+        active_complete_number = (
+            int(
+                active_complete.group("prefix_number")
+                or active_complete.group("mark_number")
+            )
+            if active_complete is not None
+            else None
+        )
+        active_reminder_target = bool(
+            active_complete
+            and self._has_active_reminders(context.domain_scope_id)
+        )
+        active_calendar_target = bool(
+            active_complete
+            and active_complete_number is not None
+            and self._has_calendar_target_number(
+                active_complete_number,
+                context.domain_scope_id,
+                context.reference_time,
+            )
+        )
+        if active_complete and active_reminder_target and active_calendar_target:
+            assert active_complete_number is not None
+            number = active_complete_number
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CLARIFY,
+                        1.0,
+                        {
+                            "clarification": (
+                                f"Mener du kalenderoppføring {number} eller "
+                                f"påminnelse {number}? Skriv for eksempel "
+                                f"«kalender ferdig {number}» eller "
+                                f"«ferdig påminnelse {number}»."
+                            )
+                        },
+                        "ambiguous_completion_domain",
+                    ),
+                    tier=10,
+                    order=25,
+                    specificity=5,
+                    action_terms=_present_terms(
+                        control,
+                        (
+                            "ferdig",
+                            "fullført",
+                            "fullfør",
+                            "done",
+                            "complete",
+                            "gjort",
+                            "marker",
+                            "markere",
+                            "mark",
+                        ),
+                    ),
+                    domain_terms=(str(number),),
+                )
+            )
+        elif active_complete and active_reminder_target:
+            assert active_complete_number is not None
+            number = active_complete_number
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -1373,6 +2389,9 @@ class IntentRouter:
                             "done",
                             "complete",
                             "gjort",
+                            "marker",
+                            "markere",
+                            "mark",
                         ),
                     ),
                     domain_terms=(str(number),),
@@ -1509,6 +2528,7 @@ class IntentRouter:
                 "sync",
                 "synkroniser",
                 "tøm",
+                "tømme",
                 "clear",
                 "slett",
                 "slette",
@@ -1556,11 +2576,17 @@ class IntentRouter:
                 )
             )
 
+        calendar_clear_target = (
+            r"(?:(?:hele|heile)\s+)?(?:"
+            r"(?:kalenderen|kalender)(?:\s+min)?|"
+            r"min\s+(?:kalenderen|kalender)|"
+            r"(?:(?:the|my)\s+)?calendar)"
+        )
         clear_match = re.fullmatch(
-            rf"{_POLITE_COMMAND_PREFIX}(?:(?:slett|slette|delete|tøm|clear)\s+"
-            r"(?:hele\s+|the\s+)?(?:kalenderen|kalender|calendar)|"
+            rf"{_POLITE_COMMAND_PREFIX}(?:(?:slett|slette|delete|tøm|tømme|clear)\s+"
+            rf"{calendar_clear_target}|"
             r"(?:kalenderen|kalender|calendar)\s+(?:slett|fjern)\s+alt|"
-            r"(?:kalenderen|kalender|calendar)\s+(?:tøm|clear))\s*\??",
+            r"(?:kalenderen|kalender|calendar)\s+(?:tøm|tømme|clear))\s*\??",
             text.strip(),
             re.I,
         )
@@ -1618,6 +2644,22 @@ class IntentRouter:
                 ):
                     mutation_match = direct
 
+        if mutation_match is None:
+            mark_match = re.fullmatch(
+                rf"{_POLITE_COMMAND_PREFIX}"
+                r"(?P<verb>marker|markere|mark)\s+"
+                r"(?P<target>.+?)\s+(?:som\s+)?"
+                r"(?:ferdig|fullført|done|complete|completed)\s*\??",
+                text,
+                re.I,
+            )
+            if mark_match and self._target_looks_like_calendar_item(
+                mark_match.group("target"),
+                context.domain_scope_id,
+                context.reference_time,
+            ):
+                mutation_match = mark_match
+
         if mutation_match is not None and not clear_match:
             verb = mutation_match.group("verb").casefold()
             raw_target = mutation_match.group("target").strip(" .!?")
@@ -1671,7 +2713,7 @@ class IntentRouter:
                 target_domain = (
                     calendar_domain
                     if explicit_domain
-                    else (target,)
+                    else (target if target_is_quoted else raw_target,)
                 )
                 if target_domain:
                     candidates.append(
@@ -1836,22 +2878,144 @@ class IntentRouter:
                     )
                 )
 
+        date_filtered_calendar_read = (
+            filtered_list_read_family(control) == "calendar"
+        )
+        if date_filtered_calendar_read:
+            date_filter = _resolve_single_date_read_filter(
+                self.temporal_resolver,
+                control,
+                reference_time=context.reference_time,
+            )
+            if date_filter is not None:
+                supported = is_supported_calendar_read_date(
+                    date_filter,
+                    reference_time=context.reference_time,
+                )
+                result = (
+                    IntentResult(
+                        BotIntent.CALENDAR_LIST,
+                        0.98,
+                        {"calendar_list": {"date": date_filter}},
+                        "calendar_list_date_filtered",
+                    )
+                    if supported
+                    else IntentResult(
+                        BotIntent.CLARIFY,
+                        1.0,
+                        {
+                            "clarification": (
+                                "Kalenderlisten viser i dag og fremover. "
+                                "Be om en dato fra i dag eller senere."
+                            )
+                        },
+                        "calendar_history_not_supported",
+                        risk=IntentRisk.READ_ONLY,
+                    )
+                )
+                candidates.append(
+                    self._candidate_from_result(
+                        result,
+                        tier=30,
+                        order=117,
+                        specificity=3,
+                        action_terms=_present_terms(
+                            control,
+                            ("vis", "show", "list", "har", "have", "skjer"),
+                        ),
+                        domain_terms=_present_terms(
+                            control,
+                            (
+                                "kalender",
+                                "kalenderen",
+                                "calendar",
+                                "schedule",
+                                "planlagt",
+                                "planned",
+                                "planen",
+                            ),
+                        ),
+                    )
+                )
+
         if self._has_calendar_context(control):
-            list_terms = _present_terms(control, LIST_KEYWORDS)
+
+            natural_calendar_read = re.fullmatch(
+                r"(?:hva\s+vet|kva\s+veit|ka\s+veit)\s+du\s+om\s+"
+                r"kalenderen\s+min\s*\??|"
+                r"(?:fortell|fortel)\s+(?:meg|mæ)\s+om\s+"
+                r"kalenderen\s+min\s*\??|"
+                r"(?:what\s+do\s+you\s+know|tell\s+me)\s+about\s+"
+                r"my\s+calendar\s*\??|"
+                rf"{_POLITE_COMMAND_PREFIX}(?:vis|vise|show)\s+"
+                r"(?:(?:meg|mæ|me)\s+)?(?:kalenderen\s+min|"
+                r"my\s+calendar)\s*\??|"
+                r"(?:hva|kva|ka)\s+står\s+(?:det\s+)?i\s+"
+                r"kalenderen\s+min\s*\??|"
+                r"(?:what\s+is|what['’]s)\s+(?:coming\s+up\s+)?on\s+"
+                r"my\s+calendar\s*\??|"
+                r"(?:show\s+me\s+my\s+schedule|"
+                r"what['’]s\s+my\s+schedule)\s*\??|"
+                r"kan\s+(?:jeg|eg|æ)\s+(?:se|sjå)\s+"
+                r"kalenderen\s+min\s*\??|"
+                r"(?:can|could)\s+i\s+see\s+my\s+calendar\s*\??",
+                control,
+                re.I,
+            )
+            explicit_calendar_list = re.fullmatch(
+                rf"{_POLITE_COMMAND_PREFIX}(?:vis|vise|list|show)\s+"
+                r"(?:(?:meg|mæ|me)\s+)?(?:kalender(?:en)?|calendar|"
+                r"arrangementer|events)\s*[?.!]*",
+                control,
+                re.I,
+            )
+            shared_calendar_read = (
+                unfiltered_list_read_family(control) == "calendar"
+            )
             no_mutation = not calendar_actions and not clear_match
-            if list_terms and no_mutation:
+            if (
+                explicit_calendar_list
+                or natural_calendar_read
+                or shared_calendar_read
+            ) and no_mutation:
                 candidates.append(
                     self._candidate_from_result(
                         IntentResult(
                             BotIntent.CALENDAR_LIST,
                             0.92,
                             {},
-                            "calendar_list_keyword",
+                            (
+                                "calendar_list_natural"
+                                if natural_calendar_read or shared_calendar_read
+                                else "calendar_list_keyword"
+                            ),
                         ),
                         tier=30,
                         order=118,
                         specificity=2,
-                        action_terms=list_terms,
+                        action_terms=_present_terms(
+                            control,
+                            (
+                                "vis",
+                                "list",
+                                "vet",
+                                "veit",
+                                "fortell",
+                                "fortel",
+                                "know",
+                                "tell",
+                                "vise",
+                                "show",
+                                "check",
+                                "sjekk",
+                                "sjekke",
+                                "har",
+                                "have",
+                                "står",
+                                "what is",
+                                "what's",
+                            ),
+                        ),
                         domain_terms=calendar_domain,
                     )
                 )
@@ -1881,41 +3045,133 @@ class IntentRouter:
                     )
                 )
 
-        birthday_edit = re.fullmatch(
-            rf"{_POLITE_COMMAND_PREFIX}"
-            r"(?P<verb>endre|rediger|oppdater|edit|update)\s+"
-            r"(?P<domain>bursdag(?:en)?|birthday)"
-            r"(?:\s+(?P<target>.+?\s+\d{1,2}\.\d{1,2}"
-            r"(?:\.\d{2,4})?))?\s*\??",
-            text.strip(),
-            re.I,
+        birthday_gate = bool(
+            re.search(
+                r"\b(?:bursdag(?:en|er|ene|ar|ane)?|birthday(?:s)?)\b",
+                control,
+                re.I,
+            )
         )
-        if birthday_edit:
-            candidates.append(
-                self._candidate_from_result(
-                    IntentResult(
+        if birthday_gate:
+            birthday_parser = getattr(
+                self.monitor, "parse_birthday_command", None
+            )
+            if birthday_parser is None:
+                from features.birthday_manager import (
+                    parse_birthday_command as birthday_parser,
+                )
+            parsed_birthday = self._safe_parse(
+                errors,
+                rejections,
+                "parse_birthday_command",
+                "birthday",
+                birthday_parser,
+                text,
+                routing_context=context.routing,
+            )
+            if isinstance(parsed_birthday, dict):
+                action = parsed_birthday.get("action")
+                intent_by_action = {
+                    "add": BotIntent.BIRTHDAY_CREATE,
+                    "edit": BotIntent.BIRTHDAY_EDIT,
+                    "list": BotIntent.BIRTHDAY_LIST,
+                }
+                birthday_intent = intent_by_action.get(action)
+                if action == "clarify":
+                    result = IntentResult(
                         BotIntent.CLARIFY,
                         0.95,
                         {},
                         "birthday_identity_required",
-                    ),
+                    )
+                elif birthday_intent is not None:
+                    result = IntentResult(
+                        birthday_intent,
+                        0.96,
+                        {"birthday": dict(parsed_birthday)},
+                        f"birthday_{action}_natural",
+                    )
+                else:
+                    result = None
+                if result is not None:
+                    candidates.append(
+                        self._candidate_from_result(
+                            result,
+                            tier=30,
+                            order={
+                                "list": 119,
+                                "clarify": 120,
+                                "add": 121,
+                                "edit": 122,
+                            }.get(str(action), 122),
+                            specificity=(
+                                2
+                                if action == "list"
+                                else (
+                                    3
+                                    if action != "clarify"
+                                    or re.search(
+                                        r"\d{1,2}[.]\d{1,2}", control
+                                    )
+                                    else 2
+                                )
+                            ),
+                            action_terms=_present_terms(
+                                control,
+                                (
+                                    "vis",
+                                    "list",
+                                    "show",
+                                    "endre",
+                                    "rediger",
+                                    "oppdater",
+                                    "edit",
+                                    "update",
+                                    "bursdagen min",
+                                    "min bursdag",
+                                    "har bursdag",
+                                    "my birthday",
+                                ),
+                            ),
+                            domain_terms=_present_terms(
+                                control,
+                                (
+                                    "bursdag",
+                                    "bursdagen",
+                                    "bursdager",
+                                    "bursdagar",
+                                    "birthday",
+                                    "birthdays",
+                                ),
+                            ),
+                        )
+                    )
+                else:
+                    self._append_invalid_payload(
+                        rejections,
+                        intent=BotIntent.BIRTHDAY_CREATE,
+                        family="birthday",
+                        tier=30,
+                        order=121,
+                    )
+            elif parsed_birthday is not None:
+                self._append_invalid_payload(
+                    rejections,
+                    intent=BotIntent.BIRTHDAY_CREATE,
+                    family="birthday",
                     tier=30,
-                    order=120,
-                    specificity=(
-                        3 if birthday_edit.group("target") else 2
-                    ),
-                    action_terms=_present_terms(
-                        control,
-                        ("endre", "rediger", "oppdater", "edit", "update"),
-                    ),
-                    domain_terms=_present_terms(
-                        control, ("bursdag", "bursdagen", "birthday")
-                    ),
+                    order=121,
                 )
-            )
 
+        bounded_english_calendar_create = (
+            bounded_english_calendar_create_head(context.utterance)
+        )
         calendar_create_frame = re.match(
-            rf"^{_POLITE_COMMAND_PREFIX}(?:(?:lag|opprett|create|add)\s+)?"
+            rf"^{_POLITE_COMMAND_PREFIX}(?:(?:(?:legg|legge)\s+"
+            r"(?:inn|til)|(?:sette|setje)\s+opp|lag|lage|opprett|opprette|"
+            r"booke|planlegg|planlegge|"
+            r"planleggje)\s+"
+            r"(?:(?:en|ei|et|a|an)\s+)?)?"
             rf"(?:{_CALENDAR_ITEM_FAMILY})\b",
             control,
             re.I,
@@ -1925,14 +3181,72 @@ class IntentRouter:
             control,
             re.I,
         )
+        bounded_generic_calendar_create = (
+            bounded_english_calendar_create is not None
+            or re.match(
+                rf"^{_POLITE_COMMAND_PREFIX}(?:legg|legge)\s+inn\s+"
+                r"(?:(?:en|ei|et)\s+)?\S+",
+                control,
+                re.I,
+            )
+            or re.match(
+                r"^(?:(?:kan|kunne|vil|can|could|would|will)\s+"
+                r"(?:du|you)|vennligst|please)\s+"
+                r"(?:(?:sette|setje)\s+opp|booke|"
+                r"planlegg|planlegge|planleggje)\s+"
+                r"(?:(?:en|ei|et|a|an)\s+)?\S+",
+                control,
+                re.I,
+            )
+            or re.match(
+                r"^(?:(?:can|could|would|will)\s+you|please)\s+"
+                r"add\s+.+?\s+to\s+my\s+calendar\b|"
+                r"^(?:i['’]d|i\s+would)\s+like\s+to\s+add\s+.+?\s+"
+                r"to\s+my\s+calendar\b|"
+                r"^(?:planlegg|planlegge|planleggje)\s+\S+",
+                control,
+                re.I,
+            )
+        )
         task_create_frame = re.match(
             r"^(?:jeg\s+må|eg\s+må|i\s+need\s+to)\b",
             control,
             re.I,
         )
-        calendar_parse_gate = bool(calendar_create_frame or task_create_frame)
+        reminder_precedence_frame = re.match(
+            r"^(?:(?:jeg|eg|æ)\s+må\s+(?:huske|hugse)\b|"
+            r"i\s+need\s+to\s+remember\b)",
+            control,
+            re.I,
+        )
+        explicit_reminder_noun_create = re.match(
+            rf"^{_POLITE_COMMAND_PREFIX}(?:opprett|opprette|lag|lage|"
+            r"(?:legg|legge)\s+(?:inn|til)|(?:sette|setje)\s+opp|"
+            r"planlegg|planlegge|planleggje|create|add|set\s+up)\s+"
+            r"(?:(?:en|ei|et|a)\s+)?(?:påminnelse|påminning|reminder|"
+            r"gjøremål|gjeremål|todo)\b",
+            control,
+            re.I,
+        )
+        foreign_calendar_create_domain = _FOREIGN_CALENDAR_CREATE_DOMAIN.search(
+            control
+        )
+        calendar_parse_gate = bool(
+            calendar_create_frame
+            or bounded_generic_calendar_create
+            or (task_create_frame and not reminder_precedence_frame)
+        ) and not explicit_reminder_noun_create and not (
+            foreign_calendar_create_domain and not calendar_domain
+        )
         calendar_item = None
-        if calendar_parse_gate:
+        calendar_temporal_errors: tuple[str, ...] = ()
+        if (
+            calendar_parse_gate
+            and _ENGLISH_BARE_CLOCK_TIME.search(control)
+            and _ENGLISH_CALENDAR_TIME_FRAME.search(control)
+        ):
+            calendar_temporal_errors = ("ambiguous_time",)
+        elif calendar_parse_gate:
             parser = getattr(self.monitor, "nlp_parser", None)
             task_parser = getattr(
                 parser, "parse_task_with_recurrence_result", None
@@ -1950,6 +3264,7 @@ class IntentRouter:
             if isinstance(task_result, dict):
                 calendar_item = task_result
             elif isinstance(task_result, NaturalParseResult) and task_result.errors:
+                calendar_temporal_errors = task_result.errors
                 self._append_invalid_temporal(rejections)
             elif isinstance(task_result, NaturalParseResult):
                 calendar_item = task_result.item
@@ -1984,6 +3299,7 @@ class IntentRouter:
                         isinstance(event_result, NaturalParseResult)
                         and event_result.errors
                     ):
+                        calendar_temporal_errors = event_result.errors
                         self._append_invalid_temporal(rejections)
                     elif isinstance(event_result, NaturalParseResult):
                         calendar_item = event_result.item
@@ -2042,9 +3358,26 @@ class IntentRouter:
                     "husk",
                     "glem",
                     "lag",
+                    "lage",
                     "opprett",
+                    "opprette",
+                    "legg inn",
+                    "legge inn",
+                    "legg til",
+                    "legge til",
+                    "sette opp",
+                    "setje opp",
+                    "set up",
+                    "book",
+                    "booke",
+                    "put",
                     "create",
                     "add",
+                    "schedule",
+                    "make",
+                    "planlegg",
+                    "planlegge",
+                    "planleggje",
                     "påminn",
                     "minn",
                     "jeg må",
@@ -2062,6 +3395,7 @@ class IntentRouter:
                     "arrangement",
                     "arrangementet",
                     "meeting",
+                    "appointment",
                     "event",
                     "eventet",
                 ),
@@ -2107,6 +3441,114 @@ class IntentRouter:
                 )
             )
 
+        if calendar_temporal_errors == ("ambiguous_time",):
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CLARIFY,
+                        0.99,
+                        {
+                            "clarification": (
+                                "Mener du tidspunktet om morgenen eller "
+                                "på ettermiddagen?"
+                            )
+                        },
+                        "calendar_time_ambiguous",
+                    ),
+                    tier=35,
+                    order=124,
+                    specificity=3,
+                    action_terms=_present_terms(
+                        control,
+                        (
+                            "lag",
+                            "lage",
+                            "opprett",
+                            "opprette",
+                            "legg inn",
+                            "legge inn",
+                            "legg til",
+                            "legge til",
+                            "sette opp",
+                            "setje opp",
+                            "book",
+                            "booke",
+                            "create",
+                            "add",
+                            "schedule",
+                        ),
+                    ),
+                    domain_terms=_present_terms(
+                        control,
+                        (
+                            "møte",
+                            "møtet",
+                            "avtale",
+                            "avtalen",
+                            "arrangement",
+                            "arrangementet",
+                            "meeting",
+                            "event",
+                            "eventet",
+                        ),
+                    ),
+                )
+            )
+
+        if calendar_temporal_errors == ("conflicting_recurrence",):
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CLARIFY,
+                        0.99,
+                        {
+                            "clarification": (
+                                "Jeg fant flere ulike gjentakelser. "
+                                "Hvilken skal jeg bruke?"
+                            )
+                        },
+                        "calendar_recurrence_conflict",
+                    ),
+                    tier=35,
+                    order=125,
+                    specificity=3,
+                    action_terms=_present_terms(
+                        control,
+                        (
+                            "lag",
+                            "lage",
+                            "opprett",
+                            "opprette",
+                            "legg inn",
+                            "legge inn",
+                            "legg til",
+                            "legge til",
+                            "sette opp",
+                            "setje opp",
+                            "book",
+                            "booke",
+                            "create",
+                            "add",
+                            "schedule",
+                        ),
+                    ),
+                    domain_terms=_present_terms(
+                        control,
+                        (
+                            "møte",
+                            "møtet",
+                            "avtale",
+                            "avtalen",
+                            "arrangement",
+                            "arrangementet",
+                            "meeting",
+                            "event",
+                            "eventet",
+                        ),
+                    ),
+                )
+            )
+
         return CollectorOutput(
             candidates=tuple(candidates),
             parser_errors=tuple(errors),
@@ -2122,14 +3564,30 @@ class IntentRouter:
         errors: list[str] = []
         rejections: list[CandidateRejection] = []
 
-        poll_domain = _present_terms(control, ("poll", "avstemning"))
+        poll_domain = _present_terms(
+            control,
+            (
+                "poll",
+                "pollen",
+                "avstemning",
+                "avstemningen",
+                "avstemninga",
+                "avstemming",
+                "avstemmingen",
+                "avstemminga",
+            ),
+        )
         poll_list_alias = (
-            r"(?:polls|avstemninger|active polls|vis poll|"
-            r"vis avstemning|list poll|poll liste|poll list|"
-            r"avstemning liste)"
+            r"(?:polls|avstemninger|active polls|vis polls?|"
+            r"vis avstemninger?|list polls?|poll liste|poll list|"
+            r"avstemning liste|what\s+polls\s+are\s+active|"
+            r"are\s+there\s+any\s+active\s+polls|"
+            rf"{_POLITE_COMMAND_PREFIX}(?:vis|vise|show)\s+"
+            r"(?:(?:meg|mæ|me)\s+)?(?:aktive|active)\s+"
+            r"(?:avstemninger|avstemmingar|polls))"
         )
         poll_list_gate = bool(
-            re.fullmatch(poll_list_alias, control, re.I)
+            re.fullmatch(poll_list_alias + r"\s*\??", control, re.I)
             or re.fullmatch(
                 poll_list_alias
                 + r"\s+(?:```.*```|`[^`]*`|\"[^\"]*\"|"
@@ -2140,9 +3598,26 @@ class IntentRouter:
         )
         poll_mutation_frame = bool(
             re.match(
-                rf"^{_POLITE_COMMAND_PREFIX}(?:endre|rediger|edit|slett|"
-                r"delete|fjern|remove|lukk|close|avslutt|steng)\s+"
-                r"(?:poll|avstemning)\b",
+                rf"^{_POLITE_COMMAND_PREFIX}(?:endre|rediger|redigere|edit|"
+                r"slett|slette|delete|fjern|fjerne|remove|lukk|lukke|close|"
+                r"avslutt|avslutte|steng|stenge)\s+"
+                r"(?:poll(?:en)?|avstemning(?:en|a)?|"
+                r"avstemming(?:en|a)?)\b",
+                control,
+                re.I,
+            )
+        )
+        explicit_vote_gate = bool(
+            re.fullmatch(
+                r"(?:"
+                r"(?:stem|vote)(?:\s+(?:på|for))?"
+                r"(?:\s+(?:alternativ(?:et)?|valg(?:et)?|option))?\s+|"
+                r"(?:jeg|eg|æ)\s+stemmer(?:\s+på)?"
+                r"(?:\s+(?:alternativ(?:et)?|valg(?:et)?|option))?\s+|"
+                r"i\s+vote(?:\s+for)?(?:\s+option)?\s+"
+                r")(?:\d{1,2}|en|én|ein|ett|one|to|two|tre|three|"
+                r"fire|four|fem|five|seks|six|sju|syv|seven|åtte|"
+                r"eight|ni|nine|ti|ten)\s*[.!?]*",
                 control,
                 re.I,
             )
@@ -2152,11 +3627,16 @@ class IntentRouter:
                 context.domain_scope_id,
                 context.reference_time,
             )
-            if poll_list_gate or control.isdigit() or poll_domain
+            if (
+                poll_list_gate
+                or control.isdigit()
+                or explicit_vote_gate
+                or poll_domain
+            )
             else ()
         )
         single_poll_id = self._single_poll_id(active_polls)
-        if poll_list_gate and active_polls:
+        if poll_list_gate:
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -2181,7 +3661,8 @@ class IntentRouter:
             and (
                 re.match(
                     rf"^{_POLITE_COMMAND_PREFIX}"
-                    r"(?:(?:lag|opprett|ny|create)\s+)?"
+                    r"(?:(?:lag|lage|opprett|opprette|ny|create|make)\s+"
+                    r"(?:(?:en|ei|et|a|an)\s+)?)?"
                     r"(?:poll|avstemning)\b",
                     control,
                     re.I,
@@ -2244,7 +3725,15 @@ class IntentRouter:
                         specificity=3,
                         action_terms=_present_terms(
                             control,
-                            ("lag", "opprett", "create", "ny"),
+                            (
+                                "lag",
+                                "lage",
+                                "opprett",
+                                "opprette",
+                                "create",
+                                "make",
+                                "ny",
+                            ),
                         ),
                         domain_terms=poll_domain,
                     )
@@ -2258,13 +3747,21 @@ class IntentRouter:
                         specificity=3 if poll_domain and complete_poll else 0,
                         action_terms=_present_terms(
                             control,
-                            ("lag", "opprett", "create", "ny"),
+                            (
+                                "lag",
+                                "lage",
+                                "opprett",
+                                "opprette",
+                                "create",
+                                "make",
+                                "ny",
+                            ),
                         ),
                         domain_terms=poll_domain,
                     )
                 )
 
-        if control.isdigit() and single_poll_id is not None:
+        if (control.isdigit() or explicit_vote_gate) and single_poll_id is not None:
             parsed_vote = self._safe_parse(
                 errors,
                 rejections,
@@ -2289,7 +3786,16 @@ class IntentRouter:
                         tier=50,
                         order=160,
                         specificity=4,
-                        domain_terms=(control,),
+                        action_terms=_present_terms(
+                            control, ("stem", "stemmer", "vote")
+                        ),
+                        domain_terms=(
+                            (control,)
+                            if control.isdigit()
+                            else _present_terms(
+                                control, ("stem", "stemmer", "vote")
+                            )
+                        ),
                     )
                 )
             elif parsed_vote is not None:
@@ -2305,21 +3811,36 @@ class IntentRouter:
             poll_ref = self._parse_poll_reference(control)
             poll_mutations = (
                 (
-                    ("endre", "rediger", "edit"),
+                    ("endre", "rediger", "redigere", "edit"),
                     BotIntent.POLL_EDIT,
                     "poll_edit",
                     "poll_edit_keyword",
                     170,
                 ),
                 (
-                    ("slett", "delete", "fjern", "remove"),
+                    (
+                        "slett",
+                        "slette",
+                        "delete",
+                        "fjern",
+                        "fjerne",
+                        "remove",
+                    ),
                     BotIntent.POLL_DELETE,
                     "poll_delete",
                     "poll_delete_keyword",
                     180,
                 ),
                 (
-                    ("lukk", "close", "avslutt", "steng"),
+                    (
+                        "lukk",
+                        "lukke",
+                        "close",
+                        "avslutt",
+                        "avslutte",
+                        "steng",
+                        "stenge",
+                    ),
                     BotIntent.POLL_CLOSE,
                     "poll_close",
                     "poll_close_keyword",
@@ -2330,7 +3851,8 @@ class IntentRouter:
                 action_pattern = "|".join(map(re.escape, actions))
                 if not re.match(
                     rf"^{_POLITE_COMMAND_PREFIX}(?:{action_pattern})\s+"
-                    r"(?:poll|avstemning)\b",
+                    r"(?:poll(?:en)?|avstemning(?:en|a)?|"
+                    r"avstemming(?:en|a)?)\b",
                     control,
                     re.I,
                 ):
@@ -2370,7 +3892,13 @@ class IntentRouter:
 
         countdown_gate = bool(
             re.search(
-                r"\b(?:hvor lenge|countdown|dager til|days until)\b",
+                r"\b(?:hvor\s+(?:lenge|mange\s+dager)|"
+                r"kor\s+(?:lenge|mange\s+dagar)|når\s+er|"
+                r"countdown|count\s+down|nedtelling|nedteljing|dager\s+til|"
+                r"dagar\s+til|days\s+(?:to|until)|"
+                r"how\s+long(?:\s+is\s+it)?\s+(?:to|until|till)|"
+                r"how\s+many\s+days(?:\s+are\s+there)?|"
+                r"when(?:\s+is|['’]s))\b",
                 control,
                 re.I,
             )
@@ -2384,6 +3912,7 @@ class IntentRouter:
                 "countdown",
                 getattr(countdown, "parse_countdown_query", None),
                 text,
+                reference_time=context.reference_time,
             )
             if parsed_countdown:
                 target = (
@@ -2404,7 +3933,26 @@ class IntentRouter:
                         specificity=3 if target else 2,
                         action_terms=_present_terms(
                             control,
-                            ("hvor lenge", "countdown", "dager til", "days until"),
+                            (
+                                "hvor lenge",
+                                "hvor mange dager",
+                                "kor lenge",
+                                "kor mange dagar",
+                                "når er",
+                                "countdown",
+                                "nedtelling",
+                                "nedteljing",
+                                "dager til",
+                                "dagar til",
+                                "days to",
+                                "days until",
+                                "how long to",
+                                "how long until",
+                                "how many days",
+                                "when is",
+                                "when's",
+                                "when’s",
+                            ),
                         ),
                         domain_terms=(str(target),) if target else (),
                     )
@@ -2412,9 +3960,16 @@ class IntentRouter:
 
         watchlist_status_gate = bool(
             re.fullmatch(
-                r"(?:(?:vis|list|show)\s+)?(?:(?:min|the)\s+)?"
+                r"(?:(?:(?:vis|list|show)\s+)?(?:(?:min|my|the)\s+)?"
                 r"(?:watchlist|watchlista|watch\s+list)|"
-                r"hva\s+har\s+vi\s+(?:på|i)\s+watchlist",
+                r"hva\s+har\s+vi\s+(?:på|i)\s+watchlist|"
+                r"hva\s+har\s+(?:jeg|eg|æ)\s+(?:på|i)\s+"
+                r"(?:watchlist|watchlista|watchlisten)(?:\s+min)?|"
+                r"show\s+me\s+my\s+(?:watchlist|watch\s+list)|"
+                r"(?:what\s+is|what['’]s)\s+on\s+my\s+"
+                r"(?:watchlist|watch\s+list)|"
+                r"which\s+(?:movies|films|series|shows)\s+are\s+on\s+my\s+"
+                r"(?:watchlist|watch\s+list))\s*[?.!]*",
                 control,
                 re.I,
             )
@@ -2425,13 +3980,16 @@ class IntentRouter:
         watchlist_add_gate = bool(
             re.fullmatch(
                 rf"(?:{_POLITE_COMMAND_PREFIX}(?:legg|legge)(?:\s+til)?\s+"
-                r".+?\s+(?:på|i)\s+watchlist|"
-                rf"{_POLITE_COMMAND_PREFIX}add\s+.+?\s+to\s+(?:the\s+)?watchlist|"
+                r".+?\s+(?:på|i|til)\s+(?:watchlist(?:a|en)?|watch\s+list)"
+                r"(?:\s+min)?|"
+                rf"{_POLITE_COMMAND_PREFIX}add\s+.+?\s+to\s+"
+                r"(?:(?:the|my)\s+)?watchlist|"
+                rf"{_POLITE_COMMAND_PREFIX}(?:husk|huske|hugs|hugse)\s+at\s+"
+                r"(?:jeg|eg|æ)\s+(?:vil|skal)\s+(?:se|sjå)(?:\s+på)?\s+.+|"
                 r"(?:husk\s+å\s+se|hugs\s+å\s+sjå|remember\s+to\s+watch)"
                 r"(?:\s+.*)?|"
-                r"legg\s+til\s+(?:film|filmen|serie|serien)(?:\s+.*)?|"
-                r".*(?:på|i)\s+watchlist|"
-                r".*to\s+(?:the\s+)?watchlist)\s*\??",
+                r"legg\s+til\s+(?:film|filmen|serie|serien)(?:\s+.*)?)"
+                r"\s*\??",
                 control,
                 re.I,
             )
@@ -2439,14 +3997,15 @@ class IntentRouter:
         watchlist_remove_gate = bool(
             re.match(
                 rf"^{_POLITE_COMMAND_PREFIX}(?:fjern|fjerne|slett|slette|"
-                r"remove|delete)\s+(?:film|filmen|serie|serien|movie|show|watchlist)\b",
+                r"remove|delete)\s+(?:film|filmen|serie|serien|movie|show|"
+                r"watchlist(?:a)?)\b",
                 control,
                 re.I,
             )
             or re.match(
                 rf"^{_POLITE_COMMAND_PREFIX}(?:fjern|fjerne|slett|slette|"
                 r"remove|delete)\s+(?:nummer|number|nr\.?|no\.?|#)?\s*"
-                r"\d+\s+(?:fra|from)\s+watchlist\b",
+                r"\d+\s+(?:fra|from)\s+watchlist(?:a)?\b",
                 control,
                 re.I,
             )
@@ -2454,7 +4013,7 @@ class IntentRouter:
         watchlist_edit_gate = bool(
             re.match(
                 rf"^{_POLITE_COMMAND_PREFIX}(?:endre|rediger|edit|change)\s+"
-                r"(?:film|filmen|serie|serien|movie|show|watchlist)\b",
+                r"(?:film|filmen|serie|serien|movie|show|watchlist(?:a)?)\b",
                 control,
                 re.I,
             )
@@ -2534,8 +4093,12 @@ class IntentRouter:
                     control,
                     (
                         "husk",
+                        "huske",
                         "hugs",
+                        "hugse",
                         "remember",
+                        "legg",
+                        "legge",
                         "legg til",
                         "add",
                         "fjern",
@@ -2555,6 +4118,7 @@ class IntentRouter:
                     (
                         "watchlist",
                         "watchlista",
+                        "watchlisten",
                         "film",
                         "filmen",
                         "serie",
@@ -2562,7 +4126,11 @@ class IntentRouter:
                         "movie",
                         "show",
                         "husk å se",
+                        "husk at",
+                        "huske at",
                         "hugs å sjå",
+                        "hugs at",
+                        "hugse at",
                         "remember to watch",
                     ),
                 )
@@ -2598,7 +4166,19 @@ class IntentRouter:
                     )
                 )
 
-        if has_any_keyword(control, WORD_OF_DAY_KEYWORDS):
+        natural_word_request = bool(
+            _WORD_OF_DAY_NATURAL_REQUEST.fullmatch(
+                strip_bounded_request_courtesy(control)
+            )
+        )
+        if natural_word_request or (
+            has_any_keyword(control, WORD_OF_DAY_KEYWORDS)
+            and _is_bounded_read_topic_request(
+                control,
+                WORD_OF_DAY_KEYWORDS,
+                information_keywords=WORD_OF_DAY_KEYWORDS,
+            )
+        ):
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -2616,30 +4196,42 @@ class IntentRouter:
 
         quote_list_gate = bool(
             re.fullmatch(
-                r"(?:liste\s+sitater|vis\s+sitater|alle\s+sitater|"
-                r"list\s+quotes|show\s+quotes|all\s+quotes)",
+                rf"{_POLITE_COMMAND_PREFIX}(?:liste\s+sitater|"
+                r"(?:vis|vise)\s+(?:(?:meg|mæ)\s+)?(?:alle\s+)?"
+                r"sitat(?:er|ene)|alle\s+sitater|list\s+quotes|"
+                r"show\s+(?:me\s+)?(?:all\s+)?quotes|all\s+quotes|"
+                r"what\s+quotes\s+have\s+i\s+saved|"
+                r"show\s+me\s+my\s+saved\s+quotes)\s*[?.!]*",
                 control,
                 re.I,
             )
         )
-        quote_domain = _present_terms(control, ("sitat", "quote"))
+        quote_domain = _present_terms(
+            control,
+            ("sitat", "sitatet", "sitater", "sitatene", "quote", "quotes"),
+        )
         quote_edit_gate = bool(
             re.fullmatch(
-                r"(?:endre|rediger|edit)\s+(?:sitat|quote)\s+"
+                rf"{_POLITE_COMMAND_PREFIX}(?:endre|rediger|redigere|edit)\s+"
+                r"(?:sitat|quote)\s+"
                 r"\d+(?:\s+.+)?",
                 control,
                 re.I,
             )
         )
         quote_delete_gate = bool(re.fullmatch(
-            r"(?:slett|fjern|delete|remove)\s+(?:sitat|quote)\s+(\d+)",
+            rf"{_POLITE_COMMAND_PREFIX}(?:slett|slette|fjern|fjerne|"
+            r"delete|remove)\s+(?:sitat|quote)\s+(\d+)\s*[?.!]*",
             control,
             re.I,
         ))
         quote_get_gate = bool(
             re.fullmatch(
-                r"(?:sitat|quote|random\s+quote|show\s+quote|vis\s+sitat|"
-                r"vis\s+quote|husk\s+hva(?:\s+.+)?|hva\s+sa(?:\s+.+)?|"
+                rf"(?:{_POLITE_COMMAND_PREFIX}(?:sitat|quote|random\s+quote|"
+                r"give\s+me\s+(?:a\s+)?random\s+quote|"
+                r"(?:show|vis|vise)\s+(?:(?:meg|me|mæ)\s+)?"
+                r"(?:(?:et|eit|a)\s+)?(?:sitat|quote)|"
+                r"husk\s+hva(?:\s+.+)?)|hva\s+sa(?:\s+.+)?|"
                 r"what\s+did\s+.+?\s+say)\s*\??",
                 control,
                 re.I,
@@ -2647,7 +4239,9 @@ class IntentRouter:
         )
         quote_save_gate = bool(
             re.match(
-                r"^(?:husk\s+dette|lagre\s+dette|dette\s+må\s+huskes|"
+                rf"^{_POLITE_COMMAND_PREFIX}(?:husk\s+dette|"
+                r"lagre\s+dette(?:\s+som\s+(?:et\s+)?sitat)?|"
+                r"dette\s+må\s+huskes|"
                 r"gullkorn|remember\s+this|save\s+this|"
                 r"this\s+must\s+be\s+remembered|quote\s+this|"
                 r"lagre\s+sitat|save\s+quote)\b",
@@ -2760,9 +4354,12 @@ class IntentRouter:
                                 "quote this",
                                 "endre",
                                 "rediger",
+                                "redigere",
                                 "edit",
                                 "slett",
+                                "slette",
                                 "fjern",
+                                "fjerne",
                                 "delete",
                                 "remove",
                             ),
@@ -2774,7 +4371,24 @@ class IntentRouter:
                     )
                 )
 
-        if has_any_keyword(control, AURORA_KEYWORDS):
+        natural_aurora_request = bool(
+            _AURORA_NATURAL_REQUEST.fullmatch(
+                strip_bounded_request_courtesy(control)
+            )
+        )
+        if natural_aurora_request or (
+            has_any_keyword(control, AURORA_KEYWORDS)
+            and _is_bounded_read_topic_request(
+                control,
+                AURORA_KEYWORDS,
+                information_keywords=(
+                    "nordlysvarsel",
+                    "nordlysvarselet",
+                    "aurora forecast",
+                    "northern lights forecast",
+                ),
+            )
+        ):
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -2789,7 +4403,10 @@ class IntentRouter:
                     domain_terms=_present_terms(control, AURORA_KEYWORDS),
                 )
             )
-        if has_any_keyword(control, SCHOOL_HOLIDAYS_KEYWORDS):
+        if has_any_keyword(
+            control,
+            SCHOOL_HOLIDAYS_KEYWORDS,
+        ) and _is_bounded_school_holiday_request(control):
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -2824,8 +4441,9 @@ class IntentRouter:
 
         price_gate = bool(
             re.search(
-                r"\b(?:pris|price|koster|kostar|bitcoin|ethereum|btc|eth|"
-                r"krypto|crypto)\b",
+                r"\b(?:pris(?:en)?|price|verdi(?:en)?|value|kurs(?:en)?|"
+                r"koster|kostar|how\s+much\s+(?:is|does)|bitcoin|"
+                r"ethereum|btc|eth|krypto|crypto)\b",
                 control,
                 re.I,
             )
@@ -2861,14 +4479,25 @@ class IntentRouter:
                                 "krypto",
                                 "crypto",
                                 "pris",
+                                "prisen",
                                 "price",
+                                "verdi",
+                                "verdien",
+                                "value",
+                                "kurs",
+                                "kursen",
+                                "how much",
                             ),
                         ),
                     )
                 )
 
         horoscope_gate = bool(
-            re.search(r"\b(?:horoskop|horoscope|stjernetegn)\b", control, re.I)
+            re.search(
+                r"\b(?:horoskop(?:et)?|horoscope|stjernetegn(?:et)?)\b",
+                control,
+                re.I,
+            )
         )
         if horoscope_gate:
             parsed = self._safe_parse(
@@ -2893,7 +4522,14 @@ class IntentRouter:
                         order=300,
                         specificity=3 if target else 2,
                         domain_terms=_present_terms(
-                            control, ("horoskop", "horoscope", "stjernetegn")
+                            control,
+                            (
+                                "horoskop",
+                                "horoskopet",
+                                "horoscope",
+                                "stjernetegn",
+                                "stjernetegnet",
+                            ),
                         ),
                     )
                 )
@@ -2935,8 +4571,20 @@ class IntentRouter:
 
         calculator_gate = bool(
             re.search(
-                r"(?:\b(?:regn ut|calculate|kalkuler|hva er)\b|"
-                r"\d\s*[+*/^-]\s*\d)",
+                r"(?:\b(?:regn(?:e)?\s+ut|rekn(?:e)?\s+ut|calculate|"
+                r"calc|compute|work\s+out|kalk(?:uler(?:e)?)?|"
+                r"(?:hva|kva|ka)\s+er|what\s+is|konverter(?:e)?|"
+                r"convert|omgjør|gjør\s+om|gjer\s+om)\b|"
+                r"\d\s*[+x×*/^-]\s*\d)",
+                control,
+                re.I,
+            )
+            or re.fullmatch(
+                rf"{_POLITE_COMMAND_PREFIX}"
+                r"[+-]?\d+(?:[.,]\d+)?\s*"
+                r"(?:[A-Za-z]{1,5}|°\s*[CFK])\s+"
+                r"(?:til|to|i|in)\s+(?:[A-Za-z]{1,5}|°\s*[CFK])"
+                r"\s*[?.!]*",
                 control,
                 re.I,
             )
@@ -2963,7 +4611,30 @@ class IntentRouter:
                         order=320,
                         specificity=3,
                         domain_terms=_present_terms(
-                            control, ("regn ut", "calculate", "kalkuler", "hva er")
+                            control,
+                            (
+                                "regn ut",
+                                "regne ut",
+                                "rekn ut",
+                                "rekne ut",
+                                "calculate",
+                                "calc",
+                                "compute",
+                                "work out",
+                                "kalk",
+                                "kalkuler",
+                                "kalkulere",
+                                "hva er",
+                                "kva er",
+                                "ka er",
+                                "what is",
+                                "konverter",
+                                "konvertere",
+                                "convert",
+                                "omgjør",
+                                "gjør om",
+                                "gjer om",
+                            ),
                         ),
                     )
                 )
@@ -2980,9 +4651,13 @@ class IntentRouter:
             )
             if parsed:
                 action = (
-                    "forkort"
-                    if _phrase_present(control, "forkort")
-                    else "shorten"
+                    "forkorte"
+                    if _phrase_present(control, "forkorte")
+                    else (
+                        "forkort"
+                        if _phrase_present(control, "forkort")
+                        else "shorten"
+                    )
                 )
                 url_match = re.search(r"https?://[^\s]+", control, re.I)
                 candidates.append(
@@ -3001,7 +4676,13 @@ class IntentRouter:
                     )
                 )
 
-        if has_any_keyword(control, DAILY_DIGEST_KEYWORDS):
+        if has_any_keyword(
+            control,
+            DAILY_DIGEST_KEYWORDS,
+        ) and _is_bounded_read_topic_request(
+            control,
+            DAILY_DIGEST_KEYWORDS,
+        ):
             candidates.append(
                 self._candidate_from_result(
                     IntentResult(
@@ -3043,8 +4724,18 @@ class IntentRouter:
                 )
             )
 
+        date_filtered_calendar_question = bool(
+            re.fullmatch(
+                r"(?:har\s+(?:jeg|eg|æ)\s+noe\s+i\s+kalenderen|"
+                r"(?:hva|kva|ka)\s+skjer\s+i\s+kalenderen(?:\s+min)?)\s+"
+                r"(?:i\s+morgen|i\s+morgon)\s*[?.!]*",
+                control,
+                re.I,
+            )
+        )
         search_gate = bool(
             not vague
+            and not date_filtered_calendar_question
             and re.search(
                 r"\b(?:nyheter|news|søk|search|hva skjer i|hvem vant|"
                 r"resultatet|hvordan gikk|hva er status|hvor mye koster|"
@@ -3084,26 +4775,138 @@ class IntentRouter:
                     )
                 )
 
+        direct_weather_location = False
+        weather_location_match = re.fullmatch(
+            r"(?:vær(?:et)?|vêret|værmelding|weather)\s+"
+            r"(?:i|in|for)\s+(?P<location>[^?!.]+?)\s*[?!.]*",
+            control,
+            re.I,
+        )
+        if weather_location_match is not None:
+            location = weather_location_match.group("location").strip()
+            from features.weather_api import extract_city
+
+            city = extract_city(location)
+            direct_weather_location = bool(
+                city is not None and location.casefold() == city.casefold()
+            )
+
+        future_weather_request = bool(
+            has_bounded_future_weather_request(context.utterance)
+            and context.semantics.speech_act
+            in {SpeechAct.DIRECTIVE, SpeechAct.INFORMATION_REQUEST}
+        )
+        if future_weather_request:
+            candidates.append(
+                self._candidate_from_result(
+                    IntentResult(
+                        BotIntent.CLARIFY,
+                        1.0,
+                        {
+                            "clarification": (
+                                "Jeg kan vise forholdene nå, men denne "
+                                "handlingen støtter ikke en datofestet "
+                                "værprognose ennå. Spør om været nå, eller "
+                                "bruk en egen værtjeneste for fremtidsvarsel."
+                            )
+                        },
+                        "weather_future_date_unsupported",
+                    ),
+                    tier=10,
+                    order=26,
+                    specificity=4,
+                    domain_terms=_present_terms(
+                        control,
+                        (
+                            "weather",
+                            "forecast",
+                            "rain",
+                            "umbrella",
+                            "vær",
+                            "været",
+                            "vêret",
+                            "regn",
+                            "paraply",
+                        ),
+                    ),
+                )
+            )
+
+        natural_weather_match = re.fullmatch(
+            r"what['’]s\s+the\s+weather\s+like\s*[?.!]*|"
+            r"(?:will\s+it|is\s+it\s+going\s+to)\s+rain"
+            r"(?:\s+today)?\s*[?.!]*|"
+            r"do\s+i\s+need\s+(?:an?\s+)?umbrella"
+            r"(?:\s+today)?\s*[?.!]*|"
+            r"what(?:\s+is|['’]s)\s+(?:the\s+)?forecast"
+            r"(?:\s+today)?\s*[?.!]*|"
+            r"what\s+is\s+the\s+weather\s+forecast\s*[?.!]*|"
+            r"(?:(?:hvordan|korleis)\s+(?:er|blir)\s+(?:været|vêret)|"
+            r"how['’]s\s+(?:the\s+)?weather|"
+            r"how\s+is\s+(?:the\s+)?weather|"
+            r"how\s+will\s+(?:the\s+)?weather\s+be|"
+            r"(?:hva|kva|ka)\s+(?:er|blir)\s+(?:været|vêret)|"
+            r"what\s+is\s+the\s+weather)"
+            r"(?:\s+(?:i|in)\s+(?P<conditions_location>[^?!.]+?))?"
+            r"\s*[?.!]*|"
+            r"blir\s+det\s+regn(?:\s+i\s+dag)?\s*[?.!]*|"
+            r"(?:trenger|treng)\s+(?:jeg|eg|æ)\s+"
+            r"(?:(?:en|ei|ein)\s+)?paraply(?:\s+i\s+dag)?\s*[?.!]*|"
+            r"(?:how\s+warm\s+is\s+it|(?:hvor|kor)\s+varmt\s+er\s+det)\s+"
+            r"(?:in|i)\s+(?P<warm_location>[^?!.]+?)\s*[?.!]*",
+            control,
+            re.I,
+        )
+        natural_weather_request = natural_weather_match is not None
+        weather_location = None
+        if natural_weather_match is not None:
+            weather_location = (
+                natural_weather_match.groupdict().get("warm_location")
+                or natural_weather_match.groupdict().get("conditions_location")
+            )
+        if weather_location:
+            weather_location = weather_location.strip()
+            from features.weather_api import extract_city
+
+            warm_city = extract_city(weather_location)
+            natural_weather_request = bool(
+                warm_city is not None
+                and weather_location.casefold() == warm_city.casefold()
+            )
         dashboard_gate = bool(
             not vague
-            and re.search(
-                r"\b(?:dashboard|dashbord|oversikt|vær|weather|hva skjer i)\b",
+            and (
+                direct_weather_location
+                or natural_weather_request
+                or re.fullmatch(
+                rf"(?:vær|været|vêret|værmelding|weather|dashboard(?:et)?|"
+                r"dashbord(?:et)?|oversikt(?:en)?|overview)|"
+                rf"{_POLITE_COMMAND_PREFIX}(?:vis|vise|show|fortell|fortelje|"
+                r"tell)\s+(?:(?:meg|mæ|me)\s+)?(?:(?:en|ei|an)\s+)?"
+                r"(?:vær(?:et)?|vêret|weather|dashboard(?:et)?|"
+                r"dashbord(?:et)?|oversikt(?:en)?|overview)"
+                r"(?:\s+(?:i|in|for)\s+.+?)?\s*\??",
                 control,
                 re.I,
+            )
             )
         )
         conversation = getattr(self.monitor, "conversation", None)
         dashboard_parser = getattr(conversation, "should_show_dashboard", None)
         if dashboard_gate and callable(dashboard_parser):
             try:
-                wants_dashboard, dashboard_reason = dashboard_parser(
-                    text,
-                    (
-                        context.channel_id
-                        if context.channel_id is not None
-                        else context.guild_id
-                    ),
-                )
+                if natural_weather_request:
+                    wants_dashboard = True
+                    dashboard_reason = "natural_weather_request"
+                else:
+                    wants_dashboard, dashboard_reason = dashboard_parser(
+                        text,
+                        (
+                            context.channel_id
+                            if context.channel_id is not None
+                            else context.guild_id
+                        ),
+                    )
             except Exception:
                 wants_dashboard, dashboard_reason = False, "default"
             if wants_dashboard:
@@ -3111,13 +4914,13 @@ class IntentRouter:
                     self._candidate_from_result(
                         IntentResult(
                             BotIntent.DASHBOARD,
-                            0.7,
+                            0.9 if natural_weather_request else 0.7,
                             {"dashboard_reason": dashboard_reason},
                             "dashboard_intent",
                         ),
                         tier=80,
                         order=370,
-                        specificity=1,
+                        specificity=2 if natural_weather_request else 1,
                         domain_terms=_present_terms(
                             control, ("dashboard", "dashbord", "oversikt", "vær", "weather")
                         ),
@@ -3128,14 +4931,20 @@ class IntentRouter:
             control,
             (
                 "bor",
+                "bur",
                 "bosted",
                 "sted",
+                "lokasjon",
                 "location",
                 "flytt",
                 "sett",
+                "sette",
+                "set",
                 "holder til",
+                "held til",
                 "live in",
                 "from",
+                "frå",
             ),
         )
         if location_actions:
@@ -3184,7 +4993,8 @@ class IntentRouter:
     def _has_calendar_context(self, content_lower: str) -> bool:
         stripped = content_lower.strip()
         if re.fullmatch(
-            r"(?:arrangementer|events|kommende|kommende arrangementer|planlagt|planlagte)",
+            r"(?:arrangementer|events|kommende|kommende arrangementer|"
+            r"planlagt|planlagte|schedule)",
             stripped,
             flags=re.IGNORECASE,
         ):
@@ -3195,6 +5005,14 @@ class IntentRouter:
                 "kalender",
                 "calendar",
                 "gcal",
+                "schedule",
+                "planned",
+                "plans",
+                "planlagt",
+                "planer",
+                "planar",
+                "planene",
+                "planane",
             ],
         ):
             return True
@@ -3220,7 +5038,22 @@ class IntentRouter:
             target.strip(),
             flags=re.IGNORECASE,
         )
-        target = target.strip(" .")
+        target = target.strip(" .!?")
+        target = re.sub(r"^(?:the)\s+", "", target, flags=re.I)
+        target = re.sub(
+            r"^(?:møtet|meeting(?:en)?|avtalen|arrangementet|eventet)\b",
+            lambda match: {
+                "møtet": "møte",
+                "meetingen": "meeting",
+                "meeting": "meeting",
+                "avtalen": "avtale",
+                "arrangementet": "arrangement",
+                "eventet": "event",
+            }[match.group(0).casefold()],
+            target,
+            count=1,
+            flags=re.I,
+        )
         target = self._strip_wrapping_quotes(target)
 
         bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)$", target, flags=re.IGNORECASE)
@@ -3290,6 +5123,21 @@ class IntentRouter:
                 reference=reference_time,
             )
             if resolved.errors:
+                saw_invalid_temporal = True
+                continue
+            residual = self.temporal_resolver.strip_temporal_evidence(
+                change_control,
+                reference=reference_time,
+            )
+            residual = re.sub(
+                r"^[\s,;:–—-]+|[\s,;:–—-]+$",
+                "",
+                residual,
+            ).casefold()
+            if (
+                residual not in _CALENDAR_EDIT_TEMPORAL_FILLERS
+                and _CALENDAR_EDIT_KEEP_TIME.fullmatch(residual) is None
+            ):
                 saw_invalid_temporal = True
                 continue
             changes = {
@@ -3440,21 +5288,57 @@ class IntentRouter:
             "slett brukerminne confirm",
             "glem meg confirm",
         }
-        if lower in delete_commands or lower in confirmed_delete_commands:
+        natural_delete = re.fullmatch(
+            rf"{_POLITE_COMMAND_PREFIX}(?:slett|slette|delete)\s+"
+            r"(?:minnet\s+mitt|brukerminne|my\s+memory)",
+            lower,
+            re.I,
+        )
+        natural_forget = re.fullmatch(
+            rf"{_POLITE_COMMAND_PREFIX}(?:glem|glemme|gløym|gløyme|forget)\s+"
+            r"(?:meg|mæ|me)",
+            lower,
+            re.I,
+        )
+        if (
+            lower in delete_commands
+            or lower in confirmed_delete_commands
+            or natural_delete
+            or natural_forget
+        ):
             return IntentResult(
                 BotIntent.MEMORY_DELETE,
                 0.99,
                 {"memory": {"action": "delete"}},
                 "memory_delete_keyword",
             )
-        if any(phrase in lower for phrase in ("eksporter minnet mitt", "export my memory", "eksporter brukerminne")):
+        memory_export = re.fullmatch(
+            rf"{_POLITE_COMMAND_PREFIX}(?:eksporter|eksportere|export)\s+"
+            r"(?:minnet\s+mitt|brukerminne|my\s+memory)",
+            lower,
+            re.I,
+        )
+        if memory_export:
             return IntentResult(
                 BotIntent.MEMORY_EXPORT,
                 0.99,
                 {"memory": {"action": "export"}},
                 "memory_export_keyword",
             )
-        if any(phrase in lower for phrase in ("vis minnet mitt", "mitt minne", "brukerminne", "hva husker du om meg")):
+        memory_view = re.fullmatch(
+            r"(?:vis\s+minnet\s+mitt|mitt\s+minne|brukerminne|"
+            r"hva\s+(?:husker|vet)\s+du\s+om\s+meg|"
+            r"kva\s+(?:hugsar|veit)\s+du\s+om\s+meg|"
+            r"what\s+do\s+you\s+(?:remember|know)\s+about\s+me|"
+            r"(?:(?:kan|kunne|vil)\s+du\s+)?(?:vis|vise)\s+"
+            r"(?:(?:meg|mæ)\s+)?(?:hva\s+du\s+husker|"
+            r"kva\s+du\s+hugsar)\s+om\s+meg|"
+            r"(?:(?:can|could|would|will)\s+you\s+)?show\s+"
+            r"(?:me\s+)?what\s+you\s+remember\s+about\s+me)",
+            lower,
+            re.I,
+        )
+        if memory_view:
             return IntentResult(
                 BotIntent.MEMORY_VIEW,
                 0.99,
@@ -3466,15 +5350,74 @@ class IntentRouter:
     def _route_local_search_command(self, content: str) -> Optional[IntentResult]:
         cleaned = re.sub(r"<@!?\d+>", "", content)
         cleaned = cleaned.replace("@inebotten", "").strip()
-        lower = cleaned.lower()
+
+        natural_calendar_match = re.fullmatch(
+            rf"{_BOUNDED_SEARCH_REQUEST_SHELL}"
+            r"(?:søk|søke|søkje|search)\s+"
+            r"(?:i|in)\s+(?:kalenderen|calendar)\s+"
+            r"(?:etter|for)\s+(.+?)\s*[?.!]*",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if natural_calendar_match:
+            query = _clean_bounded_search_query(
+                natural_calendar_match.group(1)
+            )
+            if query:
+                return IntentResult(
+                    BotIntent.CALENDAR_SEARCH,
+                    0.98,
+                    {"query": query},
+                    "calendar_search_natural",
+                )
+
+        natural_reminder_match = re.fullmatch(
+            rf"{_BOUNDED_SEARCH_REQUEST_SHELL}"
+            r"(?:finn|find)\s+(?:påminnelsen|påminninga|"
+            r"the\s+reminder|reminder)\s+(?:om|about)\s+"
+            r"(.+?)\s*[?.!]*",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if natural_reminder_match:
+            query = _clean_bounded_search_query(
+                natural_reminder_match.group(1)
+            )
+            if query:
+                return IntentResult(
+                    BotIntent.REMINDER_SEARCH,
+                    0.98,
+                    {"reminder": {"action": "search", "query": query}},
+                    "reminder_search_natural",
+                )
+
+        natural_web_match = re.fullmatch(
+            rf"{_BOUNDED_SEARCH_REQUEST_SHELL}{_SEARCH_ACTION}\s+"
+            r"(?:på\s+nett(?:et)?|(?:the\s+)?web)\s+(?:etter|for)\s+"
+            r"(.+?)\s*[?.!]*",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if natural_web_match:
+            query = _clean_bounded_search_query(natural_web_match.group(1))
+            if query:
+                return IntentResult(
+                    BotIntent.SEARCH,
+                    0.98,
+                    {"search": {"query": query, "type": "web"}},
+                    "web_search_natural",
+                )
 
         reminder_match = re.match(
-            r"^(?:søk|search)\s+(?:påminnelse|påminnelser|reminder|reminders)\s+(.+)$",
+            rf"^{_BOUNDED_SEARCH_REQUEST_SHELL}"
+            r"(?:søk|søke|søkje|search)\s+"
+            r"(?:påminnelse|påminnelser|reminder|reminders)\s+"
+            r"(?:(?:etter|for|om|about)\s+)?(.+)$",
             cleaned,
             flags=re.IGNORECASE,
         )
         if reminder_match:
-            query = reminder_match.group(1).strip()
+            query = _clean_bounded_search_query(reminder_match.group(1))
             if query:
                 return IntentResult(
                     BotIntent.REMINDER_SEARCH,
@@ -3489,12 +5432,14 @@ class IntentRouter:
                 )
 
         calendar_match = re.match(
-            r"^(?:søk|search)\s+(?:kalender|calendar)\s+(.+)$",
+            rf"^{_BOUNDED_SEARCH_REQUEST_SHELL}"
+            r"(?:søk|søke|søkje|search)\s+"
+            r"(?:kalender|calendar)\s+(.+)$",
             cleaned,
             flags=re.IGNORECASE,
         )
         if calendar_match:
-            query = calendar_match.group(1).strip()
+            query = _clean_bounded_search_query(calendar_match.group(1))
             if query:
                 return IntentResult(
                     BotIntent.CALENDAR_SEARCH,
@@ -3504,12 +5449,14 @@ class IntentRouter:
                 )
 
         web_match = re.match(
-            r"^(?:søk\s+på\s+nett|search\s+(?:the\s+)?web)\s+(.+)$",
+            rf"^{_BOUNDED_SEARCH_REQUEST_SHELL}"
+            r"(?:(?:søk|søke|søkje)\s+på\s+nett(?:et)?|"
+            r"search\s+(?:the\s+)?web)\s+(.+)$",
             cleaned,
             flags=re.IGNORECASE,
         )
         if web_match:
-            query = web_match.group(1).strip()
+            query = _clean_bounded_search_query(web_match.group(1))
             if query:
                 return IntentResult(
                     BotIntent.SEARCH,
@@ -3518,9 +5465,9 @@ class IntentRouter:
                     "explicit_web_search_keyword",
                 )
 
-        bare_match = re.match(r"^(?:søk|search)\s+(.+)$", cleaned, flags=re.IGNORECASE)
-        if bare_match and not lower.startswith(("søk på nett", "search web", "search the web")):
-            query = bare_match.group(1).strip()
+        bare_match = _BOUNDED_BARE_SEARCH_REQUEST.fullmatch(cleaned)
+        if bare_match:
+            query = _clean_bounded_search_query(bare_match.group("query"))
             if query:
                 return IntentResult(
                     BotIntent.SEARCH,
@@ -3567,14 +5514,52 @@ class IntentRouter:
         except Exception:
             return False
 
+    def _has_calendar_target_number(
+        self,
+        number: int,
+        scope_id: int | None,
+        reference_time: datetime,
+    ) -> bool:
+        """Check the same stable future-item index used by calendar handlers."""
+
+        if isinstance(number, bool) or number <= 0:
+            return False
+        calendar = getattr(self.monitor, "calendar", None)
+        if calendar is None:
+            return False
+        try:
+            snapshot = getattr(calendar, "snapshot_target_items", None)
+            if callable(snapshot):
+                rows = snapshot(reference_time=reference_time)
+            else:
+                upcoming = getattr(calendar, "get_upcoming", None)
+                if not callable(upcoming):
+                    return False
+                rows = upcoming(
+                    scope_id,
+                    days=365,
+                    reference_time=reference_time,
+                )
+            return 1 <= number <= len(rows)
+        except Exception:
+            return False
+
     def _route_location_command(self, content: str) -> Optional[IntentResult]:
         """Detect when a user is setting their location."""
         content_lower = content.lower().strip(" .!?")
         
         # Phrases like "Jeg bor i Trondheim", "Min lokasjon er Oslo", "Sett lokasjon til Bergen"
         patterns = [
-            r"(?:jeg bor i|min lokasjon er|sett (?:min )?lokasjon(?:en)? til|jeg er fra|jeg holder til i)\s+([a-zæøå\s]+)",
-            r"(?:i'm from|i live in|my location is|set (?:my )?location to)\s+([a-z\s]+)"
+            r"(?:jeg\s+bor\s+i|eg\s+bur\s+i|min\s+lokasjon\s+er|"
+            r"(?:jeg\s+holder|eg\s+held)\s+til\s+i|"
+            r"jeg\s+er\s+fra|eg\s+er\s+frå)\s+([a-zæøå\s]+)",
+            rf"{_POLITE_COMMAND_PREFIX}(?:sett|sette|set)\s+"
+            r"(?:(?:min\s+lokasjon(?:en)?)|"
+            r"(?:lokasjon(?:en)?(?:\s+min)?)|"
+            r"(?:my\s+location)|location)\s+"
+            r"(?:til|to)\s+([a-zæøå\s]+)",
+            r"(?:i'm\s+from|i\s+live\s+in|my\s+location\s+is)\s+"
+            r"([a-z\s]+)",
         ]
         
         for pattern in patterns:
@@ -3590,7 +5575,15 @@ class IntentRouter:
         return None
 
     def _is_status_command(self, content_lower: str) -> bool:
-        return content_lower == "status" or has_any_keyword(content_lower, STATUS_KEYWORDS)
+        return re.fullmatch(
+            rf"(?:status|bot\s+status|status\s+bot|inebotten\s+status|"
+            r"health(?:\s+check)?|helse(?:sjekk)?|diagnose|diagnostics)|"
+            rf"{_POLITE_COMMAND_PREFIX}(?:vis|vise|show|sjekk|check|kjør|run)\s+"
+            r"(?:(?:meg|me)\s+)?(?:bot\s*)?(?:status|health(?:\s+check)?|"
+            r"helse(?:sjekk)?|diagnostics)\s*[?.!]*",
+            content_lower,
+            re.I,
+        ) is not None
 
     def _is_profile_command(
         self,
@@ -3599,6 +5592,23 @@ class IntentRouter:
     ) -> bool:
         if self._is_status_command(content_lower):
             return False
+        if re.fullmatch(
+            rf"{_POLITE_COMMAND_PREFIX}(?:sett|sette|set)\s+"
+            r"(?:(?:min|my)\s+)?status(?:en)?(?:\s+(?:til|to))?\s+"
+            r"(?:online|offline|idle|dnd|invisible)\s*[.!?]*",
+            content_lower,
+            re.I,
+        ):
+            return True
+        if re.fullmatch(
+            rf"{_POLITE_COMMAND_PREFIX}(?:sett|sette|set)\s+"
+            r"(?:aktivitet(?:en)?|activity)\s+(?:til|to)\s+"
+            r"(?:å\s+)?(?:spille|spiller|playing|se\s+på|ser\s+på|"
+            r"watching)\s+.+?\s*[.!?]*",
+            content_lower,
+            re.I,
+        ):
+            return True
         if re.fullmatch(
             r"status\s+(?:online|offline|idle|dnd|invisible)",
             content_lower,
@@ -3680,8 +5690,9 @@ class IntentRouter:
         self, content: str
     ) -> dict[str, Any] | None:
         match = re.fullmatch(
-            rf"{_POLITE_COMMAND_PREFIX}(?:endre|rediger|edit)\s+"
-            r"(?:poll|avstemning)(?:\s+(?:\d+|siste|last))?\s+"
+            rf"{_POLITE_COMMAND_PREFIX}(?:endre|rediger|redigere|edit)\s+"
+            r"(?:poll(?:en)?|avstemning(?:en|a)?|"
+            r"avstemming(?:en|a)?)(?:\s+(?:\d+|siste|last))?\s+"
             r"(?P<body>.+?)\s*",
             content,
             re.I,
@@ -3725,13 +5736,30 @@ class IntentRouter:
     def _parse_poll_reference(self, content_lower: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {"target": None}
         # Scoped extraction: number immediately after "poll" or "avstemning"
-        number_match = re.search(r'(?:poll|avstemning)\s+(\d+)', content_lower)
+        number_match = re.search(
+            r"(?:poll(?:en)?|avstemning(?:en|a)?|"
+            r"avstemming(?:en|a)?)\s+"
+            r"(?:(?:nummer|number|nr\.?|no\.?|#)\s*)?(\d+)",
+            content_lower,
+        )
         if number_match:
             result["target"] = int(number_match.group(1))
             return result
         # If message contains poll keywords but no scoped number, don't fall back
         # to arbitrary numbers (prevents "slett poll etter 15 minutter" → target=15)
-        if has_any_keyword(content_lower, ("poll", "avstemning")):
+        if has_any_keyword(
+            content_lower,
+            (
+                "poll",
+                "pollen",
+                "avstemning",
+                "avstemningen",
+                "avstemninga",
+                "avstemming",
+                "avstemmingen",
+                "avstemminga",
+            ),
+        ):
             if has_any_keyword(content_lower, ("siste", "last")):
                 result["target"] = "siste"
                 return result

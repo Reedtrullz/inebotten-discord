@@ -19,6 +19,7 @@ from core.dispatch_result import (
 from core.intent_models import BotIntent, IntentResult, IntentRisk, IntentSource
 from core.message_context import conversation_key_from_message
 from features.base_handler import BaseHandler
+from features.memory_handler import MemoryHandler
 from memory.conversation_context import ConversationContext
 from tests.nlu_test_support import FIXED_NOW
 from tests.test_message_monitor_routing import RecordingMessage
@@ -46,6 +47,46 @@ def _ai_route() -> IntentResult:
 def _provider(response="svar"):
     generate = AsyncMock(return_value=(True, response))
     return type("Hermes", (), {"generate_response": generate})(), generate
+
+
+def _calendar_list_action() -> str:
+    return json.dumps(
+        {
+            "action": "CALENDAR_LIST",
+            "confidence": 0.99,
+            "slots": {},
+            "reply": "Her er kalenderen.",
+            "clarification": None,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _clarify_action(question: str = "Hvilken dag?") -> str:
+    return json.dumps(
+        {
+            "action": "CLARIFY",
+            "confidence": 0.99,
+            "slots": {},
+            "reply": "",
+            "clarification": question,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _install_private_calendar_list(monitor, private_copy: str) -> None:
+    async def handle_list(message, *, reference_time):
+        del reference_time
+        delivery = await monitor._send_response_result(
+            message,
+            private_copy,
+        )
+        return DispatchOutcome.success().with_delivery(delivery)
+
+    monitor.handlers["calendar"].handle_list = handle_list
 
 
 @pytest.mark.asyncio
@@ -95,6 +136,189 @@ async def test_prior_assistant_and_user_turns_reach_provider_in_order(monitor):
 
 
 @pytest.mark.asyncio
+async def test_model_calendar_read_reclassifies_entire_turn_before_followup(
+    monitor,
+):
+    # Keep the canary itself bridge-valid: this test isolates history-policy
+    # reclassification, while ActionBridge independently requires that a
+    # CALENDAR_LIST proposal is supported by the current utterance.
+    inbound_canary = "SHOW MY CALENDAR?!?!!"
+    output_canary = "PRIVATE-CALENDAR-ROW-CANARY"
+    monitor.conversation = ConversationContext(
+        max_history=3,
+        now_provider=monitor._reference_time_now,
+    )
+    monitor.intent_router.route_utterance = Mock(return_value=_ai_route())
+    monitor.hermes, generate = _provider(_calendar_list_action())
+    _install_private_calendar_list(monitor, output_canary)
+    first = RecordingMessage(f"@inebotten {inbound_canary}")
+    key = conversation_key_from_message(first)
+    prior = (
+        ChatTurn("user", "eldste historikk", 900_001),
+        ChatTurn("assistant", "midterste historikk"),
+        ChatTurn("user", "nyeste historikk", 900_002),
+    )
+    for turn in prior:
+        monitor.conversation.add_turn(key, turn)
+
+    await monitor.handle_message(first)
+
+    assert output_canary in first.replies[0]
+    assert monitor.conversation.get_prompt_history(key) == prior
+
+    generate.reset_mock()
+    generate.return_value = (True, "Vanlig oppfølging.")
+    followup = RecordingMessage("@inebotten hvordan går det?")
+    await monitor.handle_message(followup)
+
+    history = generate.await_args.kwargs["history"]
+    assert history == prior
+    serialized = "\n".join(turn.content for turn in history)
+    assert inbound_canary not in serialized
+    assert output_canary not in serialized
+
+
+@pytest.mark.asyncio
+async def test_semantic_clarification_keeps_bounded_context_for_slot_reply(
+    monitor,
+):
+    monitor.intent_router.route_utterance = Mock(return_value=_ai_route())
+    monitor.hermes, generate = _provider(_clarify_action())
+    first = RecordingMessage("@inebotten planlegg noe med Ola")
+
+    await monitor.handle_message(first)
+
+    assert first.replies == ["Hvilken dag?"]
+    generate.reset_mock()
+    generate.return_value = (True, "Da tar vi det i morgen.")
+    second = RecordingMessage("@inebotten i morgen")
+    await monitor.handle_message(second)
+
+    history = generate.await_args.kwargs["history"]
+    assert [(turn.role, turn.content) for turn in history] == [
+        ("user", "planlegg noe med Ola"),
+        ("assistant", "Hvilken dag?"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "adapter_mode",
+    [
+        "missing",
+        "stage_rejecting",
+        "stage_raising",
+        "reclass_rejecting",
+        "reclass_raising",
+    ],
+)
+async def test_semantic_history_transition_fails_closed_for_adapters(
+    monitor,
+    adapter_mode,
+):
+    # The semantic action bridge is intentionally evidence-bound.  Use a
+    # distinctive exact calendar-read phrase so this adapter test reaches the
+    # history transition it is meant to exercise.
+    inbound_canary = "SHOW MY CALENDAR?!?!!"
+    output_canary = f"ADAPTER-{adapter_mode}-OUTPUT-CANARY"
+    turns = []
+    history_reads = []
+
+    def add_turn(key, turn):
+        turns.append((key, turn))
+
+    def get_prompt_history(
+        key,
+        *,
+        limit=10,
+        exclude_source_message_id=None,
+    ):
+        history_reads.append(key)
+        return tuple(
+            turn
+            for turn_key, turn in turns[-limit:]
+            if turn_key == key
+            and (
+                exclude_source_message_id is None
+                or turn.source_message_id != exclude_source_message_id
+            )
+        )
+
+    adapter = SimpleNamespace(
+        add_turn=add_turn,
+        get_prompt_history=get_prompt_history,
+    )
+
+    def successful_stage(key, turn):
+        add_turn(key, turn)
+        return True
+
+    def partial_stage_rejection(key, turn):
+        add_turn(key, turn)
+        return False
+
+    def partial_stage_failure(key, turn):
+        add_turn(key, turn)
+        raise RuntimeError("adapter staging failed")
+
+    def accept_reclassification(key, source_message_id, policy):
+        del key, source_message_id, policy
+        return True
+
+    if adapter_mode == "stage_rejecting":
+        adapter.stage_source_turn = partial_stage_rejection
+        adapter.reclassify_source_turn = accept_reclassification
+    elif adapter_mode == "stage_raising":
+        adapter.stage_source_turn = partial_stage_failure
+        adapter.reclassify_source_turn = accept_reclassification
+    elif adapter_mode == "reclass_rejecting":
+        adapter.stage_source_turn = successful_stage
+
+        def reject_reclassification(key, source_message_id, policy):
+            del key, source_message_id, policy
+            return False
+
+        adapter.reclassify_source_turn = reject_reclassification
+    elif adapter_mode == "reclass_raising":
+        adapter.stage_source_turn = successful_stage
+
+        def fail_reclassification(key, source_message_id, policy):
+            del key, source_message_id, policy
+            raise RuntimeError("adapter rollback failed")
+
+        adapter.reclassify_source_turn = fail_reclassification
+    monitor.conversation = adapter
+    monitor.intent_router.route_utterance = Mock(return_value=_ai_route())
+    monitor.hermes, generate = _provider(_calendar_list_action())
+    _install_private_calendar_list(monitor, output_canary)
+    first = RecordingMessage(f"@inebotten {inbound_canary}")
+
+    await monitor.handle_message(first)
+
+    assert output_canary in first.replies[0]
+    if adapter_mode == "missing":
+        assert turns == []
+    else:
+        assert [turn.content for _, turn in turns] == [inbound_canary]
+    assert monitor._provider_history_quarantined
+
+    generate.reset_mock()
+    generate.return_value = (True, "Vanlig oppfølging.")
+    await monitor.handle_message(
+        RecordingMessage("@inebotten hvordan går det?")
+    )
+
+    history = generate.await_args.kwargs["history"]
+    assert history == ()
+    serialized = "\n".join(turn.content for turn in history)
+    assert inbound_canary not in serialized
+    assert output_canary not in serialized
+    assert len(history_reads) == (
+        0 if adapter_mode.startswith("stage_") else 1
+    )
+
+
+@pytest.mark.asyncio
 async def test_untagged_and_rate_rejected_messages_are_not_recorded(monitor):
     untagged = RecordingMessage("hemmelig")
     key = conversation_key_from_message(untagged)
@@ -132,9 +356,17 @@ async def test_non_delivery_records_inbound_but_not_assistant(monitor):
 
 
 @pytest.mark.asyncio
-async def test_memory_and_search_data_use_only_bounded_untrusted_context(monitor):
-    memory_canary = "MEMORY-CANARY"
+async def test_memory_and_search_data_use_only_bounded_allowlisted_context(monitor):
+    memory_canary = "MEMORY-INTEREST-CANARY"
     search_canary = "SEARCH-CANARY"
+    stable_user_id = 987_654_321
+    forbidden_canaries = (
+        "LEGACY-NOTE-CANARY",
+        "API-KEY-CANARY",
+        "TOKEN-CANARY",
+        "PRIVATE-NOTE-CANARY",
+        "BIRTHDAY-CANARY",
+    )
     route = IntentResult(
         BotIntent.SEARCH,
         1.0,
@@ -142,7 +374,20 @@ async def test_memory_and_search_data_use_only_bounded_untrusted_context(monitor
     )
     monitor.intent_router.route_utterance = Mock(return_value=route)
     monitor.user_memory.snapshot_user = Mock(
-        return_value={"interests": [memory_canary], "note": "ø" * 10_000}
+        return_value={
+            "interests": [memory_canary],
+            "location": "Trondheim",
+            "last_topics": ["ski"],
+            "preferences": {
+                "humor_style": "friendly",
+                "use_dialect": True,
+                "api_key": forbidden_canaries[1],
+            },
+            "note": forbidden_canaries[0],
+            "token": forbidden_canaries[2],
+            "private_note": forbidden_canaries[3],
+            "birthday": forbidden_canaries[4],
+        }
     )
     monitor.search_manager = SimpleNamespace(
         search=AsyncMock(
@@ -161,6 +406,7 @@ async def test_memory_and_search_data_use_only_bounded_untrusted_context(monitor
     )
     monitor.hermes, generate = _provider()
     message = RecordingMessage("@inebotten søk etter kanari")
+    message.author.id = stable_user_id
 
     await monitor.handle_message(message)
 
@@ -169,9 +415,56 @@ async def test_memory_and_search_data_use_only_bounded_untrusted_context(monitor
     serialized_context = json.dumps(context, ensure_ascii=False)
     assert memory_canary in serialized_context
     assert search_canary in serialized_context
+    assert str(stable_user_id) not in serialized_context
+    assert all(canary not in serialized_context for canary in forbidden_canaries)
+    assert set(context["author"]) == {"display_name"}
+    assert context["user_memory"] == {
+        "interests": [memory_canary],
+        "last_topics": ["ski"],
+        "location": "Trondheim",
+        "preferences": {
+            "humor_style": "friendly",
+            "use_dialect": True,
+        },
+    }
     assert len(call["context_prompt"]) <= 4_000
     assert memory_canary not in call["system_prompt"]
     assert search_canary not in call["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_memory_export_never_reenters_future_provider_history(monitor):
+    private_export = "PRIVATE-MEMORY-EXPORT-CANARY"
+    export_route = IntentResult(
+        BotIntent.MEMORY_EXPORT,
+        1.0,
+        {"memory": {"action": "export"}},
+    )
+    monitor.handlers["memory"] = MemoryHandler(monitor)
+    monitor.user_memory.export_user_memory = AsyncMock(
+        return_value={"private_note": private_export}
+    )
+    monitor.intent_router.route_utterance = Mock(return_value=export_route)
+    first = RecordingMessage("@inebotten eksporter minnet mitt")
+
+    await monitor.handle_message(first)
+
+    assert private_export in first.replies[0]
+    assert monitor.conversation.get_prompt_history(
+        conversation_key_from_message(first)
+    ) == ()
+
+    monitor.intent_router.route_utterance = Mock(return_value=_ai_route())
+    monitor.hermes, generate = _provider()
+    followup = RecordingMessage("@inebotten hvordan går det?")
+
+    await monitor.handle_message(followup)
+
+    serialized_history = "\n".join(
+        turn.content for turn in generate.await_args.kwargs["history"]
+    )
+    assert private_export not in serialized_history
+    assert generate.await_args.kwargs["history"] == ()
 
 
 @pytest.mark.asyncio

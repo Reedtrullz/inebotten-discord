@@ -108,8 +108,8 @@ class ResponseGenerator:
             lines.append(self._format_almanac_compact(almanac_data))
             lines.append("")
         
-        # Footer with hint about commands
-        lines.append("— *🌌 Nordlys: `@inebotten nordlys` | 🎓 Skoleferie: `@inebotten skoleferie`*")
+        # Conversational capability hint
+        lines.append("— *Du kan også spørre meg om nordlys eller skoleferier.*")
         
         return "\n".join(lines)
     

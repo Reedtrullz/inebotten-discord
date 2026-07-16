@@ -38,28 +38,44 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Install Playwright browsers
-        run: playwright install chromium
+      - name: Compile Python files
+        run: |
+          python -m compileall \
+            -q \
+            -x '(^|/)(\.git|\.venv312|__pycache__|\.pytest_cache)(/|$)' \
+            .
 
       - name: Check for syntax errors and undefined names
         run: |
           python -m flake8 . \
+            --exclude=.git,.venv,.venv312,__pycache__,.pytest_cache \
             --count \
             --select=E9,F63,F7,F82 \
             --show-source \
             --statistics
 
-      - name: Compile Python files
-        run: |
-          python -m compileall \
-            -q \
-            -x '(^|/)(\.git|__pycache__|\.pytest_cache)(/|$)' \
-            .
+      - name: Run non-browser tests
+        run: python -m pytest -q --ignore=tests/test_console_frontend.py
 
-      - name: Run tests
-        run: |
-          python -m pytest -q --ignore=tests/test_console_frontend.py
-          python -m pytest -q tests/test_console_frontend.py
+      - name: Evaluate production NLU contract
+        run: >
+          python scripts/evaluate_nlu.py
+          --corpus tests/fixtures/nlu_contract_v1.jsonl
+          --report .artifacts/nlu-contract.json
+
+      - name: Upload NLU contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nlu-contract
+          path: .artifacts/nlu-contract.json
+          if-no-files-found: error
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
+
+      - name: Run browser tests
+        run: python -m pytest -q tests/test_console_frontend.py
 
       - name: Check for committed secrets
         run: |

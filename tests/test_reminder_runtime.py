@@ -10,10 +10,13 @@ from __future__ import annotations
 import copy
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from cal_system.reminder_checker import ReminderChecker, reminder_metric_error_code
 from cal_system.reminder_clock import MutableReminderClock
 from cal_system.reminder_manager import (
     MAX_CALENDAR_STEPS,
@@ -24,10 +27,166 @@ from cal_system.reminder_manager import (
 from cal_system.temporal_resolver import TemporalResolver
 from core.intent_models import BotIntent
 from core.intent_payloads import validate_intent_payload
+from core.dispatch_result import DeliveryState, MessageSendResult, SEND_ERROR_CODES
+from core.nlu_metrics import NLUMetrics
 
 
 OSLO = ZoneInfo("Europe/Oslo")
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=OSLO)
+
+
+def test_reminder_delivery_error_registry_maps_every_send_code():
+    expected = {
+        "missing_channel": "channel_missing",
+        "invalid_channel": "channel_missing",
+        "missing_adapter": "channel_missing",
+        "forbidden": "send_forbidden",
+        "http": "send_http",
+        "empty": "manager_error",
+        "daily_quota": "manager_error",
+        "timeout": "manager_error",
+        "transport": "manager_error",
+        "send_task_cancelled": "manager_error",
+        "send_task_exception": "manager_error",
+        "partial_send": "manager_error",
+    }
+    assert set(expected) == SEND_ERROR_CODES
+    assert {
+        code: reminder_metric_error_code(code)
+        for code in SEND_ERROR_CODES
+    } == expected
+
+
+@pytest.mark.asyncio
+async def test_checker_records_bounded_attempt_and_delivery_events(tmp_path):
+    metrics = NLUMetrics()
+
+    async def send_channel(*_args, **_kwargs):
+        return None
+
+    checker = ReminderChecker(
+        send_channel_message_func=send_channel,
+        storage_path=tmp_path / "sent.json",
+        metrics=metrics,
+    )
+    assert checker.metrics is metrics
+
+    sent = await checker._send_to_channel(
+        7,
+        "CANARY-CONTENT",
+        allowed_mentions=None,
+    )
+    assert sent.state is DeliveryState.DELIVERED
+    checker._record_delivery_result(sent, digest=False, catchup=False)
+    checker._record_delivery_result(sent, digest=False, catchup=True)
+    checker._record_delivery_result(sent, digest=True, catchup=False)
+    checker._record_delivery_result(
+        MessageSendResult(DeliveryState.NOT_DELIVERED, "forbidden"),
+        digest=False,
+        catchup=False,
+    )
+    checker._record_delivery_result(
+        MessageSendResult(DeliveryState.UNKNOWN, "timeout"),
+        digest=True,
+        catchup=False,
+    )
+
+    delivery = metrics.snapshot()["reminder_delivery"]
+    assert delivery == {
+        "event=attempted|error=none": 1,
+        "event=catchup_sent|error=none": 1,
+        "event=digest_failed|error=manager_error": 1,
+        "event=digest_sent|error=none": 1,
+        "event=send_failed|error=send_forbidden": 1,
+        "event=sent|error=none": 1,
+    }
+    assert "CANARY" not in json.dumps(delivery)
+
+
+@pytest.mark.asyncio
+async def test_checker_records_persisted_occurrence_deduplication(tmp_path):
+    metrics = NLUMetrics()
+    checker = ReminderChecker(
+        storage_path=tmp_path / "sent.json",
+        metrics=metrics,
+    )
+    occurrence_key = "reminder:rem_1:2026-07-14T12:00:00+02:00:due"
+    checker.sent_log["reminders_sent"][occurrence_key] = {
+        "state": "sent",
+        "at": NOW.timestamp(),
+    }
+    manager = SimpleNamespace(
+        matches_delivery_fingerprint=lambda *_args, **_kwargs: True
+    )
+
+    claimed = await checker._claim_occurrence(
+        manager,
+        ("test", "family"),
+        (),
+        occurrence_key,
+        reference_time=NOW,
+    )
+
+    assert claimed is False
+    assert metrics.snapshot()["reminder_delivery"] == {
+        "event=deduplicated|error=none": 1
+    }
+
+
+@pytest.mark.asyncio
+async def test_checker_maps_invalid_canonical_due_to_bounded_metric(tmp_path):
+    metrics = NLUMetrics()
+    manager = SimpleNamespace(
+        snapshot_delivery_occurrences=lambda *, reference_time: (
+            {
+                "source_kind": "reminder",
+                "id": "rem_1",
+                "due_at": "CANARY-RAW-DUE",
+            },
+        )
+    )
+    checker = ReminderChecker(
+        reminder_manager=manager,
+        storage_path=tmp_path / "sent.json",
+        metrics=metrics,
+    )
+
+    assert await checker.check_alerts_once(reference_time=NOW) == ()
+
+    delivery = metrics.snapshot()["reminder_delivery"]
+    assert delivery == {"event=send_failed|error=invalid_due_at": 1}
+    assert "CANARY" not in json.dumps(delivery)
+
+
+@pytest.mark.asyncio
+async def test_checker_distinguishes_catchup_from_ordinary_delivery(tmp_path):
+    metrics = NLUMetrics()
+    checker = ReminderChecker(
+        storage_path=tmp_path / "sent.json",
+        metrics=metrics,
+    )
+    checker._run_alert_send = AsyncMock(
+        return_value=MessageSendResult(DeliveryState.DELIVERED)
+    )
+    checker._settle_owned = AsyncMock()
+
+    await checker._deliver_claimed_occurrence(
+        {"due_at": NOW - timedelta(minutes=1)},
+        "late",
+        "due",
+        reference_time=NOW,
+    )
+    await checker._deliver_claimed_occurrence(
+        {"due_at": NOW + timedelta(minutes=30)},
+        "warning",
+        "warning_30m",
+        reference_time=NOW,
+    )
+
+    assert metrics.snapshot()["reminder_delivery"] == {
+        "event=catchup_sent|error=none": 1,
+        "event=sent|error=none": 1,
+    }
 
 
 def row(manager: ReminderManager, guild_id: object = 1) -> dict[str, object]:

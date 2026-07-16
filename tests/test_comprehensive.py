@@ -1456,7 +1456,7 @@ class TestFeatureCommands(unittest.TestCase):
         result = manager.parse_command("konverter 10 km til meter")
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["type"], "currency")
+        self.assertEqual(result["type"], "length")
 
     def test_99_calculator_conversion_weight(self):
         """Test 99: Calculator: weight conversion"""
@@ -1466,7 +1466,7 @@ class TestFeatureCommands(unittest.TestCase):
         result = manager.parse_command("convert 5 kg to pounds")
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["type"], "currency")
+        self.assertEqual(result["type"], "weight")
 
     def test_100_url_shortener_with_keyword(self):
         """Test 100: URL shortener with keyword"""

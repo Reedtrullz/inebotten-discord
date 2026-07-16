@@ -7,6 +7,108 @@ Generates compliments and friendly roasts
 import random
 import re
 
+
+_LEADING_INVOCATION = re.compile(
+    r"^\s*(?:@inebotten\b|<@!?\d+>)\s*[:,;-]?\s*",
+    re.IGNORECASE,
+)
+_POLITE_PREFIX = re.compile(
+    r"^(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s+",
+    re.IGNORECASE,
+)
+_NON_REQUEST_PATTERNS = (
+    re.compile(r"\b(?:ikke|ikkje|not|never|don['’]t|do\s+not)\b", re.IGNORECASE),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:sa|skrev|skreiv|leste|las)\b|"
+        r"^i\s+(?:said|wrote|read)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:hva\s+skjer\s+hvis|kva\s+skjer\s+om|ka\s+skjer\s+hvis|"
+        r"what\s+happens\s+if|hvis|om|if)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:eksempel|example|hva\s+betyr|kva\s+tyder|hvordan\s+skriver|"
+        r"korleis\s+skriv|how\s+do\s+i\s+(?:say|write)|"
+        r"what\s+does\b.*\bmean)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:jeg|eg|æ)\s+(?:vurderer|tenker\s+på)\b|"
+        r"^i(?:'m|\s+am)\s+(?:considering|thinking\s+about)\b",
+        re.IGNORECASE,
+    ),
+)
+_TRAILING_POLITENESS = re.compile(
+    r"\s*,?\s*(?:takk(?:\s+skal\s+du\s+ha)?|tusen\s+takk|"
+    r"please|thanks|thank\s+you)\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_LEADING_COURTESY_REQUEST = re.compile(
+    r"^(?:(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please)\s*,?\s*"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))|"
+    r"(?:(?:om|hvis|viss)\s+du\s+(?:kan|har\s+tid)|"
+    r"if\s+you\s+(?:can|have\s+(?:time|a\s+moment))|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*,?\s*"
+    r"(?:(?:kan|kunne|vil)\s+du|(?:can|could|would|will)\s+you|"
+    r"vennligst|vær\s+så\s+snill|ver\s+så\s+snill|please))\s*,?\s*",
+    re.IGNORECASE,
+)
+_TRAILING_COURTESY = re.compile(
+    r"(?:\s*,\s*|\s+)(?:(?:om|hvis|viss)\s+du\s+kan|"
+    r"(?:om|hvis|viss)\s+du\s+har\s+tid|når\s+du\s+har\s+tid|"
+    r"if\s+you\s+can|if\s+you\s+have\s+(?:time|a\s+moment)|"
+    r"when\s+you\s+have\s+(?:time|a\s+moment))\s*[?!.]*$",
+    re.IGNORECASE,
+)
+_TARGET = r"(?:<@!?\d+>|@[\w.-]+|meg|mæ|me)"
+_COMPLIMENT_PATTERNS = (
+    re.compile(
+        rf"^(?:kompliment(?:er)?|compliment|praise|ros|rose)"
+        rf"(?:\s+(?:til|to))?\s*(?P<target>{_TARGET})?$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"^(?:gi|gje|give)\s+(?:(?P<before>{_TARGET})\s+)?"
+        rf"(?:et|eit|en|a)\s+(?:(?:fint|fint lite|nice|vennlig|vennleg|friendly)\s+)?"
+        rf"(?:kompliment|compliment)(?:\s+(?:til|to)\s+(?P<after>{_TARGET}))?$",
+        re.IGNORECASE,
+    ),
+)
+_ROAST_PATTERNS = (
+    re.compile(
+        rf"^(?:roast|roaste|diss)\s*(?P<target>{_TARGET})?$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"^(?:gi|gje|give)\s+(?P<target>{_TARGET})\s+"
+        rf"(?:en|ein|a)\s+(?:(?:vennlig|vennleg|friendly)\s+)?roast$",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _prepare_compliment_request(message_content):
+    if not isinstance(message_content, str):
+        return None
+    content = _LEADING_INVOCATION.sub("", message_content, count=1).strip()
+    content = _LEADING_COURTESY_REQUEST.sub("", content, count=1).strip()
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    content = _TRAILING_COURTESY.sub("", content).strip()
+    if not content or any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _POLITE_PREFIX.sub("", content, count=1).strip()
+    if any(pattern.search(content) for pattern in _NON_REQUEST_PATTERNS):
+        return None
+    content = _TRAILING_POLITENESS.sub("", content).strip()
+    return content.rstrip("?!.").strip()
+
+
 class ComplimentsManager:
     """
     Generates compliments and playful roasts
@@ -81,34 +183,54 @@ class ComplimentsManager:
         - "roast @username"
         - "diss @username"
         """
-        content_lower = message_content.lower()
+        content = _prepare_compliment_request(message_content)
+        if not content:
+            return None
+
+        for pattern in _COMPLIMENT_PATTERNS:
+            match = pattern.fullmatch(content)
+            if match:
+                target = next(
+                    (value for value in match.groupdict().values() if value),
+                    None,
+                )
+                return {
+                    'action': 'compliment',
+                    'user': self._target_to_user(target),
+                }
+
+        for pattern in _ROAST_PATTERNS:
+            match = pattern.fullmatch(content)
+            if match:
+                return {
+                    'action': 'roast',
+                    'user': self._target_to_user(match.group("target")),
+                }
         
-        # Check for compliments
-        compliment_keywords = ['kompliment', 'compliment', 'ros', 'praise']
-        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in compliment_keywords):
-            # Extract username if mentioned
-            user = self._extract_user(message_content)
-            return {'action': 'compliment', 'user': user}
-        
-        # Check for roasts (friendly)
-        roast_keywords = ['roast', 'diss', 'drit', 'kjøl deg ned']
-        if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in roast_keywords):
-            user = self._extract_user(message_content)
-            return {'action': 'roast', 'user': user}
-        
+        return None
+
+    def _target_to_user(self, target):
+        """Convert a bounded target token while preserving the user's case."""
+        if not target or target.casefold() in {"meg", "mæ", "me"}:
+            return None
+        discord_match = re.fullmatch(r'<@!?(\d+)>', target)
+        if discord_match:
+            return "<@" + discord_match.group(1) + ">"
+        if target.startswith("@"):
+            return target[1:]
         return None
     
     def _extract_user(self, message_content):
         """Extract mentioned username"""
-        # Look for @username or Discord mentions
-        match = re.search(r'@(\w+)', message_content)
-        if match:
-            return match.group(1)
-        
         # Look for Discord mention format
         match = re.search(r'<@!?(\d+)>', message_content)
         if match:
             return "<@" + match.group(1) + ">"
+
+        # Look for @username after checking Discord's numeric form.
+        match = re.search(r'@([\w.-]+)', message_content)
+        if match:
+            return match.group(1)
         
         return None
     

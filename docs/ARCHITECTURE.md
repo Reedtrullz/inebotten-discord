@@ -27,41 +27,19 @@ Inebotten er bygget med en **lagdelt arkitektur** som skiller bekymringer og mul
 - **Enkel testing** av isolerte komponenter
 - **Skalerbarhet** for nye funksjoner
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                   BRUKERGRENSESNITT                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                │
-│  │   Discord    │  │  Google      │  │   LM Studio  │  │  MET.no      │                │
-│  │   (Chat)     │  │  Calendar    │  │   (AI)       │  │  (Weather)   │                │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                │
-└─────────┼─────────────────┼─────────────────┼─────────────────┼────────────────────────┘
-          │                 │                 │                 │
-          │  HTTP/WebSocket │   HTTPS/OAuth   │   HTTP (local)  │    HTTPS               │
-          │                 │                 │                 │                        │
-┌─────────▼─────────────────▼─────────────────▼─────────────────▼────────────────────────┐
-│                                    BOT LAG                                            │
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
-│  │                        Message Monitor (message_monitor.py)                      │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │   │
-│  │  │   Mention   │  │   Command   │  │     AI      │  │  Calendar   │            │   │
-│  │  │   Detector  │──►   Router    │──►  Fallback   │──►   Handler   │            │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘            │   │
-│  └─────────────────────────────────────────────────────────────────────────────────┘   │
-│                                         │                                              │
-│                    ┌────────────────────┼────────────────────┐                        │
-│                    │                    │                    │                        │
-│           ┌────────▼────────┐  ┌────────▼────────┐  ┌────────▼────────┐              │
-│           │  Natural Lang   │  │  Personality    │  │  Feature        │              │
-│           │  Parser         │  │  System         │  │  Handlers       │              │
-│           │                 │  │                 │  │                 │              │
-│           │ calendar_parser │  │ user_memory     │  │ countdown       │              │
-│           │ date_extractor  │  │ conversation    │  │ poll            │              │
-│           │ recurrence      │  │ personality     │  │ watchlist       │              │
-│           └─────────────────┘  └─────────────────┘  │ crypto          │              │
-│                                                     │ horoscope       │              │
-│                                                     │ calculator      │              │
-│                                                     └─────────────────┘              │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+```text
+Discord turn (mention required)
+  -> MessageMonitor
+     -> lossless normalization + speech-act checks
+     -> deterministic typed collectors
+     -> risk arbitration
+        -> policy-authorized explicit route -> parse-once feature handler
+        -> auth/destructive/inferred write -> scoped PendingActionStore
+        -> insufficient evidence -> LM Studio/OpenRouter chat
+           -> optional inert typed proposal -> same arbiter/pending flow
+
+Feature handlers -> local JSON stores / Google Calendar / external read APIs
+Provider chat    -> projected memory + route-filtered conversation history
 ```
 
 ### Modulær handler-arkitektur
@@ -136,80 +114,72 @@ class MessageMonitor:
 
 #### 2.2 Intent Router
 
-**Rolle:** Én sentral beslutning per prompt før meldingen sendes til handler eller AI.
+**Rolle:** Én validert, risikovurdert beslutning per prompt før meldingen sendes til en handler eller AI-chat.
 
-`core/intent_router.py` returnerer `IntentResult(intent, confidence, payload, reason)`. Routeren importerer nå keywords fra `core/intent_keywords.py` og bruker token-aware utilities fra `core/intent_utils.py`. Dette erstatter spredt keyword-ruting i `MessageMonitor` og gjør prioritetene lettere å teste.
+`core/intent_router.py` samler typede kandidater fra rene funksjonsparsere. `core/intent_arbitration.py` velger én kandidat eller returnerer en avgrenset avvisning/presisering. `MessageMonitor` orkestrerer flyten, men skal ikke tolke funksjonstekst på nytt.
 
 **Intent-systemarkitektur:**
 
 ```
 Intent-system
-├── core/intent_keywords.py     # Sentraliserte keyword-constants
-│   ├── HELP_KEYWORDS
-│   ├── CALENDAR_KEYWORDS
-│   ├── STATUS_KEYWORDS
-│   └── ... (13 eksporterte tupler)
-│
-├── core/intent_thresholds.py   # Confidence-grenser per intent
-│   └── CONFIDENCE_THRESHOLDS
-│       ├── CALENDAR_ITEM: 0.94
-│       ├── SEARCH: 0.80
-│       ├── PRICE: 0.85
-│       ├── HOROSCOPE: 0.85
-│       └── COMPLIMENT: 0.80
-│
-├── core/intent_utils.py        # Token-aware matching
-│   ├── has_keyword()           # Regex \b for hele ord
-│   ├── has_any_keyword()
-│   ├── has_all_keywords()
-│   └── extract_keywords()
-│
-├── core/intent_router.py       # Rutinglogikk
-│   └── route() → IntentResult
-│
-└── core/message_monitor.py     # Dispatch med confidence-sjekk
-    └── _handle_intent()
+├── core/utterance.py           # Normalisering + maskering av sitat/kode
+├── core/utterance_semantics.py # Negasjon, hypotese, avbrytelse, sekvenser
+├── features/*_commands.py      # Rene, funksjonsspesifikke parsere
+├── core/intent_payloads.py     # Typede envelopes + streng validering
+├── core/intent_policy.py       # Read/add/write/destructive-risiko
+├── core/intent_arbitration.py  # Én vinner eller avgrenset avvisning
+├── core/intent_router.py       # Deterministisk kandidatinnsamling
+├── ai/action_schema.py         # Inert, avgrenset modellprotokoll
+├── core/action_bridge.py       # Modellforslag inn i samme arbiter
+├── core/pending_actions.py     # Scoped bekreftelse/presisering
+└── core/message_monitor.py     # Orkestrering og parse-once dispatch
 ```
 
-**Standard prioritet:**
+**Flyt og autorisasjon:**
 
+```text
+mention gate
+  -> normalisering og speech-act-sikkerhet
+  -> deterministiske typede kandidater
+  -> felles arbiter
+  -> policy-autorisert eksplisitt rute: dispatch, ellers scoped pending
+  -> valgfritt strengt modellforslag ved fallback
+  -> samme validering, risiko og arbiter
+  -> parse-once handler
 ```
-1. Eksplisitt hjelp, status, profil og kalender-CRUD
-2. Aktiv avstemning og stemmegivning
-3. Nedtelling, watchlist, sitat/moro og nytteverktøy
-4. Konservativ kalender-/oppgaveparser
-5. Søk eller dashboard når prompten ber om ekstern kontekst
-6. AI-chat som fallback
-```
 
-**Confidence-tresholds:**
-
-`message_monitor.py` sjekker `route.confidence` mot `CONFIDENCE_THRESHOLDS` før dispatch. Hvis confidence er for lav, faller boten tilbake til AI-chat i stedet for å utføre en usikker handling. Kalender-NLP krever tydelig kommandohensikt pluss dato, tid eller gjentakelsessignal. Bare "jeg skal", "jeg vil" eller "jeg bør" er ikke nok alene.
-
-**Token-aware matching:**
-
-`core/intent_utils.py` bruker regex word boundaries (`\b`) slik at "tale" ikke matcher inni "avtale". Dette eliminerer falske positive fra delstreng-treff.
+Sitat, kode, negasjon, hypotetiske formuleringer, terminale avbrytelser og flere forespurte handlinger blir kontrollert før mutasjon. Destruktive handlinger krever alltid bekreftelse. Inferred og modellforeslåtte skriveruter krever bekreftelse selv når payloadet er komplett. En modell har ingen executor- eller managerreferanser og kan derfor aldri skrive direkte.
 
 **Structured Actions:**
 
-`ai/action_schema.py` definerer dataclasses for AI-genererte handlinger:
-- `SaveEventAction` — foreslå kalenderhendelse som bekreftbar draft
-- `ShowDashboardAction` — vise dashboard
-- `NoAction` — ingen handling
+`ai/action_schema.py` godtar null eller ett forslag som én frittstående, kompakt JSON-linje. Toppnivåfeltene er nøyaktig `action`, `confidence`, `slots`, `reply` og `clarification`; tillatte actions og slots kommer fra en lukket allowlist.
 
-AI kan returnere handlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Begge parses og valideres gjennom `nlp_parser.parse_event()` og blir bekreftbare drafts; kalenderen endres ikke direkte av AI-responsen.
+```json
+{"action":"REMINDER_CREATE","confidence":0.93,"slots":{"text":"Ring legen","due_date":"17.07.2026","time":"09:00"},"reply":"","clarification":null}
+```
+
+`core/action_bridge.py` oversetter et validert forslag til samme typede `IntentCandidate` som den deterministiske ruteren bruker. Eldre `SAVE_EVENT`-JSON og tags er `legacy compatibility` i én overgangsutgivelse og konverteres til gjeldende skjema uten å omgå validering eller bekreftelse.
+
+Samtalehistorikk følger den endelige rutens policy. AI-chat, eksplisitt søk og en enkel semantisk presisering kan få avgrenset historikk, slik at et kort svar på presiseringen beholder konteksten. Deterministiske presiseringer og lokale/private funksjonsruter utelates; autentiseringsflyter får redigert historikk. Ved OpenRouter sendes bare en allowlist-projeksjon av brukerminnet, uten Discord-ID eller vilkårlige lagrede felter.
+
+**Målt språkdekning:** Den deterministiske kontrakten evaluerer bokmål, nynorsk, utvalgte dialektnære former og engelsk. Dette er ikke en påstand om full dialektdekning eller at alle friformuleringer forstås.
 
 #### 2.3 Natural Language Parser
 
 **Rolle:** Transformere norsk tekst til strukturerte data
 
-```
-Input:  "møte med Ola i morgen kl 14"
-Output: {
-    "title": "møte med Ola",
-    "date": "2026-03-29",
+Med referansetid 14.07.2026 kl. 12:00 i `Europe/Oslo`:
+
+```json
+{
+  "input": "møte med Ola 15.07.2026 kl 14",
+  "output": {
+    "title": "Møte med Ola",
+    "date": "15.07.2026",
     "time": "14:00",
-    "type": "event"
+    "type": "event",
+    "days_offset": 1
+  }
 }
 ```
 
@@ -234,8 +204,8 @@ Personality System
 │   └── Historikk (siste emner, antall samtaler)
 │
 ├── Conversation Context (In-memory)
-│   ├── Siste 10 meldinger per kanal
-│   ├── Intent-deteksjon (small talk vs handling)
+│   ├── Avgrensede turer per kanal og bruker
+│   ├── FULL / REDACT_AUTH / OMIT provider-policy
 │   └── 30-minutters utløp
 │
 └── Personality Config (Static)
@@ -562,14 +532,14 @@ run_both.py
 - **Numerisk:** `25.03.2026`, `DD.MM`, `DD/MM/YYYY`
 - **Månedsnavn:** `15. mai`, `20 desember` (norsk/engelsk)
 - **"Den X" mønster:** `den 5.`, `den 15. mai`
-- **Tid:** `kl 14`, `klokken 14:30`, `14:30`, tidsord (`i kveld`)
+- **Tid:** `kl 14`, `klokken 14:30`, `kl 14.30`; tvetydige tidsord feiler lukket og ber om presisering
 - **Gjentagelse:** `hver uke`/`kvar veke`, `den 5. hver måned`, `annenhver torsdag`
-- **Nynorsk:** Full støtte for `kvar`, `måndag`, `laurdag`, `kvart år`, etc.
+- **Nynorsk:** Evaluerte former som `kvar`, `måndag`, `laurdag` og `kvart år`
 
 **Fordeler:**
 - Intuitivt for norske brukere
-- Ingen læringskurve
-- Støtter dialekter
+- Lavere behov for å pugge eksempelordlyd
+- Målte bokmål-, nynorsk-, utvalgte dialektnære og engelske varianter
 - Fleksible datomønstre (månedsnavn + "den X")
 
 ### 3. Bridge-arkitektur

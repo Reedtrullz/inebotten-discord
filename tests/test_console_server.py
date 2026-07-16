@@ -1,17 +1,43 @@
 import asyncio
 import json
 import os
+import re
+from html import unescape
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import quote_plus
 from unittest.mock import patch
 
+from core.help_registry import catalog_sections
+from web_console.dashboard import render_commands_page
+from web_console.console_store import ConsoleStore
 from web_console.server import ConsoleServer, MAX_BODY_BYTES
 
 
 HOST = "127.0.0.1"
 PORT = 18080
 API_KEY = "test-key-123"
+
+
+def test_commands_page_renders_only_shared_registry_examples_in_order():
+    page = render_commands_page()
+    commands = [
+        unescape(value)
+        for value in re.findall(r"<code>(.*?)</code>", page)
+        if unescape(value).startswith("@inebotten ")
+    ]
+    expected = [
+        f"@inebotten {example.display_phrase}"
+        for _, examples in catalog_sections("nb")
+        for example in examples
+    ]
+
+    assert commands == expected
+    assert len(commands) == len(set(commands))
+    assert "@inebotten legg til Inception" not in page
+    assert "@inebotten les https://example.invalid" not in page
+    for category, _ in catalog_sections("nb"):
+        assert page.count(category.title_no) == 1
 
 
 def desktop_client_json() -> dict:
@@ -720,6 +746,25 @@ async def test_logs_endpoint():
         response = await request("/api/logs", api_key=API_KEY)
         assert b"200" in response
         assert b"logs" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_logs_endpoint_reads_only_the_injected_store(tmp_path):
+    store = ConsoleStore(data_dir=tmp_path)
+    assert store.append_logs(["injected-store-only"]) is True
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        store=store,
+    )
+    task = asyncio.create_task(server.start())
+    await asyncio.sleep(0.1)
+    try:
+        response = await request("/api/logs", api_key=API_KEY)
+        assert b"200" in response
+        assert json_body(response) == {"logs": ["injected-store-only"]}
     finally:
         await stop_server(server, task)
 

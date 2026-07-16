@@ -30,6 +30,7 @@ from core.mutation_coordinator import (
     REMINDER_STORE_SCOPE,
     MutationCoordinator,
 )
+from core.nlu_metrics import NLUMetrics
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 
 
@@ -61,6 +62,25 @@ _STAT_KEYS = (
     "gcal_sync_errors",
     "cycle_errors",
 )
+_REMINDER_METRIC_ERROR_CODES = {
+    "missing_channel": "channel_missing",
+    "invalid_channel": "channel_missing",
+    "missing_adapter": "channel_missing",
+    "forbidden": "send_forbidden",
+    "http": "send_http",
+    "empty": "manager_error",
+    "daily_quota": "manager_error",
+    "timeout": "manager_error",
+    "transport": "manager_error",
+    "send_task_cancelled": "manager_error",
+    "send_task_exception": "manager_error",
+    "partial_send": "manager_error",
+}
+
+
+def reminder_metric_error_code(error_code: str | None) -> str:
+    """Project one shared send code onto the finite reminder registry."""
+    return _REMINDER_METRIC_ERROR_CODES.get(error_code, "manager_error")
 
 
 def select_alert_kind(delta: timedelta) -> str | None:
@@ -93,6 +113,7 @@ class ReminderChecker:
         mutation_coordinator: MutationCoordinator | None = None,
         sleep_func: SleepFunction = asyncio.sleep,
         interval_seconds: float = 60.0,
+        metrics: NLUMetrics | None = None,
     ):
         self.calendar = calendar_manager
         self.reminders = reminder_manager
@@ -104,6 +125,7 @@ class ReminderChecker:
         self.mutation_coordinator = mutation_coordinator or MutationCoordinator()
         self.sleep_func = sleep_func
         self.interval_seconds = interval_seconds
+        self.metrics = metrics if isinstance(metrics, NLUMetrics) else NLUMetrics()
         self.running = False
         self._last_gcal_sync: float | None = None
         self._last_gcal_probe_error: float | None = None
@@ -120,6 +142,7 @@ class ReminderChecker:
         self._digest_states: dict[str, str] = {}
         self._owned_send_tasks: set[asyncio.Task] = set()
         self._sent_log_normalized = False
+        self._sent_log_dirty = False
 
         self.stats = {key: 0 for key in _STAT_KEYS}
 
@@ -691,10 +714,12 @@ class ReminderChecker:
                     )
                     if state in _TERMINAL_OCCURRENCE_STATES:
                         if persisted is not None:
+                            self.metrics.record_reminder_delivery("deduplicated")
                             return False
                         self._occurrence_states.pop(occurrence_key, None)
                     if persisted is not None:
                         self._occurrence_states[occurrence_key] = persisted
+                        self.metrics.record_reminder_delivery("deduplicated")
                         return False
                     self._occurrence_states[occurrence_key] = IN_FLIGHT
                     published = True
@@ -719,6 +744,64 @@ class ReminderChecker:
             self.storage_path,
             snapshot,
         )
+
+    def _mark_sent_log_persisted(self) -> None:
+        """Clear the sticky durability failure after a complete atomic write."""
+        self._sent_log_dirty = False
+        if self._last_error_code == "storage_error":
+            self._last_error_code = None
+
+    async def _persist_dirty_sent_log_locked(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> bool:
+        """Persist the current snapshot without releasing its lock early.
+
+        ``asyncio.to_thread`` workers continue after their awaiting coroutine
+        is cancelled.  Keep the write owned and the mutation scope held until
+        that worker settles so an older snapshot can never finish after a
+        newer acknowledgement.
+        """
+        self.mutation_coordinator.assert_held(REMINDER_SENT_LOG_SCOPE)
+        persistence = asyncio.create_task(self._persist_new_schema_log())
+        try:
+            await asyncio.shield(persistence)
+        except asyncio.CancelledError:
+            await self._await_owned_task(persistence)
+            if not persistence.cancelled():
+                try:
+                    persistence.result()
+                except Exception:
+                    self._record_bounded_error(
+                        "storage_error",
+                        reference_time=reference_time,
+                    )
+                else:
+                    self._mark_sent_log_persisted()
+            raise
+        except Exception:
+            self._record_bounded_error(
+                "storage_error",
+                reference_time=reference_time,
+            )
+            return False
+        self._mark_sent_log_persisted()
+        return True
+
+    async def _retry_dirty_sent_log(
+        self,
+        *,
+        reference_time: datetime,
+    ) -> bool:
+        """Retry an acknowledgement that is terminal only in process memory."""
+        self._require_aware_reference(reference_time)
+        async with self.mutation_coordinator.hold(REMINDER_SENT_LOG_SCOPE):
+            if not self._sent_log_dirty:
+                return True
+            return await self._persist_dirty_sent_log_locked(
+                reference_time=reference_time
+            )
 
     def _record_bounded_error(
         self,
@@ -782,13 +865,10 @@ class ReminderChecker:
                 )
 
             self._prune_terminal_records(reference_time=reference_time)
-            try:
-                await self._persist_new_schema_log()
-            except Exception:
-                self._record_bounded_error(
-                    "storage_error",
-                    reference_time=reference_time,
-                )
+            self._sent_log_dirty = True
+            await self._persist_dirty_sent_log_locked(
+                reference_time=reference_time
+            )
 
     async def _settle_digest(
         self,
@@ -833,13 +913,10 @@ class ReminderChecker:
                 )
 
             self._prune_terminal_records(reference_time=reference_time)
-            try:
-                await self._persist_new_schema_log()
-            except Exception:
-                self._record_bounded_error(
-                    "storage_error",
-                    reference_time=reference_time,
-                )
+            self._sent_log_dirty = True
+            await self._persist_dirty_sent_log_locked(
+                reference_time=reference_time
+            )
 
     @staticmethod
     async def _await_owned_task(task: asyncio.Task):
@@ -983,6 +1060,11 @@ class ReminderChecker:
         *,
         reference_time: datetime,
     ) -> MessageSendResult:
+        catchup = (
+            alert_kind == "due"
+            and item["due_at"].astimezone(timezone.utc)
+            < reference_time.astimezone(timezone.utc)
+        )
         attempt = asyncio.create_task(self._run_alert_send(item, alert_kind))
         try:
             result = await asyncio.shield(attempt)
@@ -991,6 +1073,11 @@ class ReminderChecker:
             cancelled_result = MessageSendResult(
                 DeliveryState.UNKNOWN,
                 "send_task_cancelled",
+            )
+            self._record_delivery_result(
+                cancelled_result,
+                digest=False,
+                catchup=catchup,
             )
             settlement = asyncio.create_task(
                 self._settle_occurrence(
@@ -1003,6 +1090,7 @@ class ReminderChecker:
             await self._await_owned_task(settlement)
             raise
 
+        self._record_delivery_result(result, digest=False, catchup=catchup)
         await self._settle_owned(
             occurrence_key,
             alert_kind,
@@ -1030,6 +1118,11 @@ class ReminderChecker:
                 DeliveryState.UNKNOWN,
                 "send_task_cancelled",
             )
+            self._record_delivery_result(
+                cancelled_result,
+                digest=True,
+                catchup=False,
+            )
             settlement = asyncio.create_task(
                 self._settle_digest(
                     digest_key,
@@ -1040,12 +1133,36 @@ class ReminderChecker:
             await self._await_owned_task(settlement)
             raise
 
+        self._record_delivery_result(result, digest=True, catchup=False)
         await self._settle_owned_digest(
             digest_key,
             result,
             reference_time=reference_time,
         )
         return result
+
+    def _record_delivery_result(
+        self,
+        result: MessageSendResult,
+        *,
+        digest: bool,
+        catchup: bool,
+    ) -> None:
+        """Record one bounded acknowledgement outcome without message data."""
+        if result.state is DeliveryState.DELIVERED:
+            if digest:
+                event = "digest_sent"
+            elif catchup:
+                event = "catchup_sent"
+            else:
+                event = "sent"
+            self.metrics.record_reminder_delivery(event)
+            return
+        event = "digest_failed" if digest else "send_failed"
+        self.metrics.record_reminder_delivery(
+            event,
+            error_code=reminder_metric_error_code(result.error_code),
+        )
 
     async def _process_occurrence(
         self,
@@ -1144,11 +1261,18 @@ class ReminderChecker:
                     or not item_id
                     or item_id != item_id.strip()
                     or ":" in item_id
-                    or not isinstance(due_at, datetime)
+                ):
+                    continue
+                if (
+                    not isinstance(due_at, datetime)
                     or due_at.tzinfo is None
                     or due_at.utcoffset() is None
                     or due_at.microsecond
                 ):
+                    self.metrics.record_reminder_delivery(
+                        "send_failed",
+                        error_code="invalid_due_at",
+                    )
                     continue
                 delta = due_at.astimezone(timezone.utc) - reference_utc
                 alert_kind = select_alert_kind(delta)
@@ -1257,6 +1381,9 @@ class ReminderChecker:
             self._started_at = reference_text
 
         try:
+            await self._retry_dirty_sent_log(
+                reference_time=reference_time
+            )
             self._snapshot_delivery_diagnostics(
                 reference_time=reference_time
             )
@@ -1285,6 +1412,7 @@ class ReminderChecker:
         """Async initialization"""
         self.sent_log = await self._load_sent_log()
         self._sent_log_normalized = False
+        self._sent_log_dirty = False
 
     async def _load_sent_log(self):
         """Load a bounded detached root off-loop without exposing failures."""
@@ -1611,6 +1739,7 @@ class ReminderChecker:
 
         if channel is not None:
             try:
+                self.metrics.record_reminder_delivery("attempted")
                 await channel.send(
                     message,
                     allowed_mentions=allowed_mentions,
@@ -1629,6 +1758,7 @@ class ReminderChecker:
 
         if self.send_channel_message is not None:
             try:
+                self.metrics.record_reminder_delivery("attempted")
                 await self.send_channel_message(
                     normalized_channel_id,
                     message,

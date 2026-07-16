@@ -16,6 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tests.nlu_harness import (  # noqa: E402
+    EVAL_FAMILIES,
+    EVAL_LOCALES,
     aggregate_intent_report,
     build_production_router,
     evaluate_case,
@@ -33,6 +35,10 @@ REQUIRED_METRICS = (
     "critical_action_recall",
     "destructive_action_precision",
 )
+MIN_GATE_CASES = 50
+MIN_NEGATIVE_CASES = 10
+MIN_CASES_PER_LOCALE = 3
+MIN_CASES_PER_FAMILY = 1
 
 
 def _unit_interval(value: str) -> float:
@@ -95,10 +101,31 @@ def _report_passes(
     if _metric_rate(metrics, "overall_exact_intent_accuracy") < min_overall:
         return False
 
+    totals = cast(dict[str, Any], report["totals"])
+    if int(totals["cases"]) < MIN_GATE_CASES:
+        return False
+    if int(totals["negative_cases"]) < MIN_NEGATIVE_CASES:
+        return False
+
     by_locale = cast(dict[str, dict[str, Any]], report["by_locale"])
+    if set(by_locale) != set(EVAL_LOCALES):
+        return False
     for metric in by_locale.values():
-        if int(metric["denominator"]) and (
-            not bool(metric["defined"]) or float(metric["rate"]) < min_locale
+        if (
+            int(metric["denominator"]) < MIN_CASES_PER_LOCALE
+            or not bool(metric["defined"])
+            or float(metric["rate"]) < min_locale
+        ):
+            return False
+
+    by_family = cast(dict[str, dict[str, Any]], report["by_family"])
+    if set(by_family) != set(EVAL_FAMILIES):
+        return False
+    for metric in by_family.values():
+        if (
+            int(metric["denominator"]) < MIN_CASES_PER_FAMILY
+            or not bool(metric["defined"])
+            or float(metric["rate"]) < min_locale
         ):
             return False
 

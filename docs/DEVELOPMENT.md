@@ -321,43 +321,18 @@ self.handlers = {
 }
 ```
 
-**2.2. Legg til intent-regel:**
+**2.2. Legg til funksjonen i handlingsarkitekturen:**
 
-Nye prompt-regler skal normalt legges i `core/intent_router.py`, ikke som en ny hardkodet sjekk i `MessageMonitor`. Routeren skal returnere én `IntentResult` med intent, confidence, payload og reason.
+Nye promptregler skal ikke legges som ad hoc-sjekker i `MessageMonitor`. Følg denne kontrakten:
 
-**Bruk sentraliserte keywords og token-aware matching:**
+1. Definer et typet payload og en streng validator i `core/intent_payloads.py`.
+2. Lag en ren collector/parser, normalt i `features/<family>_commands.py`. Den skal ikke ha Discord-, manager-, lagrings-, klokke- eller nettverksavhengigheter.
+3. La `core/intent_router.py` gjøre parserresultatet om til en `IntentCandidate`; alle kandidater går gjennom `core/intent_arbitration.py`.
+4. Registrer intentets konservative grunnrisiko i `core/intent_policy.py`. Payload-avhengige familier må klassifisere hver action eksplisitt.
+5. La handleren konsumere det validerte, typede payloadet. Handleren skal ikke parse `message.content` på nytt.
+6. Hvis modellen skal kunne foreslå funksjonen, legg action og lukkede slots i `ai/action_schema.py` og oversettelsen i `core/action_bridge.py`. Modellforslaget er inert og må gjennom samme validator, risikovurdering, arbiter og pending-regler.
 
-```python
-from core.intent_keywords import MY_FEATURE_KEYWORDS
-from core.intent_utils import has_any_keyword
-
-if has_any_keyword(content_lower, MY_FEATURE_KEYWORDS):
-    return IntentResult(
-        intent=BotIntent.MY_FEATURE,
-        confidence=0.9,
-        payload={"feature": "my_feature"},
-        reason="Eksplisitt myfeature-kommando",
-    )
-```
-
-**Legg til keywords i `core/intent_keywords.py`:**
-
-```python
-MY_FEATURE_KEYWORDS = (
-    "myfeature", "my feature", "min funksjon",
-)
-```
-
-**Sett confidence-treshold hvis nødvendig:**
-
-```python
-from core.intent_thresholds import CONFIDENCE_THRESHOLDS
-from core.intent_router import BotIntent
-
-CONFIDENCE_THRESHOLDS[BotIntent.MY_FEATURE] = 0.85
-```
-
-Deretter lar `MessageMonitor` kalle riktig handler basert på router-resultatet. MessageMonitor sjekker automatisk confidence mot tresholden før dispatch.
+Destruktive handlinger skal alltid bekreftes. Semantisk inferred/modelldrevne skriveruter skal bekreftes. Sitert, negert, hypotetisk, avbrutt eller sekvensert handlingstekst skal ikke gi en delvis mutasjon.
 
 **Fordeler med ny arkitektur:**
 - ✅ **send_response()** håndterer automatisk DM/Group/Guild kanaler
@@ -397,7 +372,13 @@ python scripts/run_both.py
 # I Discord: "@inebotten myfeature add test"
 ```
 
-Legg også inn minst én positiv og én negativ case i `tests/test_intent_router.py`.
+Legg minst inn:
+
+- positive naturlige varianter og payload-sjekk;
+- negative sitat-, negasjons-, hypotese-, avbrytelses- og flerhandlingssaker der relevant;
+- en parse-once-test som feiler hvis handleren reparser originalteksten;
+- én eller flere rader i `tests/fixtures/nlu_contract_v1.jsonl` for alle berørte språk/familier;
+- en rad i `core/help_registry.py` først når eksempelet faktisk passerer produksjonsruteren og handlerkontrakten.
 
 #### BaseHandler Referanse
 
@@ -576,6 +557,11 @@ if __name__ == "__main__":
 # Kjør alle tester (anbefalt)
 .venv312/bin/python -m pytest -q
 
+# Kjør den deterministiske NLU-porten gjennom produksjonsparserne
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json
+
 # Kjør spesifikk testfil
 .venv312/bin/python -m pytest tests/test_intent_router.py -q
 .venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q
@@ -590,31 +576,27 @@ if __name__ == "__main__":
 
 ### Intent-tester
 
-Nye intents skal testes for både positive og negative cases:
+Nye intents skal testes for typet payload, risiko og både positive og negative saker. Et enkelt keyword-treff er ikke tilstrekkelig bevis for en skriverute:
 
 ```python
 # tests/test_my_feature_intent.py
-from core.intent_router import IntentRouter, BotIntent
-from core.intent_utils import has_any_keyword
+from core.intent_models import BotIntent, IntentRisk
 
-class FakeMonitor:
-    pass
+def test_natural_variant_has_typed_payload(production_router):
+    result = production_router.route("kan du legge til eksempelverdien?")
+    assert result.intent is BotIntent.MY_FEATURE
+    assert result.payload == {
+        "my_feature": {"action": "add", "value": "eksempelverdien"}
+    }
+    assert result.risk is IntentRisk.ADDITIVE
 
-def test_my_feature_positive():
-    router = IntentRouter(FakeMonitor())
-    result = router.route("@inebotten min funksjon test")
-    assert result.intent == BotIntent.MY_FEATURE
-    assert result.confidence >= 0.85
-
-def test_my_feature_negative():
-    router = IntentRouter(FakeMonitor())
-    result = router.route("@inebotten hei, hvordan går det?")
-    assert result.intent != BotIntent.MY_FEATURE
-
-def test_keyword_boundary():
-    # "feature" skal ikke matche inni "featuresome"
-    assert has_any_keyword("featuresome", ["feature"]) is False
-    assert has_any_keyword("my feature", ["feature"]) is True
+def test_quoted_or_cancelled_write_is_inert(production_router):
+    for text in (
+        'hun skrev "legg til eksempelverdien"',
+        "legg til eksempelverdien, men glem det",
+    ):
+        result = production_router.route(text)
+        assert result.intent is not BotIntent.MY_FEATURE
 ```
 
 ---

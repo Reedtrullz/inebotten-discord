@@ -75,6 +75,21 @@ def test_invalid_and_conflicting_temporal_evidence_fails_closed(text, error, met
     assert result.errors == (error,)
 
 
+@pytest.mark.parametrize(
+    "method",
+    ("parse_event_result", "parse_task_with_recurrence_result"),
+)
+def test_conflicting_recurrences_fail_closed(method):
+    parser = NaturalLanguageParser(now_provider=lambda: NOW)
+    result = getattr(parser, method)(
+        "lag møte hver uke og hver måned",
+        reference_time=NOW,
+    )
+
+    assert result.item is None
+    assert result.errors == ("conflicting_recurrence",)
+
+
 def test_relative_parse_accepts_a_real_clock_with_nonzero_seconds():
     reference = datetime(2026, 7, 14, 12, 0, 37, 123456, tzinfo=OSLO)
     parser = NaturalLanguageParser(now_provider=lambda: reference)
@@ -93,6 +108,40 @@ def test_unquoted_title_uses_the_shared_temporal_cleanup():
     assert result.errors == ()
     assert result.item is not None
     assert result.item["title"] == "Møte med Ola"
+
+
+@pytest.mark.parametrize(
+    ("text", "time"),
+    (
+        ("møte i morgen kl 14.30", "14:30"),
+        ("møte i morgen klokka 14:30", "14:30"),
+        (
+            "møte i morgen klokka halv tre på ettermiddagen",
+            "14:30",
+        ),
+        (
+            "møte i morgen kvart over to på ettermiddagen",
+            "14:15",
+        ),
+        (
+            "møte i morgen klokka kvart over to på ettermiddagen",
+            "14:15",
+        ),
+    ),
+)
+def test_minimal_event_title_is_derived_from_original_temporal_cleanup(
+    text,
+    time,
+):
+    result = NaturalLanguageParser(now_provider=lambda: NOW).parse_event_result(
+        text
+    )
+
+    assert result.errors == ()
+    assert result.item is not None
+    assert result.item["title"] == "Møte"
+    assert result.item["date"] == "15.07.2026"
+    assert result.item["time"] == time
 
 
 @pytest.mark.parametrize(

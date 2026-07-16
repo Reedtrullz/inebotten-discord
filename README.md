@@ -29,8 +29,8 @@ Inebotten er laget for praktisk hverdagsbruk i Discord: skriv naturlig norsk, s�
 |--------|----------------|
 | Samtale | AI-chat via LM Studio lokalt eller OpenRouter i skyen |
 | Kalender | Hendelser, oppgaver, gjentakelser, fullføring, sletting og Google Calendar-synk |
-| Intent-ruting | Sentral router som prioriterer eksplisitte kommandoer før naturlig språk og AI-chat |
-| Norsk språk | Bokmål, nynorskvarianter, vanlige dialektformer og grunnleggende engelsk |
+| Intent-ruting | Typede kandidater, felles risikovurdering og konservativ AI-fallback |
+| Språkdekning | Evaluert på bokmål, nynorsk, utvalgte dialektnære former og engelsk |
 | Verktøy | Vær, kalkulator, valuta/temperatur, krypto, URL-forkorter og søk/dashboard |
 | Sosialt | Avstemninger, sitater, dagens ord, komplimenter, horoskop og nordlysvarsel |
 | Drift | Rate limiting, mention-gate, helsesjekk, Docker/VPS-oppsett og desktop-launchere |
@@ -95,18 +95,21 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 
 ## Eksempler
 
-### Kalender og oppgaver
+### Kalender og påminnelser
 
 ```text
-@inebotten møte med Ola i morgen kl 14
-@inebotten husk "RBK - Bodø/Glimt" på søndag kl 18:00
-@inebotten lunsj hver fredag kl 12:00
-@inebotten møte 15. mai kl 10
-@inebotten meeting tomorrow at 3pm
-@inebotten kalender (Delt på tvers av alle kanaler og DMs!)
-@inebotten ferdig 2
-@inebotten slett alle tannlege
+@inebotten Kan du legge inn et møte med Ola i morgen klokka 14?
+@inebotten Kan du vise meg kalenderen?
+@inebotten Kan du flytte møtet med Ola til fredag klokka 10?
+@inebotten Kan du minne meg på å ringe legen om to timer?
+@inebotten Kan du vise påminnelsene mine?
+@inebotten Kan du markere påminnelse 1 som ferdig?
+@inebotten Kan du slette møtet med Ola?
 ```
+
+Sletting og andre destruktive handlinger blir vist for bekreftelse før de
+utføres. Du kan svare naturlig med for eksempel «ja takk», «nei, avbryt» eller
+en avgrenset rettelse som «i overmorgen klokka 15».
 
 ### Samtale
 
@@ -116,46 +119,39 @@ Se [docs/VPS_DEPLOYMENT.md](docs/VPS_DEPLOYMENT.md).
 @inebotten fortell en kort vits
 ```
 
-### Andre kommandoer
+### Flere naturlige forespørsler
 
 ```text
-@inebotten hjelp
-@inebotten bot status
-@inebotten status dnd
-@inebotten spiller CS2
-@inebotten vær i Trondheim
-@inebotten avstemning Pizza? Pepperoni, Margherita, Kebab
-@inebotten polls
-@inebotten stem 1
-@inebotten slett poll
-@inebotten nedtelling til 17. mai
-@inebotten pris BTC
-@inebotten 100 USD til NOK
-@inebotten nordlys
-@inebotten Jeg bor i Trondheim
-@inebotten daglig oppsummering
+@inebotten Kan du lage en avstemning: Hva spiser vi? pizza, burger eller taco
+@inebotten Kan du legge til bursdagen min 15. mai?
+@inebotten Hvis du har tid kan du vise prisen på BTC?
+@inebotten Kan du regne ut 2,5 + 1?
+@inebotten Kan du fortelle meg hvor mange dager det er til jul?
+@inebotten Kan du forkorte https://example.invalid?
+@inebotten Kan du vise skoleferiene i Tromsø?
+@inebotten Kan du sette aktiviteten til å spille CS2?
+@inebotten Kan du vise hva du husker om meg?
 ```
 
 ## Hvordan botten forstår meldinger
 
-`core/intent_router.py` gir én strukturert beslutning per prompt. Routeren bruker sentraliserte keywords (`core/intent_keywords.py`) og token-aware matching (`core/intent_utils.py`) med regex word boundaries for å unngå falske positive.
+Meldingen går gjennom én sikker handlingsflyt:
 
-**Standard prioritet:**
+1. Mention-gate, normalisering og kontroll av sitater, negasjon, hypotetiske utsagn, avbrytelser og flere handlinger i samme ytring.
+2. Rene funksjonsparsere lager typede kandidater. En felles arbiter velger én kandidat eller avviser/ber om presisering.
+3. Eksplisitte, komplette ruter som policyen autoriserer kan utføres direkte, inkludert lesing, opprettelse og enkelte avgrensede endringer/fullføringer. Autentisering og destruktive handlinger, samt alle inferred/modelldrevne skriveforslag, legges i en kanal- og brukeravgrenset ventetilstand for bekreftelse.
+4. Hvis den deterministiske ruteren ikke har nok bevis, kan modellen returnere ett strengt, inert forslag. Forslaget går gjennom samme skjema, risikovurdering og arbiter; modellen kan aldri kalle en manager eller skrive direkte.
+5. Handleren mottar det validerte payloadet én gang og parser ikke originalteksten på nytt.
 
-1. Hjelp, status, profil og eksplisitte kalenderkommandoer.
-2. Aktiv avstemning og stemmegivning.
-3. Nedtelling, watchlist, sitat/moro og nytteverktøy.
-4. Konservativ kalender-/oppgaveforståelse med tydelig dato, tid eller påminnelsessignal.
-5. Søk/dashboard når meldingen faktisk ber om kontekst utenfra.
-6. AI-chat som trygg fallback.
+Et modellforslag må være én frittstående kompakt JSON-linje med nøyaktig disse toppnivåfeltene:
 
-**Confidence-tresholds:**
+```json
+{"action":"CALENDAR_CREATE","confidence":0.96,"slots":{"title":"Møte med Ola","date":"17.07.2026","time":"14:00"},"reply":"","clarification":null}
+```
 
-Usikre intents faller tilbake til AI-chat i stedet for å gjette. Kalender-NLP krever f.eks. confidence ≥ 0.94 før dispatch.
+Eldre `SAVE_EVENT`-/tag-format støttes bare som `legacy compatibility` i én overgangsutgivelse. Det får ingen snarvei: innholdet konverteres til gjeldende skjema og må gjennom samme validering og bekreftelsesregler.
 
-**Structured actions:**
-
-AI kan foreslå kalenderhandlinger som JSON (`{"action": "SAVE_EVENT", ...}`) eller eldre tag-format (`[SAVE_EVENT: ...]`). Forslagene blir gjort om til en bekreftbar kalenderdraft; botten endrer ikke kalenderen før du sender en vanlig, eksplisitt kalenderkommando.
+Språkdekningen måles av den versjonerte NLU-kontrakten. Den dekker bokmål, nynorsk, utvalgte dialektnære former og engelsk; den er ikke dokumentasjon på at alle dialekter eller vilkårlige kommandofrie formuleringer forstås.
 
 ## Prosjektstruktur
 
@@ -178,7 +174,7 @@ inebotten-discord/
 
 | Dokument | Innhold |
 |----------|---------|
-| [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) | Kort kommandooversikt |
+| [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) | Verifisert eksempelbank for naturlige forespørsler |
 | [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md) | Komplett teknisk gjennomgang |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Arkitektur, dataflyt og designvalg |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Utviklingsguide og testpraksis |
@@ -204,7 +200,12 @@ Nyttige måltester:
 .venv312/bin/python -m pytest tests/test_false_positives.py -q
 .venv312/bin/python -m pytest tests/test_action_schema.py -q
 .venv312/bin/python -m pytest tests/test_comprehensive.py -q
+.venv312/bin/python scripts/evaluate_nlu.py \
+  --corpus tests/fixtures/nlu_contract_v1.jsonl \
+  --report .artifacts/nlu-contract.json
 ```
+
+NLU-porten er deterministisk og bruker produksjonsparserne uten nettverk. Live LM Studio-, OpenRouter- og Discord-smoke er separate, manuelle bevis.
 
 ## Sikkerhet
 
