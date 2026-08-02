@@ -39,6 +39,9 @@ Norwegian Discord selfbot with AI chat, calendar, reminders, polls, weather, and
 | Add tests | `tests/test_*.py` | pytest with async support |
 | Change logging | `utils/logger.py` | LogBuffer with persistent JSONL storage |
 | Change console persistence | `web_console/console_store.py` | Cross-restart log + stats storage |
+| Drive the bot from shell/Codex | `scripts/inebotten_ctl.py` | Live guild/channel/message/search/send CLI (uses `.venv`) |
+| Bot service + logs | launchd `local.inebotten.selfbot`, `~/.hermes/discord/data/bot.log` | Always-on local run; verify `Connected to N guilds` |
+| Bundled Codex skill | `.codex/skills/inebotten/` | `SKILL.md` + `references/control.md` — Discord API/reference guide; mirrors `~/.codex/skills/inebotten/` |
 
 ## CONVENTIONS
 
@@ -70,6 +73,21 @@ python3 ai/hermes_bridge_server.py    # Bridge only
 # Test
 python3 -m pytest -q                   # All tests
 python3 -m pytest tests/test_console_server.py -q
+
+# Control (live Discord state)
+.venv/bin/python scripts/inebotten_ctl.py guilds
+.venv/bin/python scripts/inebotten_ctl.py search THORChain "vault" --limit 25
+.venv/bin/python scripts/inebotten_ctl.py member <guild> <user-id>   # single member (REST; list endpoint 403s)
+.venv/bin/python scripts/inebotten_ctl.py roles <guild>              # roles + permission bits
+.venv/bin/python scripts/inebotten_ctl.py pins <guild> <channel>     # pinned messages
+.venv/bin/python scripts/inebotten_ctl.py guild <guild>              # tier, boosts, vanity URL
+.venv/bin/python scripts/inebotten_ctl.py dm-channels                # DM / group DM list
+.venv/bin/python scripts/inebotten_ctl.py threads-search <guild> <channel> <query>  # active + archived threads
+.venv/bin/python scripts/inebotten_ctl.py send THORChain general "hello"
+
+# Service
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.inebotten.selfbot.plist
+tail -f ~/.hermes/discord/data/bot.log
 
 # Setup
 python3 setup.py                       # Interactive first-run setup
