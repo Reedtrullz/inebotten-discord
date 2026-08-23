@@ -1282,6 +1282,16 @@ class SelfbotClient(discord.Client):
 
     async def on_ready(self):
         """Called when bot is ready"""
+        # Discord may emit READY again after a reconnect.  Keep the existing
+        # monitor, console, and reminder task instead of creating duplicate
+        # background workers or resetting the uptime clock.
+        if self.monitor is not None:
+            print(f"[BOT] Session ready again as {self.user}; existing monitor retained")
+            await self.start_console()
+            if self.console_server:
+                self.console_server.monitor = self.monitor
+            return
+
         self.start_time = datetime.now()
         print(f"[BOT] Logged in as {self.user} (ID: {self.user.id})")
         print(f"[BOT] Connected to {len(self.guilds)} guilds")

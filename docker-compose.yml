@@ -23,8 +23,12 @@ services:
     environment:
       # Keep token/config/data paths aligned with the mounted persistent volume.
       - HERMES_HOME=/home/inebotten/.hermes
-      - HERMES_BRIDGE_HOST=0.0.0.0
-      - HERMES_BRIDGE_PORT=3000
+      # The bridge is an internal bot dependency; keep it off the container
+      # network by default. Set HERMES_BRIDGE_HOST explicitly together with
+      # HERMES_BRIDGE_API_KEY when a network peer must access it.
+      - HERMES_BRIDGE_HOST=${HERMES_BRIDGE_HOST:-127.0.0.1}
+      - HERMES_BRIDGE_PORT=${HERMES_BRIDGE_PORT:-3000}
+      - HERMES_BRIDGE_API_KEY=${HERMES_BRIDGE_API_KEY:-}
       # Bind console to all interfaces so Caddy can reach it
       - CONSOLE_HOST=0.0.0.0
       - CONSOLE_PORT=8080

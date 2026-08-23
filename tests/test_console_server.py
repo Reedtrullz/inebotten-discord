@@ -784,3 +784,80 @@ async def test_oversized_body_returns_413():
         assert b"Request body too large" in response
     finally:
         await stop_server(server, task)
+
+
+async def test_idle_request_times_out_and_closes_connection():
+    server = ConsoleServer(
+        host=HOST,
+        port=0,
+        api_key=API_KEY,
+        request_read_timeout=0.05,
+    )
+    await server.start()
+    reader, writer = await asyncio.open_connection(HOST, server.actual_port)
+    try:
+        response = await asyncio.wait_for(reader.read(4096), timeout=1)
+        assert b"408 Request Timeout" in response
+        assert b"Request timed out" in response
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await server.stop()
+
+
+async def test_excess_connection_is_rejected_without_waiting_for_first_request():
+    server = ConsoleServer(
+        host=HOST,
+        port=0,
+        api_key=API_KEY,
+        request_read_timeout=1,
+        max_active_connections=1,
+    )
+    await server.start()
+    first_reader, first_writer = await asyncio.open_connection(HOST, server.actual_port)
+    second_writer = None
+    try:
+        first_writer.write(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")
+        await first_writer.drain()
+        for _ in range(20):
+            if server.active_connections == 1:
+                break
+            await asyncio.sleep(0.01)
+        assert server.active_connections == 1
+
+        second_reader, second_writer = await asyncio.open_connection(HOST, server.actual_port)
+        second_writer.write(
+            b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        await second_writer.drain()
+        response = await asyncio.wait_for(second_reader.read(4096), timeout=1)
+        assert b"503 Service Unavailable" in response
+        assert b"Console busy" in response
+    finally:
+        first_writer.close()
+        await first_writer.wait_closed()
+        if second_writer is not None:
+            second_writer.close()
+            try:
+                await second_writer.wait_closed()
+            except ConnectionResetError:
+                pass
+        await server.stop()
+
+
+def test_nonlocal_bind_forces_secure_session_cookie():
+    server = ConsoleServer(host="0.0.0.0", port=0, api_key=API_KEY, cookie_secure=False)
+    assert server.cookie_secure is True
+    assert "Secure" in server._session_cookie_header("session-token", {})
+
+
+async def test_internal_exception_returns_generic_error_without_detail():
+    server, task = await start_server()
+    try:
+        with patch("web_console.server.collect_bot_status", side_effect=RuntimeError("secret-detail")):
+            response = await request("/api/status", api_key=API_KEY)
+        assert b"500 Internal Server Error" in response
+        assert b"Internal server error" in response
+        assert b"secret-detail" not in response
+    finally:
+        await stop_server(server, task)

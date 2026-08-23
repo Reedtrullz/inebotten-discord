@@ -5,6 +5,7 @@ Connects to LM Studio on Windows host from WSL for AI responses
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -25,6 +26,28 @@ logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 32 * 1024
 MAX_BODY_BYTES = 256 * 1024
+MAX_QUERY_BYTES = 32 * 1024
+MAX_MESSAGE_CHARS = 8_000
+MAX_AUTHOR_NAME_CHARS = 120
+MAX_CHANNEL_TYPE_CHARS = 64
+MAX_SYSTEM_PROMPT_CHARS = 16_000
+MAX_PAYLOAD_FIELDS = 8
+
+# The bridge is intentionally a small, single-request HTTP server.  Keep all
+# waits bounded so a client that opens a socket and then goes silent cannot
+# consume a connection forever.
+HEADER_READ_TIMEOUT = float(os.getenv("HERMES_BRIDGE_HEADER_TIMEOUT", "5"))
+BODY_READ_TIMEOUT = float(os.getenv("HERMES_BRIDGE_BODY_TIMEOUT", "10"))
+LM_REQUEST_TIMEOUT = float(os.getenv("HERMES_BRIDGE_LM_TIMEOUT", "60"))
+MAX_CONCURRENT_REQUESTS = max(
+    1, int(os.getenv("HERMES_BRIDGE_MAX_CONCURRENCY", "16"))
+)
+RATE_LIMIT_REQUESTS = max(
+    0, int(os.getenv("HERMES_BRIDGE_RATE_LIMIT", "120"))
+)
+RATE_LIMIT_WINDOW = max(
+    1.0, float(os.getenv("HERMES_BRIDGE_RATE_WINDOW", "60"))
+)
 
 # Configuration
 HOST = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1")
@@ -33,6 +56,24 @@ PORT = int(os.getenv("HERMES_BRIDGE_PORT", "3000"))
 # LM Studio Configuration
 LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1").rstrip("/")
 LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
+BRIDGE_API_KEY = os.getenv("HERMES_BRIDGE_API_KEY", "").strip()
+
+
+def _is_loopback_host(host):
+    """Return whether *host* is a loopback-only bind target."""
+
+    value = (host or "").strip().lower().strip("[]")
+    return value in {"127.0.0.1", "localhost", "::1"}
+
+
+def validate_runtime_config():
+    """Fail closed when the bridge would be reachable without authentication."""
+
+    if not _is_loopback_host(HOST) and not BRIDGE_API_KEY:
+        raise RuntimeError(
+            "HERMES_BRIDGE_API_KEY is required when HERMES_BRIDGE_HOST is not loopback"
+        )
+
 
 # Model-specific settings
 MODEL_CONFIG = {
@@ -209,12 +250,17 @@ class HermesBridgeServer:
         self.lm_studio_available = None
         self.lm_studio_checked_at = 0.0
         self.lm_studio_cache_ttl = float(os.getenv("LM_STUDIO_HEALTH_CACHE_TTL", "10"))
+        self._request_slots = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+        self._rate_history = {}
+        self._rate_lock = asyncio.Lock()
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
             import aiohttp
 
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=LM_REQUEST_TIMEOUT)
+            )
         return self.session
 
     async def _check_lm_studio(self):
@@ -446,13 +492,13 @@ class HermesBridgeServer:
             async with session.post(
                 f"{LM_STUDIO_URL}/chat/completions",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=LM_REQUEST_TIMEOUT),
             ) as resp:
                 logger.info(f"LM Studio response status: {resp.status}")
                 if resp.status == 200:
                     self.lm_studio_available = True
                     self.lm_studio_checked_at = time.monotonic()
-                    data = await resp.json()
+                    data = await resp.json(content_type=None)
                     choices = data.get("choices", [])
                     if choices:
                         message = choices[0].get("message", {})
@@ -623,13 +669,155 @@ class HermesBridgeServer:
             traceback.print_exc()
             return None
 
+    @staticmethod
+    def _peer_key(writer):
+        """Return a low-cardinality client key for the in-memory rate guard."""
+
+        peer = writer.get_extra_info("peername")
+        if isinstance(peer, tuple) and peer:
+            return str(peer[0])
+        return "unknown"
+
+    async def _allow_request(self, writer):
+        """Apply a small per-peer sliding-window guard.
+
+        A zero limit disables the guard explicitly.  The default is generous
+        for normal bot traffic while preventing an accidental tight loop from
+        exhausting the bridge or its local model.
+        """
+
+        if RATE_LIMIT_REQUESTS <= 0:
+            return True
+        now = time.monotonic()
+        peer = self._peer_key(writer)
+        async with self._rate_lock:
+            history = [
+                timestamp
+                for timestamp in self._rate_history.get(peer, [])
+                if now - timestamp < RATE_LIMIT_WINDOW
+            ]
+            if len(history) >= RATE_LIMIT_REQUESTS:
+                self._rate_history[peer] = history
+                return False
+            history.append(now)
+            self._rate_history[peer] = history
+            # Avoid retaining inactive peers indefinitely.
+            if len(self._rate_history) > 1024:
+                self._rate_history = {
+                    key: values
+                    for key, values in self._rate_history.items()
+                    if values and now - values[-1] < RATE_LIMIT_WINDOW
+                }
+            return True
+
+    @staticmethod
+    def _authorized(headers):
+        """Check the configured API key without exposing it in logs/errors."""
+
+        if not BRIDGE_API_KEY:
+            return True
+        supplied = headers.get("x-api-key", "")
+        if not supplied:
+            authorization = headers.get("authorization", "")
+            scheme, _, value = authorization.partition(" ")
+            if scheme.lower() == "bearer":
+                supplied = value.strip()
+        return bool(supplied) and hmac.compare_digest(supplied, BRIDGE_API_KEY)
+
+    @staticmethod
+    def _validate_chat_payload(payload):
+        """Validate the small public chat schema before invoking the model."""
+
+        if not isinstance(payload, dict):
+            raise ValueError("Payload must be a JSON object")
+        if len(payload) > MAX_PAYLOAD_FIELDS:
+            raise ValueError("Too many payload fields")
+        allowed_fields = {
+            "message",
+            "author_name",
+            "channel_type",
+            "system_prompt",
+            "timestamp",
+            "is_mention",
+            "temperature",
+            "max_tokens",
+        }
+        if set(payload) - allowed_fields:
+            raise ValueError("Unsupported payload field")
+
+        message = payload.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("message must be a non-empty string")
+        if len(message) > MAX_MESSAGE_CHARS:
+            raise ValueError("message is too long")
+
+        for field, limit, default in (
+            ("author_name", MAX_AUTHOR_NAME_CHARS, "unknown"),
+            ("channel_type", MAX_CHANNEL_TYPE_CHARS, "DM"),
+        ):
+            value = payload.get(field, default)
+            if not isinstance(value, str):
+                raise ValueError(f"{field} must be a string")
+            if len(value) > limit:
+                raise ValueError(f"{field} is too long")
+
+        system_prompt = payload.get("system_prompt")
+        if system_prompt is not None:
+            if not isinstance(system_prompt, str):
+                raise ValueError("system_prompt must be a string")
+            if len(system_prompt) > MAX_SYSTEM_PROMPT_CHARS:
+                raise ValueError("system_prompt is too long")
+
+        timestamp = payload.get("timestamp")
+        if timestamp is not None and (
+            not isinstance(timestamp, str) or len(timestamp) > 64
+        ):
+            raise ValueError("timestamp must be a short string")
+
+        is_mention = payload.get("is_mention")
+        if is_mention is not None and not isinstance(is_mention, bool):
+            raise ValueError("is_mention must be a boolean")
+
+        temperature = payload.get("temperature")
+        if temperature is not None and (
+            isinstance(temperature, bool)
+            or not isinstance(temperature, (int, float))
+            or not 0 <= temperature <= 2
+        ):
+            raise ValueError("temperature is out of range")
+
+        max_tokens = payload.get("max_tokens")
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or not 1 <= max_tokens <= 4_096
+        ):
+            raise ValueError("max_tokens is out of range")
+
+        return payload
+
     async def handle_request(self, reader, writer):
         self.request_count += 1
         request_id = self.request_count
+        acquired = False
 
         try:
+            if not await self._allow_request(writer):
+                await self._send_response(writer, 429, {"error": "Rate limit exceeded"})
+                return
+            try:
+                await asyncio.wait_for(self._request_slots.acquire(), timeout=0.1)
+                acquired = True
+            except asyncio.TimeoutError:
+                await self._send_response(
+                    writer, 503, {"error": "Bridge is busy; try again later"}
+                )
+                return
+
             # Read header first
-            header_data = await reader.readuntil(b"\r\n\r\n")
+            header_data = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"), timeout=HEADER_READ_TIMEOUT
+            )
             if len(header_data) > MAX_HEADER_BYTES:
                 await self._send_response(writer, 400, {"error": "Request headers too large"})
                 return
@@ -642,18 +830,27 @@ class HermesBridgeServer:
 
             request_line = lines[0]
             parts = request_line.split(" ")
-            if len(parts) < 2:
+            if len(parts) != 3 or not parts[2].startswith("HTTP/"):
                 await self._send_response(writer, 400, {"error": "Invalid request"})
                 return
 
             method, path = parts[0], parts[1]
             headers = self._parse_headers(lines[1:])
 
+            if not self._authorized(headers):
+                await self._send_response(writer, 401, {"error": "Unauthorized"})
+                return
+
             # Handle body if POST
             body = None
             if method == "POST":
+                if headers.get("transfer-encoding", "").lower() not in {"", "identity"}:
+                    await self._send_response(
+                        writer, 400, {"error": "Unsupported transfer encoding"}
+                    )
+                    return
                 try:
-                    content_length = int(headers.get("Content-Length", 0) or 0)
+                    content_length = int(headers.get("content-length", 0) or 0)
                 except ValueError:
                     await self._send_response(writer, 400, {"error": "Invalid Content-Length"})
                     return
@@ -664,15 +861,30 @@ class HermesBridgeServer:
                     await self._send_response(writer, 413, {"error": "Request body too large"})
                     return
                 if content_length > 0:
-                    body_data = await reader.readexactly(content_length)
+                    body_data = await asyncio.wait_for(
+                        reader.readexactly(content_length), timeout=BODY_READ_TIMEOUT
+                    )
                     body = body_data.decode("utf-8", errors="ignore")
 
+            if len(path.encode("utf-8", errors="ignore")) > MAX_QUERY_BYTES:
+                await self._send_response(writer, 414, {"error": "Request target too large"})
+                return
             parsed = urlparse(path)
-            query = parse_qs(parsed.query)
+            try:
+                query = parse_qs(parsed.query, max_num_fields=4)
+            except ValueError:
+                await self._send_response(writer, 400, {"error": "Too many query fields"})
+                return
 
             if parsed.path == "/api/chat":
+                if method not in {"GET", "POST"}:
+                    await self._send_response(writer, 405, {"error": "Method not allowed"})
+                    return
                 await self._handle_chat(writer, method, query, body)
             elif parsed.path == "/health":
+                if method != "GET":
+                    await self._send_response(writer, 405, {"error": "Method not allowed"})
+                    return
                 lm_available = await self._check_lm_studio()
                 await self._send_response(
                     writer,
@@ -685,39 +897,45 @@ class HermesBridgeServer:
                     },
                 )
             elif parsed.path == "/":
+                if method != "GET":
+                    await self._send_response(writer, 405, {"error": "Method not allowed"})
+                    return
                 await self._send_response(
                     writer,
                     200,
                     {
                         "service": "Hermes Bridge Server",
-                        "lm_studio": LM_STUDIO_URL,
                         "endpoints": ["/api/chat", "/health"],
                     },
                 )
             else:
                 await self._send_response(writer, 404, {"error": "Not found"})
 
+        except asyncio.TimeoutError:
+            await self._send_response(writer, 408, {"error": "Request timed out"})
         except asyncio.IncompleteReadError:
             await self._send_response(writer, 400, {"error": "Incomplete request"})
         except asyncio.LimitOverrunError:
             await self._send_response(writer, 400, {"error": "Request headers too large"})
-        except Exception as e:
+        except Exception:
             self.error_count += 1
-            logger.error(f"[{request_id}] Error: {e}")
-            await self._send_response(writer, 500, {"error": str(e)})
+            logger.exception("[%s] Internal bridge request error", request_id)
+            await self._send_response(writer, 500, {"error": "Internal server error"})
         finally:
+            if acquired:
+                self._request_slots.release()
             try:
                 writer.close()
                 await writer.wait_closed()
-            except:
+            except Exception:
                 pass
 
     def _parse_headers(self, lines):
         headers = {}
         for line in lines:
-            if ": " in line:
-                k, v = line.split(": ", 1)
-                headers[k] = v
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
         return headers
 
     async def _handle_chat(self, writer, method, query, body):
@@ -725,20 +943,31 @@ class HermesBridgeServer:
         if method == "POST" and body:
             try:
                 payload = json.loads(body)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 await self._send_response(writer, 400, {"error": "Invalid JSON body"})
                 return
         else:
             data_param = query.get("data", [""])[0]
             if data_param:
                 try:
+                    if len(data_param) > MAX_BODY_BYTES:
+                        await self._send_response(
+                            writer, 413, {"error": "Request payload too large"}
+                        )
+                        return
                     payload = json.loads(unquote(data_param))
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     await self._send_response(writer, 400, {"error": "Invalid data parameter"})
                     return
 
         if not payload:
             await self._send_response(writer, 400, {"error": "Missing payload"})
+            return
+
+        try:
+            self._validate_chat_payload(payload)
+        except ValueError as exc:
+            await self._send_response(writer, 400, {"error": str(exc)})
             return
 
         message = payload.get("message", "")
@@ -792,9 +1021,15 @@ class HermesBridgeServer:
         status_text = {
             200: "OK",
             400: "Bad Request",
+            401: "Unauthorized",
             404: "Not Found",
             405: "Method Not Allowed",
+            408: "Request Timeout",
+            413: "Payload Too Large",
+            414: "URI Too Long",
+            429: "Too Many Requests",
             500: "Server Error",
+            503: "Service Unavailable",
         }.get(status_code, "Unknown")
 
         headers = [
@@ -810,8 +1045,8 @@ class HermesBridgeServer:
         try:
             writer.write(header_bytes + body)
             await writer.drain()
-        except Exception as e:
-            print(f"[BRIDGE] Response write error: {e}")
+        except Exception:
+            logger.debug("Bridge response could not be written")
 
     async def cleanup(self):
         if self.session and not self.session.closed:
@@ -819,11 +1054,12 @@ class HermesBridgeServer:
 
 
 async def main():
+    validate_runtime_config()
     print("=" * 60)
     print("  HERMES BRIDGE SERVER FOR DISCORD SELFBOT")
     print("  Mode: LM Studio AI + Local Fallback")
     print("=" * 60)
-    print(f"  LM Studio: {LM_STUDIO_URL}")
+    print("  LM Studio: configured")
     print(f"  Model: {LM_STUDIO_MODEL}")
     print("=" * 60)
 
