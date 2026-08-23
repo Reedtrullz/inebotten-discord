@@ -1,8 +1,10 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
+import math
 import os
 import pathlib
 import time
@@ -30,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 32 * 1024
 MAX_BODY_BYTES = 16 * 1024
+DEFAULT_REQUEST_READ_TIMEOUT_SECONDS = 5.0
+DEFAULT_MAX_ACTIVE_CONNECTIONS = 64
 DEFAULT_SECURITY_HEADERS = [
     "Cache-Control: no-store",
     "Pragma: no-cache",
@@ -49,6 +53,7 @@ class ConsoleServer:
     cookie_secure: bool
     monitor: object | None
     _server: asyncio.AbstractServer | None
+    _active_connections: int
 
     def __init__(
         self,
@@ -66,12 +71,27 @@ class ConsoleServer:
         cloudflare_access_audiences: list[str] | None = None,
         cloudflare_access_allowed_emails: list[str] | None = None,
         cloudflare_access_verifier: object | None = None,
+        request_read_timeout: float | None = None,
+        max_active_connections: int | None = None,
     ):
         self.host = host
         self.port = port
         self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
         self.monitor = monitor
         self._server = None
+        self.request_read_timeout = self._positive_float(
+            request_read_timeout if request_read_timeout is not None else os.getenv(
+                "CONSOLE_REQUEST_READ_TIMEOUT", str(DEFAULT_REQUEST_READ_TIMEOUT_SECONDS)
+            ),
+            DEFAULT_REQUEST_READ_TIMEOUT_SECONDS,
+        )
+        self.max_active_connections = self._positive_int(
+            max_active_connections if max_active_connections is not None else os.getenv(
+                "CONSOLE_MAX_ACTIVE_CONNECTIONS", str(DEFAULT_MAX_ACTIVE_CONNECTIONS)
+            ),
+            DEFAULT_MAX_ACTIVE_CONNECTIONS,
+        )
+        self._active_connections = 0
         self.store = get_console_store()
         self.session_ttl_seconds = max(
             1,
@@ -90,6 +110,13 @@ class ConsoleServer:
         if cookie_secure is None:
             cookie_secure = os.getenv("CONSOLE_COOKIE_SECURE", "False").lower() == "true"
         self.cookie_secure = bool(cookie_secure)
+        if not self._is_loopback_host(self.host):
+            # A console bound beyond loopback must never issue a session cookie
+            # that can be sent over cleartext HTTP.  This remains fail-closed
+            # even when an old deployment explicitly configured False.
+            if not self.cookie_secure:
+                logger.warning("Forcing Secure console cookies for non-local bind host %s", self.host)
+            self.cookie_secure = True
         self.auth_mode = (auth_mode or os.getenv("CONSOLE_AUTH_MODE", "api_key")).strip().lower()
         if self.auth_mode not in {"api_key", "cloudflare_access"}:
             raise ValueError("CONSOLE_AUTH_MODE must be 'api_key' or 'cloudflare_access'")
@@ -117,6 +144,38 @@ class ConsoleServer:
             )
         self._login_failures: dict[str, list[float]] = {}
 
+    @staticmethod
+    def _positive_float(value: object, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(parsed) or parsed <= 0:
+            return default
+        return parsed
+
+    @staticmethod
+    def _positive_int(value: object, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _is_loopback_host(host: str) -> bool:
+        normalized = (host or "").strip().lower().strip("[]")
+        if normalized == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(normalized).is_loopback
+        except ValueError:
+            return False
+
+    @property
+    def active_connections(self) -> int:
+        return self._active_connections
+
     @property
     def actual_port(self) -> int:
         if self._server is None:
@@ -136,7 +195,14 @@ class ConsoleServer:
             if not configured:
                 raise RuntimeError("Cloudflare Access console auth requires team domain, AUD, and allowed email config")
 
-        self._server = await asyncio.start_server(self.handle_request, self.host, self.port)
+        # Keep the StreamReader's internal line buffer bounded as well as the
+        # explicit MAX_HEADER_BYTES check in handle_request().
+        self._server = await asyncio.start_server(
+            self.handle_request,
+            self.host,
+            self.port,
+            limit=MAX_HEADER_BYTES,
+        )
         sockets = self._server.sockets or []
         bound = ", ".join(f"{sock.getsockname()!r}" for sock in sockets) if sockets else f"{self.host}:{self.port}"
         logger.info("Console server started on %s", bound)
@@ -350,8 +416,10 @@ class ConsoleServer:
             404: "Not Found",
             405: "Method Not Allowed",
             302: "Found",
+            408: "Request Timeout",
             413: "Payload Too Large",
             429: "Too Many Requests",
+            503: "Service Unavailable",
             500: "Internal Server Error",
         }.get(status, "OK")
 
@@ -379,9 +447,29 @@ class ConsoleServer:
         await writer.drain()
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._active_connections >= self.max_active_connections:
+            try:
+                await self._send_response(writer, 503, {"error": "Console busy; try again later"})
+            except Exception:
+                logger.debug("Could not reject excess console connection", exc_info=True)
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            return
+
+        self._active_connections += 1
         try:
             try:
-                header_data = await reader.readuntil(b"\r\n\r\n")
+                header_data = await asyncio.wait_for(
+                    reader.readuntil(b"\r\n\r\n"),
+                    timeout=self.request_read_timeout,
+                )
+            except asyncio.TimeoutError:
+                await self._send_response(writer, 408, {"error": "Request timed out"})
+                return
             except asyncio.IncompleteReadError:
                 return
             except asyncio.LimitOverrunError:
@@ -417,7 +505,13 @@ class ConsoleServer:
             body_bytes = b""
             if content_length > 0:
                 try:
-                    body_bytes = await reader.readexactly(content_length)
+                    body_bytes = await asyncio.wait_for(
+                        reader.readexactly(content_length),
+                        timeout=self.request_read_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    await self._send_response(writer, 408, {"error": "Request body timed out"})
+                    return
                 except asyncio.IncompleteReadError:
                     await self._send_response(writer, 400, {"error": "Incomplete request body"})
                     return
@@ -605,6 +699,7 @@ class ConsoleServer:
             except Exception:
                 pass
         finally:
+            self._active_connections = max(0, self._active_connections - 1)
             try:
                 writer.close()
                 await writer.wait_closed()

@@ -458,6 +458,7 @@ class IdAndPersistenceHardeningTests(unittest.TestCase):
                 "DISCORD_USER_TOKEN=token-from-hermes\nCONSOLE_API_KEY=console-from-hermes\n",
                 encoding="utf-8",
             )
+            env_path.chmod(0o600)
             with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}, clear=True):
                 config = Config()
 
