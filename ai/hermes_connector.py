@@ -62,7 +62,7 @@ class HermesConnector:
     Uses GET /api/chat?data={payload}
     """
 
-    def __init__(self, base_url="http://127.0.0.1:3000/api/chat", temperature=0.7, max_tokens=500, model_size="12b"):
+    def __init__(self, base_url="http://127.0.0.1:3000/api/chat", temperature=0.7, max_tokens=500, model_size="12b", api_key=None):
         self.base_url = base_url.rstrip("/")
         self.session = None
         self.request_count = 0
@@ -70,6 +70,11 @@ class HermesConnector:
         self.last_error = None
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.api_key = (
+            api_key.strip()
+            if isinstance(api_key, str)
+            else os.getenv("HERMES_BRIDGE_API_KEY", "").strip()
+        )
         
         # Load system prompt optimized for model size (default to 12b)
         self.default_system_prompt = load_system_prompt(model_size)
@@ -84,11 +89,14 @@ class HermesConnector:
                 connect=10,   # Connection timeout
                 sock_read=20  # Socket read timeout
             )
+            headers = {
+                "User-Agent": "DiscordSelfbot/1.0 HermesConnector",
+                "Accept": "application/json",
+            }
+            if self.api_key:
+                headers["X-API-Key"] = self.api_key
             self.session = aiohttp.ClientSession(
-                headers={
-                    "User-Agent": "DiscordSelfbot/1.0 HermesConnector",
-                    "Accept": "application/json",
-                },
+                headers=headers,
                 timeout=timeout
             )
         return self.session
@@ -343,5 +351,6 @@ def create_hermes_connector(config):
     return HermesConnector(
         base_url=config.get_hermes_url(),
         temperature=temperature,
-        max_tokens=max_tokens
+        max_tokens=max_tokens,
+        api_key=getattr(config, "HERMES_BRIDGE_API_KEY", None),
     )

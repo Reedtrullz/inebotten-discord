@@ -38,6 +38,8 @@ BRIDGE_HOST = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.getenv("HERMES_BRIDGE_PORT", "3000"))
 BRIDGE_URL = f"http://{BRIDGE_HOST}:{BRIDGE_PORT}"
 BRIDGE_HEALTH_URL = f"{BRIDGE_URL}/health"
+BRIDGE_API_KEY = os.getenv("HERMES_BRIDGE_API_KEY", "").strip()
+BRIDGE_REQUEST_HEADERS = {"X-API-Key": BRIDGE_API_KEY} if BRIDGE_API_KEY else {}
 BRIDGE_READY_TIMEOUT = 30  # seconds to wait for bridge
 
 
@@ -63,7 +65,9 @@ class CombinedRunner:
 
         # Check if bridge is already running
         try:
-            response = requests.get(BRIDGE_HEALTH_URL, timeout=5)
+            response = requests.get(
+                BRIDGE_HEALTH_URL, headers=BRIDGE_REQUEST_HEADERS, timeout=5
+            )
             if response.status_code == 200:
                 data = response.json()
                 lm_status = data.get("lm_studio", "unknown")
@@ -111,7 +115,9 @@ class CombinedRunner:
         start_time = time.time()
         while time.time() - start_time < BRIDGE_READY_TIMEOUT:
             try:
-                response = requests.get(BRIDGE_HEALTH_URL, timeout=2)
+                response = requests.get(
+                    BRIDGE_HEALTH_URL, headers=BRIDGE_REQUEST_HEADERS, timeout=2
+                )
                 if response.status_code == 200:
                     data = response.json()
                     lm_status = data.get("lm_studio", "unknown")

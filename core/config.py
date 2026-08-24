@@ -6,6 +6,7 @@ Centralized settings, defaults, and environment variables
 
 import os
 import secrets
+import stat
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
@@ -35,6 +36,7 @@ class Config:
         
         # LM Studio Configuration (default)
         self.HERMES_API_URL = os.getenv('HERMES_API_URL', 'http://127.0.0.1:3000/api/chat')
+        self.HERMES_BRIDGE_API_KEY = os.getenv('HERMES_BRIDGE_API_KEY', '').strip()
         self.LM_STUDIO_URL = os.getenv('LM_STUDIO_URL', 'http://127.0.0.1:1234/v1')
         self.LM_STUDIO_MODEL = os.getenv('LM_STUDIO_MODEL', 'local-model')
         self.HERMES_TEMPERATURE = float(os.getenv('HERMES_TEMPERATURE', '0.7'))
@@ -94,15 +96,27 @@ class Config:
         Load environment variables from .env file if it exists
         Uses python-dotenv for robust parsing
         """
-        env_paths = [
-            Path('.env'),  # Current directory
-            hermes_home_path() / 'discord' / '.env',  # Hermes home
-        ]
+        # An explicitly configured Hermes home is the authoritative runtime
+        # environment (Docker/launchd use this to point at the persistent data
+        # volume).  Prefer it over a checkout-local .env so a stale developer
+        # token cannot silently win.  When no override is configured, retain
+        # the local-development convenience of loading .env first.
+        hermes_env = hermes_home_path() / 'discord' / '.env'
+        if os.getenv('HERMES_HOME'):
+            env_paths = [hermes_env]
+        else:
+            env_paths = [Path('.env'), hermes_env]
         
         self.env_file_loaded = None
         for env_path in env_paths:
             if env_path.exists():
                 try:
+                    if env_path.is_symlink() or not env_path.is_file():
+                        print(f"[CONFIG] Warning: ignoring non-regular env file {env_path}")
+                        continue
+                    if stat.S_IMODE(env_path.stat().st_mode) & 0o077:
+                        print(f"[CONFIG] Warning: ignoring env file with unsafe permissions {env_path}")
+                        continue
                     # override=True ensures .env wins over pre-set environment variables
                     load_dotenv(env_path, override=True)
                     self.env_file_loaded = str(env_path)
