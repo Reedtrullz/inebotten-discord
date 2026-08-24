@@ -1314,12 +1314,18 @@ class SelfbotClient(discord.Client):
             rate_limiter=self.rate_limiter,
             response_generator=self.response_gen,
         )
-        await monitor.setup()
+        try:
+            await monitor.setup()
 
-        # Initialize and start calendar reminder checker
-        reminder_checker = self._create_reminder_checker(monitor)
-        if reminder_checker:
-            await reminder_checker.setup()
+            # Initialize and start calendar reminder checker
+            reminder_checker = self._create_reminder_checker(monitor)
+            if reminder_checker:
+                await reminder_checker.setup()
+        except Exception:
+            # setup() may already have started monitor-owned background tasks.
+            # Cancel them before leaving the components unpublished for retry.
+            await monitor.close()
+            raise
 
         # Publish fully initialized components only. A failed first READY can
         # then be retried safely when Discord reconnects.
