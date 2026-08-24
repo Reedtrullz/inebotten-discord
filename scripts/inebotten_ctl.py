@@ -80,12 +80,10 @@ class OutputWriter:
 
     def _envelope(self) -> dict[str, Any]:
         return {
-            "ok": True,
             "operation": self.operation,
             "queried_at": self.queried_at,
             "source": self.source,
             "freshness": self.freshness,
-            "complete": True,
             "identity": self.identity,
         }
 
@@ -243,9 +241,10 @@ def load_token_with_source() -> tuple[str, str]:
 
     project_env = Path(__file__).resolve().parent.parent / ".env"
     hermes_env = HERMES_HOME / "discord" / ".env"
+    explicit_hermes_home = bool(os.getenv("HERMES_HOME"))
     env_paths = (
-        [(hermes_env, "hermes_env"), (project_env, "project_env")]
-        if os.getenv("HERMES_HOME")
+        [(hermes_env, "hermes_env")]
+        if explicit_hermes_home
         else [(project_env, "project_env"), (hermes_env, "hermes_env")]
     )
     for env_path, source in env_paths:
@@ -255,7 +254,7 @@ def load_token_with_source() -> tuple[str, str]:
 
     unsafe = [
         str(path)
-        for path in (project_env, hermes_env)
+        for path, _source in env_paths
         if path.exists() and not _safe_env_file(path)
     ]
     if unsafe:
@@ -264,7 +263,7 @@ def load_token_with_source() -> tuple[str, str]:
             + ", ".join(unsafe)
         )
     raise ControlError(
-        "DISCORD_USER_TOKEN not found in the environment, project .env, or Hermes .env"
+        "DISCORD_USER_TOKEN not found in the configured environment file(s)"
     )
 
 
@@ -342,7 +341,7 @@ async def rest_get(
     *,
     timeout: float = DEFAULT_REQUEST_TIMEOUT,
     max_attempts: int = MAX_RETRY_ATTEMPTS,
-) -> tuple[int, dict]:
+) -> tuple[int, Any]:
     attempts = min(MAX_RETRY_ATTEMPTS, max(1, int(max_attempts)))
     request_timeout = min(max(0.1, float(timeout)), DEFAULT_REQUEST_TIMEOUT)
     for attempt in range(attempts):
@@ -378,7 +377,7 @@ async def rest_get(
 
                 should_retry = status == 429 or status >= 500
                 if not should_retry or attempt + 1 >= attempts:
-                    return status, data if isinstance(data, dict) else {"data": data}
+                    return status, data
 
                 wait_for = (
                     retry_after
@@ -388,7 +387,7 @@ async def rest_get(
                     else min(2**attempt, 5.0)
                 )
                 if wait_for > MAX_RETRY_WAIT:
-                    return status, data if isinstance(data, dict) else {"data": data}
+                    return status, data
                 REQUEST_TELEMETRY.retries += 1
                 await asyncio.sleep(max(0.0, wait_for) + random.uniform(0.0, 0.25))
         except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
@@ -466,9 +465,12 @@ def append_audit(
             "error": error[:300] if error else None,
             "dry_run": dry_run,
         }
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
         fd = os.open(
             AUDIT_PATH,
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+            flags,
             0o600,
         )
         try:
@@ -476,10 +478,15 @@ def append_audit(
         finally:
             os.close(fd)
         os.chmod(AUDIT_PATH, 0o600)
-    except OSError:
-        # Audit failure must not expose secrets or turn a successful Discord write
-        # into a second write attempt. The operation result remains authoritative.
-        return
+    except OSError as exc:
+        raise ControlError("controller audit log is unavailable; refusing write") from exc
+
+
+def require_snowflake(value: str, kind: str) -> str:
+    """Reject non-decimal IDs before interpolating authenticated REST paths."""
+    if not value.isdecimal() or not 1 <= len(value) <= 20:
+        raise ControlError(f"{kind} must be a decimal Discord ID")
+    return value
 
 
 def write_is_allowed(guild_id: int | str, channel_id: int | str) -> bool:
@@ -599,14 +606,15 @@ async def cmd_thread(
     client: discord.Client, args: argparse.Namespace, writer: OutputWriter
 ) -> None:
     """Read a forum post / thread (any channel id works; messages in chronological order)."""
+    thread_id = require_snowflake(args.thread, "thread ID")
     token = load_token()
     async with aiohttp.ClientSession() as s:
-        status, info = await rest_get(s, f"https://discord.com/api/v10/channels/{args.thread}", token)
+        status, info = await rest_get(s, f"https://discord.com/api/v10/channels/{thread_id}", token)
         if status != 200:
             raise ControlError(f"HTTP {status} fetching thread metadata")
         writer.event(
             "thread",
-            thread_id=args.thread,
+            thread_id=thread_id,
             name=info.get("name", "?"),
             channel_type=info.get("type"),
             parent_id=info.get("parent_id"),
@@ -616,7 +624,7 @@ async def cmd_thread(
         for _page in range(MAX_REST_PAGES):
             if len(msgs) >= args.limit:
                 break
-            url = f"https://discord.com/api/v10/channels/{args.thread}/messages?limit=100"
+            url = f"https://discord.com/api/v10/channels/{thread_id}/messages?limit=100"
             if before:
                 url += f"&before={before}"
             status, batch = await rest_get(s, url, token)
@@ -650,7 +658,7 @@ async def cmd_thread(
                     "author": m["author"].get("username"),
                     "content": body,
                     "reference_id": ref,
-                    "embeds": m.get("embeds", []) if args.embeds else [],
+                    "embeds": embed_summary(m.get("embeds", [])) if args.embeds else [],
                 },
             )
 
@@ -790,10 +798,11 @@ async def run(args: argparse.Namespace) -> None:
                 await cmd_thread(client, args, writer)
             elif args.cmd == "member":
                 guild = find_guild(client, args.guild)
+                user_id = require_snowflake(args.user_id, "user ID")
                 async with aiohttp.ClientSession() as session:
                     status, member = await rest_get(
                         session,
-                        f"https://discord.com/api/v10/guilds/{guild.id}/members/{args.user_id}",
+                        f"https://discord.com/api/v10/guilds/{guild.id}/members/{user_id}",
                         token,
                     )
                     if status != 200:
@@ -894,7 +903,12 @@ async def run(args: argparse.Namespace) -> None:
                             channel["id"],
                             name or "-",
                             channel.get("last_message_id") or "-",
-                            record={"channel": channel},
+                            record={
+                                "channel_id": channel.get("id"),
+                                "channel_type": channel.get("type"),
+                                "name": name or "-",
+                                "last_message_id": channel.get("last_message_id"),
+                            },
                         )
             elif args.cmd == "guild":
                 guild = find_guild(client, args.guild)
@@ -989,6 +1003,13 @@ async def run(args: argparse.Namespace) -> None:
                             content=text,
                         )
                         raise ControlError("send requires --confirm; use --dry-run to preview")
+                    append_audit(
+                        command="send",
+                        outcome="authorized_pending",
+                        guild_id=guild.id,
+                        channel_id=channel.id,
+                        content=text,
+                    )
                     message = await channel.send(text)
                     append_audit(
                         command="send",
@@ -1042,6 +1063,16 @@ async def run(args: argparse.Namespace) -> None:
         operation_error = ControlError(
             f"controller operation exceeded the {int(MAX_COMMAND_SECONDS)}-second safety budget"
         )
+        writer.finish(ok=False, complete=False, error=str(operation_error))
+        raise operation_error from exc
+    except (discord.LoginFailure, discord.HTTPException) as exc:
+        operation_error = ControlError(
+            f"Discord authentication/request failure: {type(exc).__name__}"
+        )
+        writer.finish(ok=False, complete=False, error=str(operation_error))
+        raise operation_error from exc
+    except Exception as exc:
+        operation_error = ControlError("controller operation failed")
         writer.finish(ok=False, complete=False, error=str(operation_error))
         raise operation_error from exc
     finally:

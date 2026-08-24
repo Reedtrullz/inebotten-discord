@@ -33,7 +33,7 @@ Each REST request has a 15-second timeout and each one-shot command has a 60-sec
 
 ### Structured output and freshness
 
-Machine consumers should use `--format jsonl`. Each row and the final completion record carry an envelope with `ok`, `operation`, `queried_at` in UTC, `source`, `freshness`, `complete`, `identity`, resolved guild/channel/thread IDs where applicable, and `error` on failure. Use these freshness values:
+Machine consumers should use `--format jsonl`. Each row carries `operation`, `queried_at` in UTC, `source`, `freshness`, `identity`, and resolved guild/channel/thread IDs where applicable. The final completion record is authoritative for `ok`, `complete`, and `error`; consumers must not infer success or completeness from partial rows. Use these freshness values:
 
 - `live`: direct REST response or live gateway state at query time;
 - `index_may_lag`: guild/channel search results, which can omit recent writes;

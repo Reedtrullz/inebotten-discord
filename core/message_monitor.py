@@ -1308,24 +1308,31 @@ class SelfbotClient(discord.Client):
             print(f"[BOT] Could not set activity: {e}")
 
         # Initialize message monitor
-        self.monitor = MessageMonitor(
+        monitor = MessageMonitor(
             client=self,
             hermes_connector=self.hermes,
             rate_limiter=self.rate_limiter,
             response_generator=self.response_gen,
         )
-        await self.monitor.setup()
+        await monitor.setup()
+
+        # Initialize and start calendar reminder checker
+        reminder_checker = self._create_reminder_checker(monitor)
+        if reminder_checker:
+            await reminder_checker.setup()
+
+        # Publish fully initialized components only. A failed first READY can
+        # then be retried safely when Discord reconnects.
+        self.monitor = monitor
+        self.reminder_checker = reminder_checker
 
         await self.start_console()
         if self.console_server:
             self.console_server.monitor = self.monitor
 
-        # Initialize and start calendar reminder checker
-        self.reminder_checker = self._create_reminder_checker()
-        if self.reminder_checker:
-            await self.reminder_checker.setup()
-            self.reminder_checker_task = self.monitor._track_background_task(
-                self.reminder_checker.start(),
+        if reminder_checker:
+            self.reminder_checker_task = monitor._track_background_task(
+                reminder_checker.start(),
                 "reminder-checker",
             )
             print("[BOT] Calendar reminder checker started")
@@ -1343,13 +1350,14 @@ class SelfbotClient(discord.Client):
             print(f"[BOT] WARNING: AI connector issue - {message}")
             print("[BOT] Will use local response generator as fallback")
 
-    def _create_reminder_checker(self):
+    def _create_reminder_checker(self, monitor=None):
         """Create a ReminderChecker wired to the bot's channels."""
         from cal_system.reminder_checker import ReminderChecker
         from cal_system.calendar_manager import CalendarManager
         from cal_system.reminder_manager import ReminderManager
 
-        calendar = self.monitor.calendar if self.monitor else CalendarManager()
+        selected_monitor = monitor if monitor is not None else self.monitor
+        calendar = selected_monitor.calendar if selected_monitor else CalendarManager()
         reminders = ReminderManager()
 
         def get_channel(channel_id: int):

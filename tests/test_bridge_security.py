@@ -90,6 +90,51 @@ def test_non_loopback_bind_requires_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_request_does_not_consume_rate_quota(monkeypatch):
+    monkeypatch.setattr(bridge, "BRIDGE_API_KEY", "test-secret")
+    server_obj = bridge.HermesBridgeServer()
+    called = 0
+
+    async def allow(_writer):
+        nonlocal called
+        called += 1
+        return True
+
+    server_obj._allow_request = allow
+    server = await asyncio.start_server(server_obj.handle_request, "127.0.0.1", 0)
+    try:
+        response = await _request(
+            server.sockets[0].getsockname()[1],
+            b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+        await server_obj.cleanup()
+
+    assert b"401 Unauthorized" in response
+    assert called == 0
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_peer_map_has_hard_cap(monkeypatch):
+    monkeypatch.setattr(bridge, "MAX_RATE_LIMIT_PEERS", 2)
+    server_obj = bridge.HermesBridgeServer()
+
+    class Writer:
+        def __init__(self, peer):
+            self.peer = peer
+
+        def get_extra_info(self, name):
+            return (self.peer, 1234) if name == "peername" else None
+
+    assert await server_obj._allow_request(Writer("one"))
+    assert await server_obj._allow_request(Writer("two"))
+    assert not await server_obj._allow_request(Writer("three"))
+    assert len(server_obj._rate_history) == 2
+
+
+@pytest.mark.asyncio
 async def test_header_read_timeout_returns_generic_error(monkeypatch):
     monkeypatch.setattr(bridge, "HEADER_READ_TIMEOUT", 0.05)
     server_obj = bridge.HermesBridgeServer()

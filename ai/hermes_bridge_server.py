@@ -32,6 +32,7 @@ MAX_AUTHOR_NAME_CHARS = 120
 MAX_CHANNEL_TYPE_CHARS = 64
 MAX_SYSTEM_PROMPT_CHARS = 16_000
 MAX_PAYLOAD_FIELDS = 8
+MAX_RATE_LIMIT_PEERS = 1024
 
 # The bridge is intentionally a small, single-request HTTP server.  Keep all
 # waits bounded so a client that opens a socket and then goes silent cannot
@@ -691,6 +692,13 @@ class HermesBridgeServer:
         now = time.monotonic()
         peer = self._peer_key(writer)
         async with self._rate_lock:
+            self._rate_history = {
+                key: values
+                for key, values in self._rate_history.items()
+                if values and now - values[-1] < RATE_LIMIT_WINDOW
+            }
+            if peer not in self._rate_history and len(self._rate_history) >= MAX_RATE_LIMIT_PEERS:
+                return False
             history = [
                 timestamp
                 for timestamp in self._rate_history.get(peer, [])
@@ -701,13 +709,6 @@ class HermesBridgeServer:
                 return False
             history.append(now)
             self._rate_history[peer] = history
-            # Avoid retaining inactive peers indefinitely.
-            if len(self._rate_history) > 1024:
-                self._rate_history = {
-                    key: values
-                    for key, values in self._rate_history.items()
-                    if values and now - values[-1] < RATE_LIMIT_WINDOW
-                }
             return True
 
     @staticmethod
@@ -802,9 +803,6 @@ class HermesBridgeServer:
         acquired = False
 
         try:
-            if not await self._allow_request(writer):
-                await self._send_response(writer, 429, {"error": "Rate limit exceeded"})
-                return
             try:
                 await asyncio.wait_for(self._request_slots.acquire(), timeout=0.1)
                 acquired = True
@@ -839,6 +837,9 @@ class HermesBridgeServer:
 
             if not self._authorized(headers):
                 await self._send_response(writer, 401, {"error": "Unauthorized"})
+                return
+            if not await self._allow_request(writer):
+                await self._send_response(writer, 429, {"error": "Rate limit exceeded"})
                 return
 
             # Handle body if POST

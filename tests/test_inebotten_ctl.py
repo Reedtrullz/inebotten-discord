@@ -55,6 +55,7 @@ def test_load_token_prefers_explicit_hermes_home(monkeypatch, tmp_path: Path):
 
 def test_load_token_uses_stable_non_path_source_labels(monkeypatch):
     monkeypatch.delenv("DISCORD_USER_TOKEN", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     project_env = Path(ctl.__file__).resolve().parent.parent / ".env"
 
     def fake_read_token(path: Path):
@@ -129,9 +130,19 @@ def test_output_writer_jsonl_preserves_tabs_and_metadata(capsys):
     assert payload["fields"] == ["message\twith-tab"]
     assert payload["message_id"] == "42"
     assert payload["source"] == "test"
-    assert payload["ok"] is True
+    assert "ok" not in payload
     assert payload["identity"]["id"] == str(ctl.EXPECTED_USER_ID)
     assert json.loads(lines[-1])["type"] == "complete"
+
+
+def test_output_writer_failure_is_authoritative_completion(capsys):
+    writer = ctl.OutputWriter("jsonl", "test")
+    writer.line("partial")
+    writer.finish(ok=False, complete=False, error="failed")
+    payloads = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert "complete" not in payloads[0]
+    assert payloads[-1]["ok"] is False
+    assert payloads[-1]["complete"] is False
 
 
 def test_output_writer_enforces_record_budget(monkeypatch):
@@ -159,6 +170,37 @@ def test_append_audit_hashes_content_and_writes_private_file(monkeypatch, tmp_pa
     assert payload["content_sha256"]
     assert payload["dry_run"] is True
     assert stat.S_IMODE(audit_path.stat().st_mode) == 0o600
+
+
+def test_append_audit_rejects_symlink(monkeypatch, tmp_path: Path):
+    target = tmp_path / "target"
+    target.write_text("unchanged", encoding="utf-8")
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.symlink_to(target)
+    monkeypatch.setattr(ctl, "AUDIT_PATH", audit_path)
+    with pytest.raises(ctl.ControlError, match="audit log is unavailable"):
+        ctl.append_audit(command="send", outcome="authorized_pending")
+    assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_require_snowflake_rejects_rest_path_injection():
+    assert ctl.require_snowflake("123456789", "thread ID") == "123456789"
+    with pytest.raises(ctl.ControlError, match="decimal Discord ID"):
+        ctl.require_snowflake("123/../../users/@me", "thread ID")
+
+
+def test_explicit_hermes_home_does_not_fallback_to_project(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("DISCORD_USER_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(ctl, "HERMES_HOME", tmp_path)
+
+    def fake_read(path: Path):
+        project_env = Path(ctl.__file__).resolve().parent.parent / ".env"
+        return "project-secret" if path == project_env else None
+
+    monkeypatch.setattr(ctl, "_read_token_file", fake_read)
+    with pytest.raises(ctl.ControlError, match="configured environment"):
+        ctl.load_token_with_source()
 
 
 class _FakeResponse:
@@ -239,6 +281,15 @@ async def test_rest_get_does_not_retry_permission_errors(monkeypatch):
     assert status == 403
     assert payload["code"] == 50013
     assert ctl.REQUEST_TELEMETRY.retries == 0
+
+
+@pytest.mark.asyncio
+async def test_rest_get_preserves_successful_json_arrays():
+    ctl.REQUEST_TELEMETRY = ctl.RequestTelemetry()
+    session = _FakeSession([_FakeResponse(200, [{"id": "1"}, {"id": "2"}])])
+    status, payload = await ctl.rest_get(session, "https://discord.test", "token")
+    assert status == 200
+    assert payload == [{"id": "1"}, {"id": "2"}]
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,11 @@ _SENSITIVE_PATTERNS = (
     (re.compile(r"(?i)(DISCORD_USER_TOKEN\s*=\s*)([^\s,;]+)"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(OPENROUTER_API_KEY\s*=\s*)([^\s,;]+)"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(CONSOLE_API_KEY\s*=\s*)([^\s,;]+)"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(authorization\s*:\s*)([^\s,;]+)"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(HERMES_BRIDGE_API_KEY\s*=\s*)([^\s,;]+)"), r"\1[REDACTED]"),
+    (
+        re.compile(r"(?i)(authorization\s*:\s*)(?:bearer|basic)?\s*([^\s,;]+)"),
+        r"\1[REDACTED]",
+    ),
     (re.compile(r"\b[A-Za-z\d_-]{20,}\.[A-Za-z\d_-]{4,}\.[A-Za-z\d_-]{20,}\b"), "[REDACTED_TOKEN]"),
 )
 
@@ -37,6 +41,20 @@ def redact_sensitive(text: str) -> str:
 class RedactingFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         return redact_sensitive(super().format(record))
+
+
+class PrivateRotatingFileHandler(RotatingFileHandler):
+    """Keep the active log private when rollover recreates it."""
+
+    def _chmod_active_log(self) -> None:
+        try:
+            os.chmod(self.baseFilename, 0o600)
+        except OSError:
+            pass
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        self._chmod_active_log()
 
 
 def setup_logger(
@@ -92,7 +110,7 @@ def setup_logger(
         except OSError:
             pass
         
-        file_handler = RotatingFileHandler(
+        file_handler = PrivateRotatingFileHandler(
             log_dir / 'inebotten.log',
             maxBytes=10*1024*1024,  # 10MB
             backupCount=5,
@@ -101,10 +119,7 @@ def setup_logger(
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_format)
         logger.addHandler(file_handler)
-        try:
-            os.chmod(log_dir / 'inebotten.log', 0o600)
-        except OSError:
-            pass
+        file_handler._chmod_active_log()
     
     return logger
 
@@ -182,13 +197,17 @@ class StdoutWrapper:
         self._pending = ""
 
     def write(self, data: str) -> None:
-        self._stream.write(data)
         self._pending += data
         while "\n" in self._pending:
             line, self._pending = self._pending.split("\n", 1)
-            self._buffer.append(line)
+            safe_line = redact_sensitive(line)
+            self._stream.write(safe_line + "\n")
+            self._buffer.append(safe_line)
 
     def flush(self) -> None:
+        if self._pending:
+            self._stream.write(redact_sensitive(self._pending))
+            self._pending = ""
         self._stream.flush()
 
     def isatty(self) -> bool:

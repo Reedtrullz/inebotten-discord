@@ -28,8 +28,9 @@ gateway or Discord REST API, while `send` is the only write command.
 ## Machine-readable output
 
 Use `--format jsonl`. Every row includes source, UTC query time, freshness,
-completion state, and live identity metadata; the final `complete` record
-summarizes the operation. `search` is marked `index_may_lag`; direct history
+and live identity metadata. The final `complete` record is authoritative for
+success and completeness; partial rows alone never prove a successful result.
+`search` is marked `index_may_lag`; direct history
 and REST/gateway reads are marked `live`.
 
 ```bash

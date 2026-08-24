@@ -36,6 +36,7 @@ class Config:
         
         # LM Studio Configuration (default)
         self.HERMES_API_URL = os.getenv('HERMES_API_URL', 'http://127.0.0.1:3000/api/chat')
+        self.HERMES_BRIDGE_API_KEY = os.getenv('HERMES_BRIDGE_API_KEY', '').strip()
         self.LM_STUDIO_URL = os.getenv('LM_STUDIO_URL', 'http://127.0.0.1:1234/v1')
         self.LM_STUDIO_MODEL = os.getenv('LM_STUDIO_MODEL', 'local-model')
         self.HERMES_TEMPERATURE = float(os.getenv('HERMES_TEMPERATURE', '0.7'))
@@ -102,7 +103,7 @@ class Config:
         # the local-development convenience of loading .env first.
         hermes_env = hermes_home_path() / 'discord' / '.env'
         if os.getenv('HERMES_HOME'):
-            env_paths = [hermes_env, Path('.env')]
+            env_paths = [hermes_env]
         else:
             env_paths = [Path('.env'), hermes_env]
         
