@@ -13,7 +13,7 @@ urllib3>=2.7.0
 python-dateutil>=2.9.0.post0
 
 # Safe expression evaluation
-simpleeval>=0.9.0
+simpleeval>=1.0.7
 
 # Environment variable management
 python-dotenv>=1.2.2
