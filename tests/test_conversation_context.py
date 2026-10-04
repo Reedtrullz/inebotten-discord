@@ -48,3 +48,11 @@ class ConversationContextTests(unittest.TestCase):
         ctx = cast(_ConversationContextProto, ConversationContext())
         msgs = ctx.get_channel_messages(999)
         self.assertEqual(msgs, [])
+
+
+def test_summary_only_learns_topics_from_the_selected_speaker():
+    ctx = ConversationContext()
+    ctx.add_message(1, 'u1', 'One', 'Jeg liker RBK')
+    ctx.add_message(1, 'u2', 'Two', 'Vi snakker om været')
+    assert ctx.get_conversation_summary(1, user_id='u1') == ['RBK']
+    assert ctx.get_conversation_summary(1, user_id='u2') == ['været']

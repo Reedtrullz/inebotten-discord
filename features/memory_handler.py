@@ -18,10 +18,21 @@ class MemoryHandler(BaseHandler):
                 await self._handle_export(message)
             elif action == "delete":
                 await self._handle_delete(message, confirmed=bool((payload or {}).get("confirmed")))
+            elif action == 'policy':
+                changes = (payload or {}).get('changes', {})
+                if set(changes) - {'learning_enabled', 'topic_retention_days', 'allowed_provider_ids', 'private_facts_enabled'}:
+                    raise ValueError('invalid_memory_control')
+                await self.monitor.user_memory.set_policy(message.author.id, **changes)
+                await self.send_response(message, '✅ Minnekontrollen er lagret for deg. Allerede lagrede fakta er bevart; pauset læring deler ingen personalisering med AI.')
+            elif action == 'school_locality':
+                await self.monitor.user_memory.set_saved_fact(message.author.id, 'school_locality', payload['value'])
+                await self.send_response(message, '✅ Skolekommunen er lagret som et bevisst valg. Den brukes automatisk bare i direktemelding.')
             else:
                 await self._handle_view(message)
         except (StorageMutationError, OSError):
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
+        except ValueError:
+            await self.send_response(message, '❌ Ugyldig minnekontroll. Velg en støttet provider eller behold tema i 1–365 dager.')
 
     async def _handle_view(self, message) -> None:
         text = await self.monitor.user_memory.format_user_memory_for_user(
@@ -50,8 +61,8 @@ class MemoryHandler(BaseHandler):
             )
             return
 
-        deleted = await self.monitor.user_memory.delete_user_memory(message.author.id)
-        if deleted:
-            await self.send_response(message, "✅ Ferdig. Jeg har slettet brukerminnet ditt.")
-        else:
-            await self.send_response(message, "Jeg hadde ikke noe brukerminne lagret om deg.")
+        result = await self.monitor.user_memory.delete_local_memory(message.author.id, include_transient=True)
+        await self.send_response(message, '✅ Lokal sletting er gjennomført. '
+            f'Brukerminne: {"slettet" if result["persistent_deleted"] else "ingen lagret"}; '
+            f'midlertidige egne meldinger/svar: {result["transient_deleted"]}. '
+            'Dette sletter ikke sikkerhetskopier, Discord-meldinger eller tidligere data hos AI-providere.')

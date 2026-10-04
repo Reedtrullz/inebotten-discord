@@ -330,11 +330,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify memory/user_memory.py, memory/conversation_context.py, features/memory_handler.py and core/message_monitor.py; extend tests/test_user_memory_controls.py and tests/test_conversation_context.py; create tests/test_memory_sharing_policy.py.
 **Interfaces:** MemoryPolicy(learning_enabled: bool, topic_retention_days: int|None, allowed_provider_ids: list[str], private_facts_enabled: bool); build_prompt_memory(user_id: str, provider_id: str, scope_id: str) -> dict enforces policy. delete_local_memory(user_id: str, include_transient: bool) -> dict reports affected local surfaces and exclusions.
 
-- [ ] Add opt-out/no-prompt-inclusion, expired topic, idle-channel global pruning, transient self-delete in a shared channel, other-user preservation and backup/remote-deletion wording tests.
-- [ ] Pin current self-only access and demonstrate remaining transient context after persistent deletion.
-- [ ] Separate deliberately saved facts from temporary topics, expose pause/reset/retention/sharing controls, prune before access and globally, and filter personalization before calling the provider.
-- [ ] Run tests/test_memory_sharing_policy.py, tests/test_user_memory_controls.py, tests/test_conversation_context.py and AI dispatch fixtures.
-- [ ] Review and commit; make retention defaults explicit without silently deleting legacy facts or claiming remote/backups erased.
+- [x] Add opt-out/no-prompt-inclusion, expired topic, idle-channel global pruning, transient self-delete in a shared channel, other-user preservation and backup/remote-deletion wording tests.
+- [x] Pin current self-only access and demonstrate remaining transient context after persistent deletion.
+- [x] Separate deliberately saved facts from temporary topics, expose pause/reset/retention/sharing controls, prune before access and globally, and filter personalization before calling the provider.
+- [x] Run tests/test_memory_sharing_policy.py, tests/test_user_memory_controls.py, tests/test_conversation_context.py and AI dispatch fixtures.
+- [x] Review and commit; make retention defaults explicit without silently deleting legacy facts or claiming remote/backups erased.
 
 ### Task 23: I17 — Provider-aware actionable readiness
 

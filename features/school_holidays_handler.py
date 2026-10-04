@@ -3,6 +3,7 @@
 import re
 
 from features.base_handler import BaseHandler
+from core.request_context import current_request
 from features.school_holidays import format_holidays_list, get_locality_from_location
 
 
@@ -15,6 +16,13 @@ class SchoolHolidaysHandler(BaseHandler):
     async def handle_school_holidays(self, message) -> None:
         try:
             locality_id = get_locality_from_location(message.content)
+            actor = current_request()
+            if locality_id is None and actor is not None and actor.channel_kind == 'dm':
+                memory = getattr(self.monitor, 'user_memory', None)
+                if memory is not None:
+                    saved = await memory.export_user_memory(message.author.id)
+                    if not any(name in message.content.lower() for name in ('oslo', 'trondheim')):
+                        locality_id = saved.get('school_locality')
             years = {f'{start}-{end}' for start, end in re.findall(r'\b(\d{4})\s*[-/–]\s*(\d{4})\b', message.content)}
             if len(years) > 1:
                 await self.send_response(message, '📚 Velg ett skoleår om gangen, for eksempel 2026–2027.')

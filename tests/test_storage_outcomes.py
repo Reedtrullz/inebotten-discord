@@ -115,7 +115,7 @@ def test_console_refuses_to_overwrite_unsupported_stats_or_corrupt_sessions(tmp_
 @pytest.mark.asyncio
 async def test_memory_handler_reports_save_failure_without_success():
     from features.memory_handler import MemoryHandler
-    memory = SimpleNamespace(delete_user_memory=AsyncMock(side_effect=OSError('synthetic')))
+    memory = SimpleNamespace(delete_local_memory=AsyncMock(side_effect=OSError('synthetic')))
     handler = MemoryHandler(SimpleNamespace(user_memory=memory, rate_limiter=None, loc=None, client=None))
     handler.send_response = AsyncMock()
     message = SimpleNamespace(author=SimpleNamespace(id='u'))

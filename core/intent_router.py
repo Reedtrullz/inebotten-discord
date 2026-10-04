@@ -442,6 +442,21 @@ class IntentRouter:
         cleaned = cleaned.replace("@inebotten", "").strip()
         lower = re.sub(r"\s+", " ", cleaned.lower()).strip(" .!?")
 
+        changes = None
+        if lower in ('minne læring på', 'minne læring av'):
+            changes = {'learning_enabled': lower.endswith('på')}
+        elif lower in ('minne private fakta på', 'minne private fakta av'):
+            changes = {'private_facts_enabled': lower.endswith('på')}
+        elif lower in ('minne del med lokal', 'minne del med openrouter', 'minne del med ingen', 'minne del med lokal og openrouter'):
+            value = 'begge' if lower.endswith('lokal og openrouter') else lower.split()[-1]
+            changes = {'allowed_provider_ids': {'lokal': ['hermes'], 'openrouter': ['openrouter'], 'ingen': [], 'begge': ['hermes', 'openrouter']}[value]}
+        elif re.fullmatch(r'minne behold tema (?:[0-9]{1,3} dager|ubegrenset)', lower):
+            changes = {'topic_retention_days': None if lower.endswith('ubegrenset') else int(lower.split()[3])}
+        if changes is not None:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'policy', 'changes': changes}}, 'explicit_memory_control')
+        locality = re.fullmatch(r'minne kommune (oslo|trondheim)', lower)
+        if locality:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'school_locality', 'value': locality[1]}}, 'explicit_memory_locality')
         delete_commands = {"slett minnet mitt", "slett brukerminne", "glem meg"}
         confirmed_delete_commands = {
             "slett minnet mitt bekreft",

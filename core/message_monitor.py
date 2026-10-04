@@ -5,6 +5,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+import json
 import time
 from utils.storage_contract import StorageMutationError
 from core.outbound_sender import monitor_sender
@@ -190,6 +191,7 @@ class MessageMonitor:
 
         self.user_memory = get_user_memory()
         self.conversation = get_context_manager()
+        self.user_memory.conversation = self.conversation
         self.get_system_prompt = get_system_prompt
         self.ResponseStyle = ResponseStyle
 
@@ -673,6 +675,43 @@ class MessageMonitor:
             response_text = str(error)
         await self._send_response(message, response_text)
 
+    async def _provider_memory_context(self, message, channel_id):
+        """Filter every retained surface for every route that could receive it."""
+        build = getattr(self.user_memory, 'build_prompt_memory', None)
+        policy_for = getattr(self.user_memory, 'policy_for_user', None)
+        if not callable(build) or not callable(policy_for):
+            return '', ''
+        primary = getattr(self.hermes, 'primary', self.hermes)
+        providers = [getattr(primary, 'provider', 'unknown')]
+        fallback = getattr(self.hermes, 'fallback', None)
+        if fallback is not None:
+            providers.append(getattr(fallback, 'provider', 'unknown'))
+        from core.request_context import current_request
+        actor = current_request() or RequestContext.from_message(message, 'no')
+        scope = f'private:{message.author.id}' if actor.channel_kind == 'dm' else 'shared'
+        snapshots = [await build(message.author.id, provider, scope) for provider in providers]
+        # One prompt is reused by declared fallback: sharing cannot expand on it.
+        policy = policy_for(message.author.id)
+        shared = {key: value for key, value in snapshots[0].items()
+            if all(key in snapshot and snapshot[key] == value for snapshot in snapshots)} if snapshots and all(snapshots) else {}
+        if not policy.learning_enabled or any(provider not in policy.allowed_provider_ids for provider in providers):
+            shared = {}
+        elif not policy.private_facts_enabled or scope != f'private:{message.author.id}':
+            shared = {key: value for key, value in shared.items() if key == 'preferences'}
+        user_context = json.dumps(shared, ensure_ascii=False) if shared else ''
+        messages = []
+        get_messages = getattr(self.conversation, 'get_channel_messages', None)
+        if callable(get_messages):
+            for entry in get_messages(channel_id, limit=5):
+                owner = entry.get('source_user_id') if entry.get('is_bot') else entry.get('user_id')
+                if owner is None:
+                    continue
+                policy = policy_for(owner)
+                if policy.learning_enabled and all(provider in policy.allowed_provider_ids for provider in providers):
+                    if str(owner) == str(message.author.id) or actor.channel_kind != 'dm':
+                        messages.append(f'{entry.get("username", "Bruker")}: {entry["content"]}')
+        return user_context, '\n'.join(messages)
+
     async def _send_ai_response(self, message, forced_search_info=None):
         """
         Generate and send an AI response to a mention.
@@ -683,9 +722,10 @@ class MessageMonitor:
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
         guild_id = message.guild.id if message.guild else message.channel.id
+        context_channel = message.channel.id
         content_lower = message.content.lower()
         wants_dashboard, dashboard_reason = self.conversation.should_show_dashboard(
-            message.content, guild_id
+            message.content, context_channel
         )
         print(f"[MONITOR] AI fallback mode: dashboard={wants_dashboard} ({dashboard_reason})")
 
@@ -702,17 +742,20 @@ class MessageMonitor:
 
         # Update conversation history
         self.conversation.add_message(
-            channel_id=guild_id,
+            channel_id=context_channel,
             user_id=message.author.id,
             username=message.author.name,
             content=message.content,
             is_bot=False,
         )
 
-        # Update user memory
+        # Automatic topics belong only to the opted-in speaker.
+        policy_for = getattr(self.user_memory, 'policy_for_user', None)
+        learning = callable(policy_for) and policy_for(message.author.id).learning_enabled
+        topic = self.conversation.get_conversation_summary(context_channel, user_id=message.author.id) if learning else None
         await self.user_memory.update_last_interaction(
             message.author.id,
-            topic=self.conversation.get_conversation_summary(guild_id),
+            topic=topic,
             username=message.author.name,
         )
 
@@ -730,13 +773,6 @@ class MessageMonitor:
             # Fall back to AI if no dialect match and hermes is available
             if not response_text and self.hermes:
                 try:
-                    user_context = await self.user_memory.format_context_for_prompt(
-                        message.author.id, message.author.name
-                    )
-                    conversation_context = self.conversation.get_context(
-                        guild_id, limit=5
-                    )
-
                     # Check for search intent
                     search_info = forced_search_info or self.detect_search_intent(message.content)
                     search_context = ""
@@ -777,6 +813,7 @@ class MessageMonitor:
                             )
 
                     if not response_text:
+                        user_context, conversation_context = await self._provider_memory_context(message, context_channel)
                         system_prompt = self.get_system_prompt(
                             user_context=user_context,
                             conversation_context=conversation_context,
@@ -1023,9 +1060,8 @@ class MessageMonitor:
         result = await monitor_sender(self).reply(message, response_text)
         if result.status == 'delivered' and result.reason_code == 'remote_message':
             self.response_count += 1
-            guild_id = message.guild.id if message.guild else message.channel.id
-            self.conversation.add_message(channel_id=guild_id, user_id=None,
-                                          username='Inebotten', content=response_text, is_bot=True)
+            self.conversation.add_message(channel_id=message.channel.id, user_id=None,
+                username='Inebotten', content=response_text, is_bot=True, source_user_id=message.author.id)
         return result
 
     def _get_channel_type(self, channel):
