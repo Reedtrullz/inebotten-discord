@@ -93,6 +93,8 @@ class HermesConnector:
         self.default_system_prompt = load_system_prompt(model_size)
 
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('connector_closed')
         """
         Get or create aiohttp session with proper timeout configuration
         """
@@ -118,6 +120,10 @@ class HermesConnector:
         """
         Close the HTTP session
         """
+        self._closed = True
+        admission = getattr(self, '_reply_admission', None)
+        if admission is not None:
+            await admission.close()
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None

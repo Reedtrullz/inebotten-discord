@@ -158,6 +158,7 @@ class ExternalSlot:
     """At most one live provider thread, including work past its caller deadline."""
     def __init__(self):
         self.task = None
+        self.closed = False
 
     @property
     def busy(self):
@@ -166,7 +167,7 @@ class ExternalSlot:
     async def run(self, function, *args, deadline):
         if not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
             raise ValueError('invalid_deadline')
-        if self.busy or deadline <= time.monotonic():
+        if self.closed or self.busy or deadline <= time.monotonic():
             raise TimeoutError('provider_busy_or_deadline')
         task = asyncio.create_task(asyncio.to_thread(function, *args))
         self.task = task
@@ -176,6 +177,14 @@ class ExternalSlot:
         if not done or time.monotonic() >= deadline:
             raise TimeoutError('provider_deadline')
         return task.result()
+
+    async def close(self):
+        self.closed = True
+        if self.task is not None:
+            try:
+                await asyncio.shield(self.task)
+            except Exception:
+                pass
 
 
 class SyncOutbox:

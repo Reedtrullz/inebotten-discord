@@ -35,6 +35,8 @@ class AuroraForecast:
         self.cache_time = None
 
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('aurora_closed')
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(headers=self.headers)
@@ -42,6 +44,7 @@ class AuroraForecast:
 
     async def close(self):
         """Close the session"""
+        self._closed = True
         if self.session and not self.session.closed:
             await self.session.close()
 

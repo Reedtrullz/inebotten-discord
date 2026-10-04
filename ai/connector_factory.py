@@ -141,9 +141,15 @@ class AIConnectorRouter:
         return await self.primary.check_health()
 
     async def close(self):
-        await self.primary.close()
-        if self.fallback is not None:
-            await self.fallback.close()
+        from utils.resource_shutdown import OwnedResources
+        if not hasattr(self, '_close_scope'):
+            self._close_scope = OwnedResources()
+            self._close_scope.add('primary', self.primary.close)
+            if self.fallback is not None:
+                self._close_scope.add('fallback', self.fallback.close)
+        receipt = await self._close_scope.close(time.monotonic() + 10)
+        if receipt['status'] != 'closed':
+            raise RuntimeError('ai_cleanup_incomplete')
 
     def get_stats(self):
         stats = self.primary.get_stats()

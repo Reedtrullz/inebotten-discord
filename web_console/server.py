@@ -93,6 +93,9 @@ class ConsoleServer:
             DEFAULT_MAX_ACTIVE_CONNECTIONS,
         )
         self._active_connections = 0
+        self._connection_tasks = set()
+        self._connection_writers = set()
+        self._stopping = False
         self.store = get_console_store()
         self.session_ttl_seconds = max(
             1,
@@ -198,6 +201,7 @@ class ConsoleServer:
 
         # Keep the StreamReader's internal line buffer bounded as well as the
         # explicit MAX_HEADER_BYTES check in handle_request().
+        self._stopping = False
         self._server = await asyncio.start_server(
             self.handle_request,
             self.host,
@@ -209,12 +213,20 @@ class ConsoleServer:
         logger.info("Console server started on %s", bound)
 
     async def stop(self) -> None:
-        if self._server is None:
-            return
-
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        self._stopping = True
+        server = self._server
+        if server is not None:
+            server.close()
+        tasks = self._connection_tasks - {asyncio.current_task()}
+        for writer in list(self._connection_writers):
+            writer.close()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if server is not None:
+            await server.wait_closed()
+            self._server = None
         logger.info("Console server stopped")
 
     def _parse_headers(self, lines: list[str]) -> dict[str, str]:
@@ -448,6 +460,20 @@ class ConsoleServer:
         await writer.drain()
 
     async def handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        self._connection_tasks.add(task)
+        self._connection_writers.add(writer)
+        try:
+            if self._stopping:
+                writer.close()
+                await writer.wait_closed()
+                return
+            await self._handle_request(reader, writer)
+        finally:
+            self._connection_tasks.discard(task)
+            self._connection_writers.discard(writer)
+
+    async def _handle_request(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if self._active_connections >= self.max_active_connections:
             try:
                 await self._send_response(writer, 503, {"error": "Console busy; try again later"})

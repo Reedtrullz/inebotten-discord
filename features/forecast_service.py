@@ -51,7 +51,8 @@ class ForecastResult:
 
 
 class ForecastService:
-    def __init__(self, weather_client=None, aurora_client=None, *, now=None, monotonic=None):
+    def __init__(self, weather_client=None, aurora_client=None, *, now=None, monotonic=None,
+                 owns_weather=True, owns_aurora=True):
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.monotonic = monotonic or time.monotonic
         self.weather_client = weather_client or METWeatherAPI(now=self.now, monotonic=self.monotonic)
@@ -61,6 +62,7 @@ class ForecastService:
         self._cache = {}
         self._locks = {}
         self._closed = False
+        self._owns_weather, self._owns_aurora = owns_weather, owns_aurora
 
     async def get_weather(self, location: dict) -> ForecastResult:
         location = resolve_location(location)
@@ -93,12 +95,19 @@ class ForecastService:
                 return ForecastResult('unavailable', 'MET Norway', now, None, None, location, None)
 
     async def close(self):
-        if self._closed:
-            return
         self._closed = True
-        for client in (self.weather_client, self.aurora_client):
-            if client is not None:
-                await client.close()
+        if not hasattr(self, '_closed_clients'):
+            self._closed_clients = set()
+        failed = False
+        for client, owned in ((self.weather_client, self._owns_weather), (self.aurora_client, self._owns_aurora)):
+            if owned and client is not None and id(client) not in self._closed_clients:
+                try:
+                    await client.close()
+                    self._closed_clients.add(id(client))
+                except Exception:
+                    failed = True
+        if failed:
+            raise RuntimeError('forecast_cleanup_failed')
 
 
 _DEFAULT = None

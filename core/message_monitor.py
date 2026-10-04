@@ -114,11 +114,17 @@ class MessageMonitor:
         response_generator,
         bot_name="inebotten",
     ):
+        from utils.resource_shutdown import OwnedResources
+        self._owned_resources = OwnedResources()
+        self._active_requests = set()
+        self._closing = False
+        self._shutdown_registered = False
         self.client = client
         self.bot = client
         self.hermes = hermes_connector
         self.rate_limiter = rate_limiter
         monitor_sender(self)
+        self._owned_resources.add('outbound', self.outbound.aclose)
         self.response_gen = response_generator
         self.bot_name = bot_name
         self.bot_mention = f"@{bot_name}"
@@ -142,11 +148,14 @@ class MessageMonitor:
             owner_email=getattr(self.client.config, 'DISCORD_EMAIL', None),
             owner_name=getattr(self.client.config, 'CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
         )
+        self._owned_resources.add('calendar-store', self.calendar._storage.aclose)
+        self._owned_resources.add('google-slot', self.calendar._outbox.slot.close)
         self.nlp_parser = NaturalLanguageParser()
 
         from cal_system.reminder_manager import ReminderManager
         self.reminders = ReminderManager(gcal_manager=gcal, access_policy=self.access_policy,
             clock=self.calendar.clock)
+        self._owned_resources.add('reminder-store', self.reminders._storage.aclose)
         self.reminders.configure_google(gcal, slot=self.calendar._outbox.slot,
             access_policy=self.access_policy)
 
@@ -190,18 +199,23 @@ class MessageMonitor:
 
         self.countdown = CountdownManager()
         self.poll = PollManager()
+        self._owned_resources.add('poll-store', self.poll._storage.aclose)
         self.watchlist = WatchlistManager()
         self.wod = WordOfTheDay()
         self.quote = QuoteManager()
         self.crypto = CryptoManager()
+        self._owned_resources.add('crypto', self.crypto.close)
         self.compliments = ComplimentsManager()
         self.horoscope = HoroscopeManager()
         self.calculator = CalculatorManager()
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
+        self._owned_resources.add('aurora', self.aurora.close)
         from features.forecast_service import ForecastService
-        self.forecasts = ForecastService(aurora_client=self.aurora)
+        self.forecasts = ForecastService(aurora_client=self.aurora, owns_aurora=False)
+        self._owned_resources.add('forecasts', self.forecasts.close)
         self.search_manager = SearchManager()
+        self._owned_resources.add('search', self.search_manager.close)
         self.browser_manager = BrowserManager()
         self.detect_search_intent = detect_search_intent
         from features.birthday_manager import BirthdayManager
@@ -366,15 +380,32 @@ class MessageMonitor:
 
         print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
 
-    async def close(self):
-        """Cancel monitor-owned background tasks."""
-        tasks = list(self._background_tasks)
-        if not tasks:
-            return
+    async def _drain_owned_work(self):
+        tasks = set(getattr(self, '_background_tasks', set())) | set(getattr(self, '_active_requests', set()))
+        tasks.discard(asyncio.current_task())
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self._background_tasks.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        getattr(self, '_background_tasks', set()).clear()
+
+    async def close(self, deadline=None):
+        """Close only owned resources; retain pending work and failed deltas."""
+        from utils.resource_shutdown import OwnedResources
+        self._closing = True
+        if not hasattr(self, '_owned_resources'):
+            self._owned_resources = OwnedResources()
+        if not getattr(self, '_shutdown_registered', False):
+            if hasattr(self, 'intent_stats'):
+                self._owned_resources.add('final-counters', self._persist_console_stats_once)
+            self._owned_resources.add('owned-work', self._drain_owned_work)
+            self._shutdown_registered = True
+        try:
+            await self._owned_resources.close(deadline if deadline is not None else time.monotonic() + 10)
+        finally:
+            self.shutdown_receipt = self._owned_resources.receipt()
+            self.shutdown_receipt['unsaved_intents'] = self.get_unsaved_intent_stats() if hasattr(self, 'intent_stats') else {}
+            self.shutdown_receipt['unsaved_rate_requests'] = sum(getattr(self, '_pending_console_delta', {}).get('rates', {}).values())
 
     async def _console_persistence_loop(self) -> None:
         """Periodically save intent and rate-limit stats to disk."""
@@ -390,6 +421,12 @@ class MessageMonitor:
 
     async def _persist_console_stats_once(self) -> None:
         """Persist one stats delta batch and update health only after success."""
+        if not hasattr(self, '_stats_flush_lock'):
+            self._stats_flush_lock = asyncio.Lock()
+        async with self._stats_flush_lock:
+            await self._persist_console_stats_locked()
+
+    async def _persist_console_stats_locked(self) -> None:
         from web_console.console_store import get_console_store
 
         store = get_console_store()
@@ -412,12 +449,25 @@ class MessageMonitor:
             rate_stats,
             getattr(self, "_last_persisted_rate_stats", {}),
         )
+        self._pending_console_delta = {'intents': intent_delta, 'rates': rate_delta}
         if intent_delta or rate_delta:
-            if not store.save_stats(intent_delta, rate_delta):
+            worker = asyncio.create_task(asyncio.to_thread(store.save_stats, intent_delta, rate_delta))
+            cancelled = False
+            try:
+                saved = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+                saved = await worker
+            if not saved:
                 raise RuntimeError("console stats save failed")
+        else:
+            cancelled = False
         self._last_persisted_intent_stats = intent_snapshot
         self._last_persisted_rate_stats = dict(rate_stats)
+        self._pending_console_delta = {'intents': {}, 'rates': {}}
         self._mark_task_ok("console-persistence")
+        if cancelled:
+            raise asyncio.CancelledError
 
     def is_mention(self, message):
         """Check if message explicitly mentions the bot."""
@@ -467,6 +517,18 @@ class MessageMonitor:
         return AuthorizedMessage(message, self.clean_authorized_content(message))
 
     async def handle_message(self, message):
+        if getattr(self, '_closing', False):
+            return
+        if not hasattr(self, '_active_requests'):
+            self._active_requests = set()
+        task = asyncio.current_task()
+        self._active_requests.add(task)
+        try:
+            await self._handle_message(message)
+        finally:
+            self._active_requests.discard(task)
+
+    async def _handle_message(self, message):
         """Process an incoming message"""
         # Skip own messages
         if message.author.id == self.client.user.id:
@@ -1231,6 +1293,14 @@ class SelfbotClient(discord.Client):
 
     async def on_ready(self):
         """Called when bot is ready"""
+        if getattr(self, '_client_closing', False):
+            return
+        previous = getattr(self, '_failed_monitor', None)
+        if previous is not None:
+            await previous.close()
+            if getattr(previous, 'shutdown_receipt', {}).get('status', 'closed') != 'closed':
+                raise RuntimeError('previous_initialization_cleanup_pending')
+            self._failed_monitor = None
         # Discord may emit READY again after a reconnect.  Keep the existing
         # monitor, console, and reminder task instead of creating duplicate
         # background workers or resetting the uptime clock.
@@ -1263,6 +1333,8 @@ class SelfbotClient(discord.Client):
             rate_limiter=self.rate_limiter,
             response_generator=self.response_gen,
         )
+        self._process_memory_owner = getattr(monitor, 'user_memory', None)
+        reminder_checker = None
         try:
             await monitor.setup()
 
@@ -1270,10 +1342,17 @@ class SelfbotClient(discord.Client):
             reminder_checker = self._create_reminder_checker(monitor)
             if reminder_checker:
                 await reminder_checker.setup()
-        except Exception:
+        except BaseException:
             # setup() may already have started monitor-owned background tasks.
             # Cancel them before leaving the components unpublished for retry.
-            await monitor.close()
+            self._failed_monitor = monitor
+            try:
+                await monitor.close()
+                if reminder_checker is not None and hasattr(reminder_checker, 'close_storage'):
+                    from utils.storage_contract import store_worker
+                    await store_worker(reminder_checker.close_storage)
+            except Exception:
+                print('[BOT] Initialization cleanup remains incomplete')
             raise
 
         # Publish fully initialized components only. A failed first READY can
@@ -1343,7 +1422,7 @@ class SelfbotClient(discord.Client):
 
     async def on_message(self, message):
         """Called when a message is received"""
-        if self.monitor:
+        if not getattr(self, '_client_closing', False) and self.monitor:
             await self.monitor.handle_message(message)
 
     async def on_disconnect(self):
@@ -1354,46 +1433,40 @@ class SelfbotClient(discord.Client):
         """Called when session is resumed"""
         print("[BOT] Session resumed")
 
-    async def close(self):
-        if self.monitor and hasattr(self.monitor, "close"):
-            try:
-                await self.monitor.close()
-            except Exception as e:
-                print(f"[BOT] Error stopping monitor tasks: {e}")
-
-        if self.reminder_checker:
-            try:
-                self.reminder_checker.stop()
-            except Exception as e:
-                print(f"[BOT] Error stopping reminder checker: {e}")
-
-        if self.reminder_checker_task and not self.reminder_checker_task.done():
-            self.reminder_checker_task.cancel()
-            try:
-                await self.reminder_checker_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self.reminder_checker_task = None
-
-        if self.console_task and not self.console_task.done():
-            self.console_task.cancel()
-            try:
-                await self.console_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self.console_task = None
-
-        if self.console_server:
-            try:
-                await self.console_server.stop()
-                print("[BOT] Web console stopped")
-            except Exception as e:
-                print(f"[BOT] Error stopping console: {e}")
-            finally:
-                self.console_server = None
-        await super().close()
+    async def close(self, deadline=None):
+        from utils.resource_shutdown import OwnedResources
+        self._client_closing = True
+        if not hasattr(self, '_close_scope'):
+            scope = self._close_scope = OwnedResources()
+            scope.add('discord-transport', super().close)
+            checker = getattr(self, 'reminder_checker', None)
+            if checker is not None and hasattr(checker, 'close_storage'):
+                scope.add('checker-store', checker.close_storage)
+            monitor = getattr(self, 'monitor', None) or getattr(self, '_failed_monitor', None)
+            if monitor is not None:
+                async def close_monitor():
+                    await monitor.close()
+                    if getattr(monitor, 'shutdown_receipt', {}).get('status', 'closed') != 'closed':
+                        raise RuntimeError('monitor_cleanup_incomplete')
+                scope.add('monitor', close_monitor)
+            async def close_checker_work():
+                if checker is not None:
+                    checker.stop()
+                tasks = [task for task in (getattr(self, 'reminder_checker_task', None),
+                                          getattr(self, 'console_task', None)) if task is not None]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            scope.add('checker-work', close_checker_work)
+            if getattr(self, 'console_server', None) is not None:
+                scope.add('console-connections', self.console_server.stop)
+        try:
+            await self._close_scope.close(deadline if deadline is not None else time.monotonic() + 10)
+        finally:
+            self.shutdown_receipt = self._close_scope.receipt()
+        if self.shutdown_receipt['status'] != 'closed':
+            raise RuntimeError('client_cleanup_incomplete')
 
     def get_uptime(self):
         """Get bot uptime"""

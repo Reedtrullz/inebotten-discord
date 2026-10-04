@@ -124,6 +124,15 @@ class BoundedAdmission:
         self.max_in_flight = max_in_flight
         self.in_flight = 0
         self._pending = set()
+        self._closed = False
+
+    async def close(self):
+        self._closed = True
+        tasks = set(self._pending) - {asyncio.current_task()}
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _release(self, task):
         self._pending.discard(task)
@@ -139,6 +148,8 @@ class BoundedAdmission:
         provider: str,
         model: str | None,
     ) -> AIResult:
+        if self._closed:
+            return AIResult('unavailable', None, provider, model)
         if self.in_flight >= self.max_in_flight:
             return AIResult("busy", None, provider, model)
 

@@ -21,6 +21,17 @@ class SearchManager:
         # Support both naming conventions (with and without underscore)
         self.tavily_api_key = os.getenv("TAVILY_API_KEY")
         self.ddgs = None # Initialize lazily
+        self._closed = False
+
+    async def close(self):
+        # No shared singleton/provider session is claimed here. I30 owns the
+        # bounded provider worker lifecycle when that integration is added.
+        self._closed = True
+        client = self.ddgs
+        closer = getattr(client, 'close', None)
+        if closer is not None:
+            await asyncio.to_thread(closer)
+        self.ddgs = None
 
     @staticmethod
     def _report_provider_failure(provider: str, distribution: str, error: Exception) -> None:
@@ -70,6 +81,8 @@ class SearchManager:
         Perform a web search with multiple fallbacks.
         Order: Tavily (if key) -> Google -> DuckDuckGo
         """
+        if self._closed:
+            return []
         # 1. Try Tavily (Pro AI Search)
         if self.tavily_api_key:
             try:
@@ -133,6 +146,8 @@ class SearchManager:
         """
         Perform a news search with Tavily news or fallbacks.
         """
+        if self._closed:
+            return []
         if self.tavily_api_key:
             try:
                 from tavily import TavilyClient

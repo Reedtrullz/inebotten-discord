@@ -138,6 +138,13 @@ class SelfbotRunner:
         signal.signal(signal.SIGTERM, signal_handler)
     
     async def run(self):
+        try:
+            result = await self._run()
+        finally:
+            await self.shutdown()
+        return result if self.shutdown_receipt['status'] == 'closed' else 2
+
+    async def _run(self):
         """Main run loop"""
         if not self.setup():
             return 1
@@ -175,34 +182,34 @@ class SelfbotRunner:
         
         return 0
     
-    async def shutdown(self):
+    async def shutdown(self, deadline=None):
         """Graceful shutdown"""
-        if not self.running:
-            return
-        
+        import time
+        from utils.resource_shutdown import OwnedResources
         self.running = False
-        print("\n[SHUTDOWN] Cleaning up...")
-        
-        if self.client:
-            await self.client.close()
-        
-        if self.ai_connector:
-            await self.ai_connector.close()
-        
-        print("\n[FINAL STATS]")
-        if self.rate_limiter:
-            stats = self.rate_limiter.get_stats()
-            print(f"  Messages sent today: {stats['sent_today']}/{stats['daily_quota']}")
-            print(f"  Total sent: {stats['total_sent']}")
-        
-        if self.ai_connector:
-            ai_stats = self.ai_connector.get_stats()
-            print(f"  AI Provider: {ai_stats.get('provider', 'unknown')}")
-            print(f"  AI Requests: {ai_stats.get('requests', 0)}")
-            print(f"  AI Errors: {ai_stats.get('errors', 0)}")
-            print(f"  AI Success Rate: {ai_stats.get('success_rate', 0):.1f}%")
-        
-        print("\n[SHUTDOWN] Complete")
+        if not hasattr(self, '_owned_resources'):
+            self._owned_resources = OwnedResources()
+            console = getattr(self.client, 'console_server', None)
+            memory = getattr(self.client, '_process_memory_owner', None) or getattr(getattr(self.client, 'monitor', None), 'user_memory', None)
+            if console is not None:
+                from utils.logger import close_log_capture
+                def close_console_capture():
+                    close_log_capture()
+                    console.store.close()
+                self._owned_resources.add('console-capture-store', close_console_capture)
+                from features import forecast_service
+                if forecast_service._DEFAULT is not None:
+                    self._owned_resources.add('console-forecasts', forecast_service._DEFAULT.close)
+            if memory is not None:
+                self._owned_resources.add('process-memory-store', memory._storage.aclose)
+            if self.ai_connector is not None:
+                self._owned_resources.add('ai-connector', self.ai_connector.close)
+            if self.client is not None:
+                self._owned_resources.add('discord-client', self.client.close)
+        try:
+            await self._owned_resources.close(deadline if deadline is not None else time.monotonic() + 10)
+        finally:
+            self.shutdown_receipt = self._owned_resources.receipt()
 
 def main():
     """Entry point"""

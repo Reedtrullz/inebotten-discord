@@ -84,9 +84,18 @@ class OutboundSender:
         self._results = OrderedDict()
         self._inflight = {}
         self._closed = False
+        self._tasks = set()
 
     async def send(self, channel_id: str, text: str, *, delivery_key: str | None = None,
                    deadline: float, _dispatch=None) -> DeliveryResult:
+        task = asyncio.current_task()
+        self._tasks.add(task)
+        try:
+            return await self._send(channel_id, text, delivery_key=delivery_key, deadline=deadline, _dispatch=_dispatch)
+        finally:
+            self._tasks.discard(task)
+
+    async def _send(self, channel_id: str, text: str, *, delivery_key=None, deadline, _dispatch=None):
         if not math.isfinite(deadline) or deadline <= time.monotonic():
             return DeliveryResult('dropped', reason_code='deadline_expired')
         if self._closed:
@@ -225,6 +234,14 @@ class OutboundSender:
 
     def close(self):
         self._closed = True
+
+    async def aclose(self):
+        self.close()
+        tasks = set(self._tasks) - {asyncio.current_task()}
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _retry_after(error):

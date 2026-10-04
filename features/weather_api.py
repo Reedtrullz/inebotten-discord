@@ -33,12 +33,15 @@ class METWeatherAPI:
         self.cache_time = 600  # Cache for 10 minutes
     
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('weather_closed')
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(headers=self.headers)
         return self.session
     
     async def close(self):
+        self._closed = True
         """Close the session"""
         if self.session and not self.session.closed:
             await self.session.close()

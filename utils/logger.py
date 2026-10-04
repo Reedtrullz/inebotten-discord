@@ -268,6 +268,19 @@ def install_log_capture() -> None:
         sys.stderr = StdoutWrapper(sys.stderr, buffer)
 
 
+def close_log_capture() -> None:
+    """Process owner stops capture before releasing the shared console store."""
+    for handler in list(logging.getLogger().handlers):
+        if isinstance(handler, BufferHandler) and handler._buffer is _log_buffer:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+    for name in ('stdout', 'stderr'):
+        stream = getattr(sys, name)
+        if isinstance(stream, StdoutWrapper):
+            stream.flush()
+            setattr(sys, name, stream._stream)
+
+
 class LoggerMixin:
     """
     Mixin class to add logging capabilities to any class

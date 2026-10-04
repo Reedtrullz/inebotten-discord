@@ -79,6 +79,8 @@ class OpenRouterConnector(LoggerMixin):
             return "Du er en hjelpsom norsk assistent som svarer på norsk."
 
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('connector_closed')
         """
         Get or create aiohttp session with proper timeout configuration
         """
@@ -104,6 +106,10 @@ class OpenRouterConnector(LoggerMixin):
         """
         Close the HTTP session
         """
+        self._closed = True
+        admission = getattr(self, '_reply_admission', None)
+        if admission is not None:
+            await admission.close()
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None

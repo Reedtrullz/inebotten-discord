@@ -392,11 +392,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify core/message_monitor.py, core/selfbot_runner.py, features/crypto_manager.py, features/aurora_forecast.py, features/search_manager.py, features/forecast_service.py and web_console/console_store.py; create tests/test_resource_shutdown.py.
 **Interfaces:** every owned manager with resources supplies async close() -> None; MessageMonitor.close(deadline: float) idempotently cancels/awaits owned work and flushes each remaining counter delta once. Shared resources stay with their owner.
 
-- [ ] Add partial-startup/repeated-close/cancel-during-flush/final-delta tests with fake sessions, tasks and thread workers; assert no orphaned owned resource and retained failed-flush evidence.
-- [ ] Demonstrate missing manager close coverage, preserving already merged partial-readiness regressions.
-- [ ] Register only actual owned resources, close in reverse dependency order within a monotonic deadline, and preserve unsaved deltas if bounded flush fails.
-- [ ] Run tests/test_resource_shutdown.py, tests/test_ready_initialization.py from master, tests/test_forecast_validity.py and console stats regressions.
-- [ ] Review and commit; do not duplicate task tracking, reconnect, or readiness fixes already on master.
+- [x] Add partial-startup/repeated-close/cancel-during-flush/final-delta tests with fake sessions, tasks and thread workers; assert no orphaned owned resource and retained failed-flush evidence.
+- [x] Demonstrate missing manager close coverage, preserving already merged partial-readiness regressions.
+- [x] Register only actual owned resources, close in reverse dependency order within a monotonic deadline, and preserve unsaved deltas if bounded flush fails.
+- [x] Run tests/test_resource_shutdown.py, tests/test_ready_initialization.py from master, tests/test_forecast_validity.py and console stats regressions.
+- [x] Review and commit; do not duplicate task tracking, reconnect, or readiness fixes already on master.
 
 ### Task 28: I30 — Bounded cited research with optional extraction
 

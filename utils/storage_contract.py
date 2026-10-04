@@ -275,6 +275,13 @@ class DocumentOwner:
         self._ownership.close()
         self._owned = False
 
+    async def aclose(self):
+        async with self._async_lock:
+            def release():
+                with self._mutex:
+                    self.close()
+            await store_worker(release)
+
 
 class VersionedJsonStoreProtocol(Protocol):
     """Revision-checked storage surface shared by domain consumers."""
