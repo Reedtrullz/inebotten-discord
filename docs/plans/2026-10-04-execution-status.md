@@ -6,7 +6,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | --- | --- | --- | --- | --- |
 | 1 | I20 | Hermetic offline verification | Implemented locally | 671 passed, 1 live-provider skip, 17 subtests; separate browser suite 24 passed; four isolation probes passed. Python 3.12.12. |
 | 2 | I01 | Preserve events on inconclusive Google lookups | Implemented locally | 29 offline tests passed; uncertain lookup warnings persisted; explicit cancellation/deletion tested. |
-| 3 | I02 | One live reminder owner | Planned | — |
+| 3 | I02 | One live reminder owner | Implemented locally | 24 ownership, CRUD, routing and READY tests passed; no duplicate load on reconnect. |
 | 4 | I04 | Explicit storage failures and schema compatibility | Planned | — |
 | 5 | I06 | Request-owned locale | Planned | — |
 | 6 | I27 | Forecast validity, location, time, and useful caching | Planned | — |

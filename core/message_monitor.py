@@ -1359,12 +1359,11 @@ class SelfbotClient(discord.Client):
     def _create_reminder_checker(self, monitor=None):
         """Create a ReminderChecker wired to the bot's channels."""
         from cal_system.reminder_checker import ReminderChecker
-        from cal_system.calendar_manager import CalendarManager
-        from cal_system.reminder_manager import ReminderManager
-
         selected_monitor = monitor if monitor is not None else self.monitor
-        calendar = selected_monitor.calendar if selected_monitor else CalendarManager()
-        reminders = ReminderManager()
+        if selected_monitor is None:
+            raise RuntimeError("Reminder checker requires an initialized monitor")
+        calendar = selected_monitor.calendar
+        reminders = selected_monitor.reminders
 
         def get_channel(channel_id: int):
             return self.get_channel(channel_id)

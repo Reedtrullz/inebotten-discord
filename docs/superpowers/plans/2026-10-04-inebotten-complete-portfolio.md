@@ -98,11 +98,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify core/message_monitor.py; extend tests/test_gcal_reminder_routing.py and tests/test_reminder_crud.py; create tests/test_reminder_scheduler_ownership.py.
 **Interfaces:** SelfbotClient._create_reminder_checker(monitor=None) consumes the initialized monitor.reminders. ReminderChecker.reminders is that exact object; startup does not load another copy.
 
-- [ ] Add test_checker_uses_monitor_manager asserting object identity; create/edit/complete/delete a reminder after checker startup and assert its next fake scan sees the change.
-- [ ] Reproduce stale ownership with the current composition.
-- [ ] Inject the owned manager and retain current-master failure-safe initialization/reconnect behavior.
-- [ ] Run all three listed tests plus current-master tests/test_ready_initialization.py when working from master.
-- [ ] Review and commit the wiring; prove one checker and one manager across reconnects.
+- [x] Add test_checker_uses_monitor_manager asserting object identity; create/edit/complete/delete a reminder after checker startup and assert its next fake scan sees the change.
+- [x] Reproduce stale ownership with the current composition.
+- [x] Inject the owned manager and retain current-master failure-safe initialization/reconnect behavior.
+- [x] Run all three listed tests plus current-master tests/test_ready_initialization.py when working from master.
+- [x] Review and commit the wiring; prove one checker and one manager across reconnects.
 
 ### Task 4: I04 — Explicit storage failures and schema compatibility
 
