@@ -478,11 +478,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create utils/backup_bundle.py, scripts/inebotten_backup.py, tests/test_backup_restore_bundle.py and docs/BACKUP_RESTORE.md; modify store ownership registration only where required.
 **Interfaces:** create_bundle(store_registry, destination: Path) -> manifest; validate_bundle(archive: Path, staging_dir: Path) -> RestorePreview(schema_versions: dict, checksums: dict, generation: str, destination: str, warnings: list[str]); restore(preview, expected_destination: Path) only while services are quiescent and destination ownership/revision is rechecked.
 
-- [ ] Add concurrent related-store updates, tampered/truncated archives, traversal, symlink/hardlink, concurrent destination creation, newer-schema-on-old-code and credential/session exclusion tests.
-- [ ] Demonstrate mixed-generation copying with synthetic stores.
-- [ ] Freeze owned writes briefly under a deterministic lock order, snapshot a single generation, create private data-only allowlisted manifests, validate into an exclusively created staging directory, and preserve the previous destination before any explicit replacement.
-- [ ] Run tests/test_backup_restore_bundle.py, storage concurrency/outcome and memory-policy tests; rehearse restore/rollback using generated data and verify every reference/checksum.
-- [ ] Review and commit; calendar/memory bundles are private, secrets/raw logs/exports are excluded by default, and no offsite/upload provider is selected.
+- [x] Add concurrent related-store updates, tampered/truncated archives, traversal, symlink/hardlink, concurrent destination creation, newer-schema-on-old-code and credential/session exclusion tests.
+- [x] Demonstrate mixed-generation copying with synthetic stores.
+- [x] Freeze owned writes briefly under a deterministic lock order, snapshot a single generation, create private data-only allowlisted manifests, validate into an exclusively created staging directory, and preserve the previous destination before any explicit replacement.
+- [x] Run tests/test_backup_restore_bundle.py, storage concurrency/outcome and memory-policy tests; rehearse restore/rollback using generated data and verify every reference/checksum.
+- [x] Review and commit; calendar/memory bundles are private, secrets/raw logs/exports are excluded by default, and no offsite/upload provider is selected.
 
 ### Task 35: I36 — Previewed ICS exchange
 

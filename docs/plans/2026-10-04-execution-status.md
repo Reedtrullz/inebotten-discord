@@ -37,7 +37,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 31 | I10 | Series, occurrences, and recurring delivery identities | Planned | — |
 | 32 | I23 | Supported deployment profiles and compatible rollback | Planned | — |
 | 33 | I31 | Safe desktop UI and child-process lifecycle | Planned | — |
-| 34 | I35 | Consistent data backup and staged restore | Planned | — |
+| 34 | I35 | Consistent data backup and staged restore | Implemented locally | Frozen initialized-owner snapshot, private bounded allowlisted archive, domain/schema/checksum validation, private stage and exact destination review token. Quiescence assertion plus cooperating writer locks; exclusive destination creation and preserved previous / failed partial generations. 60 focused tests; 1002 full offline tests, 1 live skip, 19 subtests. Generated CLI restore/rollback rehearsal; no personal backup or live service operation. |
 | 35 | I36 | Previewed ICS exchange | Planned | — |
 | 36 | I26 | Authenticated agenda-first calendar workspace | Planned | — |
 | 37 | I34 | Organizer-confirmed group planning and RSVP | Planned | — |
