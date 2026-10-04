@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 import discord
 
 from core.intent_router import BotIntent, IntentRouter
+from core.request_context import RequestContext, request_scope, request_localization
 from core.intent_thresholds import CONFIDENCE_THRESHOLDS
 from core.intent_keywords import (
     CALENDAR_KEYWORDS,
@@ -313,6 +314,14 @@ class MessageMonitor:
     def get_task_health(self):
         return {name: dict(values) for name, values in self._task_health.items()}
 
+    @property
+    def loc(self):
+        return request_localization(self._localization)
+
+    @loc.setter
+    def loc(self, value):
+        self._localization = value
+
     async def setup(self):
         await self.calendar.setup()
         await self.user_memory.setup()
@@ -484,32 +493,33 @@ class MessageMonitor:
 
         # Detect language from message
         lang = self.loc.detect_language(message.content)
-        self.loc.set_language(lang)
         print(f"[MONITOR] Detected language: {lang}")
 
-        guild_id = message.guild.id if message.guild else message.channel.id
-        route = None
-        try:
-            route = self.intent_router.route(message.content, guild_id=guild_id)
-            self._last_routed_intent = route.intent
-            print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
-            await self._handle_intent(message, route)
-            self.intent_stats[route.intent.value]["count"] += 1
-        except StorageMutationError:
-            self.error_count += 1
-            await self._send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
-        except Exception as exc:
-            import traceback
-
-            route_name = route.intent.value if route else "unknown"
-            print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
-            traceback.print_exc()
-            self.error_count += 1
-            self.intent_stats[route_name]["errors"] += 1
+        context = RequestContext.from_message(message, lang)
+        with request_scope(context):
+            guild_id = message.guild.id if message.guild else message.channel.id
+            route = None
             try:
-                await self._send_ai_response(message)
-            except Exception as ai_exc:
-                print(f"[MONITOR] AI fallback also failed: {ai_exc}")
+                route = self.intent_router.route(message.content, guild_id=guild_id)
+                self._last_routed_intent = route.intent
+                print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
+                await self._handle_intent(message, route)
+                self.intent_stats[route.intent.value]["count"] += 1
+            except StorageMutationError:
+                self.error_count += 1
+                await self._send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
+            except Exception as exc:
+                import traceback
+
+                route_name = route.intent.value if route else "unknown"
+                print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
+                traceback.print_exc()
+                self.error_count += 1
+                self.intent_stats[route_name]["errors"] += 1
+                try:
+                    await self._send_ai_response(message)
+                except Exception as ai_exc:
+                    print(f"[MONITOR] AI fallback also failed: {ai_exc}")
 
     async def _handle_intent(self, message, route):
         """Execute the handler for a routed intent."""

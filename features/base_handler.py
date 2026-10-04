@@ -17,6 +17,7 @@ import inspect
 import re
 from typing import Optional, Union
 from utils.logger import LoggerMixin
+from core.request_context import current_request, request_localization
 
 
 class BaseHandler(LoggerMixin):
@@ -37,8 +38,16 @@ to ensure consistent access to shared state like rate limiting and
         """
         self.monitor = monitor
         self.rate_limiter = monitor.rate_limiter
-        self.loc = monitor.loc
+        self._localization = monitor.loc
         self.client = monitor.client
+
+    @property
+    def loc(self):
+        return request_localization(self._localization)
+
+    @property
+    def request_context(self):
+        return current_request()
 
     async def send_response(
         self,

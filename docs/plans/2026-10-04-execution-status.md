@@ -8,7 +8,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 2 | I01 | Preserve events on inconclusive Google lookups | Implemented locally | 29 offline tests passed; uncertain lookup warnings persisted; explicit cancellation/deletion tested. |
 | 3 | I02 | One live reminder owner | Implemented locally | 24 ownership, CRUD, routing and READY tests passed; no duplicate load on reconnect. |
 | 4 | I04 | Explicit storage failures and schema compatibility | Implemented locally | 158 focused tests; full non-browser suite 711 passed, 1 live skip, 17 subtests; separate browser suite 24 passed. Synthetic migration/downgrade/write-failure receipts. |
-| 5 | I06 | Request-owned locale | Planned | — |
+| 5 | I06 | Request-owned locale | Implemented locally | 99 routing/locale tests with 17 subtests; interleaved locales, immutable views and exception cleanup verified. |
 | 6 | I27 | Forecast validity, location, time, and useful caching | Planned | — |
 | 7 | I28 | Honest currency snapshots | Planned | — |
 | 8 | I32 | Preserving private onboarding | Planned | — |

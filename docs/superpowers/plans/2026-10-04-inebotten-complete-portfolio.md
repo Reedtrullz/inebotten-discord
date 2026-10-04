@@ -122,11 +122,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create core/request_context.py and tests/test_request_locale.py; modify memory/localization.py, core/message_monitor.py, features/base_handler.py and handlers using loc.current_lang.
 **Interfaces:** immutable RequestContext(request_id: str, user_id: str, channel_id: str, guild_id: str|None, locale: str); Localization.for_language(locale: str) returns an immutable translation view. Handler dispatch consumes one context; no handler changes singleton locale.
 
-- [ ] Add test_interleaved_norwegian_english_keep_locale with a barrier around an await; assert each response's expected translation.
-- [ ] Observe cross-request language interference.
-- [ ] Pass context/localization views at dispatch and use existing detection/preferences; keep translation keys and supported Norwegian dialect behavior.
-- [ ] Run tests/test_request_locale.py, tests/test_message_monitor_routing.py, tests/test_intent_router.py, tests/test_false_positives.py.
-- [ ] Review handler coverage and commit; grep for dispatch-time singleton language writes to prove migration completeness.
+- [x] Add test_interleaved_norwegian_english_keep_locale with a barrier around an await; assert each response's expected translation.
+- [x] Observe cross-request language interference.
+- [x] Pass context/localization views at dispatch and use existing detection/preferences; keep translation keys and supported Norwegian dialect behavior.
+- [x] Run tests/test_request_locale.py, tests/test_message_monitor_routing.py, tests/test_intent_router.py, tests/test_false_positives.py.
+- [x] Review handler coverage and commit; grep for dispatch-time singleton language writes to prove migration completeness.
 
 ### Task 6: I27 — Forecast validity, location, time, and useful caching
 
