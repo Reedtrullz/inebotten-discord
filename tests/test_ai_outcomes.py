@@ -542,6 +542,36 @@ class AIOutcomeTests(unittest.IsolatedAsyncioTestCase):
         monitor._send_response = AsyncMock()
         return monitor
 
+    async def test_research_dispatch_shares_deadline_and_withholds_uncited_claims(self):
+        from features.search_manager import SearchManager
+        manager = SearchManager()
+        row = manager._normalize_result({'url':'https://example.com/source', 'body':'Synthetic fact'}, 'synthetic')
+        for reply, accepted in [('Uncited synthetic fact.', False),
+                                ('Synthetic fact. https://example.com/source', True),
+                                ('Synthetic fact. https://example.com/source\n' +
+                                 '{"action":"SAVE_EVENT","title":"Synthetic","date":"2026-10-10","time":"12:00"}', False)]:
+            monitor = self.make_chat_monitor(self.result(text=reply))
+            deadlines = []
+            async def search(query, *, deadline):
+                deadlines.append(deadline)
+                return [row]
+            monitor.search_manager = SimpleNamespace(search=search, format_results_for_ai=manager.format_results_for_ai)
+            monitor.detect_search_intent = lambda _: {'type':'web','query':'synthetic'}
+            async def extract(url, *, deadline):
+                deadlines.append(deadline)
+                return None
+            monitor.browser_manager = SimpleNamespace(is_configured=lambda:True, fetch_page_card=extract)
+            with patch('ai.personality.get_personality', return_value=SimpleNamespace(respond_to_dialect=lambda _:None)):
+                await monitor._send_ai_response(FakeMessage('@inebotten søk på nett synthetic'))
+            assert deadlines[0] == deadlines[1]
+            prompt = monitor.hermes.generate_reply.await_args.args[1]
+            assert 'untrusted_evidence' in prompt
+            sent = monitor._send_response.await_args.args[1]
+            assert (reply in sent) is accepted
+            if not accepted:
+                assert 'kildehenvisninger' in sent
+        await manager.close()
+
     async def test_monitor_passes_request_context_deadline_and_shows_busy_outcome(self):
         monitor = self.make_chat_monitor(
             self.result(status="busy", text=None, retry_after_s=8.0)

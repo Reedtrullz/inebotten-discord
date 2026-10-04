@@ -217,6 +217,7 @@ class MessageMonitor:
         self.search_manager = SearchManager()
         self._owned_resources.add('search', self.search_manager.close)
         self.browser_manager = BrowserManager()
+        self._owned_resources.add('public-extraction', self.browser_manager.close)
         self.detect_search_intent = detect_search_intent
         from features.birthday_manager import BirthdayManager
         self.birthdays = BirthdayManager()
@@ -765,35 +766,36 @@ class MessageMonitor:
                     # Check for search intent
                     search_info = forced_search_info or self.detect_search_intent(message.content)
                     search_context = ""
+                    search_results = []
                     search_was_requested = False
                     if search_info:
                         search_was_requested = True
                         query = search_info["query"]
                         search_type = search_info["type"]
-                        print(f"[MONITOR] Web search ({search_type}) triggered for: {query}")
+                        print('[MONITOR] Web search requested')
+                        research_deadline = time.monotonic() + 8
                         
                         if search_type == "news":
-                            search_results = await self.search_manager.get_news(query)
+                            search_results = await self.search_manager.get_news(query, deadline=research_deadline)
                         else:
-                            search_results = await self.search_manager.search(query)
+                            search_results = await self.search_manager.search(query, deadline=research_deadline)
                             
                         if search_results:
-                            search_context = self.search_manager.format_results_for_ai(search_results)
                             print(f"[MONITOR] Found {len(search_results)} search results")
                             
                             # WEB LOOKUP: Only use Browserbase if we don't have deep content yet
-                            has_deep_content = any(len(res.get('body', '')) > 500 for res in search_results)
+                            has_deep_content = any(res.get('content_kind') == 'extracted' for res in search_results)
                             
                             if not has_deep_content and self.browser_manager.is_configured() and len(search_results) > 0:
                                 top_url = search_results[0].get('href') or search_results[0].get('url')
                                 if top_url:
-                                    print(f"[MONITOR] Web Lookup: Tavily content was shallow. Using Browserbase fallback for: {top_url}")
-                                    page_content = await self.browser_manager.fetch_page_content(top_url)
-                                    if page_content:
-                                        search_context += f"\n\nDETALJERT INFORMASJON FRA KILDEN ({top_url}):\n{page_content}\n"
-                                        print("[MONITOR] Web Lookup: Browserbase fallback successful")
+                                    fetch_card = getattr(self.browser_manager, 'fetch_page_card', None)
+                                    page_card = await fetch_card(top_url, deadline=research_deadline) if callable(fetch_card) else None
+                                    if page_card:
+                                        search_results = [page_card] + search_results[1:]
                             elif has_deep_content:
-                                print("[MONITOR] Web Lookup: Tavily provided deep content. Skipping Browserbase.")
+                                print('[MONITOR] Provider returned extracted text')
+                            search_context = self.search_manager.format_results_for_ai(search_results)
                         else:
                             response_text = (
                                 "Jeg fant ingen ferske kilder akkurat nå, så jeg vil ikke late som jeg "
@@ -853,9 +855,14 @@ class MessageMonitor:
                                 f"[MONITOR] AI response from {result.provider} "
                                 f"(fallback={result.fallback})"
                             )
-                            response_text = await self._parse_and_execute_actions(
-                                result.text, message
-                            )
+                            from features.search_manager import cited_reply_is_valid
+                            if search_was_requested and (not cited_reply_is_valid(result.text, search_results)
+                                    or any(parse_action_draft(line.strip()) for line in result.text.splitlines())):
+                                response_text = 'Svaret manglet tydelige kildehenvisninger for påstandene. Prøv et smalere søk eller åpne kildene selv.'
+                            elif search_was_requested:
+                                response_text = result.text
+                            else:
+                                response_text = await self._parse_and_execute_actions(result.text, message)
                             if result.fallback and response_text:
                                 origin = result.provider
                                 if result.model:

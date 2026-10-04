@@ -404,11 +404,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify features/search_manager.py, features/browser_manager.py, core/message_monitor.py and ai prompt construction; extend tests/test_search_manager.py and tests/test_search_intent.py; create tests/test_public_page_extraction.py.
 **Interfaces:** ResearchCard(url: str, title: str, content_kind url_only|snippet|extracted, published_at: str|None, fetched_at: aware datetime, source: str, text: str|None); async research(query: str, *, deadline: float) -> dict exposes cards/partial_failures. External evidence is inert data, never an action instruction.
 
-- [ ] Add hung fallback/worker saturation, URL-only-not-read, claim-to-source citation, malicious evidence and extract redirect/private-address/type/byte-limit fixtures.
-- [ ] Reproduce a multi-fallback unbounded-duration path with fake providers; retain existing normalization and honest browser stub.
-- [ ] Implement total/underlying network deadlines and bounded workers first. Only then choose a reviewed public extractor; validate each redirect/resolved destination and close sessions on cancellation.
-- [ ] Run tests/test_search_manager.py, tests/test_search_intent.py, tests/test_public_page_extraction.py and action-schema tests; timeout tests account for executor threads still running.
-- [ ] Review and commit slices; extraction has no credentialed browsing, paywall bypass or arbitrary automation.
+- [x] Add hung fallback/worker saturation, URL-only-not-read, claim-to-source citation, malicious evidence and extract redirect/private-address/type/byte-limit fixtures.
+- [x] Reproduce a multi-fallback unbounded-duration path with fake providers; retain existing normalization and honest browser stub.
+- [x] Implement total/underlying network deadlines and bounded workers first. Only then choose a reviewed public extractor; validate each redirect/resolved destination and close sessions on cancellation.
+- [x] Run tests/test_search_manager.py, tests/test_search_intent.py, tests/test_public_page_extraction.py and action-schema tests; timeout tests account for executor threads still running.
+- [x] Review and commit slices; extraction has no credentialed browsing, paywall bypass or arbitrary automation.
 
 ## Wave 4 — Everyday use and recovery
 
