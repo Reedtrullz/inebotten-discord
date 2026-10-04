@@ -5,7 +5,70 @@ Performs calculations and unit conversions
 """
 
 import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Literal
+
 from simpleeval import simple_eval, InvalidExpression
+
+
+@dataclass(frozen=True)
+class RateSnapshot:
+    """A coherent set of currency rates expressed per one unit of ``base``."""
+
+    source: str
+    effective_at: datetime | None
+    base: str
+    rates: dict[str, Decimal]
+    status: Literal["fresh", "stale", "demonstration"]
+
+    def __post_init__(self):
+        if self.status not in {"fresh", "stale", "demonstration"}:
+            raise ValueError("status must be fresh, stale, or demonstration")
+        if self.effective_at is not None and (
+            self.effective_at.tzinfo is None or self.effective_at.utcoffset() is None
+        ):
+            raise ValueError("effective_at must be timezone-aware")
+        normalized = {code.upper(): Decimal(rate) for code, rate in self.rates.items()}
+        base = self.base.upper()
+        if base not in normalized or normalized[base] != Decimal("1"):
+            raise ValueError("base rate must be present and equal to 1")
+        if any(rate <= 0 for rate in normalized.values()):
+            raise ValueError("rates must be positive")
+        if self.status == "fresh" and self.effective_at is None:
+            raise ValueError("fresh snapshots require an effective time")
+        object.__setattr__(self, "base", base)
+        object.__setattr__(self, "rates", normalized)
+
+
+def convert_currency(
+    amount: Decimal, source: str, target: str, snapshot: RateSnapshot
+) -> Decimal:
+    """Convert using one base-rate snapshot with explicit currency precision."""
+    source = source.upper()
+    target = target.upper()
+    if source not in snapshot.rates or target not in snapshot.rates:
+        raise ValueError(f"Unsupported currency pair: {source} -> {target}")
+    converted = Decimal(amount) * snapshot.rates[target] / snapshot.rates[source]
+    places = 8 if target == "BTC" else 2
+    quantum = Decimal(1).scaleb(-places)
+    return converted.quantize(quantum, rounding=ROUND_HALF_UP)
+
+
+DEMONSTRATION_RATES = RateSnapshot(
+    source="fixed demonstration values",
+    effective_at=None,
+    base="USD",
+    rates={
+        "USD": Decimal("1"),
+        "NOK": Decimal("10.85"),
+        "EUR": Decimal("0.92"),
+        "GBP": Decimal("0.79"),
+        "BTC": Decimal("1") / Decimal("67420"),
+    },
+    status="demonstration",
+)
 
 
 class CalculatorManager:
@@ -14,14 +77,7 @@ class CalculatorManager:
     """
 
     def __init__(self):
-        # Exchange rates (approximate - would use real API in production)
-        self.exchange_rates = {
-            "usd": {"nok": 10.85, "eur": 0.92, "gbp": 0.79},
-            "nok": {"usd": 0.092, "eur": 0.085, "gbp": 0.073},
-            "eur": {"nok": 11.78, "usd": 1.09, "gbp": 0.86},
-            "gbp": {"nok": 13.71, "usd": 1.27, "eur": 1.17},
-            "btc": {"usd": 67420, "nok": 731000},
-        }
+        self.rate_snapshot = DEMONSTRATION_RATES
 
         # Temperature conversions
         self.temp_units = ["c", "celsius", "f", "fahrenheit", "k", "kelvin"]
@@ -94,7 +150,10 @@ class CalculatorManager:
             from_unit = match.group(2)
             to_unit = match.group(3)
             
-            is_recognized = (from_unit in self.exchange_rates or to_unit in self.exchange_rates)
+            is_recognized = (
+                from_unit.upper() in self.rate_snapshot.rates
+                or to_unit.upper() in self.rate_snapshot.rates
+            )
             is_explicit = any(re.search(rf"\b{re.escape(w)}\b", content_lower) for w in ["konverter", "convert", "omgjør"])
             
             if is_recognized or is_explicit:
@@ -103,6 +162,12 @@ class CalculatorManager:
                     "amount": amount,
                     "from": from_unit,
                     "to": to_unit,
+                    "requires_current": bool(
+                        re.search(
+                            r"\b(?:now|current|currently|today|live|nå|nåværende|fersk|dagens|i dag|oppdatert)\b",
+                            content_lower,
+                        )
+                    ),
                 }
 
         # Temperature conversion with explicit temperature units.
@@ -173,30 +238,22 @@ class CalculatorManager:
 
     def _convert_currency(self, cmd, lang):
         """Convert currency"""
-        amount = cmd["amount"]
+        amount = Decimal(str(cmd["amount"]))
         from_curr = cmd["from"].lower()
         to_curr = cmd["to"].lower()
-
-        # Get exchange rate
-        rate = 1.0
-        if (
-            from_curr in self.exchange_rates
-            and to_curr in self.exchange_rates[from_curr]
-        ):
-            rate = self.exchange_rates[from_curr][to_curr]
-        elif (
-            to_curr in self.exchange_rates and from_curr in self.exchange_rates[to_curr]
-        ):
-            rate = 1 / self.exchange_rates[to_curr][from_curr]
-        else:
+        snapshot = self.rate_snapshot
+        if cmd.get("requires_current") and snapshot.status != "fresh":
+            return (
+                "❌ Ingen fersk valutakurs er tilgjengelig."
+                if lang == "no"
+                else "❌ No fresh exchange rate is available."
+            )
+        try:
+            result = convert_currency(amount, from_curr, to_curr, snapshot)
+        except ValueError:
             if lang == "no":
                 return f"💱 Ukjent valutakonvertering: {from_curr.upper()} → {to_curr.upper()}"
-            else:
-                return (
-                    f"💱 Unknown currency pair: {from_curr.upper()} → {to_curr.upper()}"
-                )
-
-        result = amount * rate
+            return f"💱 Unknown currency pair: {from_curr.upper()} → {to_curr.upper()}"
 
         currency_symbols = {
             "usd": "$",
@@ -210,10 +267,37 @@ class CalculatorManager:
         from_sym = currency_symbols.get(from_curr, from_curr.upper())
         to_sym = currency_symbols.get(to_curr, to_curr.upper())
 
-        if lang == "no":
-            return f"💱 **Valutakonvertering**\n{from_sym}{amount:,.2f} = {to_sym}{result:,.2f}"
+        amount_places = 8 if from_curr == "btc" else 2
+        result_places = 8 if to_curr == "btc" else 2
+        amount_text = f"{amount:,.{amount_places}f}"
+        result_text = f"{result:,.{result_places}f}"
+        if snapshot.status == "demonstration":
+            provenance = (
+                "Estimat: demonstrasjonskurs · kilde: faste eksempelverdier · gyldig tidspunkt: ukjent"
+                if lang == "no"
+                else "Estimated demonstration rate · source: fixed example values · effective time: unknown"
+            )
         else:
-            return f"💱 **Currency Conversion**\n{from_sym}{amount:,.2f} = {to_sym}{result:,.2f}"
+            effective = (
+                snapshot.effective_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                if snapshot.effective_at
+                else ("ukjent" if lang == "no" else "unknown")
+            )
+            freshness = "fresh" if snapshot.status == "fresh" else "stale"
+            provenance = (
+                f"{freshness.capitalize()} rate · source: {snapshot.source} · effective: {effective}"
+            )
+            if lang == "no":
+                freshness = "fersk" if snapshot.status == "fresh" else "foreldet"
+                provenance = f"{freshness.capitalize()} kurs · kilde: {snapshot.source} · gyldig tidspunkt: {effective}"
+        rounding = (
+            "Avrunding: fiat 2 desimaler, BTC 8"
+            if lang == "no"
+            else "Rounding: fiat 2 decimal places, BTC 8"
+        )
+        if lang == "no":
+            return f"💱 **Valutakonvertering**\n{from_sym}{amount_text} → {to_sym}{result_text}\n{provenance}\n{rounding}"
+        return f"💱 **Currency Conversion**\n{from_sym}{amount_text} → {to_sym}{result_text}\n{provenance}\n{rounding}"
 
     def _convert_temperature(self, cmd, lang):
         """Convert temperature"""
