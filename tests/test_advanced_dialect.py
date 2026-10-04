@@ -1,3 +1,7 @@
+import pytest
+
+pytestmark = pytest.mark.live_provider
+
 #!/usr/bin/env python3
 """
 Test advanced and dialect sentences (51-100)

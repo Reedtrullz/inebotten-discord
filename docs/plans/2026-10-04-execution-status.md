@@ -4,7 +4,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 
 | Task | Proposal | Title | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 1 | I20 | Hermetic offline verification | Planned | — |
+| 1 | I20 | Hermetic offline verification | Implemented locally | 671 passed, 1 live-provider skip, 17 subtests; separate browser suite 24 passed; four isolation probes passed. Python 3.12.12. |
 | 2 | I01 | Preserve events on inconclusive Google lookups | Planned | — |
 | 3 | I02 | One live reminder owner | Planned | — |
 | 4 | I04 | Explicit storage failures and schema compatibility | Planned | — |

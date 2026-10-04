@@ -74,11 +74,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify tests/conftest.py, pytest.ini, .github/workflows/ci.yml, tests/README_TESTING.md; create tests/test_test_environment.py and scripts/run_offline_tests.py.
 **Interfaces:** scripts/run_offline_tests.py --python PATH -- PYTEST_ARGS launches the selected interpreter with an explicit child env and run-local Hermes directory before any application import. live_provider and live_account markers require separate explicit --live-provider/--live-account invocation; loopback fixture servers remain allowed by default.
 
-- [ ] Add test_inherited_hermes_is_untouched: seed a synthetic outside directory, run collection in a child, and assert its bytes unchanged; test_external_network_is_blocked; test_parallel_console_ports_differ.
-- [ ] Observe import-order/environment/port failures with generated fixtures; do not run an unsafe old full suite against the user's inherited configuration.
-- [ ] Move test bootstrap before console imports, remove sensitive inherited config inside the child only, bind fixture servers to port 0, and gate live markers. Ensure failed/interrupted runs clean only their own bounded scratch.
-- [ ] Run tests/test_test_environment.py, then existing non-live tests and tests/test_console_frontend.py separately; verify zero external connections and record executed/skipped counts.
-- [ ] Review and commit the harness; document the exact safe runner. This gate unlocks all following automated checks.
+- [x] Add test_inherited_hermes_is_untouched: seed a synthetic outside directory, run collection in a child, and assert its bytes unchanged; test_external_network_is_blocked; test_parallel_console_ports_differ.
+- [x] Observe import-order/environment/port failures with generated fixtures; do not run an unsafe old full suite against the user's inherited configuration.
+- [x] Move test bootstrap before console imports, remove sensitive inherited config inside the child only, bind fixture servers to port 0, and gate live markers. Ensure failed/interrupted runs clean only their own bounded scratch.
+- [x] Run tests/test_test_environment.py, then existing non-live tests and tests/test_console_frontend.py separately; verify zero external connections and record executed/skipped counts.
+- [x] Review and commit the harness; document the exact safe runner. This gate unlocks all following automated checks.
 
 ### Task 2: I01 — Preserve events on inconclusive Google lookups
 

@@ -151,3 +151,17 @@ Sett opp cron-job for daglig testing:
 ---
 
 God testing! 🧪🤖🇳🇴
+
+
+## Isolert offline-kjøring
+
+Bruk Python 3.12 og kjør fra repoets arbeidskopi:
+
+```bash
+.venv312/bin/python scripts/run_offline_tests.py --python .venv312/bin/python -- --ignore=tests/test_console_frontend.py -q
+.venv312/bin/python scripts/run_offline_tests.py --python .venv312/bin/python -- tests/test_console_frontend.py -q
+```
+
+Runneren oppretter én midlertidig testmappe under `.superpowers/test-runs`, erstatter konfigurasjon i barneprosessen før app-import, bruker kun syntetisk Discord-token og rydder egen mappe etter kjøring. Arvede API-nøkler og Hermes-data brukes ikke. Chromium-cache kan gjenbrukes, men nettleserprofiler er nye. Console-fixtures bruker serverens faktiske, dynamiske port.
+
+Python-socket/DNS-kall utenfor loopback blokkeres. Dette er ingen operativsystem-sandbox; native nettverksklienter må erstattes med fixtures i offline-tester. Live-tester merkes `live_provider` eller `live_account` og hoppes over som standard. Bare en eksplisitt `--live-provider` eller `--live-account` før `--` tillater den respektive markøren og nødvendig konfigurasjon. Ikke legg personlige data eller tokens i fixtures.
