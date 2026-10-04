@@ -14,8 +14,8 @@
       document.documentElement.classList.add(theme);
     }})();
   </script>
-  <link rel="stylesheet" href="/static/main.css?v=5">
-  <script src="/static/app.js?v=5" defer></script>
+  <link rel="stylesheet" href="/static/main.css?v=6">
+  <script src="/static/app.js?v=6" defer></script>
 </head>
 <body class="{body_class}">
   <div class="app-shell" data-console-app>
@@ -54,8 +54,8 @@
             <a href="#logs" class="nav-link">Logger</a>
           </nav>
           <div class="header-tools">
-            <span id="last-updated" class="freshness" hidden>
-              Oppdatert <span data-last-updated-time></span>
+            <span id="last-updated" class="freshness" role="status" aria-live="polite" hidden>
+              <span data-last-updated-time></span>
             </span>
             <button id="theme-toggle" class="theme-toggle" aria-label="Bytt tema">
               <span data-theme-icon>Lys</span>

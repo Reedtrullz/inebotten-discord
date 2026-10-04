@@ -73,6 +73,8 @@ def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> No
     assert "Intents" in content
     assert "Minne" in content
     assert "Logger" in content
+    assert page.locator("[data-poll-endpoint]").count() == 8
+    assert page.locator("[data-poll-retry]").count() == 8
 
 
 def test_gcal_auth_page_renders_after_login(page: Any, console_server: ConsoleServer) -> None:
@@ -484,3 +486,123 @@ def test_section_renderer_owns_latest_modal_and_overview_snapshot(page: Any, con
     page.evaluate("window.consoleApp.renderSection('calendar', {event_count: 1, task_count: 0, upcoming_events: [{title: 'Latest owned snapshot', date: 'Tomorrow'}]})")
     assert 'Latest owned snapshot' in page.locator('#modal-content').inner_text()
     assert page.locator('[data-metric="overview.calendar"]').inner_text()=='1 / 0'
+
+
+def _start_fake_poller(page: Any, console_server: ConsoleServer, responses: dict[str, Any] | None = None) -> None:
+    page.clock.install(time="2026-10-04T09:00:00")
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate(
+        """async (responses) => {
+          window.__responses = responses || {};
+          window.__requestCounts = {};
+          window.__settledRequests = 0;
+          window.__abortedRequests = {};
+          window.fetch = async (url, options = {}) => {
+            const endpoint = String(url);
+            window.__requestCounts[endpoint] = (window.__requestCounts[endpoint] || 0) + 1;
+            const configured = window.__responses[endpoint] || {status: 200, body: {}};
+            const queue = Array.isArray(configured) ? configured : [configured];
+            const response = queue.length > 1 ? queue.shift() : queue[0];
+            window.__settledRequests += 1;
+            if (response.hang) {
+              return new Promise((resolve, reject) => {
+                options.signal?.addEventListener('abort', () => {
+                  window.__abortedRequests[endpoint] = (window.__abortedRequests[endpoint] || 0) + 1;
+                  reject(new DOMException('Aborted', 'AbortError'));
+                }, {once: true});
+              });
+            }
+            return {
+              status: response.status ?? 200,
+              ok: (response.status ?? 200) >= 200 && (response.status ?? 200) < 300,
+              json: async () => response.body || {},
+            };
+          };
+          const app = window.consoleApp;
+          app.isDemo = false;
+          app.startPolling();
+          for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+        }""",
+        responses or {},
+    )
+
+
+def test_visibility_cycles_keep_one_poll_chain_per_endpoint(page: Any, console_server: ConsoleServer) -> None:
+    """Repeated hide/show cycles leave only one scheduled request per endpoint."""
+    _start_fake_poller(page, console_server)
+    page.evaluate(
+        """async () => {
+          let visibility = 'visible';
+          Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => visibility});
+          window.__setVisibility = async (state) => {
+            visibility = state;
+            document.dispatchEvent(new Event('visibilitychange'));
+            for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+          };
+          await window.__setVisibility('hidden');
+          await window.__setVisibility('visible');
+          await window.__setVisibility('hidden');
+          await window.__setVisibility('visible');
+        }"""
+    )
+    page.clock.fast_forward(5000)
+
+    assert page.evaluate("window.__requestCounts['/api/status']") == 4
+    assert page.evaluate("Object.keys(window.consoleApp.pollingEntries).length") == 8
+    assert page.evaluate("Object.values(window.consoleApp.pollingEntries).every((entry) => entry.timerId !== null)")
+
+
+def test_endpoint_failure_stays_stale_until_its_own_retry_succeeds(page: Any, console_server: ConsoleServer) -> None:
+    """A healthy endpoint cannot make a failing calendar card look fresh."""
+    _start_fake_poller(
+        page,
+        console_server,
+        {"/api/calendar": [
+            {"status": 503, "body": {}},
+            {"status": 200, "body": {"event_count": 2, "task_count": 0, "upcoming_events": []}},
+        ]},
+    )
+
+    calendar_state = page.locator('#calendar [data-poll-endpoint="/api/calendar"]')
+    status_state = page.locator('#status [data-poll-endpoint="/api/status"]')
+    assert calendar_state.count() == 1
+    assert "Feil" in calendar_state.inner_text() or "utdatert" in calendar_state.inner_text().lower()
+    assert "utdaterte" in page.locator("#last-updated").inner_text().lower()
+    first_status_time = status_state.get_attribute("data-last-success")
+    page.locator('#calendar [data-poll-retry="/api/calendar"]').click()
+    page.wait_for_function("window.__requestCounts['/api/calendar'] === 2")
+
+    assert "Oppdatert" in calendar_state.inner_text()
+    assert status_state.get_attribute("data-last-success") == first_status_time
+
+
+def test_hung_endpoint_times_out_and_reports_failure(page: Any, console_server: ConsoleServer) -> None:
+    """A hung API request is aborted by its elapsed deadline and marked stale."""
+    _start_fake_poller(page, console_server, {"/api/calendar": {"hang": True}})
+    page.clock.fast_forward(16000)
+
+    assert page.evaluate("window.__abortedRequests['/api/calendar'] || 0") == 1
+    calendar_state = page.locator('#calendar [data-poll-endpoint="/api/calendar"]')
+    assert "Tidsavbrudd" in calendar_state.inner_text() or "utdatert" in calendar_state.inner_text().lower()
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/calendar'].controller") is None
+
+
+def test_auth_expiry_stops_all_endpoint_chains(page: Any, console_server: ConsoleServer) -> None:
+    """A 401 stops every timer and blocks further requests after expiry."""
+    _start_fake_poller(page, console_server, {"/api/status": {"status": 401, "body": {}}})
+    page.wait_for_function("window.consoleApp.authExpired === true")
+    counts_at_expiry = page.evaluate("window.__requestCounts")
+    page.clock.fast_forward(120000)
+
+    assert page.locator("#auth-expired").is_visible()
+    assert page.evaluate("window.__requestCounts") == counts_at_expiry
+    assert page.evaluate("Boolean(window.consoleApp.pollingEntries) && Object.values(window.consoleApp.pollingEntries).every((entry) => entry.timerId === null)")
+
+
+def test_poll_deadlines_ignore_wall_clock_jumps(page: Any, console_server: ConsoleServer) -> None:
+    """Moving wall time backward does not postpone a monotonic poll deadline."""
+    _start_fake_poller(page, console_server)
+    page.clock.set_fixed_time("2020-01-01T00:00:00")
+    page.clock.fast_forward(5000)
+
+    assert page.evaluate("window.__requestCounts['/api/status']") == 2

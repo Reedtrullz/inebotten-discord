@@ -553,9 +553,26 @@ pre {
 
 .card-footer {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: auto;
+}
+
+.endpoint-freshness {
+  min-width: 10rem;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.endpoint-freshness.is-stale {
+  color: var(--amber);
+}
+
+.poll-retry {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
 }
 
 .metric-grid {

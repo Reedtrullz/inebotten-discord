@@ -7,7 +7,6 @@ class ConsoleApp {
     this.lastUpdated = null;
     this.isPolling = false;
     this.authExpired = false;
-    this.pollingControllers = {};
     this.pollingBackoff = {};
     this._focusTrapHandler = null;
     this._lastFocusedElement = null;
@@ -23,6 +22,19 @@ class ConsoleApp {
       "/api/memory": { interval: 10000, lastFetch: 0 },
       "/api/logs?lines=50": { interval: 30000, lastFetch: 0 },
     };
+    this.requestTimeout = 15000;
+    this.pollingEntries = Object.fromEntries(Object.entries(this.pollingConfig).map(([endpoint, config]) => [endpoint, {
+      endpoint,
+      interval: config.interval,
+      timerId: null,
+      deadlineId: null,
+      controller: null,
+      generation: 0,
+      lastSuccess: null,
+      status: "idle",
+      deadline: null,
+      timedOut: false,
+    }]));
   }
 
   init() {
@@ -72,6 +84,9 @@ class ConsoleApp {
     document.querySelectorAll("[data-copy-logs]").forEach((button) => {
       button.addEventListener("click", () => copyLogs());
     });
+    document.querySelectorAll("[data-poll-retry]").forEach((button) => {
+      button.addEventListener("click", () => this.retryEndpoint(button.dataset.pollRetry));
+    });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") this.closeModal();
     });
@@ -110,11 +125,17 @@ class ConsoleApp {
   }
 
   touchUpdated() {
-    this.lastUpdated = new Date().toLocaleTimeString("no-NO", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    const entries = Object.values(this.pollingEntries);
+    const allFresh = entries.length > 0 && entries.every((entry) => entry.status === "fresh" && entry.lastSuccess !== null);
+    const anyFailure = entries.some((entry) => entry.status === "error" || entry.status === "timeout");
+    const anyPaused = entries.some((entry) => entry.status === "paused");
+    this.lastUpdated = this.authExpired
+      ? "Økta er utløpt"
+      : !this.isPolling && anyPaused
+        ? "Oppdatering satt på pause"
+        : anyFailure
+          ? "Noen data er utdaterte"
+          : allFresh ? "Alle data oppdatert" : "Oppdaterer data";
     const wrapper = document.getElementById("last-updated");
     const value = document.querySelector("[data-last-updated-time]");
     if (wrapper && value) {
@@ -126,32 +147,74 @@ class ConsoleApp {
   startPolling() {
     if (this.isPolling || this.authExpired) return;
     this.isPolling = true;
-    Object.keys(this.pollingConfig).forEach((endpoint) => {
-      this.pollEndpoint(endpoint);
+    Object.keys(this.pollingEntries).forEach((endpoint) => {
+      const entry = this.pollingEntries[endpoint];
+      if (entry.timerId !== null || entry.controller !== null) return;
+      this.pollEndpoint(endpoint, entry.generation);
     });
   }
 
   stopPolling() {
     this.isPolling = false;
-    Object.values(this.pollingControllers).forEach((controller) => controller.abort());
-    this.pollingControllers = {};
+    Object.values(this.pollingEntries).forEach((entry) => {
+      entry.generation += 1;
+      if (entry.timerId !== null) clearTimeout(entry.timerId);
+      if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+      entry.timerId = null;
+      entry.deadlineId = null;
+      entry.deadline = null;
+      entry.controller?.abort();
+      entry.controller = null;
+      entry.timedOut = false;
+      entry.status = "paused";
+      this.renderEndpointState(entry.endpoint);
+    });
   }
 
-  async pollEndpoint(endpoint) {
-    if (!this.isPolling || this.authExpired) return;
-    const config = this.pollingConfig[endpoint];
-    const now = Date.now();
-    const backoff = this.pollingBackoff[endpoint] || 0;
-    const interval = config.interval + backoff;
+  scheduleEndpoint(endpoint, delay, generation) {
+    const entry = this.pollingEntries[endpoint];
+    if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.timerId !== null) return;
+    entry.timerId = setTimeout(() => {
+      if (entry.generation !== generation) return;
+      entry.timerId = null;
+      this.pollEndpoint(endpoint, generation);
+    }, Math.max(0, delay));
+  }
 
-    if (now - config.lastFetch < interval) {
-      setTimeout(() => this.pollEndpoint(endpoint), interval - (now - config.lastFetch));
+  retryEndpoint(endpoint) {
+    const entry = this.pollingEntries[endpoint];
+    if (!entry || this.authExpired) return;
+    if (!this.isPolling) {
+      if (document.visibilityState === "hidden") return;
+      this.startPolling();
       return;
     }
+    if (entry.timerId !== null) clearTimeout(entry.timerId);
+    if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+    entry.timerId = null;
+    entry.deadlineId = null;
+    entry.controller?.abort();
+    entry.controller = null;
+    entry.generation += 1;
+    this.pollingBackoff[endpoint] = 0;
+    this.pollEndpoint(endpoint, entry.generation);
+  }
 
-    this.pollingControllers[endpoint]?.abort();
+  async pollEndpoint(endpoint, generation = this.pollingEntries[endpoint]?.generation) {
+    const entry = this.pollingEntries[endpoint];
+    if (!entry || !this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== null) return;
+    const config = this.pollingConfig[endpoint];
     const controller = new AbortController();
-    this.pollingControllers[endpoint] = controller;
+    entry.controller = controller;
+    entry.timedOut = false;
+    entry.deadline = performance.now() + this.requestTimeout;
+    entry.status = "loading";
+    this.renderEndpointState(endpoint);
+    entry.deadlineId = setTimeout(() => {
+      if (entry.generation !== generation || entry.controller !== controller) return;
+      entry.timedOut = true;
+      controller.abort();
+    }, this.requestTimeout);
 
     try {
       const response = await fetch(endpoint, {
@@ -163,29 +226,62 @@ class ConsoleApp {
         this.stopPolling();
         const banner = document.getElementById("auth-expired");
         if (banner) banner.hidden = false;
+        this.touchUpdated();
         return;
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const data = await response.json();
+      if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== controller) return;
       const key = endpoint.replace("/api/", "").replace("?lines=50", "");
       this.data[key] = data;
       this.pollingBackoff[endpoint] = 0;
-      config.lastFetch = now;
-      this.touchUpdated();
+      config.lastFetch = performance.now();
+      entry.lastSuccess = performance.now();
+      entry.status = "fresh";
       this.updateDashboard(key, data);
+      this.renderEndpointState(endpoint);
     } catch (error) {
-      if (error.name !== "AbortError") {
+      if (this.isPolling && !this.authExpired && entry.generation === generation) {
         this.pollingBackoff[endpoint] = Math.min((this.pollingBackoff[endpoint] || 0) + config.interval, 60000);
-        console.error(`Poll error for ${endpoint}:`, error);
+        entry.status = entry.timedOut ? "timeout" : "error";
+        this.renderEndpointState(endpoint);
+        if (!entry.timedOut && error.name !== "AbortError") console.error(`Poll error for ${endpoint}:`, error);
       }
     } finally {
-      delete this.pollingControllers[endpoint];
+      if (entry.generation === generation && entry.controller === controller) {
+        if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+        entry.deadlineId = null;
+        entry.deadline = null;
+        entry.controller = null;
+      }
     }
 
-    if (this.isPolling && !this.authExpired) {
-      setTimeout(() => this.pollEndpoint(endpoint), config.interval + (this.pollingBackoff[endpoint] || 0));
+    if (this.isPolling && !this.authExpired && entry.generation === generation) {
+      this.scheduleEndpoint(endpoint, config.interval + (this.pollingBackoff[endpoint] || 0), generation);
     }
+  }
+
+  renderEndpointState(endpoint) {
+    const entry = this.pollingEntries[endpoint];
+    if (!entry) return;
+    const age = entry.lastSuccess === null ? null : Math.max(0, Math.floor((performance.now() - entry.lastSuccess) / 1000));
+    const lastSuccess = entry.lastSuccess === null ? "" : String(entry.lastSuccess);
+    let label;
+    if (entry.status === "fresh") label = age === 0 ? "Oppdatert nå" : `Oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "loading") label = age === null ? "Laster inn" : `Oppdaterer · sist oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "timeout") label = age === null ? "Tidsavbrudd · ingen vellykket oppdatering" : `Tidsavbrudd · utdatert, sist oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "error") label = age === null ? "Feil · ingen vellykket oppdatering" : `Feil · utdatert, sist oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "paused") label = age === null ? "Pausert · ingen vellykket oppdatering" : `Pausert · sist oppdatert for ${age} sekunder siden`;
+    else label = "Venter på oppdatering";
+    document.querySelectorAll("[data-poll-endpoint]").forEach((element) => {
+      if (element.dataset.pollEndpoint !== endpoint) return;
+      element.textContent = label;
+      element.dataset.lastSuccess = lastSuccess;
+      element.dataset.pollStatus = entry.status;
+      element.classList.toggle("is-stale", entry.status === "error" || entry.status === "timeout");
+    });
+    this.touchUpdated();
   }
 
   updateDashboard(section, data) {

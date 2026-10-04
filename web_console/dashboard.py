@@ -216,6 +216,16 @@ def _modal_button(section: str, label: str = "Detaljer") -> str:
     )
 
 
+def _poll_controls(endpoint: str) -> str:
+    safe_endpoint = escape(endpoint)
+    return (
+        f'<span class="endpoint-freshness" data-poll-endpoint="{safe_endpoint}" '
+        f'data-last-success="" role="status" aria-live="polite">Venter på oppdatering</span>'
+        f'<button type="button" class="btn btn-secondary poll-retry" '
+        f'data-poll-retry="{safe_endpoint}">Prøv igjen</button>'
+    )
+
+
 def _metric_tile(label: str, value: object, *, metric: str | None = None) -> str:
     metric_attr = f' data-metric="{escape(metric)}"' if metric else ""
     return (
@@ -341,7 +351,7 @@ def _render_status_section(data: dict[str, Any]) -> str:
     <span class="badge {_status_badge(bot_status)}">{escape(_badge_text(bot_status, ok="Online", error="Offline"))}</span>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
-  <div class="card-footer">{_modal_button("status")}</div>
+  <div class="card-footer">{_poll_controls("/api/status")}{_modal_button("status")}</div>
 </section>"""
 
 
@@ -363,7 +373,7 @@ def _render_bridge_section(data: dict[str, Any]) -> str:
     <span class="badge {_status_badge(bridge_status)}">{escape(_badge_text(bridge_status, ok="Tilkoblet", error="Frakoblet"))}</span>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
-  <div class="card-footer">{_modal_button("bridge")}</div>
+  <div class="card-footer">{_poll_controls("/api/bridge")}{_modal_button("bridge")}</div>
 </article>"""
 
 
@@ -404,6 +414,7 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
   </div>
   <div class="card-footer">
     <a href="/gcal-auth" class="btn btn-secondary">Google-oppsett</a>
+    {_poll_controls("/api/calendar")}
     {_modal_button("calendar", "Vis alle")}
   </div>
 </section>"""
@@ -451,7 +462,7 @@ def _render_polls_section(data: dict[str, Any]) -> str:
     <span class="badge badge-neutral"><span data-metric="polls.active">{escape(str(active_polls))}</span> aktive</span>
   </div>
   <div class="card-body">{polls_html}</div>
-  <div class="card-footer">{_modal_button("polls", "Vis alle")}</div>
+  <div class="card-footer">{_poll_controls("/api/polls")}{_modal_button("polls", "Vis alle")}</div>
 </section>"""
 
 
@@ -487,7 +498,7 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
     <span class="badge badge-neutral"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
   <div class="card-body">{table_html}</div>
-  <div class="card-footer">{_modal_button("rate-limits")}</div>
+  <div class="card-footer">{_poll_controls("/api/rate-limits")}{_modal_button("rate-limits")}</div>
 </article>"""
 
 
@@ -516,7 +527,7 @@ def _render_intents_section(data: dict[str, Any]) -> str:
     <span class="badge {fallback_badge_class}">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
   <div class="card-body">{table_html}</div>
-  <div class="card-footer">{_modal_button("intents")}</div>
+  <div class="card-footer">{_poll_controls("/api/intents")}{_modal_button("intents")}</div>
 </article>"""
 
 
@@ -535,7 +546,7 @@ def _render_memory_section(data: dict[str, Any]) -> str:
     <div><h3>Minne</h3><p class="muted">Hva botten husker på tvers av samtaler.</p></div>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
-  <div class="card-footer">{_modal_button("memory")}</div>
+  <div class="card-footer">{_poll_controls("/api/memory")}{_modal_button("memory")}</div>
 </section>"""
 
 
@@ -552,6 +563,7 @@ def _render_logs_section(data: dict[str, Any]) -> str:
   </div>
   <div class="card-footer">
     <button type="button" class="btn btn-secondary" data-copy-logs>Kopier</button>
+    {_poll_controls("/api/logs?lines=50")}
     {_modal_button("logs", "Vis alle")}
   </div>
 </section>"""
