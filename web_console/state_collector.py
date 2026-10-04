@@ -1049,9 +1049,11 @@ def collect_memory_stats(monitor: object | None = None) -> dict[str, int]:
         return {"user_count": 0, "conversation_count": 0}
 
 
-def collect_logs(count: int = 200) -> dict[str, Any]:
-    from utils.logger import get_log_buffer
-    return {"logs": get_log_buffer().get_lines(count)}
+def collect_logs(count: int = 200, *, cursor=None, max_bytes=None, filters=None) -> dict[str, Any]:
+    from web_console.console_store import get_console_store
+    page = get_console_store().read_log_page(cursor, max_bytes=max_bytes if max_bytes is not None else max(1024, min(count * 256, 65536)), filters=filters or {})
+    page['logs'] = [row['line'] for row in reversed(page['records'])]
+    return page
 
 
 def generate_mock_data() -> dict[str, Any]:

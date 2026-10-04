@@ -990,7 +990,7 @@ class HermesBridgeServer:
             )
             return
 
-        logger.info(f"[{author_name}] {message[:60]}...")
+        logger.info('AI request received', extra={'component': 'bridge', 'outcome': 'received'})
         if system_prompt:
             logger.info(f"Received custom system prompt ({len(system_prompt)} chars)")
 

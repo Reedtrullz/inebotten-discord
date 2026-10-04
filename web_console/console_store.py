@@ -5,7 +5,6 @@ from __future__ import annotations
 # pyright: reportAny=false
 
 import hashlib
-import json
 import os
 import secrets
 import threading
@@ -25,9 +24,9 @@ def _empty_stats() -> dict[str, Any]:
 
 
 class ConsoleStore:
-    """Append-only JSONL store for logs and cumulative stats."""
+    """Bounded diagnostic logs, cumulative stats and private browser sessions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_log_bytes: int = 8 * 1024 * 1024, log_retention_days: int = 7) -> None:
         self._data_dir = hermes_discord_data_dir() / "console"
         self._data_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -40,6 +39,9 @@ class ConsoleStore:
         self._sessions_file = self._data_dir / "sessions.json"
         self._first_start_file = self._data_dir / "first_start.txt"
         self._lock = threading.RLock()
+        from web_console.log_store import DiagnosticLogs
+        self.max_log_bytes = max_log_bytes
+        self._diagnostic_logs = DiagnosticLogs(self._logs_file, max_log_bytes, log_retention_days)
         self._stats_storage = DocumentOwner(self._stats_file, lambda d: (
             d.get("version") == STATS_SCHEMA_VERSION and isinstance(d.get("intents", {}), dict)
             and isinstance(d.get("rate_limits", {}), dict)))
@@ -58,33 +60,34 @@ class ConsoleStore:
         if not lines:
             return
         try:
-            with self._lock, self._logs_file.open("a", encoding="utf-8") as handle:
+            with self._lock:
                 for line in lines:
-                    record = {"line": line, "ts": datetime.now().isoformat()}
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                try:
-                    os.chmod(self._logs_file, 0o600)
-                except OSError:
-                    pass
+                    self._diagnostic_logs.append(line=line)
             self._record_success("logs")
         except Exception as exc:
             self._record_error("append_logs", exc)
 
     def load_logs(self, count: int = 200) -> list[str]:
         try:
-            if not self._logs_file.exists():
-                return []
-            with self._lock, self._logs_file.open("r", encoding="utf-8") as handle:
-                raw_lines = handle.readlines()
-            parsed: list[str] = []
-            for raw in raw_lines[-count:]:
-                try:
-                    parsed.append(json.loads(raw)["line"])
-                except Exception:
-                    continue
-            return parsed
+            page = self.read_log_page(None, max_bytes=65536, filters={})
+            return [row['line'] for row in reversed(page['records'][:max(1, min(count, 2000))])]
         except Exception:
             return []
+
+    def append_record(self, **record) -> None:
+        with self._lock:
+            self._diagnostic_logs.append(**record)
+        self._record_success('logs')
+
+    def read_log_page(self, cursor: str | None, *, max_bytes: int, filters: dict) -> dict:
+        with self._lock:
+            return self._diagnostic_logs.read(cursor, max_bytes, filters)
+
+    def close(self) -> None:
+        with self._lock:
+            self._diagnostic_logs.close()
+            self._stats_storage.close()
+            self._sessions_storage.close()
 
     def save_stats(self, intent_stats: dict[str, Any], rate_limit_stats: dict[str, int]) -> bool:
         try:

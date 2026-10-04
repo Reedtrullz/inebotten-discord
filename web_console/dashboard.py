@@ -641,10 +641,16 @@ def _render_logs_section(data: dict[str, Any]) -> str:
     <span class="badge badge-neutral">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
   </div>
   <div class="card-body">
+    <label>Nivå <select data-log-level><option value="">Alle</option><option>ERROR</option><option>WARNING</option><option>INFO</option><option>DEBUG</option></select></label>
+    <label>Komponent <input data-log-component maxlength="64" placeholder="Alle"></label>
+    <p data-log-page-status class="muted" role="status"></p>
     <div id="log-container" class="log-console">{_render_log_block(log_lines)}</div>
   </div>
   <div class="card-footer">
     <button type="button" class="btn btn-secondary" data-copy-logs>Kopier</button>
+    <button type="button" class="btn btn-secondary" data-download-logs>Last ned vist side</button>
+    <button type="button" class="btn btn-secondary" data-log-pause aria-pressed="false">Sett på pause</button>
+    <button type="button" class="btn btn-secondary" data-log-older disabled>Eldre side</button>
     {_poll_controls("/api/logs?lines=50")}
     {_modal_button("logs", "Vis alle")}
   </div>

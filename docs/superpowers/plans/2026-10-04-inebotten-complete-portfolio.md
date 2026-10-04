@@ -356,11 +356,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify web_console/console_store.py, web_console/server.py, web_console/static/app.js, utils/logger.py; create tests/test_console_log_retention.py; extend frontend/security tests.
 **Interfaces:** read_log_page(cursor: str|None, max_bytes: int, filters: dict) -> dict returns records/next_cursor/truncated. Records carry timestamp, level, component, request_id and outcome; prompt/member content is excluded by default.
 
-- [ ] Add large-file bounded-read byte accounting, rotation boundaries, malformed rows, filtered pagination, pause-follow and redaction-before-persistence tests.
-- [ ] Reproduce whole-file readlines tail cost with generated logs and count bytes actually read.
-- [ ] Implement configured byte/age limits and reverse/cursor tail reads, keeping audit retention separate; add text-safe filters/copy/download with private access.
-- [ ] Run tests/test_console_log_retention.py, tests/test_logger_hardening.py and affected frontend tests.
-- [ ] Review measured I/O receipts and commit; never describe existing rotating application logs as universally unbounded.
+- [x] Add large-file bounded-read byte accounting, rotation boundaries, malformed rows, filtered pagination, pause-follow and redaction-before-persistence tests.
+- [x] Reproduce whole-file readlines tail cost with generated logs and count bytes actually read.
+- [x] Implement configured byte/age limits and reverse/cursor tail reads, keeping audit retention separate; add text-safe filters/copy/download with private access.
+- [x] Run tests/test_console_log_retention.py, tests/test_logger_hardening.py and affected frontend tests.
+- [x] Review measured I/O receipts and commit; never describe existing rotating application logs as universally unbounded.
 
 ### Task 25: I19 — Typed command catalogue and non-dispatch routing preview
 

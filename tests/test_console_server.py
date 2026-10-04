@@ -766,6 +766,23 @@ async def test_logs_endpoint():
         await stop_server(server, task)
 
 
+async def test_log_pages_are_private_and_reject_invalid_cursor_and_budget():
+    server, task = await start_server()
+    try:
+        assert b'401' in await request('/api/logs?level=ERROR')
+        for query in ('cursor=/etc/passwd', 'max_bytes=99999999', 'max_bytes=wrong', 'level=ERROR&level=INFO'):
+            response = await request('/api/logs?' + query, api_key=API_KEY)
+            assert b'400 Bad Request' in response
+        response = await request('/api/logs?max_bytes=4096&level=ERROR', api_key=API_KEY)
+        assert b'200 OK' in response
+        page = json_body(response)
+        assert page['bytes_read'] <= 4096
+        assert all(row['level'] == 'ERROR' for row in page['records'])
+        assert b'Cache-Control: no-store' in response
+    finally:
+        await stop_server(server, task)
+
+
 async def test_console_responses_include_security_headers():
     server, task = await start_server()
     try:

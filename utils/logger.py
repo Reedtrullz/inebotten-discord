@@ -17,6 +17,7 @@ from utils.json_storage import hermes_home_path
 
 
 _SENSITIVE_PATTERNS = (
+    (re.compile(r'(?i)((?:[A-Z0-9_]*API_KEY|CLIENT_SECRET|ACCESS_TOKEN|REFRESH_TOKEN|PASSWORD)\s*[:=]\s*)([^\s,;]+)'), r'\1[REDACTED]'),
     # Discord user/bot token-shaped values and common secret assignments.
     (re.compile(r"(?i)(DISCORD_USER_TOKEN\s*=\s*)([^\s,;]+)"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(OPENROUTER_API_KEY\s*=\s*)([^\s,;]+)"), r"\1[REDACTED]"),
@@ -38,9 +39,17 @@ def redact_sensitive(text: str) -> str:
     return redacted
 
 
+def diagnostic_line(text: str) -> str:
+    """Exclude legacy content-bearing debug messages from diagnostic sinks."""
+    value = redact_sensitive(text)
+    if re.search(r'(?i)(called for message:|mention detected from|members\s*:|prompt\s*[:=]|message content\s*[:=])', value):
+        return '[PRIVATE_CONTENT_OMITTED]'
+    return value
+
+
 class RedactingFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        return redact_sensitive(super().format(record))
+        return diagnostic_line(super().format(record))
 
 
 class PrivateRotatingFileHandler(RotatingFileHandler):
@@ -161,20 +170,21 @@ class LogBuffer:
                 pass
         return self._store
 
-    def append(self, line: str) -> None:
-        line = redact_sensitive(line)
+    def append(self, line: str, *, metadata: dict | None = None) -> None:
+        line = diagnostic_line(line)
         self._buffer.append(line)
         store = self._lazy_store()
         if store is not None:
-            store.append_logs([line])
+            if metadata is not None and hasattr(store, 'append_record'):
+                store.append_record(line=line, **metadata)
+            else:
+                store.append_logs([line])
 
     def get_lines(self, count: int = 200) -> list[str]:
         store = self._lazy_store()
         if store is not None:
             persisted = store.load_logs(count)
-            live = list(self._buffer)
-            combined = persisted + live
-            return combined[-count:]
+            return persisted if persisted else list(self._buffer)[-count:]
         return list(self._buffer)[-count:]
 
 
@@ -185,7 +195,9 @@ class BufferHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._buffer.append(self.format(record))
+            self._buffer.append(self.format(record), metadata={'level': record.levelname,
+                                'component': record.name, 'request_id': getattr(record, 'request_id', None),
+                                'outcome': getattr(record, 'outcome', 'observed')})
         except Exception:
             pass
 
@@ -195,18 +207,30 @@ class StdoutWrapper:
         self._stream = stream
         self._buffer = buffer
         self._pending = ""
+        self._discarding = False
 
     def write(self, data: str) -> None:
+        if self._discarding:
+            if '\n' not in data:
+                return
+            data = data.split('\n', 1)[1]
+            self._discarding = False
         self._pending += data
+        if len(self._pending) > 16384 and '\n' not in self._pending:
+            self._pending = ''
+            self._discarding = True
+            self._stream.write('[OVERSIZED_LOG_LINE_OMITTED]\n')
+            self._buffer.append('[OVERSIZED_LOG_LINE_OMITTED]')
+            return
         while "\n" in self._pending:
             line, self._pending = self._pending.split("\n", 1)
-            safe_line = redact_sensitive(line)
+            safe_line = diagnostic_line(line)
             self._stream.write(safe_line + "\n")
             self._buffer.append(safe_line)
 
     def flush(self) -> None:
         if self._pending:
-            self._stream.write(redact_sensitive(self._pending))
+            self._stream.write(diagnostic_line(self._pending))
             self._pending = ""
         self._stream.flush()
 

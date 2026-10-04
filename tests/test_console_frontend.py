@@ -447,10 +447,44 @@ def test_latest_logs_render_as_text_and_copy_matches_visible_lines(page: Any, co
     assert visible.locator("svg").count() == 0
     page.locator("[data-copy-logs]").click()
     page.wait_for_function("window.copiedLogs !== undefined")
-
     assert page.evaluate("window.copiedLogs") == visible.inner_text()
     assert page.evaluate("window.pwned || false") is False
 
+
+def test_log_pause_filter_cursor_and_download_use_one_owned_request(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f'{_base_url(console_server)}/demo')
+    page.evaluate("""() => {
+      window.calls = [];
+      window.fetch = async (url) => {
+        window.calls.push(url);
+        return {ok:true, status:200, json:async () => ({logs:['<svg> synthetic'],
+          next_cursor:'synthetic-cursor', truncated:true, bytes_read:4096})};
+      };
+      window.consoleApp.isPolling = true;
+      window.consoleApp.updateDashboard('logs', {logs:['initial'], next_cursor:'synthetic-cursor', truncated:true});
+      window.savedLog = null;
+      URL.createObjectURL = (blob) => {blob.text().then(text => window.savedLog = text); return 'blob:synthetic';};
+      URL.revokeObjectURL = () => {};
+      HTMLAnchorElement.prototype.click = () => {};
+    }""")
+    page.locator('[data-log-pause]').click()
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].paused")
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].timerId") is None
+    page.locator('[data-log-older]').click()
+    page.wait_for_function('() => window.calls.length === 1')
+    assert 'cursor=synthetic-cursor' in page.evaluate('window.calls[0]')
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].timerId") is None
+    page.locator('[data-log-level]').select_option('ERROR')
+    page.wait_for_function('() => window.calls.length === 2')
+    assert 'level=ERROR' in page.evaluate('window.calls[1]')
+    assert 'cursor=' not in page.evaluate('window.calls[1]')
+    page.locator('[data-download-logs]').click()
+    page.wait_for_function('() => window.savedLog !== null')
+    assert '<svg> synthetic' in page.evaluate('window.savedLog')
+    assert page.locator('#log-container svg').count() == 0
+    page.locator('[data-log-pause]').click()
+    page.wait_for_function('() => window.calls.length === 3')
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].timerId !== null")
 
 def test_calendar_refresh_keeps_keyboard_focus_and_narrow_layout(page: Any, console_server: ConsoleServer) -> None:
     """Updating details keeps the open dialog usable at a narrow viewport."""

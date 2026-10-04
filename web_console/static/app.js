@@ -84,6 +84,27 @@ class ConsoleApp {
     document.querySelectorAll("[data-copy-logs]").forEach((button) => {
       button.addEventListener("click", () => copyLogs());
     });
+    document.querySelector('[data-log-pause]')?.addEventListener('click', () => {
+      const entry = this.pollingEntries['/api/logs?lines=50'];
+      this.pauseLogs(!entry.paused);
+      if (!entry.paused) this.requestLogs();
+    });
+    document.querySelector('[data-log-older]')?.addEventListener('click', () => {
+      this.pauseLogs(true);
+      this.requestLogs(this.data.logs?.next_cursor);
+    });
+    ['[data-log-level]', '[data-log-component]'].forEach(selector => {
+      document.querySelector(selector)?.addEventListener('change', () => this.requestLogs());
+    });
+    document.querySelector('[data-download-logs]')?.addEventListener('click', () => {
+      const text = document.getElementById('log-container')?.innerText || '';
+      const url = URL.createObjectURL(new Blob([text], {type:'text/plain;charset=utf-8'}));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'inebotten-diagnostikk.txt';
+      link.click();
+      URL.revokeObjectURL(url);
+    });
     document.querySelectorAll("[data-poll-retry]").forEach((button) => {
       button.addEventListener("click", () => this.retryEndpoint(button.dataset.pollRetry));
     });
@@ -149,7 +170,7 @@ class ConsoleApp {
     this.isPolling = true;
     Object.keys(this.pollingEntries).forEach((endpoint) => {
       const entry = this.pollingEntries[endpoint];
-      if (entry.timerId !== null || entry.controller !== null) return;
+      if (entry.paused || entry.timerId !== null || entry.controller !== null) return;
       this.pollEndpoint(endpoint, entry.generation);
     });
   }
@@ -173,7 +194,7 @@ class ConsoleApp {
 
   scheduleEndpoint(endpoint, delay, generation) {
     const entry = this.pollingEntries[endpoint];
-    if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.timerId !== null) return;
+    if (!this.isPolling || this.authExpired || entry.paused || entry.generation !== generation || entry.timerId !== null) return;
     entry.timerId = setTimeout(() => {
       if (entry.generation !== generation) return;
       entry.timerId = null;
@@ -217,7 +238,7 @@ class ConsoleApp {
     }, this.requestTimeout);
 
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetch(endpoint === '/api/logs?lines=50' ? this.logRequestUrl() : endpoint, {
         credentials: "same-origin",
         signal: controller.signal,
       });
@@ -233,6 +254,13 @@ class ConsoleApp {
         if (banner) banner.hidden = false;
         this.touchUpdated();
         return;
+      }
+      if (endpoint === '/api/logs?lines=50' && response.status === 409) {
+        this.logCursor = null;
+        const status = document.querySelector('[data-log-page-status]');
+        if (status) status.textContent = 'Loggen er rotert. Hent siste side på nytt.';
+        this.data.logs.next_cursor = null;
+        document.querySelector('[data-log-older]')?.setAttribute('disabled', '');
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -535,6 +563,11 @@ class ConsoleApp {
         }
       }
     } else if (sectionName === "logs") {
+      this.data.logs = state;
+      const older = document.querySelector('[data-log-older]');
+      if (older) older.disabled = !state.next_cursor;
+      const status = document.querySelector('[data-log-page-status]');
+      if (status) status.textContent = state.truncated ? 'Avgrenset side. Eldre logger kan hentes separat.' : 'Ingen eldre logger i denne visningen.';
       const lines = Array.isArray(state.logs) ? state.logs.map((line) => String(line)) : [];
       const container = document.getElementById("log-container");
       if (container) {
@@ -576,6 +609,37 @@ class ConsoleApp {
       this.updateSectionModal(sectionName);
     }
     this.updateOverview();
+  }
+
+  pauseLogs(paused) {
+    const entry = this.pollingEntries['/api/logs?lines=50'];
+    entry.paused = paused;
+    if (entry.timerId !== null) clearTimeout(entry.timerId);
+    if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+    entry.timerId = entry.deadlineId = null;
+    entry.controller?.abort();
+    entry.controller = null;
+    entry.generation += 1;
+    const button = document.querySelector('[data-log-pause]');
+    if (button) {
+      button.textContent = paused ? 'Følg siste logger' : 'Sett på pause';
+      button.setAttribute('aria-pressed', String(paused));
+    }
+  }
+
+  logRequestUrl() {
+    const query = new URLSearchParams('lines=50');
+    const level = document.querySelector('[data-log-level]')?.value;
+    const component = document.querySelector('[data-log-component]')?.value.trim();
+    if (level) query.set('level', level);
+    if (component) query.set('component', component);
+    if (this.logCursor) query.set('cursor', this.logCursor);
+    return '/api/logs?' + query.toString();
+  }
+
+  requestLogs(cursor = null) {
+    this.logCursor = cursor;
+    this.retryEndpoint('/api/logs?lines=50');
   }
 
   updateOverview() {

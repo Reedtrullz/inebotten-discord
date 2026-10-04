@@ -644,7 +644,7 @@ class MessageMonitor:
         Generate and send an AI response to a mention.
         Uses Hermes AI with personality system.
         """
-        print(f"[MONITOR] _send_ai_response called for message: {message.content[:50]}...")
+        print('[MONITOR] AI response requested')
 
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
@@ -695,7 +695,7 @@ class MessageMonitor:
             dialect_response = get_personality().respond_to_dialect(message.content)
             if dialect_response:
                 response_text = dialect_response
-                print(f"[MONITOR] Using dialect response for: {message.content[:50]}")
+                print('[MONITOR] Using dialect response')
             
             # Fall back to AI if no dialect match and hermes is available
             if not response_text and self.hermes:

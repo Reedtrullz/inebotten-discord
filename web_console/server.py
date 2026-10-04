@@ -733,17 +733,20 @@ class ConsoleServer:
 
                 await self._send_response(writer, 200, get_google_credentials_status())
             elif path == "/api/logs":
-                parsed_query = urlparse(target)
-                query_lines = 200
-                if parsed_query.query:
-                    for pair in parsed_query.query.split("&"):
-                        if pair.startswith("lines="):
-                            try:
-                                query_lines = int(pair.split("=", 1)[1])
-                            except ValueError:
-                                pass
-                query_lines = max(1, min(query_lines, 2000))
-                await self._send_response(writer, 200, collect_logs(query_lines))
+                from utils.storage_contract import store_worker
+                try:
+                    query = parse_qs(urlparse(target).query, keep_blank_values=True, max_num_fields=8)
+                    if any(len(values) != 1 for values in query.values()):
+                        raise ValueError('invalid_query')
+                    query_lines = max(1, min(int(query.get('lines', ['200'])[0]), 2000))
+                    budget = int(query['max_bytes'][0]) if 'max_bytes' in query else None
+                    filters = {key: query[key][0] for key in ('level', 'component', 'outcome', 'request_id') if key in query}
+                    page = await store_worker(collect_logs, query_lines, cursor=query.get('cursor', [None])[0], max_bytes=budget, filters=filters)
+                except ValueError as error:
+                    code = 'stale_cursor' if str(error) == 'stale_cursor' else 'invalid_log_query'
+                    await self._send_response(writer, 409 if code == 'stale_cursor' else 400, {'error': code})
+                    return
+                await self._send_response(writer, 200, page)
             else:
                 await self._send_response(writer, 404, {"error": "Not found"})
         except Exception:
