@@ -17,6 +17,7 @@ from ai.result_schema import (
     MAX_AI_PROMPT_CHARS,
     MAX_AI_TEXT_CHARS,
     parse_retry_after,
+    read_provider_json,
 )
 from core.request_context import RequestContext
 
@@ -187,7 +188,7 @@ class HermesConnector:
         
         if response.status == 200:
             try:
-                data = await response.json()
+                data = await read_provider_json(response)
                 print("[HERMES] Response payload received")
                 # Handle different response formats
                 if isinstance(data, dict):
@@ -201,17 +202,13 @@ class HermesConnector:
                         result = None
                 else:
                     result = data
-                if isinstance(result, str) and len(result) <= MAX_AI_TEXT_CHARS:
+                if isinstance(result, str) and result.strip() and len(result) <= MAX_AI_TEXT_CHARS:
                     print(f"[HERMES] Using provider response ({len(result)} chars)")
                     return AIResult("success", result, self.provider, self.model)
                 self.last_error = "Invalid or oversized response text"
                 return AIResult("unavailable", None, self.provider, self.model)
-            except json.JSONDecodeError as e:
-                # Non-JSON response
-                print(f"[HERMES] Response parse error: {e}")
-                text = await response.text()
-                if len(text) <= MAX_AI_TEXT_CHARS:
-                    return AIResult("success", text, self.provider, self.model)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                self.last_error = "Invalid or oversized provider envelope"
                 return AIResult("unavailable", None, self.provider, self.model)
 
         elif response.status == 429:

@@ -18,6 +18,7 @@ from ai.result_schema import (
     MAX_AI_PROMPT_CHARS,
     MAX_AI_TEXT_CHARS,
     parse_retry_after,
+    read_provider_json,
 )
 from core.request_context import RequestContext
 
@@ -181,9 +182,9 @@ class OpenRouterConnector(LoggerMixin):
         
         if response.status == 200:
             try:
-                data = await response.json()
+                data = await read_provider_json(response)
                 if not expect_text:
-                    return AIResult("success", "", self.provider, self.model)
+                    return AIResult("success", "API reachable", self.provider, self.model)
                 content = None
                 if isinstance(data, dict):
                     choices = data.get("choices")
@@ -193,17 +194,14 @@ class OpenRouterConnector(LoggerMixin):
                             message = choice.get("message")
                             if isinstance(message, dict):
                                 content = message.get("content")
-                if isinstance(content, str) and len(content) <= MAX_AI_TEXT_CHARS:
+                if isinstance(content, str) and content.strip() and len(content) <= MAX_AI_TEXT_CHARS:
                     return AIResult("success", content, self.provider, self.model)
                 self.last_error = "Invalid or oversized response text"
                 return AIResult("unavailable", None, self.provider, self.model)
-            except json.JSONDecodeError as e:
-                text = await response.text()
-                self.logger.error(f"Response parse error: {e}")
-                if expect_text and len(text) <= MAX_AI_TEXT_CHARS:
-                    return AIResult("success", text, self.provider, self.model)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                self.last_error = "Invalid or oversized provider envelope"
                 return AIResult("unavailable", None, self.provider, self.model)
-                
+
         elif response.status == 401:
             self.error_count += 1
             self.last_error = "Unauthorized - Invalid API key"

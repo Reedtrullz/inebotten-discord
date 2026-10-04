@@ -17,6 +17,19 @@ MAX_AI_TEXT_CHARS = 20_000
 MAX_AI_PROMPT_CHARS = 50_000
 MAX_AI_IN_FLIGHT = 2
 MAX_RETRY_AFTER_S = 3_600.0
+MAX_AI_RESPONSE_BYTES = 131_072
+
+
+async def read_provider_json(response):
+    """Bound the HTTP envelope before decoding provider-controlled JSON."""
+    import json
+
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(8192):
+        if len(body) + len(chunk) > MAX_AI_RESPONSE_BYTES:
+            raise ValueError("Provider response exceeds envelope limit")
+        body.extend(chunk)
+    return json.loads(body)
 
 
 def parse_retry_after(value, *, default: float) -> float:
@@ -53,7 +66,7 @@ class AIResult:
         if not isinstance(self.fallback, bool):
             raise ValueError("AI fallback marker must be boolean")
         if self.status == "success":
-            if not isinstance(self.text, str):
+            if not isinstance(self.text, str) or not self.text.strip():
                 raise ValueError("Successful AI results require text")
             if len(self.text) > MAX_AI_TEXT_CHARS:
                 raise ValueError("AI response exceeds the configured size limit")
@@ -99,6 +112,13 @@ class BoundedAdmission:
             raise ValueError("max_in_flight must be a positive integer")
         self.max_in_flight = max_in_flight
         self.in_flight = 0
+        self._pending = set()
+
+    def _release(self, task):
+        self._pending.discard(task)
+        self.in_flight -= 1
+        if not task.cancelled():
+            task.exception()  # Consume failures from work cancelled by its caller.
 
     async def run(
         self,
@@ -116,11 +136,14 @@ class BoundedAdmission:
             return AIResult("cancelled", None, provider, model)
 
         self.in_flight += 1
+        task = None
         try:
-            try:
-                result = await asyncio.wait_for(operation(), timeout=remaining)
-            except asyncio.TimeoutError:
+            task = asyncio.create_task(operation())
+            self._pending.add(task)
+            done, _ = await asyncio.wait({task}, timeout=remaining)
+            if not done or time.monotonic() >= deadline:
                 return AIResult("cancelled", None, provider, model)
+            result = task.result()
             if not isinstance(result, AIResult):
                 return AIResult("unavailable", None, provider, model)
             return result
@@ -129,4 +152,11 @@ class BoundedAdmission:
         except Exception:
             return AIResult("unavailable", None, provider, model)
         finally:
-            self.in_flight -= 1
+            if task is None:
+                self.in_flight -= 1
+            elif task.done():
+                self._release(task)
+            else:
+                task.cancel()
+                # Keep the slot occupied while cancellation-resistant work lives.
+                task.add_done_callback(self._release)

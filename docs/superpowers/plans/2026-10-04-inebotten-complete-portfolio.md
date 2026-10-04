@@ -232,11 +232,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create ai/result_schema.py and tests/test_ai_outcomes.py; modify ai/hermes_connector.py, ai/openrouter_connector.py, ai/connector_factory.py, ai/action_schema.py and core/message_monitor.py.
 **Interfaces:** AIResult(status success|busy|cancelled|auth_error|retryable|unavailable, text: str|None, provider: str, model: str|None, fallback: bool, retry_after_s: float|None); async generate_reply(context: RequestContext, prompt: str, *, deadline: float) -> AIResult. parse_action_draft(raw: str) -> dict validates an allowlisted, inert action schema.
 
-- [ ] Add malformed/unknown draft, failed-domain-command, admission saturation, cancelled request, local-only preference, 429/5xx/auth and declared-fallback tests.
-- [ ] Demonstrate string/tuple ambiguity and command-error fallthrough using fake connectors.
-- [ ] Adapt connectors and bounded queue/admission, use explicit deadlines/retry policies, keep domain errors out of generic chat fallback, and preserve draft-only actions with confirmation.
-- [ ] Run tests/test_ai_outcomes.py, tests/test_action_schema.py, tests/test_message_monitor_routing.py and current-master tests/test_bridge_clients.py; no provider inference.
-- [ ] Review and commit; health consumers in I17 use this contract, never assume model listing proves inference.
+- [x] Add malformed/unknown draft, failed-domain-command, admission saturation, cancelled request, local-only preference, 429/5xx/auth and declared-fallback tests.
+- [x] Demonstrate string/tuple ambiguity and command-error fallthrough using fake connectors.
+- [x] Adapt connectors and bounded queue/admission, use explicit deadlines/retry policies, keep domain errors out of generic chat fallback, and preserve draft-only actions with confirmation.
+- [x] Run tests/test_ai_outcomes.py, tests/test_action_schema.py, tests/test_message_monitor_routing.py and current-master tests/test_bridge_clients.py; no provider inference.
+- [x] Review and commit; health consumers in I17 use this contract, never assume model listing proves inference.
 
 ### Task 15: I15 — Render all console state consistently
 

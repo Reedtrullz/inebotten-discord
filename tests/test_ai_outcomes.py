@@ -43,6 +43,12 @@ class FakeResponse:
         self.headers = headers or {}
         self.data = data
         self.body = body
+        self.content = self
+
+    async def iter_chunked(self, size):
+        raw = json.dumps(self.data).encode() if self.data is not None else self.body.encode()
+        for start in range(0, len(raw), size):
+            yield raw[start:start + size]
 
     async def json(self):
         return self.data
@@ -226,6 +232,65 @@ class AIOutcomeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(result, AIResult)
         self.assertEqual(result.status, "auth_error")
         self.assertIsNone(result.text)
+
+    async def test_malformed_http_success_is_never_an_assistant_reply(self):
+        for connector in (HermesConnector(), OpenRouterConnector(api_key="offline-test-key")):
+            with self.subTest(provider=connector.provider):
+                response = FakeResponse(200, body="<html>proxy login page</html>")
+                response.json = AsyncMock(side_effect=json.JSONDecodeError("bad", "<", 0))
+                result = await connector._handle_response(response)
+                self.assertEqual(result.status, "unavailable")
+                self.assertIsNone(result.text)
+
+    async def test_cancellation_resistant_provider_cannot_publish_late_success(self):
+        AIResult = require_result_type(self)
+        connector = HermesConnector()
+
+        async def late_request(*_args, **_kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return AIResult("success", "late", "hermes", "12b")
+
+        connector._make_request = late_request
+        result = await connector.generate_reply(request_context(), "test", deadline=time.monotonic() + .01)
+        self.assertEqual(result.status, "cancelled")
+        self.assertIsNone(result.text)
+
+    def test_success_requires_nonblank_assistant_text(self):
+        AIResult = require_result_type(self)
+        for text in ("", " \n "):
+            with self.assertRaises(ValueError):
+                AIResult("success", text, "hermes")
+
+    async def test_oversized_envelope_is_rejected_even_with_short_assistant_text(self):
+        connector = OpenRouterConnector(api_key="offline-test-key")
+        result = await connector._handle_response(FakeResponse(200, data={
+            "choices": [{"message": {"content": "Hei"}}], "padding": "x" * 131072,
+        }))
+        self.assertEqual(result.status, "unavailable")
+
+    async def test_deadline_returns_while_resistant_work_keeps_its_admission_slot(self):
+        from ai.result_schema import AIResult, BoundedAdmission
+        gate = BoundedAdmission(1)
+        release = asyncio.Event()
+
+        async def resistant():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+                return AIResult("success", "late", "hermes")
+
+        result = await asyncio.wait_for(gate.run(resistant,
+            deadline=time.monotonic() + .01, provider="hermes", model=None), .5)
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual((await gate.run(resistant,
+            deadline=time.monotonic() + 1, provider="hermes", model=None)).status, "busy")
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.assertEqual(gate.in_flight, 0)
 
     async def test_openrouter_forbidden_response_is_an_auth_error(self):
         connector = OpenRouterConnector(api_key="offline-test-key")
