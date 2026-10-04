@@ -1,4 +1,5 @@
 import asyncio
+from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,8 @@ from web_console.server import ConsoleServer, MAX_BODY_BYTES
 
 
 HOST = "127.0.0.1"
-PORT = 18080
+PORT = 0
+_test_port = ContextVar('console_test_port', default=0)
 API_KEY = "test-key-123"
 
 
@@ -36,7 +38,8 @@ class FakeCloudflareAccessVerifier:
 async def start_server(monitor: object | None = None, *, secure_cookies: bool | None = None) -> tuple[ConsoleServer, asyncio.Task[None]]:
     server = ConsoleServer(host=HOST, port=PORT, api_key=API_KEY, monitor=monitor, secure_cookies=secure_cookies)
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     return server, task
 
 
@@ -58,7 +61,7 @@ async def request(
     cookie: str | None = None,
     extra_headers: list[str] | None = None,
 ):
-    reader, writer = await asyncio.open_connection(HOST, PORT)
+    reader, writer = await asyncio.open_connection(HOST, _test_port.get())
     headers = [
         f"{method} {path} HTTP/1.1",
         "Host: localhost",
@@ -130,7 +133,8 @@ async def test_cloudflare_access_header_authenticates_when_enabled():
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request(
             "/api/status",
@@ -151,7 +155,8 @@ async def test_cloudflare_access_mode_keeps_api_key_recovery_auth():
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request("/api/status", api_key=API_KEY)
         assert b"200" in response
@@ -169,7 +174,8 @@ async def test_cloudflare_access_mode_does_not_show_api_key_login_without_access
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request("/")
         assert b"401" in response
@@ -188,7 +194,8 @@ async def test_cloudflare_access_mode_disables_browser_api_key_login():
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request(
             "/api/login",
@@ -685,7 +692,8 @@ async def test_login_throttles_repeated_failures():
         login_window_seconds=60,
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         body = b"api_key=wrong-key"
         assert b"401" in await request("/api/login", method="POST", body=body)

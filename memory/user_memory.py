@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
-from utils.storage_contract import DocumentOwner, StorageMutationError, user_records, writable_store
+from utils.storage_contract import DocumentOwner, StorageMutationError, user_records, writable_store, store_worker
 
 
 class UserMemory:
@@ -33,6 +33,14 @@ class UserMemory:
         self.memory = await self._load_memory()
 
     @property
+    def memory(self):
+        return self._storage.data
+
+    @memory.setter
+    def memory(self, value):
+        self._storage.data = value
+
+    @property
     def storage_state(self):
         return self._storage.state
 
@@ -40,7 +48,7 @@ class UserMemory:
         return await asyncio.to_thread(self._storage.load)
 
     async def _save_memory(self):
-        result = await asyncio.to_thread(self._storage.commit, self.memory, writer=write_json_atomic)
+        result = await store_worker(self._storage.commit, self.memory, writer=write_json_atomic)
         if not result.ok:
             self.memory = self._storage.rollback()
             raise StorageMutationError(result.error_code)

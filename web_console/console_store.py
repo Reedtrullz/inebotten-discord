@@ -88,25 +88,26 @@ class ConsoleStore:
 
     def save_stats(self, intent_stats: dict[str, Any], rate_limit_stats: dict[str, int]) -> bool:
         try:
-            existing = self._load_stats_raw()
-            self._stats_storage.require_writable()
-            existing["version"] = STATS_SCHEMA_VERSION
-            existing.setdefault("intents", {})
-            existing.setdefault("rate_limits", {})
-
-            for intent, stats in intent_stats.items():
-                if intent not in existing["intents"]:
-                    existing["intents"][intent] = {"count": 0, "low_confidence": 0, "errors": 0}
-                existing["intents"][intent]["count"] += int(stats.get("count", 0))
-                existing["intents"][intent]["low_confidence"] += int(stats.get("low_confidence", 0))
-                existing["intents"][intent]["errors"] += int(stats.get("errors", 0))
-
-            for user, count in rate_limit_stats.items():
-                existing["rate_limits"][user] = existing["rate_limits"].get(user, 0) + int(count)
-
-            existing["last_saved"] = datetime.now().isoformat()
-
             with self._lock:
+                self._stats_storage.claim()
+                existing = self._load_stats_raw()
+                self._stats_storage.require_writable()
+                existing["version"] = STATS_SCHEMA_VERSION
+                existing.setdefault("intents", {})
+                existing.setdefault("rate_limits", {})
+
+                for intent, stats in intent_stats.items():
+                    if intent not in existing["intents"]:
+                        existing["intents"][intent] = {"count": 0, "low_confidence": 0, "errors": 0}
+                    existing["intents"][intent]["count"] += int(stats.get("count", 0))
+                    existing["intents"][intent]["low_confidence"] += int(stats.get("low_confidence", 0))
+                    existing["intents"][intent]["errors"] += int(stats.get("errors", 0))
+
+                for user, count in rate_limit_stats.items():
+                    existing["rate_limits"][user] = existing["rate_limits"].get(user, 0) + int(count)
+
+                existing["last_saved"] = datetime.now().isoformat()
+
                 result = self._stats_storage.commit(existing, writer=write_json_atomic)
                 if not result.ok:
                     raise StorageMutationError(result.error_code)
@@ -144,6 +145,7 @@ class ConsoleStore:
         token = secrets.token_urlsafe(32)
         expires_at = int(time.time()) + max(1, ttl_seconds)
         with self._lock:
+            self._sessions_storage.claim()
             sessions = self._load_sessions_raw_unlocked()
             self._sessions_storage.require_writable()
             self._prune_sessions_unlocked(sessions)
@@ -166,10 +168,12 @@ class ConsoleStore:
             if not session:
                 return False
             if int(session.get("expires_at", 0)) <= int(time.time()):
+                self._sessions_storage.claim()
                 sessions.pop(token_hash, None)
                 self._save_sessions_unlocked(sessions)
                 return False
             if session.get("binding_hash") != binding_hash:
+                self._sessions_storage.claim()
                 sessions.pop(token_hash, None)
                 self._save_sessions_unlocked(sessions)
                 return False
@@ -181,6 +185,7 @@ class ConsoleStore:
             return
         token_hash = self._hash_token(token)
         with self._lock:
+            self._sessions_storage.claim()
             sessions = self._load_sessions_raw_unlocked()
             if token_hash in sessions:
                 sessions.pop(token_hash, None)
@@ -189,6 +194,7 @@ class ConsoleStore:
     def prune_expired_sessions(self) -> None:
         """Remove expired browser sessions."""
         with self._lock:
+            self._sessions_storage.claim()
             sessions = self._load_sessions_raw_unlocked()
             if self._prune_sessions_unlocked(sessions):
                 self._save_sessions_unlocked(sessions)

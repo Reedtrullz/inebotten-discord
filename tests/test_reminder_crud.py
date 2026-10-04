@@ -70,9 +70,7 @@ class ReminderManagerCRUDTests(unittest.TestCase):
     def test_search_reminders_includes_completed_reminders(self):
         _ = self.manager.add_reminder("123", "1", "Alice", "Kjøpe melk")
         completed = self.manager.add_reminder("123", "1", "Alice", "Ringe bestemor")
-        for reminder in self.manager.reminders["123"]:
-            if reminder["id"] == completed:
-                reminder["completed"] = True
+        self.manager.complete_reminder('123', reminder_id=completed)
 
         matches = self.manager.search_reminders("123", "bestemor")
 
@@ -91,11 +89,14 @@ class ReminderManagerCRUDTests(unittest.TestCase):
     def test_complete_reminder_uses_display_sorted_order(self):
         later_id = self.manager.add_reminder("123", "1", "Alice", "Lagt til først")
         earlier_id = self.manager.add_reminder("123", "1", "Alice", "Vises først")
-        for reminder in self.manager.reminders["123"]:
+        fixture = self.manager.reminders
+        for reminder in fixture["123"]:
             if reminder["id"] == later_id:
                 reminder["created_at"] = "2026-06-18T12:00:00"
             if reminder["id"] == earlier_id:
                 reminder["created_at"] = "2026-06-18T08:00:00"
+
+        self.manager.reminders = fixture
 
         success, text, _ = self.manager.complete_reminder("123", reminder_num=1)
 

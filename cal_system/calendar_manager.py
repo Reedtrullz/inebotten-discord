@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
-from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store
+from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store, store_worker
 
 
 class AwaitableDict(dict):
@@ -134,6 +134,14 @@ class CalendarManager:
         print(f"[CAL] Calendar system initialized with {sum(len(v) for v in self.items.values())} items")
 
     @property
+    def items(self):
+        return self._storage.data
+
+    @items.setter
+    def items(self, value):
+        self._storage.data = value
+
+    @property
     def storage_state(self):
         return self._storage.state
 
@@ -141,7 +149,10 @@ class CalendarManager:
         return await asyncio.to_thread(self._storage.load)
 
     async def _save_data(self):
-        await asyncio.to_thread(self._save_data_sync)
+        result = await store_worker(self._storage.commit, self.items, writer=write_json_atomic)
+        if not result.ok:
+            self.items = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
     def _save_data_sync(self):
         result = self._storage.commit(self.items, writer=write_json_atomic)
@@ -491,6 +502,16 @@ class CalendarManager:
                 self._save_data_sync()
                 return AwaitableDict(item)
         raise ValueError(f"Fant ikke kalenderoppføring med ID: {item_id}")
+
+    @writable_store
+    def attach_gcal_metadata(self, item_id, event_id, link):
+        for item in self.items.get(self.SHARED_KEY, []):
+            if item['id'] == item_id:
+                item['gcal_event_id'] = event_id
+                item['gcal_link'] = link
+                self._save_data_sync()
+                return AwaitableDict(item)
+        raise ValueError('Fant ikke kalenderoppføringen')
 
     def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None):
         if title is not None:

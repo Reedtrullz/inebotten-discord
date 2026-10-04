@@ -255,9 +255,8 @@ class CalendarHandler(BaseHandler):
             if self.calendar.gcal_enabled and item:
                 gcal_result = self._sync_to_gcal(item_data, message)
                 if gcal_result:
-                    item["gcal_event_id"] = gcal_result.get("id")
-                    item["gcal_link"] = gcal_result.get("htmlLink")
-                    await self.calendar._save_data()
+                    item = await self.calendar.attach_gcal_metadata(
+                        item['id'], gcal_result.get('id'), gcal_result.get('htmlLink'))
 
             if item:
                 response_text = self.calendar.format_single_item(item)

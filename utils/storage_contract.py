@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 import copy
+import asyncio
+from contextlib import contextmanager, asynccontextmanager
+from contextvars import ContextVar
+import hashlib
+import threading
 from dataclasses import dataclass
 from functools import wraps
 import inspect
@@ -11,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from utils.json_storage import write_json_atomic
+from utils.store_ownership import ProcessOwnership, StoreOwnedError
 
 
 @dataclass(frozen=True)
@@ -19,6 +25,7 @@ class StorageLoad:
     document: dict | None = None
     error_code: str | None = None
     legacy: bool = False
+    revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -51,10 +58,13 @@ def load_document(path: Path, schema_version: int) -> StorageLoad:
         return StorageLoad('corrupt', error_code='invalid_envelope')
     if version != schema_version:
         return StorageLoad('unsupported', error_code='unsupported_schema')
-    return StorageLoad('valid', value['document'])
+    revision = value.get('revision', 0)
+    if type(revision) is not int or revision < 0:
+        return StorageLoad('corrupt', error_code='invalid_revision')
+    return StorageLoad('valid', value['document'], revision=revision)
 
 
-def commit_document(path: Path, document: dict, schema_version: int, *, writer=None) -> StorageCommit:
+def commit_document(path: Path, document: dict, schema_version: int, *, writer=None, revision=0) -> StorageCommit:
     """Back up a legacy document before first migration; refuse unsafe inputs."""
     path = Path(path)
     current = load_document(path, schema_version)
@@ -76,7 +86,7 @@ def commit_document(path: Path, document: dict, schema_version: int, *, writer=N
                     handle.write(original)
                     handle.flush()
                     os.fsync(handle.fileno())
-        (writer or write_json_atomic)(path, {'schema_version': schema_version, 'document': document})
+        (writer or write_json_atomic)(path, {'schema_version': schema_version, 'revision': revision, 'document': document})
         return StorageCommit(True)
     except (OSError, TypeError, ValueError):
         return StorageCommit(False, 'write_failed')
@@ -100,51 +110,199 @@ def user_records(document):
                for user in document.values())
 
 
+async def store_worker(function, *args, **kwargs):
+    """Cancellation cannot release ownership while a file worker is writing."""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await worker
+        raise
+
+
+def _task_identity():
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
 class DocumentOwner:
-    """Last committed snapshot and degraded state for one manager's store."""
+    """One writer, serialized private drafts, copied committed snapshots."""
     def __init__(self, path: Path, validator: Callable[[dict], bool], schema_version=1):
-        self.path = path
+        self.path = Path(path)
         self.validator = validator
         self.schema_version = schema_version
         self.state = StorageLoad('missing')
         self.snapshot = {}
+        self.revision = 0
+        self._working = {}
+        self._mutex = threading.RLock()
+        self._async_lock = asyncio.Lock()
+        self._async_active = False
+        self._draft = ContextVar('store_draft', default=None)
+        self._ownership = ProcessOwnership(self.path)
+        self._owned = False
+        self._fingerprint = None
         self.load()
 
+    def _file_fingerprint(self):
+        try:
+            return hashlib.sha256(self.path.read_bytes()).digest()
+        except OSError:
+            return None
+
     def load(self) -> dict:
-        self.state = load_document(self.path, self.schema_version)
-        if self.state.status == 'valid' and not self.validator(self.state.document):
-            self.state = StorageLoad('corrupt', error_code='invalid_shape')
-        self.snapshot = copy.deepcopy(self.state.document or {}) if self.state.status == 'valid' else {}
-        return copy.deepcopy(self.snapshot)
+        with self._mutex:
+            self.state = load_document(self.path, self.schema_version)
+            if self.state.status == 'valid' and not self.validator(self.state.document):
+                self.state = StorageLoad('corrupt', error_code='invalid_shape')
+            self.snapshot = copy.deepcopy(self.state.document or {}) if self.state.status == 'valid' else {}
+            self._working = copy.deepcopy(self.snapshot)
+            self.revision = self.state.revision
+            self._fingerprint = self._file_fingerprint()
+            return copy.deepcopy(self.snapshot)
 
     def require_writable(self):
         if self.state.status in ('corrupt', 'unsupported'):
             raise StorageMutationError('read_only_' + self.state.status)
 
-    def commit(self, document: dict, *, writer=None) -> StorageCommit:
+    def claim(self):
         self.require_writable()
-        if not self.validator(document):
+        if not self._owned:
+            try:
+                self._ownership.acquire()
+            except StoreOwnedError as error:
+                raise StorageMutationError('store_owned') from error
+            self._owned = True
+            if self._file_fingerprint() != self._fingerprint:
+                self.load()
+                self.require_writable()
+
+    def _nested(self):
+        draft = self._draft.get()
+        return draft is not None and draft[0] is _task_identity() and draft[1] == threading.get_ident()
+
+    @property
+    def data(self):
+        draft = self._draft.get()
+        # to_thread propagates the transaction for copied worker inputs. A new
+        # asyncio task must not inherit mutable access to its parent's draft.
+        if draft is not None and (_task_identity() is None or self._nested()):
+            return draft[2]
+        with self._mutex:
+            return copy.deepcopy(self._working)
+
+    @data.setter
+    def data(self, value):
+        draft = self._draft.get()
+        if draft is not None and (_task_identity() is None or self._nested()):
+            draft[2].clear()
+            draft[2].update(copy.deepcopy(value))
+        else:
+            with self._mutex:
+                if self._async_active:
+                    raise StorageMutationError('store_busy')
+                self._working = copy.deepcopy(value)
+
+    @contextmanager
+    def transaction(self, *, write=True, asynchronous=False):
+        if self._nested():
+            yield True
+            return
+        with self._mutex:
+            if self._async_active and not asynchronous and write:
+                raise StorageMutationError('store_busy')
+            self.require_writable()
+            if write:
+                self.claim()
+            draft = copy.deepcopy(self._working)
+            token = self._draft.set((_task_identity(), threading.get_ident(), draft))
+            if asynchronous:
+                self._async_active = True
+            try:
+                yield False
+            except BaseException:
+                if write:
+                    self._working = self.rollback()
+                raise
+            else:
+                if write:
+                    self._working = copy.deepcopy(draft)
+            finally:
+                if asynchronous:
+                    self._async_active = False
+                self._draft.reset(token)
+
+    @asynccontextmanager
+    async def async_transaction(self, *, write=True):
+        if self._nested():
+            yield True
+            return
+        async with self._async_lock:
+            with self.transaction(write=write, asynchronous=True) as nested:
+                yield nested
+
+    def commit(self, document: dict, *, writer=None) -> StorageCommit:
+        # Worker inputs must be captured by the caller before scheduling.
+        self.require_writable()
+        self.claim()
+        candidate = copy.deepcopy(document)
+        if not self.validator(candidate):
             return StorageCommit(False, 'invalid_shape')
-        result = commit_document(self.path, copy.deepcopy(document), self.schema_version, writer=writer)
+        result = commit_document(self.path, candidate, self.schema_version,
+                                 writer=writer, revision=self.revision + 1)
         if result.ok:
-            self.snapshot = copy.deepcopy(document)
-            self.state = StorageLoad('valid', copy.deepcopy(document))
+            self.snapshot = candidate
+            self.revision += 1
+            self.state = StorageLoad('valid', copy.deepcopy(candidate), revision=self.revision)
+            self._fingerprint = self._file_fingerprint()
         return result
 
     def rollback(self) -> dict:
         return copy.deepcopy(self.snapshot)
 
+    def close(self):
+        self._ownership.close()
+        self._owned = False
+
+
+class VersionedJsonStore:
+    """Revision-checked mutations of private copies, published after commit."""
+    def __init__(self, path: Path, validator: Callable[[dict], bool], schema_version=1):
+        self.owner = DocumentOwner(path, validator, schema_version)
+
+    def snapshot(self) -> tuple[int, dict]:
+        return self.owner.revision, self.owner.rollback()
+
+    async def mutate(self, expected_revision: int | None, change: Callable[[dict], dict]) -> tuple[int, dict]:
+        async with self.owner.async_transaction():
+            if expected_revision is not None and expected_revision != self.owner.revision:
+                raise StorageMutationError('revision_conflict')
+            candidate = change(copy.deepcopy(self.owner.data))
+            result = await store_worker(self.owner.commit, copy.deepcopy(candidate))
+            if not result.ok:
+                raise StorageMutationError(result.error_code)
+            self.owner.data = candidate
+            return self.snapshot()
+
+    def close(self):
+        self.owner.close()
+
 
 def writable_store(method):
-    """Reject a degraded store before mutations or external side effects."""
+    """Serialize manager operations; only the owner can access a live draft."""
+    write = not method.__name__.startswith(('get_active', 'get_completed', 'get_upcoming', 'search_', 'export_', 'get_item'))
     if inspect.iscoroutinefunction(method):
         @wraps(method)
         async def asynchronous(self, *args, **kwargs):
-            self._storage.require_writable()
-            return await method(self, *args, **kwargs)
+            async with self._storage.async_transaction(write=write) as nested:
+                result = await method(self, *args, **kwargs)
+                return result if nested else copy.deepcopy(result)
         return asynchronous
     @wraps(method)
     def synchronous(self, *args, **kwargs):
-        self._storage.require_writable()
-        return method(self, *args, **kwargs)
+        with self._storage.transaction(write=write) as nested:
+            result = method(self, *args, **kwargs)
+            return result if nested else copy.deepcopy(result)
     return synchronous

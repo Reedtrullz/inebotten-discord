@@ -184,11 +184,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify utils/json_storage.py, cal_system/calendar_manager.py, cal_system/reminder_manager.py, memory/user_memory.py, web_console/console_store.py; create tests/test_storage_concurrency.py.
 **Interfaces:** VersionedJsonStore.snapshot() -> tuple[int, dict]; async mutate(expected_revision: int|None, change: Callable[[dict], dict]) -> tuple[int, dict]. Changes operate on a private copy; successful commit publishes the new revision/state. A process-held per-store ownership lock refuses a second writer.
 
-- [ ] Add test_barrier_updates_preserve_both_changes, test_worker_sees_immutable_snapshot, test_second_process_refused_before_mutation, and test_interrupted_commit_keeps_old_or_new_document.
-- [ ] Observe current unlocked read/merge/commit and live-dictionary races with deterministic barriers.
-- [ ] Lock the whole read/change/snapshot/commit, send only immutable copied data to bounded file workers, preserve the current state on failure, and use a documented cross-platform ownership-lock adapter.
-- [ ] Run tests/test_storage_concurrency.py, tests/test_storage_outcomes.py and touched-store tests; include Windows lock behavior in platform CI.
-- [ ] Review and commit adoption slices; document crash-durability guarantees and justify any fsync against those guarantees.
+- [x] Add test_barrier_updates_preserve_both_changes, test_worker_sees_immutable_snapshot, test_second_process_refused_before_mutation, and test_interrupted_commit_keeps_old_or_new_document.
+- [x] Observe current unlocked read/merge/commit and live-dictionary races with deterministic barriers.
+- [x] Lock the whole read/change/snapshot/commit, send only immutable copied data to bounded file workers, preserve the current state on failure, and use a documented cross-platform ownership-lock adapter.
+- [x] Run tests/test_storage_concurrency.py, tests/test_storage_outcomes.py and touched-store tests; include Windows lock behavior in platform CI.
+- [x] Review and commit adoption slices; document crash-durability guarantees and justify any fsync against those guarantees.
 
 ### Task 11: I03 — One sender with truthful delivery and reserved quotas
 

@@ -28,6 +28,14 @@ class ReminderManager:
         self.reminders = self._storage.rollback()
 
     @property
+    def reminders(self):
+        return self._storage.data
+
+    @reminders.setter
+    def reminders(self, value):
+        self._storage.data = value
+
+    @property
     def storage_state(self):
         return self._storage.state
 
