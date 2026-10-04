@@ -9,7 +9,16 @@ import asyncio
 import aiohttp
 import os
 from datetime import datetime
-from urllib.parse import quote
+import time
+
+from ai.result_schema import (
+    AIResult,
+    BoundedAdmission,
+    MAX_AI_PROMPT_CHARS,
+    MAX_AI_TEXT_CHARS,
+    parse_retry_after,
+)
+from core.request_context import RequestContext
 
 
 # Load system prompt from file
@@ -68,6 +77,9 @@ class HermesConnector:
         self.request_count = 0
         self.error_count = 0
         self.last_error = None
+        self.provider = "hermes"
+        self.model = model_size
+        self._reply_admission = BoundedAdmission()
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.api_key = (
@@ -109,7 +121,7 @@ class HermesConnector:
             await self.session.close()
             self.session = None
 
-    async def _make_request(self, url: str, method: str = "GET", payload: dict = None) -> tuple[bool, any]:
+    async def _make_request(self, url: str, method: str = "GET", payload: dict = None) -> AIResult:
         """
         Make API request with comprehensive error handling
         
@@ -119,7 +131,7 @@ class HermesConnector:
             payload: Optional payload for POST requests
             
         Returns:
-            (success, response_data or error_message)
+            A validated provider outcome.
         """
         try:
             session = await self._get_session()
@@ -135,33 +147,33 @@ class HermesConnector:
             self.error_count += 1
             self.last_error = "Request timeout"
             print(f"[HERMES] Request timed out after 30s")
-            return False, "Request timeout (30s)"
+            return AIResult("retryable", None, self.provider, self.model)
             
         except aiohttp.ClientConnectorError as e:
             self.error_count += 1
             self.last_error = f"Connection error: {type(e).__name__}"
             print(f"[HERMES] Network error: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"Cannot connect to Hermes: {type(e).__name__}"
+            return AIResult("unavailable", None, self.provider, self.model)
             
         except aiohttp.ClientError as e:
             self.error_count += 1
             self.last_error = f"Client error: {type(e).__name__}"
             print(f"[HERMES] HTTP client error: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"HTTP error: {type(e).__name__}"
+            return AIResult("retryable", None, self.provider, self.model)
             
         except json.JSONDecodeError as e:
             self.error_count += 1
             self.last_error = f"JSON decode error: {str(e)[:100]}"
             print(f"[HERMES] Invalid JSON response: {str(e)[:100]}")
-            return False, "Invalid response format"
+            return AIResult("unavailable", None, self.provider, self.model)
             
         except Exception as e:
             self.error_count += 1
             self.last_error = f"Unexpected error: {type(e).__name__}"
             print(f"[HERMES] Unexpected error: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"Request error: {type(e).__name__}"
+            return AIResult("unavailable", None, self.provider, self.model)
 
-    async def _handle_response(self, response: aiohttp.ClientResponse) -> tuple[bool, any]:
+    async def _handle_response(self, response: aiohttp.ClientResponse) -> AIResult:
         """
         Handle HTTP response with proper error handling
         
@@ -169,53 +181,66 @@ class HermesConnector:
             response: The aiohttp response object
             
         Returns:
-            (success, response_data or error_message)
+            A validated provider outcome.
         """
         print(f"[HERMES] Response status: {response.status}")
         
         if response.status == 200:
             try:
                 data = await response.json()
-                print(f"[HERMES] Response data: {str(data)[:150]}...")
+                print("[HERMES] Response payload received")
                 # Handle different response formats
                 if isinstance(data, dict):
                     if "response" in data:
-                        print(f"[HERMES] Using 'response' field: {data['response'][:80]}...")
-                        return True, data["response"]
+                        result = data["response"]
                     elif "message" in data:
-                        return True, data["message"]
+                        result = data["message"]
                     elif "content" in data:
-                        return True, data["content"]
+                        result = data["content"]
                     else:
-                        return True, str(data)
+                        result = None
                 else:
-                    return True, str(data)
+                    result = data
+                if isinstance(result, str) and len(result) <= MAX_AI_TEXT_CHARS:
+                    print(f"[HERMES] Using provider response ({len(result)} chars)")
+                    return AIResult("success", result, self.provider, self.model)
+                self.last_error = "Invalid or oversized response text"
+                return AIResult("unavailable", None, self.provider, self.model)
             except json.JSONDecodeError as e:
                 # Non-JSON response
                 print(f"[HERMES] Response parse error: {e}")
                 text = await response.text()
-                return True, text
-                
+                if len(text) <= MAX_AI_TEXT_CHARS:
+                    return AIResult("success", text, self.provider, self.model)
+                return AIResult("unavailable", None, self.provider, self.model)
+
         elif response.status == 429:
-            retry_after = int(response.headers.get('Retry-After', 5))
+            retry_after = parse_retry_after(
+                response.headers.get("Retry-After", 5), default=5.0
+            )
             self.error_count += 1
             self.last_error = f"Rate limited (retry after {retry_after}s)"
             print(f"[HERMES] Rate limited, retry after {retry_after}s")
-            return False, f"Rate limited (retry after {retry_after}s)"
+            return AIResult("busy", None, self.provider, self.model, retry_after_s=retry_after)
             
         elif response.status >= 500:
             self.error_count += 1
             self.last_error = f"Server error {response.status}"
             error_text = await response.text()
             print(f"[HERMES] Server error {response.status}: {error_text[:100]}")
-            return False, f"Server error (status {response.status})"
+            return AIResult("retryable", None, self.provider, self.model)
+
+        elif response.status in (401, 403):
+            self.error_count += 1
+            self.last_error = f"Authentication error {response.status}"
+            return AIResult("auth_error", None, self.provider, self.model)
             
         else:
             self.error_count += 1
             self.last_error = f"HTTP {response.status}"
             error_text = await response.text()
             print(f"[HERMES] HTTP error {response.status}: {error_text[:100]}")
-            return False, f"API error (status {response.status})"
+            return AIResult("unavailable", None, self.provider, self.model)
 
     async def check_health(self):
         """
@@ -248,6 +273,63 @@ class HermesConnector:
         except Exception as e:
             return False, f"Health check error: {type(e).__name__}"
 
+    async def generate_reply(
+        self,
+        context: RequestContext,
+        prompt: str,
+        *,
+        deadline: float,
+    ) -> AIResult:
+        """Generate one response before an absolute monotonic deadline."""
+        return await self._generate_reply(
+            context,
+            prompt,
+            deadline=deadline,
+            temperature=None,
+            max_tokens=None,
+            is_mention=True,
+        )
+
+    async def _generate_reply(
+        self,
+        context: RequestContext,
+        prompt: str,
+        *,
+        deadline: float,
+        temperature: float | None,
+        max_tokens: int | None,
+        is_mention: bool,
+        system_prompt: str | None = None,
+        author_name: str = "bruker",
+    ) -> AIResult:
+        if not isinstance(prompt, str) or len(prompt) > MAX_AI_PROMPT_CHARS:
+            return AIResult("unavailable", None, self.provider, self.model)
+
+        channel_types = {"dm": "DM", "group_dm": "GROUP_DM", "guild": "GUILD_TEXT"}
+        payload = {
+            "message": prompt,
+            "author_name": author_name,
+            "channel_type": channel_types.get(context.channel_kind, "UNKNOWN"),
+            "timestamp": datetime.now().isoformat(),
+            "is_mention": is_mention,
+            "temperature": self.temperature if temperature is None else temperature,
+            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+        }
+        selected_prompt = system_prompt or self.default_system_prompt
+        if selected_prompt:
+            payload["system_prompt"] = selected_prompt
+
+        async def request():
+            self.request_count += 1
+            return await self._make_request(self.base_url, method="POST", payload=payload)
+
+        return await self._reply_admission.run(
+            request,
+            deadline=deadline,
+            provider=self.provider,
+            model=self.model,
+        )
+
     async def generate_response(
         self,
         message_content,
@@ -273,42 +355,27 @@ class HermesConnector:
         Returns:
             (success, response_text or error_message)
         """
-        # Build payload
-        payload = {
-            "message": message_content,
-            "author_name": author_name,
-            "channel_type": channel_type,
-            "timestamp": datetime.now().isoformat(),
-            "is_mention": is_mention,
-        }
-
-        # Add system prompt (use provided, or default, or none)
-        if system_prompt:
-            payload["system_prompt"] = system_prompt
-        elif self.default_system_prompt:
-            payload["system_prompt"] = self.default_system_prompt
-            
-        # Add temperature and max_tokens if specified
-        if temperature is not None:
-            payload["temperature"] = temperature
-        else:
-            payload["temperature"] = self.temperature
-            
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        else:
-            payload["max_tokens"] = self.max_tokens
-
-        try:
-            self.request_count += 1
-            success, result = await self._make_request(self.base_url, method="POST", payload=payload)
-            return success, result
-
-        except Exception as e:
-            self.error_count += 1
-            self.last_error = str(e)
-            print(f"[HERMES] Unexpected error in generate_response: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"Request error: {type(e).__name__}"
+        channel_kinds = {"DM": "dm", "GROUP_DM": "group_dm", "GUILD_TEXT": "guild"}
+        context = RequestContext(
+            request_id="legacy",
+            user_id=str(author_name),
+            channel_id="legacy",
+            guild_id=None,
+            locale="no",
+            channel_kind=channel_kinds.get(str(channel_type).upper(), "unknown"),
+        )
+        prompt = str(message_content)
+        result = await self._generate_reply(
+            context,
+            prompt,
+            deadline=time.monotonic() + 30,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            is_mention=is_mention,
+            system_prompt=system_prompt,
+            author_name=str(author_name),
+        )
+        return result.legacy_tuple()
 
     async def generate_calendar_response(self, query, author_name):
         """

@@ -5,6 +5,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+import time
 from utils.storage_contract import StorageMutationError
 from core.outbound_sender import monitor_sender
 from core.access_policy import AccessPolicy, invocation_decision
@@ -21,6 +22,8 @@ import discord
 from core.intent_router import BotIntent, IntentRouter
 from core.request_context import RequestContext, request_scope, request_localization
 from core.intent_thresholds import CONFIDENCE_THRESHOLDS
+from ai.action_schema import parse_action_draft
+from ai.result_schema import AIResult, MAX_AI_PROMPT_CHARS
 from core.intent_keywords import (
     CALENDAR_KEYWORDS,
     COMPLETE_KEYWORDS,
@@ -65,6 +68,7 @@ COMMAND_REGISTRY = [
 
 
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
+AI_REPLY_TIMEOUT_S = 20.0
 
 
 def _counter_stats_delta(current, previous):
@@ -510,17 +514,20 @@ class MessageMonitor:
                 self.error_count += 1
                 await self._send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
             except Exception as exc:
-                import traceback
-
                 route_name = route.intent.value if route else "unknown"
                 print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
-                traceback.print_exc()
                 self.error_count += 1
                 self.intent_stats[route_name]["errors"] += 1
-                try:
-                    await self._send_ai_response(message)
-                except Exception as ai_exc:
-                    print(f"[MONITOR] AI fallback also failed: {ai_exc}")
+                error_message = (
+                    "🤖 Jeg fikk ikke hentet et svar nå. Prøv igjen om litt."
+                    if route and route.intent == BotIntent.AI_CHAT
+                    else "❌ Kommandoen kunne ikke fullføres. Kontroller status før du prøver igjen, "
+                    "eller bruk hjelp."
+                )
+                await self._send_response(
+                    message,
+                    error_message,
+                )
 
     async def _handle_intent(self, message, route):
         """Execute the handler for a routed intent."""
@@ -543,7 +550,10 @@ class MessageMonitor:
             await self._send_status_response(message)
         elif route.intent == BotIntent.PROFILE:
             if not await self.handlers["profile"].handle_profile_command(message):
-                await self._send_ai_response(message)
+                await self._send_response(
+                    message,
+                    "Jeg kjenner ikke igjen profilkommandoen. Prøv status eller aktivitet.",
+                )
         elif route.intent == BotIntent.CALENDAR_LIST:
             await self.handlers["calendar"].handle_list(message)
         elif route.intent == BotIntent.CALENDAR_SYNC:
@@ -789,20 +799,48 @@ class MessageMonitor:
 
                         print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
 
-                        success, ai_response = await self.hermes.generate_response(
-                            message_content=message.content,
-                            author_name=message.author.name,
-                            channel_type=channel_type,
-                            is_mention=True,
-                            system_prompt=system_prompt,
-                        )
+                        from core.request_context import current_request
 
-                        if success and ai_response:
-                            print("[MONITOR] Using personalized AI response")
-                            # Parse and execute actions before sending
-                            response_text = await self._parse_and_execute_actions(ai_response, message)
+                        request_context = current_request() or RequestContext.from_message(
+                            message, "no"
+                        )
+                        prompt = f"{system_prompt}\n\nBrukermelding:\n{message.content}"
+                        if len(prompt) > MAX_AI_PROMPT_CHARS:
+                            result = AIResult("unavailable", None, "monitor", None)
+                        elif not callable(getattr(self.hermes, "generate_reply", None)):
+                            result = AIResult("unavailable", None, "monitor", None)
+                        else:
+                            result = await self.hermes.generate_reply(
+                                request_context,
+                                prompt,
+                                deadline=time.monotonic() + AI_REPLY_TIMEOUT_S,
+                            )
+
+                        if not isinstance(result, AIResult):
+                            result = AIResult("unavailable", None, "monitor", None)
+                        if result.status == "success" and result.text:
+                            print(
+                                f"[MONITOR] AI response from {result.provider} "
+                                f"(fallback={result.fallback})"
+                            )
+                            response_text = await self._parse_and_execute_actions(
+                                result.text, message
+                            )
+                            if result.fallback and response_text:
+                                origin = result.provider
+                                if result.model:
+                                    origin += f" ({result.model})"
+                                response_text = (
+                                    f"_(Svar fra lokal reserve {origin})_\n\n"
+                                    f"{response_text}"
+                                )
+                        else:
+                            response_text = self._ai_outcome_message(result)
                 except Exception as e:
                     print(f"[MONITOR] Personalized AI failed: {e}")
+                    response_text = self._ai_outcome_message(
+                        AIResult("unavailable", None, "monitor", None)
+                    )
 
         # Fallback: dashboard or basic response
         if not response_text:
@@ -814,80 +852,45 @@ class MessageMonitor:
                     user_id=message.author.id
                 )
             else:
-                from ai.personality_config import get_fallback_response
-                response_text = get_fallback_response("general")
+                response_text = self._ai_outcome_message(
+                    AIResult("unavailable", None, "monitor", None)
+                )
 
         # Send the response
         await self._send_response(message, response_text)
 
     async def _parse_and_execute_actions(self, response_text, message):
-        """
-        Parses AI response for [ACTION] tags and executes them.
-        Returns the cleaned response text.
-        """
-        cleaned_text = response_text
-        import json
+        """Turn one validated model draft into user-confirmed text only."""
+        output_lines = []
+        draft_confirmation = None
+        for line in response_text.splitlines():
+            action = parse_action_draft(line.strip())
+            if action and action.get("action") == "SAVE_EVENT" and draft_confirmation is None:
+                draft_confirmation = self._append_calendar_draft_confirmation(
+                    "", action["title"], action["date"], action["time"]
+                )
+            else:
+                output_lines.append(line)
 
-        # 0. Try JSON format first
-        for line in cleaned_text.split('\n'):
-            line = line.strip()
-            if line.startswith('{') and line.endswith('}'):
-                try:
-                    action_data = json.loads(line)
-                    action_type = action_data.get('action')
-                    if action_type == 'SAVE_EVENT':
-                        title = action_data.get('title', '')
-                        date = action_data.get('date', '')
-                        time = action_data.get('time', '')
-                        print(f"[ROUTER] Drafted SAVE_EVENT action (JSON), waiting for user confirmation: {title} on {date} at {time}")
-                        cleaned_text = cleaned_text.replace(line, '').strip()
-                        cleaned_text = self._append_calendar_draft_confirmation(
-                            cleaned_text, title, date, time
-                        )
-                    elif action_type == 'SHOW_DASHBOARD':
-                        print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
-                        try:
-                            guild_id = message.guild.id if message.guild else message.channel.id
-                            user_mem = await self.user_memory.get_user(message.author.id)
-                            city_name = user_mem.get("location", "Oslo")
-
-                            dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
-                            await self._send_response(message, dashboard_text)
-                        except Exception as e:
-                            print(f"[ROUTER] Failed to show dashboard: {e}")
-
-                        cleaned_text = cleaned_text.replace(line, '').strip()
-                except json.JSONDecodeError:
-                    pass
-
-        # 1. Handle [SAVE_EVENT: Title | Date | Time]
-        event_match = re.search(r'\[SAVE_EVENT:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]', cleaned_text)
-        if event_match:
-            title, date, time = event_match.groups()
-            print(f"[ROUTER] Drafted SAVE_EVENT action, waiting for user confirmation: {title} on {date} at {time}")
-            
-            cleaned_text = cleaned_text.replace(event_match.group(0), "").strip()
-            cleaned_text = self._append_calendar_draft_confirmation(
-                cleaned_text, title, date, time
-            )
-
-        # 2. Handle [SHOW_DASHBOARD]
-        if '[SHOW_DASHBOARD]' in cleaned_text:
-            print("[ROUTER] Detected SHOW_DASHBOARD action")
-            try:
-                guild_id = message.guild.id if message.guild else message.channel.id
-                # Get location from user memory
-                user_mem = await self.user_memory.get_user(message.author.id)
-                city_name = user_mem.get("location", "Oslo")
-                
-                dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
-                await self._send_response(message, dashboard_text)
-            except Exception as e:
-                print(f"[ROUTER] Failed to show dashboard: {e}")
-            
-            cleaned_text = cleaned_text.replace('[SHOW_DASHBOARD]', "").strip()
-            
+        cleaned_text = "\n".join(output_lines).strip()
+        if draft_confirmation:
+            cleaned_text = f"{cleaned_text}\n\n{draft_confirmation}".strip()
         return cleaned_text
+
+    @staticmethod
+    def _ai_outcome_message(result: AIResult) -> str:
+        if result.status == "busy":
+            delay = result.retry_after_s
+            if delay is not None:
+                return f"🤖 Jeg er opptatt akkurat nå. Prøv igjen om {max(1, int(delay))} sekunder."
+            return "🤖 Jeg er opptatt akkurat nå. Prøv igjen om litt."
+        if result.status == "cancelled":
+            return "🤖 Forespørselen ble avbrutt før jeg rakk å svare."
+        if result.status == "auth_error":
+            return "🤖 AI-tilkoblingen trenger oppmerksomhet. Prøv igjen senere."
+        if result.status == "retryable":
+            return "🤖 AI-tjenesten feilet midlertidig. Prøv igjen om litt."
+        return "🤖 AI-tjenesten er ikke tilgjengelig akkurat nå."
 
     def _append_calendar_draft_confirmation(self, text, title, date, time):
         """Ask the user to confirm model-suggested calendar writes explicitly."""
