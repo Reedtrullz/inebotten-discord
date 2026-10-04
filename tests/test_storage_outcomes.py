@@ -140,7 +140,7 @@ async def test_calendar_create_commits_before_external_effect(tmp_path, monkeypa
         raise OSError('synthetic full disk')
     monkeypatch.setattr('cal_system.calendar_manager.write_json_atomic', fail)
     await handler.handle_calendar_item(message, {'title': 'Uncommitted', 'date': '01.01.2027'})
-    assert handler.send_response.await_count == 1
+    assert handler.send_response.await_count == 2
     assert 'Kunne ikke lagre' in handler.send_response.await_args.args[1]
     assert manager.items == {}
 

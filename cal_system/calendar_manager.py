@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
+from cal_system.event_schema import EventTime, Clock
 from core.access_policy import AccessPolicy
 from core.request_context import current_request
 
@@ -78,7 +79,7 @@ class CalendarManager:
     Manages calendar items - everything is just something happening on a date
     """
 
-    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None, access_policy=None):
+    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None, access_policy=None, clock=None):
         if storage_path is None:
             storage_path = hermes_discord_data_path("calendar.json")
 
@@ -90,6 +91,7 @@ class CalendarManager:
         self.owner_name = owner_name
         self.last_gcal_sync_error = None
         self.SHARED_KEY = "shared"
+        self.clock = clock or Clock()
         self.access_policy = access_policy or AccessPolicy()
         self._storage = DocumentOwner(self.storage_path, bucket_records("title", require_ids=True))
         self.items = self._storage.rollback()  # Will be transitioned to {self.SHARED_KEY: [...]}
@@ -115,6 +117,9 @@ class CalendarManager:
                 'item_ids': [item['id'] for item in self.items.get(source, [])],
                 'source_revision': self._storage.revision, 'requires_confirmation': True,
                 'warnings': ['Dette er bare en forhåndsvisning; eksisterende data er ikke flyttet.']}
+
+    def preview_item_time(self, item):
+        return EventTime.from_item(item).preview()
 
     def ensure_gcal_configured(self):
         """Refresh or lazily initialize Google Calendar integration."""
@@ -201,9 +206,17 @@ class CalendarManager:
         gcal_event_id=None,
         gcal_link=None,
         channel_id=None,
+        kind=None, timezone="Europe/Oslo", all_day=None, duration_minutes=None, fold=None,
     ):
         """Add a new item to the calendar"""
         date_str = self._normalize_date_format(date_str)
+        raw_time = {'date': date_str, 'time': time_str, 'timezone': timezone,
+                    'duration_minutes': duration_minutes, 'fold': fold}
+        if kind is not None:
+            raw_time['kind'] = kind
+        if all_day is not None:
+            raw_time['all_day'] = all_day
+        event_time = EventTime.from_item(raw_time).validate_local()
 
         guild_key = self.scope_key(guild_id, operation='write')
         if guild_key not in self.items:
@@ -226,6 +239,8 @@ class CalendarManager:
             "channel_id": str(channel_id) if channel_id else None,
         }
 
+        item.update(event_time.fields())
+        item["time_interpretation"] = event_time.preview()
         self.items[guild_key].append(item)
         self._save_data_sync()
         return AwaitableDict(item)
@@ -502,7 +517,7 @@ class CalendarManager:
         return count, completed_titles, has_recurring
 
     @writable_store
-    def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None):
+    def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None):
         """Edit a calendar item by its list number (1-based, matching delete/complete patterns)"""
         guild_key = self.scope_key(operation='write')
         items = self.get_upcoming(guild_key, days=365)
@@ -512,19 +527,19 @@ class CalendarManager:
 
         item = items[index - 1]
 
-        self._apply_item_updates(item, title, date, time, recurrence, description)
+        self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
         self._save_data_sync()
         self._sync_item_update_to_gcal(item)
         self._save_data_sync()
         return AwaitableDict(item)
 
     @writable_store
-    def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None):
+    def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None):
         """Edit a calendar item by stable ID, including past/non-upcoming entries."""
         guild_key = self.scope_key(operation='write')
         for item in self.items.get(guild_key, []):
             if item.get("id") == item_id:
-                self._apply_item_updates(item, title, date, time, recurrence, description)
+                self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
                 self._save_data_sync()
                 self._sync_item_update_to_gcal(item)
                 self._save_data_sync()
@@ -541,17 +556,25 @@ class CalendarManager:
                 return AwaitableDict(item)
         raise ValueError('Fant ikke kalenderoppføringen')
 
-    def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None):
+    def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None):
         if title is not None:
             item["title"] = title
         if date is not None:
             item["date"] = self._normalize_date_format(date)
         if time is not None:
-            item["time"] = time
+            item["time"] = time or None
+            item['all_day'] = not bool(time)
+        if date is not None or time is not None:
+            item['fold'] = None
+        for key, value in (('duration_minutes', duration_minutes), ('kind', kind), ('timezone', timezone), ('fold', fold)):
+            if value is not None:
+                item[key] = value
         if recurrence is not None:
             item["recurrence"] = recurrence
         if description is not None:
             item["description"] = description
+        event_time = EventTime.from_item(item).validate_local()
+        item.update(event_time.fields())
 
     def _sync_item_update_to_gcal(self, item):
         if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
@@ -565,6 +588,7 @@ class CalendarManager:
                 time_str=item.get("time"),
                 recurrence=item.get("recurrence"),
                 rrule_day=item.get("rrule_day") or item.get("recurrence_day"),
+                event_time=EventTime.from_item(item).fields(),
             )
             if result and isinstance(result, dict):
                 if result.get("id"):
@@ -623,7 +647,9 @@ class CalendarManager:
         if item.get("recurrence"):
             # Update to next date
             next_date = self._calculate_next_date(item["date"], item["recurrence"])
-            item["date"] = next_date
+            item['date'] = next_date
+            item['fold'] = None
+            item.update(EventTime.from_item(item).validate_local().fields())
             self._save_data_sync()
             return True, title, next_date
         else:
@@ -735,29 +761,13 @@ class CalendarManager:
 
             start = event.get("start", {})
             
-            # Parse date and time from GCal
-            date_str = ""
-            time_str = None
-            
             try:
-                if "dateTime" in start:
-                    # ISO format: 2024-04-24T10:00:00+02:00
-                    dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00"))
-                    from zoneinfo import ZoneInfo
-                    local_dt = dt.astimezone(ZoneInfo("Europe/Oslo"))
-                    date_str = local_dt.strftime("%d.%m.%Y")
-                    time_str = local_dt.strftime("%H:%M")
-                else:
-                    # Date only: 2024-04-24
-                    d_str = start.get("date", "")
-                    if d_str:
-                        dt = datetime.strptime(d_str, "%Y-%m-%d")
-                        date_str = dt.strftime("%d.%m.%Y")
-            except Exception as e:
-                print(f"[CAL] Error parsing GCal date for {summary}: {e}")
-                continue
-
-            if not date_str:
+                remote_time = EventTime.from_google(event)
+                remote_time.validate_local()
+                date_str = remote_time.local_date.strftime('%d.%m.%Y')
+                time_str = remote_time.fields()['time']
+            except (ValueError, KeyError, TypeError):
+                self.last_gcal_sync_error = 'En Google-oppføring har ugyldig dato/tid; lokal versjon er bevart.'
                 continue
 
             # Extract creator information if available
@@ -793,6 +803,9 @@ class CalendarManager:
             if matched_gcal_key:
                 # Existing item, check for updates
                 guild_id, item = gcal_map[matched_gcal_key]
+                if item.get('kind') == 'task':
+                    self.last_gcal_sync_error = 'En koblet oppgave krever eksplisitt valg før remote arrangement endrer den.'
+                    continue
                 changed = False
                 if item.get("gcal_event_id") != canonical_gcal_id:
                     item["gcal_event_id"] = canonical_gcal_id
@@ -808,6 +821,11 @@ class CalendarManager:
                     item["time"] = time_str
                     changed = True
                 
+                for key, value in remote_time.fields().items():
+                    if item.get(key) != value:
+                        item[key] = value
+                        changed = True
+
                 # Update username/user_id if it's currently generic and we found better info
                 if item.get("username") == "Google Calendar" and gcal_username != "Google Calendar":
                     item["username"] = gcal_username
@@ -842,6 +860,8 @@ class CalendarManager:
                     gcal_event_id=canonical_gcal_id,
                     gcal_link=event.get("htmlLink"),
                     channel_id=fallback_channel_id,
+                    kind=remote_time.kind, timezone=remote_time.timezone, all_day=remote_time.all_day,
+                    duration_minutes=remote_time.duration_minutes, fold=remote_time.fold,
                 )
                 
                 # If it was completed, mark it so (add_item defaults to False)
@@ -863,7 +883,7 @@ class CalendarManager:
 
     def _remove_missing_gcal_items(self, seen_gcal_ids, days=90):
         """Remove local GCal-backed items absent from Google inside the sync window."""
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = self.clock.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
         cutoff = today + timedelta(days=days)
         removed_count = 0
         self._gcal_lookup_changed = False
@@ -936,7 +956,7 @@ class CalendarManager:
         if guild_key not in self.items:
             return []
 
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = self.clock.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
         cutoff = today + timedelta(days=days)
 
         upcoming = []
@@ -1025,6 +1045,13 @@ class CalendarManager:
             f"👤 Lagt til av: {item.get('username', 'Ukjent')}",
         ]
 
+        meaning = EventTime.from_item(item)
+        lines.append('📋 Oppgave med frist' if meaning.kind == 'task' else '📅 Heldagsarrangement' if meaning.all_day else f'🕘 Tidssone: {meaning.timezone}')
+        if meaning.duration_minutes is not None:
+            lines.append(f'Varighet: {meaning.duration_minutes} minutter')
+        elif not meaning.all_day and meaning.kind == 'event':
+            lines.append('Varighet er ikke valgt; oppføringen synkes ikke som et Google-arrangement før varigheten er avklart.')
+
         if item.get("recurrence"):
             labels = {
                 "weekly": "hver uke",
@@ -1075,7 +1102,7 @@ class CalendarManager:
         month = int(match.group(2))
         year_value = match.group(3)
         if year_value is None:
-            year = datetime.now().year
+            year = self.clock.now().year
         elif len(year_value) == 2:
             year = 2000 + int(year_value)
         else:

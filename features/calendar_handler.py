@@ -238,6 +238,13 @@ class CalendarHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
 
+            from cal_system.event_schema import EventTime
+            self.calendar.scope_key(guild_id, 'write')
+            meaning = EventTime.from_item({**item_data, 'kind': item_data.get('kind', item_data.get('type', 'event'))})
+            meaning.validate_local()
+            description = ('oppgave med frist' if meaning.kind == 'task' else 'heldagsarrangement' if meaning.all_day else f'arrangement kl. {meaning.local_time:%H:%M} ({meaning.timezone})')
+            duration = f'{meaning.duration_minutes} minutter' if meaning.duration_minutes else 'ikke valgt'
+            await self.send_response(message, f'📋 Tolkning før lagring: {description}, dato {meaning.local_date:%d.%m.%Y}, varighet {duration}.')
             # Add to calendar
             item = await self.calendar.add_item(
                 guild_id=guild_id,
@@ -251,11 +258,15 @@ class CalendarHandler(BaseHandler):
                 gcal_event_id=None,
                 gcal_link=None,
                 channel_id=message.channel.id,
+                kind=item_data.get("kind", item_data.get("type", "event")),
+                duration_minutes=item_data.get("duration_minutes"),
+                timezone=item_data.get("timezone", "Europe/Oslo"),
+                fold=item_data.get("fold"),
             )
 
             # Commit locally before performing an external effect. I11 owns retries.
             if self.calendar.gcal_enabled and item:
-                gcal_result = self._sync_to_gcal(item_data, message)
+                gcal_result = self._sync_to_gcal(item, message)
                 if gcal_result:
                     item = await self.calendar.attach_gcal_metadata(
                         item['id'], gcal_result.get('id'), gcal_result.get('htmlLink'))
@@ -269,6 +280,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except ValueError as error:
+            await self.send_response(message, f"❌ Dato/tid må avklares før lagring: {getattr(error, 'reason_code', 'invalid_date_or_time')}. Velg gyldig dato, tidspunkt og eventuell DST-fold (0/1).")
         except PermissionError:
             await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
@@ -280,38 +293,20 @@ class CalendarHandler(BaseHandler):
         """
         Sync a calendar item to Google Calendar with proper timezone support.
         """
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
-        
+        from cal_system.event_schema import EventTime
         try:
-            day, month, year = map(int, item_data["date"].split("."))
-            time_parts = (item_data.get("time") or "09:00").split(":")
-            hour = int(time_parts[0])
-            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
-
-            # Create start datetime in local timezone
-            local_tz = ZoneInfo("Europe/Oslo")
-            start_dt = datetime(year, month, day, hour, minute, tzinfo=local_tz)
-            
-            # End time is 1 hour later
-            end_dt = start_dt + timedelta(hours=1)
-
+            value = EventTime.from_item(item_data)
+            start, end = value.google_times()
             return self.calendar.gcal.create_event(
-                title=item_data["title"],
-                start_time=start_dt.isoformat(),
-                end_time=end_dt.isoformat(),
-                description=item_data.get("description", item_data["title"]),
-                recurrence=item_data.get("recurrence"),
-                rrule_day=item_data.get("rrule_day"),
-                discord_user_id=message.author.id,
-                discord_username=message.author.name,
-            )
-        except PermissionError:
+                title=item_data['title'], start_time=start.get('date') or start.get('dateTime'),
+                end_time=end.get('date') or end.get('dateTime'), all_day=value.all_day,
+                event_timezone=value.timezone, description=item_data.get('description', item_data['title']),
+                recurrence=item_data.get('recurrence'), rrule_day=item_data.get('rrule_day'),
+                discord_user_id=message.author.id, discord_username=message.author.name)
+        except (PermissionError, StorageMutationError):
             raise
-        except StorageMutationError:
-            raise
-        except Exception as e:
-            self.log(f"Error preparing GCal sync: {e}")
+        except Exception:
+            self.log('Kunne ikke klargjøre Google-synkronisering; lokal oppføring er bevart.')
             return None
 
     async def handle_list(self, message) -> None:
@@ -574,6 +569,11 @@ class CalendarHandler(BaseHandler):
         "beskrivelse": "description",
         "description": "description",
         "desc": "description",
+        "varighet": "duration_minutes",
+        "duration": "duration_minutes",
+        "tidssone": "timezone",
+        "timezone": "timezone",
+        "fold": "fold",
     }
 
     def _parse_edit_command(self, content: str):
@@ -673,11 +673,26 @@ class CalendarHandler(BaseHandler):
                 )
                 return
 
+            if kwarg_field in ('duration_minutes', 'fold'):
+                try:
+                    value = int(value)
+                except ValueError:
+                    await self.send_response(message, '❌ Varighet må være positive minutter; fold må være 0 eller 1.')
+                    return
+            explicit_fold = None
+            if kwarg_field in ('date', 'time'):
+                match = re.search(r'\s+fold\s*[:=]?\s*([01])\s*$', value, re.IGNORECASE)
+                if match:
+                    explicit_fold = int(match.group(1))
+                    value = value[:match.start()].strip()
             if kwarg_field == "date":
                 parsed = self._parse_date_value(value)
                 if parsed:
                     value = parsed
 
+            changes = {kwarg_field: value}
+            if explicit_fold is not None:
+                changes['fold'] = explicit_fold
             if index is None and search_text:
                 matches = self.calendar.search_items(search_text)
                 if not matches:
@@ -705,7 +720,7 @@ class CalendarHandler(BaseHandler):
 
                 target_item = upcoming_matches[0][1]
                 updated_item = await self.calendar.edit_item_by_id(
-                    target_item.get("id"), **{kwarg_field: value}
+                    target_item.get("id"), **changes
                 )
                 await self.send_response(
                     message,
@@ -720,7 +735,7 @@ class CalendarHandler(BaseHandler):
 
             try:
                 updated_item = await self.calendar.edit_item(
-                    index, **{kwarg_field: value}
+                    index, **changes
                 )
                 await self.send_response(
                     message,

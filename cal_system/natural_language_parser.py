@@ -6,6 +6,7 @@ Understands flexible Norwegian and English event descriptions
 
 import re
 from datetime import datetime, timedelta
+from cal_system.event_schema import EventTime, Clock
 
 from core.intent_utils import has_keyword
 
@@ -15,7 +16,8 @@ class NaturalLanguageParser:
     Parses natural language event descriptions into structured data
     """
     
-    def __init__(self):
+    def __init__(self, clock=None):
+        self.clock = clock or Clock()
         self.setup_patterns()
     
     def setup_patterns(self):
@@ -194,7 +196,7 @@ class NaturalLanguageParser:
             if recurrence_data:
                 # Default to today for recurrence-only patterns like "regninger hver måned"
                 from datetime import datetime
-                today = datetime.now()
+                today = self.clock.now()
                 date_str = today.strftime('%d.%m.%Y')
                 days_offset = 0
             else:
@@ -230,6 +232,17 @@ class NaturalLanguageParser:
                 result['recurrence_day'] = recurrence_data['day']
                 result['rrule_day'] = recurrence_data['rrule_day']
         
+        fold_match = re.search(r'\bfold\s*[:=]?\s*([01])\b', content, re.IGNORECASE)
+        if fold_match:
+            result['fold'] = int(fold_match.group(1))
+        duration_match = re.search(r'\b(?:varighet|varer)\s+(\d{1,5})\s*(?:minutter|min)\b', content, re.IGNORECASE)
+        if duration_match:
+            result['duration_minutes'] = int(duration_match.group(1))
+        try:
+            result['time_preview'] = EventTime.from_item({**result, 'kind': item_type}).preview()
+        except (ValueError, TypeError):
+            return None
+        result['kind'] = item_type
         return result
     
     def _determine_item_type(self, content):
@@ -333,7 +346,7 @@ class NaturalLanguageParser:
             if date_match:
                 day_num = date_match.group(1)
                 month_num = date_match.group(2)
-                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(datetime.now().year)
+                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(self.clock.now().year)
                 if len(year) == 2:
                     year = '20' + year
                 start_date = f"{int(day_num):02d}.{int(month_num):02d}.{year}"
@@ -349,7 +362,7 @@ class NaturalLanguageParser:
             if date_match:
                 day_num = date_match.group(1)
                 month_name = date_match.group(2).lower()
-                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(datetime.now().year)
+                year = date_match.group(3) if date_match.lastindex >= 3 and date_match.group(3) else str(self.clock.now().year)
                 day_name = None
         else:
             # If we matched Pattern 1, extract components
@@ -357,7 +370,7 @@ class NaturalLanguageParser:
                 day_name = date_match.group(1).lower()
                 day_num = date_match.group(2)
                 month_name = date_match.group(3).lower()
-                year = date_match.group(4) if date_match.lastindex >= 4 and date_match.group(4) else str(datetime.now().year)
+                year = date_match.group(4) if date_match.lastindex >= 4 and date_match.group(4) else str(self.clock.now().year)
         
         if not date_match:
             return None
@@ -593,7 +606,7 @@ class NaturalLanguageParser:
         Returns: (date_string, days_offset) or (None, None)
         """
         content_lower = content.lower()
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = self.clock.now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
 
         # 1. Check for explicit DD.MM.YYYY or DD.MM
         date_match = re.search(r'(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?', content)

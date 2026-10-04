@@ -220,11 +220,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create cal_system/event_schema.py and tests/test_calendar_time_model.py; modify cal_system/calendar_manager.py, cal_system/natural_language_parser.py, cal_system/google_calendar_manager.py, cal_system/reminder_checker.py and features/calendar_handler.py.
 **Interfaces:** EventTime(kind event|task, local_date: date, local_time: time|None, timezone: str, all_day: bool, duration_minutes: int|None); Clock.now(timezone: str) -> aware datetime and Clock.monotonic() -> float. Default timezone remains Europe/Oslo.
 
-- [ ] Add tests for all-day round trips, custom duration preservation, invalid dates/times, DST gap/fold previews, midnight, UTC/Oslo hosts and test_wall_clock_jump_does_not_change_elapsed_deadline.
-- [ ] Reproduce default-noon/fixed-duration conversion with synthetic events; record legacy interpretations as migration fixtures.
-- [ ] Add the model and aware clock, losslessly migrate old strings, display inferred values before saving, reject ambiguous/nonexistent times without explicit resolution, and adapt remote start/end plus date-only reminder policy.
-- [ ] Run tests/test_calendar_time_model.py, tests/test_calendar_edit.py, tests/test_calendar_sync.py and date-parser/false-positive tests.
-- [ ] Review migration receipts and commit slices; no silent invention of event durations or task-as-event conversion.
+- [x] Add tests for all-day round trips, custom duration preservation, invalid dates/times, DST gap/fold previews, midnight, UTC/Oslo hosts and test_wall_clock_jump_does_not_change_elapsed_deadline.
+- [x] Reproduce default-noon/fixed-duration conversion with synthetic events; record legacy interpretations as migration fixtures.
+- [x] Add the model and aware clock, losslessly migrate old strings, display inferred values before saving, reject ambiguous/nonexistent times without explicit resolution, and adapt remote start/end plus date-only reminder policy.
+- [x] Run tests/test_calendar_time_model.py, tests/test_calendar_edit.py, tests/test_calendar_sync.py and date-parser/false-positive tests.
+- [x] Review migration receipts and commit slices; no silent invention of event durations or task-as-event conversion.
 
 ### Task 14: I12 — Structured AI outcomes and bounded admission
 

@@ -15,7 +15,8 @@ Tracks sent reminders in a JSON file to avoid duplicate pings.
 import copy
 import time
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from cal_system.event_schema import EventTime, Clock
 from pathlib import Path
 
 from zoneinfo import ZoneInfo
@@ -41,7 +42,9 @@ class ReminderChecker:
         send_ping_message_func=None,
         storage_path=None,
         outbound_sender=None,
+        clock=None,
     ):
+        self.clock = clock or Clock(wall=lambda: datetime.now(timezone.utc))
         self.calendar = calendar_manager
         self.reminders = reminder_manager
         self.events = event_manager
@@ -51,7 +54,7 @@ class ReminderChecker:
         self.outbound = outbound_sender or OutboundSender(get_channel_func, send_channel_message=send_channel_message_func)
         self.running = False
         self._morning_digest_sent = False
-        self._last_gcal_sync = 0
+        self._last_gcal_sync = None
 
         self.stats = {
             "30min_sent": 0,
@@ -94,7 +97,7 @@ class ReminderChecker:
         cutoff = int(time.time()) - 172800
         candidate['reminders_sent'] = {key: value for key, value in candidate.get('reminders_sent', {}).items()
                                       if isinstance(value, (int, float)) and value > cutoff}
-        cutoff_date = (datetime.now(ZoneInfo('Europe/Oslo')) - timedelta(days=30)).strftime('%Y-%m-%d')
+        cutoff_date = (self.clock.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         candidate['digest_log'] = {key: value for key, value in candidate.get('digest_log', {}).items()
                                   if isinstance(value, str) and value >= cutoff_date}
         # Unresolved acceptance is never discarded into automatic replay.
@@ -157,14 +160,14 @@ class ReminderChecker:
 
     def _digest_already_sent_today(self, guild_id, channel_id):
         key = f"{guild_id}:{channel_id}"
-        today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
+        today_key = self.clock.now().strftime("%Y-%m-%d")
         digest_log = self.sent_log.get("digest_log", {})
         return digest_log.get(key) == today_key
 
     @writable_store
     async def _mark_digest_sent_today(self, guild_id, channel_id):
         key = f"{guild_id}:{channel_id}"
-        today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
+        today_key = self.clock.now().strftime("%Y-%m-%d")
         self.sent_log.setdefault("digest_log", {})[key] = today_key
         await self._save_sent_log()
 
@@ -172,12 +175,12 @@ class ReminderChecker:
 
     async def check_upcoming_30min(self):
         """Check calendar items & reminders due within 30 minutes, ping creator in channel"""
-        now = datetime.now(ZoneInfo("Europe/Oslo"))
+        now = self.clock.now()
         thirty_min = now + timedelta(minutes=30)
 
         # Check calendar items from CalendarManager
         if self.calendar:
-            for guild_id, items_list in self.calendar.items.items():
+            for guild_id, items_list in self._calendar_buckets().items():
                 for item in items_list:
                     if item.get("completed"):
                         continue
@@ -217,13 +220,13 @@ class ReminderChecker:
 
     async def check_event_now(self):
         """Check for events happening NOW and send notifications"""
-        now = datetime.now(ZoneInfo("Europe/Oslo"))
+        now = self.clock.now()
         one_minute_ago = now - timedelta(minutes=1)
         one_minute_ahead = now + timedelta(minutes=1)
 
         # Check calendar items
         if self.calendar:
-            for guild_id, items_list in self.calendar.items.items():
+            for guild_id, items_list in self._calendar_buckets().items():
                 for item in items_list:
                     if item.get("completed"):
                         continue
@@ -263,12 +266,12 @@ class ReminderChecker:
 
     async def check_event_passed(self):
         """Check for events that just happened (within last 5 minutes)"""
-        now = datetime.now(ZoneInfo("Europe/Oslo"))
+        now = self.clock.now()
         five_minutes_ago = now - timedelta(minutes=5)
 
         # Check calendar items
         if self.calendar:
-            for guild_id, items_list in self.calendar.items.items():
+            for guild_id, items_list in self._calendar_buckets().items():
                 for item in items_list:
                     if item.get("completed"):
                         continue
@@ -309,7 +312,7 @@ class ReminderChecker:
     async def check_morning_digest(self):
         """If it's past 09:00 and we haven't sent a morning digest yet per guild, send one"""
         oslo_tz = ZoneInfo("Europe/Oslo")
-        now = datetime.now(oslo_tz)
+        now = self.clock.now()
 
         # Trigger between 09:00 and 10:00 (wider window for reliability)
         if not (9 <= now.hour < 10):
@@ -317,7 +320,7 @@ class ReminderChecker:
 
         # Check all guilds that have calendar data
         if self.calendar:
-            for guild_id in self.calendar.items:
+            for guild_id in self._calendar_buckets():
                 # Try to find a channel to send the digest to:
                 # Use the channel from the earliest upcoming item, or guild default
                 channel_id = self._find_digest_channel(guild_id)
@@ -340,28 +343,25 @@ class ReminderChecker:
 
     # ---- Helpers ----
 
+    def _calendar_buckets(self):
+        from core.request_context import current_request
+        policy = getattr(self.calendar, 'access_policy', None)
+        buckets = self.calendar.items
+        if policy is None:
+            return buckets
+        return {key: values for key, values in buckets.items()
+                if policy.authorize(current_request(), key if key in policy.scopes or key.startswith(('private:', 'group:')) else 'shared', 'read').allowed}
+
     def _parse_item_datetime(self, item):
         """Parse date+time from a calendar item into a Europe/Oslo datetime"""
-        oslo_tz = ZoneInfo("Europe/Oslo")
-        date_str = item.get("date", "")
-        time_str = item.get("time") or None
-
-        if not date_str:
+        try:
+            value = EventTime.from_item(item)
+            # Date-only entries belong in the daily agenda, not a guessed timed alert.
+            if value.all_day:
+                return None
+            return value.aware_start()
+        except (ValueError, TypeError):
             return None
-
-        dt = datetime.strptime(date_str, "%d.%m.%Y").replace(
-            hour=0, minute=0, second=0, microsecond=0, tzinfo=oslo_tz
-        )
-        if time_str:
-            try:
-                parts = time_str.split(":")
-                dt = dt.replace(hour=int(parts[0]), minute=int(parts[1]))
-            except (ValueError, IndexError):
-                pass
-        else:
-            # For date-only events, use 09:00 as default time
-            dt = dt.replace(hour=9, minute=0)
-        return dt
 
     def _parse_due_date(self, due_str):
         """Parse DD.MM.YYYY or DD.MM into a datetime"""
@@ -375,7 +375,7 @@ class ReminderChecker:
             pass
         try:
             dt = datetime.strptime(due_str, "%d.%m").replace(
-                year=datetime.now().year, hour=9, minute=0, tzinfo=oslo_tz
+                year=self.clock.now().year, hour=9, minute=0, tzinfo=oslo_tz
             )
             return dt
         except ValueError:
@@ -534,8 +534,8 @@ class ReminderChecker:
 
                 # Periodic Google Calendar sync (every 15 minutes)
                 if self.calendar and self.calendar.gcal_enabled:
-                    now_ts = time.time()
-                    if now_ts - self._last_gcal_sync > 900:  # 900 seconds = 15 min
+                    now_ts = self.clock.monotonic()
+                    if self._last_gcal_sync is None or now_ts - self._last_gcal_sync > 900:  # 900 seconds = 15 min
                         try:
                             await self.calendar.sync_from_gcal()
                             self._last_gcal_sync = now_ts

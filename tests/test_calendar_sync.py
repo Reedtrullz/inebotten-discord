@@ -213,7 +213,7 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GoogleCalendarPushTests(unittest.TestCase):
-    def test_sync_local_event_defaults_missing_time(self):
+    def test_sync_local_event_missing_time_is_explicit_all_day(self):
         manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
         manager.enabled = True
         captured = {}
@@ -230,7 +230,8 @@ class GoogleCalendarPushTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"id": "created"})
-        self.assertIn("T12:00:00", captured["start_time"])
+        self.assertEqual(captured["start_time"], "2027-06-10")
+        self.assertTrue(captured["all_day"])
 
     def test_list_upcoming_events_pages_through_all_results(self):
         manager = GoogleCalendarManager.__new__(GoogleCalendarManager)

@@ -15,6 +15,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from cal_system.event_schema import EventTime
 from utils.json_storage import write_json_atomic
 
 try:
@@ -468,6 +469,7 @@ class GoogleCalendarManager:
         rrule_day=None,
         discord_user_id=None,
         discord_username=None,
+        all_day=False, event_timezone="Europe/Oslo",
     ):
         """
         Create a new event in Google Calendar
@@ -475,7 +477,7 @@ class GoogleCalendarManager:
         Args:
             title: Event title/summary
             start_time: ISO 8601 datetime string (with timezone)
-            end_time: ISO 8601 datetime string (optional, defaults to 1 hour after start)
+            end_time: explicit ISO 8601 end; timed duration is never inferred
             description: Optional event description
             location: Optional location string
             attendees: Optional comma-separated list of email addresses
@@ -488,15 +490,9 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
-        # Calculate end time if not provided (default 1 hour duration)
+        # Timed events require a deliberate duration/end. Date-only means all day.
         if end_time is None:
-            try:
-                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                end_dt = start_dt + timedelta(hours=1)
-                end_time = end_dt.isoformat()
-            except Exception as e:
-                print(f"[CALENDAR] GCal datetime parse error: {e}")
-                return None
+            return None
 
         # Build recurrence rule if specified
         rrule = None
@@ -513,11 +509,12 @@ class GoogleCalendarManager:
             rrule=rrule,
             discord_user_id=discord_user_id,
             discord_username=discord_username,
+            all_day=all_day, event_timezone=event_timezone,
         )
 
     def _create_event_api(
         self, title, start_time, end_time, description=None, location=None, rrule=None,
-        discord_user_id=None, discord_username=None
+        discord_user_id=None, discord_username=None, all_day=False, event_timezone="Europe/Oslo"
     ):
         """
         Create an event using direct Google Calendar API (handles both recurring and non-recurring)
@@ -553,8 +550,8 @@ class GoogleCalendarManager:
             # Build event body
             event_body = {
                 "summary": title,
-                "start": {"dateTime": start_time, "timeZone": "Europe/Oslo"},
-                "end": {"dateTime": end_time, "timeZone": "Europe/Oslo"},
+                "start": {"date": start_time} if all_day else {"dateTime": start_time, "timeZone": event_timezone},
+                "end": {"date": end_time} if all_day else {"dateTime": end_time, "timeZone": event_timezone},
             }
 
             if description:
@@ -638,15 +635,10 @@ class GoogleCalendarManager:
             return "RRULE:FREQ=YEARLY"
         return None
 
-    def _local_event_times(self, date_str, time_str=None):
-        day, month, year = date_str.split(".")
-        hour, minute = (time_str or "12:00").split(":")
-        local_tz = ZoneInfo("Europe/Oslo")
-        start_dt = datetime(
-            int(year), int(month), int(day), int(hour), int(minute), tzinfo=local_tz
-        )
-        end_dt = start_dt + timedelta(hours=1)
-        return start_dt.isoformat(), end_dt.isoformat()
+    def _local_event_times(self, date_str, time_str=None, *, duration_minutes=None, timezone='Europe/Oslo', fold=None):
+        value = EventTime.from_item({'date': date_str, 'time': time_str,
+                                    'duration_minutes': duration_minutes, 'timezone': timezone, 'fold': fold})
+        return value.google_times()
 
     def update_event(
         self,
@@ -658,6 +650,7 @@ class GoogleCalendarManager:
         time_str=None,
         recurrence=None,
         rrule_day=None,
+        event_time=None,
     ):
         """
         Update an event in Google Calendar
@@ -697,9 +690,15 @@ class GoogleCalendarManager:
                 event["description"] = description
 
             if date_str:
-                start_iso, end_iso = self._local_event_times(date_str, time_str)
-                event["start"] = {"dateTime": start_iso, "timeZone": "Europe/Oslo"}
-                event["end"] = {"dateTime": end_iso, "timeZone": "Europe/Oslo"}
+                previous = EventTime.from_google(event)
+                if event_time is None:
+                    event_time = {'date': date_str, 'time': time_str, 'timezone': previous.timezone,
+                                  'duration_minutes': previous.duration_minutes, 'fold': previous.fold}
+                value = EventTime.from_item(event_time)
+                if not value.all_day and value.duration_minutes is None and previous.duration_minutes is not None:
+                    from dataclasses import replace
+                    value = replace(value, duration_minutes=previous.duration_minutes)
+                event['start'], event['end'] = value.google_times()
 
             if recurrence is not None:
                 rrule = self._build_rrule(recurrence, rrule_day)
@@ -733,37 +732,16 @@ class GoogleCalendarManager:
             return None
 
         try:
-            # Parse date and time
-            date_str = event_data.get("date", "")  # DD.MM.YYYY
-            time_str = event_data.get("time") or "12:00"  # HH:MM
-
-            # Parse date
-            day, month, year = date_str.split(".")
-            hour, minute = time_str.split(":")
-
-            # Create datetime in local timezone (assume Europe/Oslo for Norway)
-            from zoneinfo import ZoneInfo
-
-            local_tz = ZoneInfo("Europe/Oslo")
-
-            start_dt = datetime(
-                int(year), int(month), int(day), int(hour), int(minute), tzinfo=local_tz
-            )
-            end_dt = start_dt + timedelta(hours=1)
-
-            # Convert to ISO format with timezone
-            start_iso = start_dt.isoformat()
-            end_iso = end_dt.isoformat()
-
+            value = EventTime.from_item(event_data)
+            start, end = value.google_times()
             return self.create_event(
                 title=event_data.get("title", "Untitled"),
-                start_time=start_iso,
-                end_time=end_iso,
+                start_time=start.get('date') or start.get('dateTime'),
+                end_time=end.get('date') or end.get('dateTime'),
+                all_day=value.all_day, event_timezone=value.timezone,
                 description=event_data.get("description", ""),
-                recurrence=event_data.get("recurrence"),
-                rrule_day=event_data.get("rrule_day"),
-                discord_user_id=event_data.get("user_id"),
-                discord_username=event_data.get("username"),
+                recurrence=event_data.get("recurrence"), rrule_day=event_data.get("rrule_day"),
+                discord_user_id=event_data.get("user_id"), discord_username=event_data.get("username"),
             )
 
         except Exception as e:
