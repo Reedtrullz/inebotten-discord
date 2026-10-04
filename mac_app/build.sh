@@ -5,6 +5,8 @@
 
 set -e
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 echo "=========================================="
 echo "Building Inebotten macOS App"
 echo "=========================================="
@@ -21,10 +23,7 @@ PYTHON_VERSION=$(python3 --version | awk '{print $2}')
 echo "Found Python $PYTHON_VERSION"
 
 # Check if PyInstaller is installed
-if ! python3 -c "import PyInstaller" &> /dev/null; then
-    echo "PyInstaller not found, installing..."
-    pip3 install pyinstaller
-fi
+python3 -m pip install --require-hashes -r "$REPO_ROOT/requirements/desktop.lock"
 
 # Check if launcher.py exists
 if [ ! -f "launcher.py" ]; then

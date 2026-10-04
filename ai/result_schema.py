@@ -4,7 +4,10 @@ import asyncio
 from dataclasses import dataclass
 import math
 import time
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Literal, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.request_context import RequestContext
 
 
 AIStatus = Literal[
@@ -100,6 +103,14 @@ class AIResult:
             "unavailable": "Provider is unavailable",
         }
         return False, messages[self.status]
+
+
+class AIProvider(Protocol):
+    """Typed boundary shared by the configured inference connectors."""
+
+    async def generate_reply(
+        self, context: "RequestContext", prompt: str, *, deadline: float
+    ) -> AIResult: ...
 
 
 class BoundedAdmission:

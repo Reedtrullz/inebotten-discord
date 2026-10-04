@@ -13,14 +13,20 @@ def check_dependencies():
     """Check if required dependencies are installed"""
     print("Checking dependencies...")
     
-    # Check PyInstaller
+    repo_root = Path(__file__).resolve().parents[1]
+    desktop_lock = repo_root / "requirements" / "desktop.lock"
+    print(f"Installing the reviewed desktop profile from {desktop_lock}...")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--require-hashes",
+        "-r", str(desktop_lock),
+    ])
+
     try:
         import PyInstaller
-        print("✓ PyInstaller is installed")
+        print("✓ PyInstaller is installed from the desktop profile")
     except ImportError:
-        print("Installing PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
-        print("✓ PyInstaller installed")
+        print("✗ PyInstaller is unavailable in the desktop profile")
+        return False
     
     # Check tkinter
     try:

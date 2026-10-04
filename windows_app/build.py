@@ -14,16 +14,21 @@ def check_python():
     return True
 
 def check_pyinstaller():
-    """Check if PyInstaller is installed"""
+    """Install the reviewed desktop profile, including PyInstaller."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lock = os.path.join(repo_root, "requirements", "desktop.lock")
+    print(f"[INFO] Installing the reviewed desktop profile from {lock}")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--require-hashes", "-r", lock],
+        check=True,
+    )
     try:
         import PyInstaller
-        print("[OK] Found PyInstaller")
+        print("[OK] Found PyInstaller in the desktop profile")
         return True
     except ImportError:
-        print("[WARN] PyInstaller not found, installing...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
-        print("[OK] PyInstaller installed")
-        return True
+        print("[ERROR] PyInstaller is unavailable in the desktop profile")
+        return False
 
 def check_launcher():
     """Check if launcher.py exists"""

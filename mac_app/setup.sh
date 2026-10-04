@@ -38,16 +38,10 @@ fi
 echo "✓ Python version OK"
 echo ""
 
-# Install dependencies
-echo "Installing dependencies..."
-pip3 install -r requirements.txt
-echo "✓ Dependencies installed"
-echo ""
-
-# Install PyInstaller
-echo "Installing PyInstaller..."
-pip3 install pyinstaller
-echo "✓ PyInstaller installed"
+# Install the reviewed desktop profile, including the app's optional integrations.
+echo "Installing the reviewed desktop dependency profile..."
+python3 -m pip install --require-hashes -r requirements/desktop.lock
+echo "✓ Desktop profile installed"
 echo ""
 
 # Build the app

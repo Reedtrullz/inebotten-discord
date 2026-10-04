@@ -13,7 +13,7 @@ import inspect
 import json
 import os
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, Protocol
 
 from utils.json_storage import write_json_atomic
 from utils.store_ownership import ProcessOwnership, StoreOwnedError
@@ -274,6 +274,20 @@ class DocumentOwner:
     def close(self):
         self._ownership.close()
         self._owned = False
+
+
+class VersionedJsonStoreProtocol(Protocol):
+    """Revision-checked storage surface shared by domain consumers."""
+
+    def snapshot(self) -> tuple[int, dict]: ...
+
+    async def mutate(
+        self,
+        expected_revision: int | None,
+        change: Callable[[dict], dict],
+    ) -> tuple[int, dict]: ...
+
+    def close(self) -> None: ...
 
 
 class VersionedJsonStore:

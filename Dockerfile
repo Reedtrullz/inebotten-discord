@@ -27,11 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
-COPY requirements.txt .
-
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the reviewed production graph with artifact hashes.
+COPY requirements/prod.lock requirements/prod.lock
+RUN python -m pip install --require-hashes --no-cache-dir -r requirements/prod.lock
 
 # Create a fixed-UID non-root runtime user and its persistent data directory
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin inebotten

@@ -75,7 +75,8 @@ def check_dependencies():
     print(f"\n{Colors.BOLD}Step 1: Python environment{Colors.ENDC}")
     print("Use a project virtual environment; this setup does not install packages.")
     print(f"  {Colors.CYAN}python3 -m venv .venv312{Colors.ENDC}")
-    print(f"  {Colors.CYAN}.venv312/bin/python -m pip install -r requirements.txt{Colors.ENDC}")
+    print(f"  {Colors.CYAN}.venv312/bin/python -m pip install --require-hashes -r requirements/prod.lock{Colors.ENDC}")
+    print("Optional integrations can be added with the matching requirements/optional-*.lock profile.")
 
 def setup_discord():
     print(f"\n{Colors.BOLD}Step 2: Discord Configuration{Colors.ENDC}")

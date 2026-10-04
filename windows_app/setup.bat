@@ -37,24 +37,14 @@ if %errorlevel% neq 0 (
 echo [OK] Python version OK
 echo.
 
-REM Install dependencies
-echo Installing dependencies...
-pip install -r requirements.txt
+REM Install the reviewed desktop profile, including PyInstaller and optional integrations.
+echo Installing the reviewed desktop dependency profile...
+python -m pip install --require-hashes -r requirements/desktop.lock
 if %errorlevel% neq 0 (
-    echo [ERROR] Failed to install dependencies
+    echo [ERROR] Failed to install the desktop profile
     exit /b 1
 )
-echo [OK] Dependencies installed
-echo.
-
-REM Install PyInstaller
-echo Installing PyInstaller...
-pip install pyinstaller
-if %errorlevel% neq 0 (
-    echo [ERROR] Failed to install PyInstaller
-    exit /b
-)
-echo [OK] PyInstaller installed
+echo [OK] Desktop profile installed
 echo.
 
 REM Build the app

@@ -8,7 +8,7 @@ import inspect
 import hashlib
 import math
 import time
-from typing import Literal, Any
+from typing import Literal, Any, Protocol
 
 from core.rate_limiter import RateLimiter
 
@@ -20,6 +20,19 @@ class DeliveryResult:
     retry_after_s: float | None = None
     reason_code: str = 'unspecified'
     message: Any = field(default=None, repr=False, compare=False)
+
+
+class OutboundSenderProtocol(Protocol):
+    """Minimal send contract consumed by reminder and notification managers."""
+
+    async def send(
+        self,
+        channel_id: str,
+        text: str,
+        *,
+        delivery_key: str | None = None,
+        deadline: float,
+    ) -> DeliveryResult: ...
 
 
 class _LegacyLimiter:

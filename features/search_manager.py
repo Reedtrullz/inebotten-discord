@@ -22,6 +22,18 @@ class SearchManager:
         self.tavily_api_key = os.getenv("TAVILY_API_KEY")
         self.ddgs = None # Initialize lazily
 
+    @staticmethod
+    def _report_provider_failure(provider: str, distribution: str, error: Exception) -> None:
+        if isinstance(error, ImportError):
+            print(
+                f"[SEARCH] {provider} provider unavailable: optional package "
+                f"'{distribution}' is missing. Install the optional-search profile "
+                "with `python -m pip install --require-hashes -r "
+                "requirements/optional-search.lock`."
+            )
+        else:
+            print(f"[SEARCH] {provider} failed: {error}")
+
     def _normalize_result(self, result: Dict, provider: str) -> Dict:
         """Normalize provider-specific search results before AI use."""
         title = str(result.get("title") or result.get("name") or "Søkeresultat")
@@ -78,7 +90,7 @@ class SearchManager:
                     print(f"[SEARCH] Tavily (Advanced) success for: {query}")
                     return [self._normalize_result(r, "tavily") for r in response["results"]]
             except Exception as e:
-                print(f"[SEARCH] Tavily failed: {e}")
+                self._report_provider_failure("Tavily", "tavily-python", e)
 
         # 2. Try Google (Reliable Scraper Fallback)
         try:
@@ -99,11 +111,11 @@ class SearchManager:
                     for url in urls
                 ]
         except Exception as e:
-            print(f"[SEARCH] Google search failed: {e}")
+            self._report_provider_failure("Google", "googlesearch-python", e)
 
         # 3. Try DuckDuckGo (Last resort)
         try:
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
             if not self.ddgs:
                 self.ddgs = DDGS()
             print(f"[SEARCH] Trying DuckDuckGo last resort for: {query}")
@@ -114,7 +126,7 @@ class SearchManager:
             )
             return [self._normalize_result(result, "duckduckgo") for result in results]
         except Exception as e:
-            print(f"[SEARCH] All search providers failed: {e}")
+            self._report_provider_failure("DuckDuckGo", "ddgs", e)
             return []
 
     async def get_news(self, query: str = "", max_results: int = 3, region: str = "no-no") -> List[Dict]:
@@ -134,7 +146,7 @@ class SearchManager:
                 if response and response.get('results'):
                     return [self._normalize_result(r, "tavily") for r in response["results"]]
             except Exception as e:
-                print(f"[SEARCH] Tavily news failed: {e}")
+                self._report_provider_failure("Tavily", "tavily-python", e)
 
         # Fallback to general search with "nyheter" prefix
         return await self.search(f"siste nytt {query}", max_results=max_results, region=region)

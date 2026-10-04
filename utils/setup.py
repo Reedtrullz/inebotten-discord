@@ -13,9 +13,10 @@ def main() -> int:
     print("From the project directory, prepare an isolated environment with:")
     print("  python3 -m venv .venv312")
     if sys.platform == "win32":
-        print(r"  .venv312\Scripts\python.exe -m pip install -r requirements.txt")
+        print(r"  .venv312\Scripts\python.exe -m pip install --require-hashes -r requirements/prod.lock")
     else:
-        print("  .venv312/bin/python -m pip install -r requirements.txt")
+        print("  .venv312/bin/python -m pip install --require-hashes -r requirements/prod.lock")
+    print("Optional integrations use the matching requirements/optional-*.lock profile.")
     print(f"Project: {project_root}")
     print("Then run: python setup.py")
     return 0
