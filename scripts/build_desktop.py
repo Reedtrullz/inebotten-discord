@@ -39,11 +39,13 @@ def pyinstaller_arguments(
     work_dir: Path,
     spec_dir: Path,
     windows_version_file: Path | None = None,
+    data_root: Path | None = None,
 ) -> list[str]:
     """Build one platform command entirely from the shared release contract."""
     if platform_name not in _LAUNCHERS:
         raise ValueError(f"unsupported desktop platform: {platform_name!r}")
     root = Path(repository_root).resolve()
+    data_source_root = Path(data_root).resolve() if data_root is not None else root
     arguments = [
         sys.executable,
         "-m",
@@ -59,10 +61,10 @@ def pyinstaller_arguments(
         f"--specpath={Path(spec_dir)}",
     ]
     for relative in release_contract.BUNDLE_DATA_DIRECTORIES:
-        source = root / relative
+        source = data_source_root / relative
         arguments.append(f"--add-data={source}{os.pathsep}{relative}")
     for relative in release_contract.BUNDLE_DATA_FILES:
-        source = root / relative
+        source = data_source_root / relative
         arguments.append(f"--add-data={source}{os.pathsep}{Path(relative).parent.as_posix()}")
     for package in release_contract.PYINSTALLER_COLLECT_PACKAGES:
         arguments.append(f"--collect-submodules={package}")
@@ -129,7 +131,7 @@ def _ensure_clean_checkout(repository_root: Path) -> None:
         )
 
 
-def _ensure_packaged_sources_are_versioned(repository_root: Path) -> None:
+def _ensure_packaged_sources_are_versioned(repository_root: Path) -> set[str]:
     """Refuse recursive packaging of ignored, untracked, or private env files."""
     root = Path(repository_root).resolve()
     packaged_roots = tuple(
@@ -154,12 +156,12 @@ def _ensure_packaged_sources_are_versioned(repository_root: Path) -> None:
 
     def require_versioned(path: Path) -> None:
         relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise RuntimeError("refusing to package a symbolic link from the source tree")
         if path.name == ".DS_Store" or path.suffix.lower() in {".pyc", ".pyo"}:
             return
         if path.name == ".env" or path.name.startswith(".env."):
             raise RuntimeError("refusing to package a private environment file")
-        if path.is_symlink():
-            raise RuntimeError("refusing to package a symbolic link from the source tree")
         if relative not in tracked:
             raise RuntimeError(
                 "refusing to package an untracked or ignored file from a packaged source tree"
@@ -185,6 +187,34 @@ def _ensure_packaged_sources_are_versioned(repository_root: Path) -> None:
                     raise RuntimeError("refusing to package a symbolic link from the source tree")
             for name in files:
                 require_versioned(current_path / name)
+    return tracked
+
+
+def _stage_packaged_data(
+    repository_root: Path, destination: Path, tracked_sources: set[str]
+) -> Path:
+    """Copy only versioned data inputs into the bounded PyInstaller build tree."""
+    root = Path(repository_root).resolve()
+    staged = Path(destination).resolve()
+    staged.mkdir(parents=True, exist_ok=True)
+    for relative in release_contract.BUNDLE_DATA_DIRECTORIES:
+        (staged / relative).mkdir(parents=True, exist_ok=True)
+    for relative in release_contract.BUNDLE_DATA_FILES:
+        (staged / relative).parent.mkdir(parents=True, exist_ok=True)
+
+    data_directories = tuple(f"{relative}/" for relative in release_contract.BUNDLE_DATA_DIRECTORIES)
+    for relative in sorted(tracked_sources):
+        if relative not in release_contract.BUNDLE_DATA_FILES and not relative.startswith(
+            data_directories
+        ):
+            continue
+        source = root / relative
+        if source.name == ".DS_Store" or source.suffix.lower() in {".pyc", ".pyo"}:
+            continue
+        target = staged / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return staged
 
 
 def _set_macos_metadata(app_bundle: Path, version: str) -> None:
@@ -335,7 +365,7 @@ def build_desktop(
     version = release_contract.validate_manual_version(selected_ref, requested_version)
     commit = _selected_commit(root, identity["selected_ref"])
     _ensure_clean_checkout(root)
-    _ensure_packaged_sources_are_versioned(root)
+    tracked_sources = _ensure_packaged_sources_are_versioned(root)
     lock_digest = release_contract.desktop_lock_digest(root)
     _ensure_tk_available()
     _ensure_pyinstaller_available()
@@ -359,6 +389,7 @@ def build_desktop(
         if platform_name == "windows":
             version_file = scratch / "windows-version.txt"
             release_contract.write_windows_version_file(version_file, version)
+        data_root = _stage_packaged_data(root, scratch / "source-data", tracked_sources)
 
         command = pyinstaller_arguments(
             platform_name,
@@ -367,6 +398,7 @@ def build_desktop(
             work_dir,
             spec_dir,
             windows_version_file=version_file,
+            data_root=data_root,
         )
         build_env = os.environ.copy()
         build_env["PYINSTALLER_CONFIG_DIR"] = str(scratch / "pyinstaller-config")
