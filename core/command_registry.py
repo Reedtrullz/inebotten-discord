@@ -179,11 +179,15 @@ def command_spec(intent):
     return _BY_INTENT[intent]
 
 
+class CommandPayloadError(ValueError):
+    pass
+
+
 def validate_payload(intent, payload):
     try:
         return command_spec(intent).payload_validator(payload)
-    except TypeError as error:
-        raise ValueError('invalid_payload_type') from error
+    except (ValueError, TypeError) as error:
+        raise CommandPayloadError('invalid_command_payload') from error
 
 
 def command_metadata():

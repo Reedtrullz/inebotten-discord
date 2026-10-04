@@ -368,11 +368,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create core/command_registry.py and tests/test_command_registry.py; modify core/message_monitor.py, core/intent_router.py, features/help_handler.py, web_console/dashboard.py and command documentation.
 **Interfaces:** CommandSpec(intent: str, aliases: tuple[str,...], examples: tuple[str,...], mutation_kind: str, scope_rule: str, handler_name: str, payload_validator: Callable); preview_route(text: str, actor: RequestContext) -> dict returns intent/confidence/reason/validated fields/required policy without dispatch.
 
-- [ ] Add every-intent-one-handler, help/reference parity, payload rejection, preview-no-provider/no-write and existing false-positive corpus tests.
-- [ ] Pin existing route precedence and thresholds before switching consumers.
-- [ ] Extend the small registry, generate all command references and route preview through existing IntentRouter; do not add a competing parser.
-- [ ] Run tests/test_command_registry.py, tests/test_intent_router.py, tests/test_confidence_thresholds.py, tests/test_false_positives.py and tests/test_message_monitor_routing.py.
-- [ ] Review and commit; new commands in later tasks must extend this same catalogue and its positive/negative fixtures.
+- [x] Add every-intent-one-handler, help/reference parity, payload rejection, preview-no-provider/no-write and existing false-positive corpus tests.
+- [x] Pin existing route precedence and thresholds before switching consumers.
+- [x] Extend the small registry, generate all command references and route preview through existing IntentRouter; do not add a competing parser.
+- [x] Run tests/test_command_registry.py, tests/test_intent_router.py, tests/test_confidence_thresholds.py, tests/test_false_positives.py and tests/test_message_monitor_routing.py.
+- [x] Review and commit; new commands in later tasks must extend this same catalogue and its positive/negative fixtures.
 
 ### Task 26: I22 — One release owner and artifact proof
 

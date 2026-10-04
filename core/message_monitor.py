@@ -25,47 +25,13 @@ from core.request_context import RequestContext, request_scope, request_localiza
 from core.intent_thresholds import CONFIDENCE_THRESHOLDS
 from ai.action_schema import parse_action_draft
 from ai.result_schema import AIResult, MAX_AI_PROMPT_CHARS
-from core.intent_keywords import (
-    CALENDAR_KEYWORDS,
-    COMPLETE_KEYWORDS,
-    DELETE_KEYWORDS,
-    EDIT_KEYWORDS,
-    HELP_KEYWORDS,
-    LIST_KEYWORDS,
-    STATUS_KEYWORDS,
-)
+from core.intent_keywords import STATUS_KEYWORDS
+from core.command_registry import command_metadata, dispatch_command, CommandPayloadError
 from web_console.server import ConsoleServer
 
 
-COMMAND_REGISTRY = [
-    {"name": "help", "aliases": HELP_KEYWORDS, "priority": 10, "scope": "any"},
-    {"name": "status", "aliases": STATUS_KEYWORDS, "priority": 20, "scope": "any"},
-    {
-        "name": "calendar",
-        "aliases": CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS,
-        "priority": 30,
-        "scope": "any",
-    },
-    {
-        "name": "polls",
-        "aliases": ["poll", "avstemning", "vote", "stemme"],
-        "priority": 40,
-        "scope": "any",
-    },
-    {
-        "name": "watchlist",
-        "aliases": ["watchlist", "filmforslag", "hva skal vi se"],
-        "priority": 50,
-        "scope": "any",
-    },
-    {
-        "name": "memory",
-        "aliases": ["vis minnet mitt", "eksporter minnet mitt", "slett minnet mitt"],
-        "priority": 60,
-        "scope": "any",
-    },
-    {"name": "ai_chat", "aliases": [], "priority": 1000, "scope": "any"},
-]
+# Compatibility export; consumers obtain fresh copied metadata via the getter.
+COMMAND_REGISTRY = command_metadata()
 
 
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
@@ -579,8 +545,6 @@ class MessageMonitor:
 
     async def _handle_intent(self, message, route):
         """Execute the handler for a routed intent."""
-        payload = route.payload
-
         threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
         if route.confidence < threshold:
             print(
@@ -590,113 +554,33 @@ class MessageMonitor:
             await self._send_ai_response(message)
             return
 
-        if route.intent == BotIntent.HELP:
-            await self.handlers["help"].handle_help(message)
-        elif route.intent == BotIntent.CALENDAR_HELP:
-            await self._send_response(message, self.conv_gen.get_calendar_help())
-        elif route.intent == BotIntent.STATUS:
-            await self._send_status_response(message)
-        elif route.intent == BotIntent.PROFILE:
-            if not await self.handlers["profile"].handle_profile_command(message):
-                await self._send_response(
-                    message,
-                    "Jeg kjenner ikke igjen profilkommandoen. Prøv status eller aktivitet.",
-                )
-        elif route.intent == BotIntent.CALENDAR_LIST:
-            await self.handlers["calendar"].handle_list(message)
-        elif route.intent == BotIntent.CALENDAR_SYNC:
-            await self.handlers["calendar"].handle_sync(message)
-        elif route.intent == BotIntent.CALENDAR_DELETE:
-            await self.handlers["calendar"].handle_delete(message)
-        elif route.intent == BotIntent.CALENDAR_COMPLETE:
-            await self.handlers["calendar"].handle_complete(message)
-        elif route.intent == BotIntent.CALENDAR_EDIT:
-            await self.handlers["calendar"].handle_edit(message)
-        elif route.intent == BotIntent.CALENDAR_SEARCH:
-            await self.handlers["calendar"].handle_search(message, payload)
-        elif route.intent == BotIntent.CALENDAR_CLEAR:
-            await self.handlers["calendar"].handle_clear(message)
-        elif route.intent == BotIntent.CALENDAR_ITEM:
-            await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
-        elif route.intent == BotIntent.CALENDAR_AUTH:
-            await self.handlers["calendar"].handle_auth(message, payload)
-        elif route.intent == BotIntent.REMINDER_EDIT:
-            await self.handlers["reminders"].handle_reminder_edit(message, payload)
-        elif route.intent == BotIntent.REMINDER_DELETE:
-            await self.handlers["reminders"].handle_reminder_delete(message, payload)
-        elif route.intent == BotIntent.REMINDER_SEARCH:
-            await self.handlers["reminders"].handle_reminder_search(message, payload)
-        elif route.intent == BotIntent.REMINDER_CREATE:
-            await self.handlers["reminders"].handle_reminder_create(message, payload)
-        elif route.intent == BotIntent.REMINDER_LIST:
-            await self.handlers["reminders"].handle_reminder_list(message, payload)
-        elif route.intent == BotIntent.REMINDER_COMPLETE:
-            await self.handlers["reminders"].handle_reminder_complete(message, payload)
-        elif route.intent == BotIntent.POLL_CREATE:
-            await self.handlers["polls"].handle_poll(message, payload["poll"])
-        elif route.intent == BotIntent.POLL_VOTE:
-            await self.handlers["polls"].handle_vote(message, payload["vote"])
-        elif route.intent == BotIntent.POLL_EDIT:
-            await self.handlers["polls"].handle_poll_edit(message, payload["poll_edit"])
-        elif route.intent == BotIntent.POLL_DELETE:
-            await self.handlers["polls"].handle_poll_delete(message, payload["poll_delete"])
-        elif route.intent == BotIntent.POLL_CLOSE:
-            await self.handlers["polls"].handle_poll_close(message, payload["poll_close"])
-        elif route.intent == BotIntent.POLL_LIST:
-            await self.handlers["polls"].handle_poll_list(message)
-        elif route.intent == BotIntent.COUNTDOWN:
-            await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
-        elif route.intent == BotIntent.WATCHLIST:
-            watchlist_payload = payload.get("watchlist", {})
-            action = watchlist_payload.get("action")
-            if action == "remove":
-                response_text = await self.handlers["watchlist"].handle_watchlist_remove(message, watchlist_payload)
-                if response_text:
-                    await self._send_response(message, response_text)
-            elif action == "edit":
-                response_text = await self.handlers["watchlist"].handle_watchlist_edit(message, watchlist_payload)
-                if response_text:
-                    await self._send_response(message, response_text)
-            else:
-                await self.handlers["watchlist"].handle_watchlist(message, watchlist_payload)
-        elif route.intent == BotIntent.WORD_OF_DAY:
-            await self.handlers["fun"].handle_word_of_day(message)
-        elif route.intent == BotIntent.QUOTE:
-            await self.handlers["fun"].handle_quote_command(message, payload["quote"])
-        elif route.intent == BotIntent.QUOTE_LIST:
-            await self.handlers["quotes"].handle_quote_list(message)
-        elif route.intent == BotIntent.QUOTE_EDIT:
-            await self.handlers["quotes"].handle_quote_edit(message, payload)
-        elif route.intent == BotIntent.QUOTE_DELETE:
-            await self.handlers["quotes"].handle_quote_delete(message, payload)
-        elif route.intent == BotIntent.AURORA:
-            await self.handlers["aurora"].handle_aurora(message)
-        elif route.intent == BotIntent.SCHOOL_HOLIDAYS:
-            await self.handlers["school_holidays"].handle_school_holidays(message)
-        elif route.intent == BotIntent.PRICE:
-            await self.handlers["utility"].handle_price(message, payload["price"])
-        elif route.intent == BotIntent.HOROSCOPE:
-            await self.handlers["fun"].handle_horoscope(message, payload["horoscope"])
-        elif route.intent == BotIntent.COMPLIMENT:
-            await self.handlers["fun"].handle_compliment(message, payload["compliment"])
-        elif route.intent == BotIntent.CALCULATOR:
-            await self.handlers["utility"].handle_calculator(message, payload["calculator"])
-        elif route.intent == BotIntent.SHORTEN_URL:
-            await self.handlers["utility"].handle_shorten(message, payload["shorten"])
-        elif route.intent == BotIntent.DAILY_DIGEST:
-            await self.handlers["daily_digest"].handle_daily_digest(message)
-        elif route.intent == BotIntent.BIRTHDAY_EDIT:
-            await self.handlers["birthdays"].handle_birthday_edit(message, payload)
-        elif route.intent == BotIntent.SET_LOCATION:
-            await self._handle_set_location(message, payload["city"])
-        elif route.intent in (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_EXPORT, BotIntent.MEMORY_DELETE):
-            await self.handlers["memory"].handle_memory(message, payload.get("memory", {}))
-        elif route.intent == BotIntent.SEARCH:
-            await self._send_ai_response(message, forced_search_info=payload.get("search"))
-        elif route.intent == BotIntent.DASHBOARD:
-            await self._send_dashboard_response(message)
+        try:
+            return await dispatch_command(self, message, route)
+        except CommandPayloadError:
+            await self._send_response(message,
+                '❌ Kommandodataene er ugyldige. Bruk hjelp og prøv en støttet kommando.')
+
+    async def _registry_calendar_help(self, message):
+        return await self._send_response(message, self.conv_gen.get_calendar_help())
+
+    async def _registry_profile(self, message):
+        if not await self.handlers['profile'].handle_profile_command(message):
+            await self._send_response(message,
+                'Jeg kjenner ikke igjen profilkommandoen. Prøv status eller aktivitet.')
+
+    async def _registry_watchlist(self, message, payload):
+        action = payload.get('action')
+        if action == 'remove':
+            text = await self.handlers['watchlist'].handle_watchlist_remove(message, payload)
+        elif action == 'edit':
+            text = await self.handlers['watchlist'].handle_watchlist_edit(message, payload)
         else:
-            await self._send_ai_response(message)
+            return await self.handlers['watchlist'].handle_watchlist(message, payload)
+        if text:
+            return await self._send_response(message, text)
+
+    async def _registry_search(self, message, search):
+        return await self._send_ai_response(message, forced_search_info=search)
 
     async def _send_dashboard_response(self, message):
         """Generate and send an explicit dashboard response."""
@@ -1146,7 +1030,7 @@ class MessageMonitor:
 
     def get_command_registry(self):
         """Return command metadata used by help/status surfaces."""
-        return COMMAND_REGISTRY
+        return command_metadata()
 
     def _register_handlers(self):
         """Register all handlers"""
