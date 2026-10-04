@@ -104,3 +104,6 @@ commit_hash.txt
 
 # Bounded offline test and execution artifacts
 .superpowers/
+
+# Private local deployment receipts and bounded build context
+.deployment/

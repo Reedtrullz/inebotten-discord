@@ -454,11 +454,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify Dockerfile, docker-compose.yml, deploy/ansible-playbook.yml, scripts/deploy/inebotten-update and relevant webhook/update helpers; update docs/VPS_DEPLOYMENT.md; extend tests/test_deploy_hardening.py and test_deploy_scripts.py.
 **Interfaces:** deployment manifest binds full code revision, image digest, config schema and data schema range; preflight rejects dirty source, unavailable storage/ports, incompatible schemas and missing rollback evidence. Readiness requires correct full revision and required subsystem health.
 
-- [ ] Add fake dirty checkout/occupied port/unhealthy or stale image/source-sync failure and test_older_code_refuses_newer_store scenarios; simulate rollback without personal data.
-- [ ] Inventory supported profiles before deprecating a script; current service/deploy choice is not inferred from repository definitions.
-- [ ] Align Ansible/container/legacy checks, add supported HEALTHCHECK behavior, preserve tagged rollback code plus compatible data, and distinguish code rollback from an explicitly reviewed data restore.
-- [ ] Run deploy tests, shell/YAML/container static validation and a disposable local rollback rehearsal; exact-head CI gates publication. Before I35 exists, rehearsals use quiescent fixture copies with checksum receipts. Actual multi-store data migrations wait for I35's consistent backup/restore gate.
-- [ ] Review and commit; a live deployment is a later explicit action with fresh backup health, current port inventory, live revision/UI proof and an unchanged-data compatibility check.
+- [x] Add fake dirty checkout/occupied port/unhealthy or stale image/source-sync failure and test_older_code_refuses_newer_store scenarios; simulate rollback without personal data.
+- [x] Inventory supported profiles before deprecating a script; current service/deploy choice is not inferred from repository definitions.
+- [x] Align Ansible/container/legacy checks, add supported HEALTHCHECK behavior, preserve tagged rollback code plus compatible data, and distinguish code rollback from an explicitly reviewed data restore.
+- [x] Run deploy tests, shell/YAML/container static validation and a disposable local rollback rehearsal; exact-head CI gates publication. Before I35 exists, rehearsals use quiescent fixture copies with checksum receipts. Actual multi-store data migrations wait for I35's consistent backup/restore gate.
+- [x] Review and commit; a live deployment is a later explicit action with fresh backup health, current port inventory, live revision/UI proof and an unchanged-data compatibility check.
 
 ### Task 33: I31 — Safe desktop UI and child-process lifecycle
 

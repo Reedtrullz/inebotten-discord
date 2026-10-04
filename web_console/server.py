@@ -29,6 +29,8 @@ from web_console.state_collector import (
     generate_mock_data,
 )
 
+from utils.deployment_contract import built_revision
+
 logger = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 32 * 1024
@@ -79,6 +81,7 @@ class ConsoleServer:
         self.port = port
         self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
         self.monitor = monitor
+        self.built_revision = built_revision()
         self._server = None
         self.request_read_timeout = self._positive_float(
             request_read_timeout if request_read_timeout is not None else os.getenv(
@@ -715,6 +718,8 @@ class ConsoleServer:
                     200,
                     {
                         "status": public_status,
+                        "revision": self.built_revision,
+                        "readiness": readiness.get("status", "starting"),
                         "console": {"status": "running"},
                     },
                 )

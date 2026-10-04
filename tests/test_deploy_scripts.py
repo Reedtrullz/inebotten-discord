@@ -1,149 +1,92 @@
-from __future__ import annotations
-
+"""Real disposable Git repositories exercise the installed updater shell path."""
 import os
-import subprocess
 from pathlib import Path
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def git(repo, *args):
+    return subprocess.run(['git',*args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
+def fixture(tmp_path):
+    origin = tmp_path/'origin'; origin.mkdir();git(origin,'init','--bare')
+    repo=tmp_path/'repo';repo.mkdir();git(repo,'init','-b','master')
+    git(repo,'config','user.name','Fixture');git(repo,'config','user.email','fixture@example.invalid')
+    (repo/'.gitignore').write_text('.env\ndata/\n')
+    (repo/'scripts').mkdir()
+    (repo/'scripts/inebotten_deploy.py').write_text(
+        "import os,sys,json\nfrom pathlib import Path\n"
+        "Path(os.environ['FIXTURE_RECEIPT']).write_text(json.dumps(sys.argv[1:]))\n"
+        "raise SystemExit(int(os.environ.get('FIXTURE_DEPLOY_EXIT','0')))\n")
+    git(repo,'add','.');git(repo,'-c','commit.gpgsign=false','commit','-m','fixture')
+    git(repo,'remote','add','origin',str(origin));git(repo,'push','-u','origin','master')
+    (repo/'.env').write_text('fixture config preserved')
+    (repo/'data').mkdir();(repo/'data/calendar.json').write_text('fixture private bytes')
+    bin_dir=tmp_path/'bin';bin_dir.mkdir()
+    (bin_dir/'flock').write_text('#!/bin/sh\nexit 0\n');(bin_dir/'flock').chmod(0o755)
+    return repo, origin, bin_dir
 
 
-def _make_fake_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    scripts = repo / "scripts"
-    scripts.mkdir(parents=True)
-    (scripts / "write_version.py").write_text(
-        "import os\n"
-        "from pathlib import Path\n"
-        "commit = os.environ.get('SOURCE_COMMIT', 'unknown')\n"
-        "Path('commit_hash.txt').write_text(commit, encoding='utf-8')\n"
-        "print(f'wrote {commit}')\n",
-        encoding="utf-8",
-    )
-    return repo
+def run_update(tmp_path, repo, bin_dir, **extra):
+    env={**os.environ, 'PATH':str(bin_dir)+os.pathsep+os.environ['PATH'],
+         'INEBOTTEN_REPO':str(repo), 'INEBOTTEN_UPDATE_LOG':str(tmp_path/'update.log'),
+         'INEBOTTEN_UPDATE_LOCK':str(tmp_path/'update.lock'),
+         'INEBOTTEN_PYTHON':__import__('sys').executable,
+         'FIXTURE_RECEIPT':str(tmp_path/'called.json'), **extra}
+    return subprocess.run(['bash',str(ROOT/'scripts/deploy/inebotten-update')], env=env,
+                          capture_output=True, timeout=20)
 
 
-def _make_fake_bin(tmp_path: Path) -> Path:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    _write_executable(
-        fake_bin / "flock",
-        """#!/usr/bin/env bash
-exit 0
-""",
-    )
-    _write_executable(
-        fake_bin / "date",
-        """#!/usr/bin/env bash
-echo "2026-06-12T12:00:00+00:00"
-""",
-    )
-    _write_executable(
-        fake_bin / "git",
-        """#!/usr/bin/env bash
-set -euo pipefail
-case "$1" in
-  fetch)
-    exit 0
-    ;;
-  reset)
-    echo "$*" >> "$FAKE_LOG_DIR/git.log"
-    exit 0
-    ;;
-  rev-parse)
-    if [ "$2" = "--short" ]; then
-      echo "$FAKE_SHORT"
-    elif [ "$2" = "HEAD" ]; then
-      echo "$FAKE_HEAD"
-    else
-      echo "$FAKE_ORIGIN"
-    fi
-    exit 0
-    ;;
-esac
-echo "unexpected git $*" >> "$FAKE_LOG_DIR/git.log"
-exit 1
-""",
-    )
-    _write_executable(
-        fake_bin / "docker",
-        """#!/usr/bin/env bash
-set -euo pipefail
-if [ "$1" = "compose" ] && [ "${2:-}" = "version" ]; then
-  exit 0
-fi
-if [ "$1" = "compose" ] && [ "${2:-}" = "up" ]; then
-  echo "$*" >> "$FAKE_LOG_DIR/docker.log"
-  exit 0
-fi
-if [ "$1" = "exec" ]; then
-  printf '%s' "${FAKE_RUNNING_COMMIT:-}"
-  exit 0
-fi
-if [ "$1" = "image" ] && [ "${2:-}" = "prune" ]; then
-  exit 0
-fi
-echo "unexpected docker $*" >> "$FAKE_LOG_DIR/docker.log"
-exit 1
-""",
-    )
-    return fake_bin
+def test_update_calls_shared_contract_and_only_claims_verified_success(tmp_path):
+    repo,origin,bin_dir=fixture(tmp_path)
+    result=run_update(tmp_path,repo,bin_dir)
+    assert result.returncode==0
+    assert '--build' in (tmp_path/'called.json').read_text()
+    assert '--apply' in (tmp_path/'called.json').read_text()
+    assert git(repo,'rev-parse','HEAD') in (tmp_path/'update.log').read_text()
+    assert (repo/'.env').read_text()=='fixture config preserved'
+    assert (repo/'data/calendar.json').read_text()=='fixture private bytes'
 
 
-def _run_update(tmp_path: Path, *, running_commit: str) -> Path:
-    repo = _make_fake_repo(tmp_path)
-    fake_bin = _make_fake_bin(tmp_path)
-    log_dir = tmp_path / "logs"
-    log_dir.mkdir()
-
-    env = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "INEBOTTEN_REPO": str(repo),
-        "INEBOTTEN_UPDATE_LOG": str(log_dir / "update.log"),
-        "INEBOTTEN_UPDATE_LOCK": str(log_dir / "update.lock"),
-        "FAKE_LOG_DIR": str(log_dir),
-        "FAKE_HEAD": "517cabb25a145c95dab06b0b1ca22f7e5ecae7a2",
-        "FAKE_ORIGIN": "517cabb25a145c95dab06b0b1ca22f7e5ecae7a2",
-        "FAKE_SHORT": "517cabb",
-        "FAKE_RUNNING_COMMIT": running_commit,
-    }
-    subprocess.run(
-        ["bash", str(PROJECT_ROOT / "scripts/deploy/inebotten-update")],
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return log_dir
+def test_dirty_checkout_is_preserved_without_service_action(tmp_path):
+    repo,origin,bin_dir=fixture(tmp_path)
+    file=repo/'scripts/inebotten_deploy.py';file.write_text('preserved WIP')
+    assert run_update(tmp_path,repo,bin_dir).returncode!=0
+    assert file.read_text()=='preserved WIP'
+    assert not (tmp_path/'called.json').exists()
 
 
-def test_update_rebuilds_when_checkout_is_current_but_container_is_old(tmp_path):
-    log_dir = _run_update(tmp_path, running_commit="1e3e532")
+def test_failed_source_fetch_never_calls_deployer(tmp_path):
+    repo,origin,bin_dir=fixture(tmp_path)
+    git(repo,'remote','set-url','origin',str(tmp_path/'not-a-repository'))
+    before=git(repo,'rev-parse','HEAD')
+    assert run_update(tmp_path,repo,bin_dir).returncode!=0
+    assert git(repo,'rev-parse','HEAD')==before
+    assert not (tmp_path/'called.json').exists()
 
-    docker_log = (log_dir / "docker.log").read_text(encoding="utf-8")
-    update_log = (log_dir / "update.log").read_text(encoding="utf-8")
 
-    assert "compose up -d --build --remove-orphans" in docker_log
-    assert "Running container is at 1e3e532; expected 517cabb" in update_log
+def test_failed_candidate_health_is_not_reported_as_update_success(tmp_path):
+    repo,origin,bin_dir=fixture(tmp_path)
+    assert run_update(tmp_path,repo,bin_dir,FIXTURE_DEPLOY_EXIT='1').returncode==1
+    assert 'Verified deployment' not in (tmp_path/'update.log').read_text()
 
 
-def test_update_skips_rebuild_when_container_already_matches_head(tmp_path):
-    log_dir = _run_update(tmp_path, running_commit="517cabb")
-
-    assert not (log_dir / "docker.log").exists()
-    update_log = (log_dir / "update.log").read_text(encoding="utf-8")
-    assert "Already deployed at 517cabb" in update_log
+def test_non_fast_forward_source_is_refused_without_losing_local_commit(tmp_path):
+    repo,origin,bin_dir=fixture(tmp_path)
+    other=tmp_path/'other';git(tmp_path,'clone',str(origin),str(other))
+    git(other,'config','user.name','Fixture');git(other,'config','user.email','fixture@example.invalid')
+    (other/'remote.txt').write_text('remote');git(other,'add','.');git(other,'-c','commit.gpgsign=false','commit','-m','remote');git(other,'push')
+    (repo/'local.txt').write_text('local');git(repo,'add','.');git(repo,'-c','commit.gpgsign=false','commit','-m','local')
+    before=git(repo,'rev-parse','HEAD')
+    assert run_update(tmp_path,repo,bin_dir).returncode!=0
+    assert git(repo,'rev-parse','HEAD')==before
+    assert not (tmp_path/'called.json').exists()
 
 
 def test_install_autoupdate_preserves_existing_secret_and_restarts_services():
-    content = (PROJECT_ROOT / "scripts/deploy/install-autoupdate.sh").read_text(encoding="utf-8")
-
+    content=(ROOT/'scripts/deploy/install-autoupdate.sh').read_text()
     assert 'existing_env_value WEBHOOK_SECRET' in content
     assert 'systemctl restart inebotten-webhook.service' in content
     assert 'systemctl restart inebotten-update.timer' in content

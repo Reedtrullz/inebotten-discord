@@ -258,7 +258,8 @@ async def test_health_no_auth():
         body = json_body(response)
         assert body["status"] in {"healthy", "degraded", "starting"}
         assert body["console"]["status"] == "running"
-        assert set(body) == {"status", "console"}
+        assert set(body) == {"status", "console", "revision", "readiness"}
+        assert body["revision"] is None or len(body["revision"]) == 40
     finally:
         await stop_server(server, task)
 

@@ -42,3 +42,18 @@ Thumbs.db
 # Documentation
 docs/
 *.md
+
+# Run-owned dependencies, scratch, release and deployment receipts
+.superpowers/
+.profile-venvs/
+.venv*/
+.deployment/
+.artifacts/
+.dist/
+dist/
+build/
+*.app
+*.exe
+*.zip
+# Public versioned runtime asset (not a private store)
+!features/data/school_calendars.json

@@ -1,73 +1,44 @@
 from pathlib import Path
-
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_ansible_git_pull_does_not_ignore_errors():
-    playbook = (ROOT / "deploy" / "ansible-playbook.yml").read_text(encoding="utf-8")
-    pull_task = playbook.split("- name: Pull latest source from origin", 1)[1].split("- name:", 1)[0]
-    assert "ignore_errors" not in pull_task
+def test_ansible_source_sync_precedes_shared_deployer_and_never_removes_other_containers():
+    playbook = yaml.safe_load((ROOT/'deploy/ansible-playbook.yml').read_text())
+    tasks = playbook[0]['tasks']
+    pull = next(i for i,t in enumerate(tasks) if 'ansible.builtin.git' in t)
+    apply = next(i for i,t in enumerate(tasks) if 'apply with full' in t['name'])
+    assert pull < apply
+    assert tasks[pull]['ansible.builtin.git']['force'] is False
+    assert 'ignore_errors' not in tasks[pull]
+    assert all('community.docker.docker_container' not in t for t in tasks)
+    assert 'git rev-parse HEAD' in (ROOT/'deploy/ansible-playbook.yml').read_text()
+    assert 'inebotten_deploy.py' in tasks[apply]['ansible.builtin.command']['argv']
 
 
-def test_dockerignore_excludes_git_directory():
-    lines = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    assert ".git/" in lines
+def test_docker_context_excludes_secrets_and_owned_scratch_but_keeps_public_school_asset():
+    lines = (ROOT/'.dockerignore').read_text().splitlines()
+    assert {'.git/', '.env.*', '.vault_pass*', 'deploy/', 'tests/', '.github/', 'logs/',
+            '*.pem', '*.key', '.superpowers/', '.venv*/', '.deployment/', '.artifacts/'}.issubset(lines)
+    assert lines.index('!features/data/school_calendars.json') > lines.index('*.json')
 
 
-def test_dockerignore_excludes_deploy_secrets_and_local_env_files():
-    lines = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    required_patterns = {
-        ".env.*",
-        ".vault_pass*",
-        "deploy/",
-        "tests/",
-        ".github/",
-        "logs/",
-        "*.pem",
-        "*.key",
-    }
-    assert required_patterns.issubset(set(lines))
+def test_container_bakes_strict_full_revision_schema_labels_and_real_readiness_probe():
+    dockerfile = (ROOT/'Dockerfile').read_text()
+    assert '--uid 10001' in dockerfile and 'USER inebotten' in dockerfile
+    assert 'scripts/write_version.py --require-full' in dockerfile
+    assert '|| echo' not in dockerfile
+    assert 'org.opencontainers.image.revision=$SOURCE_COMMIT' in dockerfile
+    assert all(label in dockerfile for label in ['config-schema', 'data-schema-min', 'data-schema-max'])
+    assert 'HEALTHCHECK' in dockerfile and 'scripts/deployment_health.py' in dockerfile
 
 
-def test_dockerfile_runs_as_non_root_user():
-    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "useradd" in dockerfile
-    assert "--uid 10001" in dockerfile
-    assert "USER inebotten" in dockerfile
-    assert "/home/inebotten/.hermes" in dockerfile
-
-
-def test_ansible_ensures_data_dir_is_writable_by_runtime_uid():
-    playbook = (ROOT / "deploy" / "ansible-playbook.yml").read_text(encoding="utf-8")
-    assert "{{ compose_dir }}/data" in playbook
-    assert 'owner: "10001"' in playbook
-    assert 'group: "10001"' in playbook
-    assert "recurse: true" in playbook
-
-
-def test_ansible_passes_checked_out_commit_to_compose_build():
-    playbook = (ROOT / "deploy" / "ansible-playbook.yml").read_text(encoding="utf-8")
-    assert "git rev-parse --short HEAD" in playbook
-    assert "SOURCE_COMMIT={{ source_commit.stdout }}" in playbook
-    assert "COMMIT_SHA={{ source_commit.stdout }}" in playbook
-
-
-def test_ansible_fails_if_running_container_commit_is_stale():
-    playbook = (ROOT / "deploy" / "ansible-playbook.yml").read_text(encoding="utf-8")
-    assert "docker exec inebotten-bot cat /app/commit_hash.txt" in playbook
-    assert "Fail if running container is stale" in playbook
-    assert "running_commit.stdout | default('') != source_commit.stdout" in playbook
-
-
-def test_compose_mounts_non_root_home_and_caddy_is_opt_in():
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "./data:/home/inebotten/.hermes" in compose
-    assert 'user: "10001:10001"' in compose
-    assert "data-permissions:" in compose
-    assert "chown -R 10001:10001 /data" in compose
-    inebotten_block = compose.split("  inebotten:", 1)[1].split("  caddy:", 1)[0]
-    assert "condition: service_completed_successfully" in inebotten_block
-    caddy_block = compose.split("  caddy:", 1)[1]
-    assert "profiles:" in caddy_block
-    assert "bundled-caddy" in caddy_block
+def test_compose_never_recursively_reowns_existing_private_data():
+    compose = yaml.safe_load((ROOT/'docker-compose.yml').read_text())
+    bot = compose['services']['inebotten']
+    assert bot['user'] == '10001:10001'
+    assert './data:/home/inebotten/.hermes' in bot['volumes']
+    assert 'data-permissions' not in compose['services']
+    assert 'bundled-caddy' in compose['services']['caddy']['profiles']
+    assert 'recurse: true' not in (ROOT/'deploy/ansible-playbook.yml').read_text()

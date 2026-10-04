@@ -1,12 +1,6 @@
 services:
-  data-permissions:
-    image: alpine:3.20
-    command: ["sh", "-c", "mkdir -p /data && chown -R 10001:10001 /data && chmod 700 /data"]
-    volumes:
-      - ./data:/data
-    restart: "no"
-
   inebotten:
+    image: ${INEBOTTEN_IMAGE:-inebotten-candidate:local}
     build:
       context: .
       args:
@@ -34,9 +28,6 @@ services:
       - CONSOLE_PORT=8080
     expose:
       - "8080"
-    depends_on:
-      data-permissions:
-        condition: service_completed_successfully
     ports:
       # Localhost-only diagnostic access on the VPS. Public access still goes through Caddy.
       - "127.0.0.1:8080:8080"

@@ -176,7 +176,8 @@ def test_health_endpoint_no_auth(page: Any, console_server: ConsoleServer) -> No
     body = response.json()
     assert body.get("status") in {"healthy", "degraded", "starting"}
     assert body.get("console", {}).get("status") == "running"
-    assert set(body) == {"status", "console"}
+    assert set(body) == {"status", "console", "revision", "readiness"}
+    assert body["revision"] is None or len(body["revision"]) == 40
 
 
 def test_theme_toggle_login_page(page: Any, console_server: ConsoleServer) -> None:

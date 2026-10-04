@@ -60,3 +60,18 @@ def test_main_writes_resolved_commit(monkeypatch, tmp_path, capsys):
 
     assert Path("commit_hash.txt").read_text(encoding="utf-8") == "feed123"
     assert "feed123" in capsys.readouterr().out
+
+
+def test_require_full_refuses_short_or_unknown_without_overwriting(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('SOURCE_COMMIT', 'abc1234')
+    path = Path('commit_hash.txt');path.write_text('preserve')
+    assert write_version.main(['--require-full']) == 1
+    assert path.read_text() == 'preserve'
+
+
+def test_require_full_writes_exact_revision(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('SOURCE_COMMIT', 'a' * 40)
+    assert write_version.main(['--require-full']) == 0
+    assert Path('commit_hash.txt').read_text() == 'a' * 40

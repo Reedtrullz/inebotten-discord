@@ -1,137 +1,26 @@
-# Inebotten Deployment
+# Ansible deployment profile
 
-Inebotten is deployed to a shared VPS (198.23.137.16) where its source is
-checked out at `/opt/apps/inebotten-discord` and brought up via
-`docker compose`. This `deploy/` directory contains the Ansible playbook,
-inventory, and encrypted secrets used to run that deploy from a developer
-workstation.
+This playbook defines `compose-host-caddy` on a provisioned checkout at
+`/opt/apps/inebotten-discord`, with diagnostic access at `127.0.0.1:8081`.
+The definition does not establish which service currently runs on the VPS.
+See [the deployment contract](../docs/VPS_DEPLOYMENT.md) for preflight, immutable
+image receipts, readiness, code rollback and the separate data-restore gate.
 
-## Prerequisites
+The playbook refuses dirty source before synchronization, preserves WIP (`force:
+false`), and stops on source failure. It neither deletes unrelated old containers,
+rotates `.env`, recursively chowns data, nor prunes images. Existing config and a
+reviewed data root owned by UID 10001 are required. It calls the shared Python
+3.12 deployment tool with `--build --apply`; candidate failure remains a failed
+Ansible run even after successful code rollback. `first_install` defaults false.
 
-On the workstation:
-- Ansible (Homebrew: `brew install ansible`)
-- SSH key at `~/.ssh/id_rsa_racknerd` (deploy user on the VPS)
-- Vault password at `~/.vault_pass.txt` (gitignored)
+Before running this playbook, verify current service, port inventory, backup
+health and old image evidence on the target. Existing images without full
+revision/schema metadata need a separately reviewed transition; they are refused.
+Use the verified `Racknerd-Deploy` SSH alias (deploy user, `id_ed25519_racknerd`,
+`IdentitiesOnly=yes`, `IdentityAgent=none`). Resolve the actual inventory and
+credentials locally; do not print vault or token values.
 
-On the VPS (already configured, here for reference):
-- Docker + Docker Compose v2
-- A user `deploy` with SSH access and Docker group membership
-- A repo checkout at `/opt/apps/inebotten-discord`
-- A `.env` file at `/opt/apps/inebotten-discord/.env` containing
-  `DISCORD_USER_TOKEN` (per-user, not in vault)
-- A host-level Caddy serving `bot.reidar.tech` → `127.0.0.1:8081`
-- Optional Cloudflare Access/Tunnel setup for browser SSO. The app can run
-  with `CONSOLE_AUTH_MODE=cloudflare_access` after Cloudflare provides the
-  team domain, application AUD tag, and allowed email list.
-
-## Deploy
-
-```bash
-cd /path/to/inebotten-discord
-ansible-playbook -i deploy/inventory/hosts.yml deploy/ansible-playbook.yml \
-  --vault-password-file ~/.vault_pass.txt
-```
-
-What the playbook does:
-
-1. **Removes any leftover standalone container** named `inebotten` from
-   older deploys.
-2. **Updates source from `origin/master`** on the VPS and records the checked-out
-   commit for Docker build metadata.
-3. **Idempotently writes a managed block to `.env`**:
-   ```
-   AI_PROVIDER=openrouter
-   OPENROUTER_API_KEY={{ vault_openrouter_api_key }}
-   OPENROUTER_MODEL=google/gemma-4-31b-it:free
-   ```
-   The block is delimited by `# === managed by ansible (inebotten-discord
-   deploy) BEGIN/END ===`. Hand-edits between those markers are overwritten
-   on every run; lines outside the block (`DISCORD_USER_TOKEN`,
-   `CONSOLE_HOST`, …) are preserved.
-4. **Drops a `docker-compose.override.yml`** that:
-   - remaps the bot's web console to `127.0.0.1:8081` (host Caddy reverse-proxies there)
-   - disables the bundled compose `caddy` service (host Caddy already owns 80/443)
-5. **`docker compose up --build`** for the `inebotten` service only.
-6. **Polls `http://127.0.0.1:8081/health`** until it returns HTTP 200 with JSON `status: healthy`.
-7. **Verifies `/app/commit_hash.txt` inside the running container** matches the
-   checked-out commit, so stale containers fail the deploy instead of looking
-   successful.
-
-## Secrets
-
-| Secret | Where it lives |
-|---|---|
-| `OPENROUTER_API_KEY` | `deploy/group_vars/vps/vault.yml` (encrypted, `vault_openrouter_api_key`) |
-| `DISCORD_USER_TOKEN` | `/opt/apps/inebotten-discord/.env` on the VPS, outside the managed block |
-| Google OAuth client | `/opt/apps/inebotten-discord/data/credentials.json` on the VPS |
-| Google OAuth token | `/opt/apps/inebotten-discord/data/google_token.json` on the VPS |
-
-Edit the vault:
-```bash
-ansible-vault edit deploy/group_vars/vps/vault.yml \
-  --vault-password-file ~/.vault_pass.txt
-```
-
-To rotate `DISCORD_USER_TOKEN`, ssh to the VPS and edit `.env` directly —
-the playbook does not touch it.
-
-For Cloudflare Access browser SSO, keep the secret-free app settings in
-`/opt/apps/inebotten-discord/.env` unless the deploy playbook is extended to
-manage them:
-
-```bash
-CONSOLE_AUTH_MODE=cloudflare_access
-CONSOLE_COOKIE_SECURE=True
-CONSOLE_CF_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
-CONSOLE_CF_ACCESS_AUD=<bot.reidar.tech Access application AUD tag>
-CONSOLE_CF_ACCESS_ALLOWED_EMAILS=<allowed GitHub/Access email>
-```
-
-In this mode Cloudflare signs the identity token in
-`Cf-Access-Jwt-Assertion`; the console validates that token before serving the
-dashboard. Keep `CONSOLE_API_KEY` available for explicit `X-API-Key` service
-clients and recovery, but browser API-key login is disabled.
-
-For Google Calendar, keep both files in `/opt/apps/inebotten-discord/data`.
-That directory is mounted into the container as `/home/inebotten/.hermes`, so
-tokens stored there survive image rebuilds and bot restarts. To create or
-refresh the token on the VPS:
-
-```bash
-cd /opt/apps/inebotten-discord
-HERMES_HOME=/opt/apps/inebotten-discord/data python3 scripts/auth_gcal.py --no-browser
-```
-
-## Verify
-
-```bash
-ssh deploy@198.23.137.16 "docker ps --filter name=inebotten-bot"
-ssh deploy@198.23.137.16 "docker exec inebotten-bot cat /app/commit_hash.txt"
-ssh deploy@198.23.137.16 "docker logs --tail 20 inebotten-bot | grep -iE 'openrouter|fallback|logged in'"
-curl -s -o /dev/null -w "%{http_code}\n" https://bot.reidar.tech/
-```
-
-Expected log lines after a successful deploy:
-
-```
-[CONFIG] Using OpenRouter API (model: google/gemma-4-31b-it:free)
-  AI Provider: OpenRouter (model: google/gemma-4-31b-it:free)
-  ✓ AI Connector: API reachable (using model: google/gemma-4-31b-it:free)
-[BOT] Logged in as inebotten (ID: ...)
-```
-
-If you see `[BRIDGE] Using local fallback response` instead, the AI
-provider is unreachable. Check `AI_PROVIDER`, `OPENROUTER_API_KEY`, and
-`OPENROUTER_MODEL` in `/opt/apps/inebotten-discord/.env`, then re-run
-the playbook to re-inject them from vault.
-
-## Don't
-
-- Don't bring up the bundled compose `caddy` service. The host's system
-  Caddy already terminates TLS for `bot.reidar.tech`; another Caddy on
-  ports 80/443 will conflict.
-- Don't drop `force_source: yes` from any docker-image pull task you
-  add later. Without it, Ansible silently skips the pull when `:latest`
-  already exists locally.
-- Don't put `DISCORD_USER_TOKEN` in vault. It's per-user, not deployment
-  config, and binding it to a vault makes account rotation painful.
+The host proxy and any Cloudflare Access settings are provisioned separately.
+The tool uses an explicit Compose file pair and its profile mapping, so an
+unrelated `docker-compose.override.yml` is not silently loaded. Review existing
+overrides before adopting the profile.
