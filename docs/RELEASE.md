@@ -1,112 +1,53 @@
 # Utgivelser
 
-Denne guiden beskriver hvordan du lager en ny release med ferdige macOS- og Windows-bygg.
+GitHub Actions har ett publiseringsansvar: `.github/workflows/release.yml` reagerer på `v*`-tagger, venter på hele CI-suiten, kontrakttestene og begge plattformbyggene, kontrollerer bevisene fra nøyaktig samme tag og oppretter deretter utgivelsen. CI- og bygg-workflowene kan kjøres uten publisering; bygg-workflowen kan også kjøres manuelt for å bygge en valgt gren, tagg eller commit.
 
-## Automatisk bygg
+## Automatisk utgivelse
 
-GitHub Actions bygger desktop-appene når du pusher en tag som starter med `v`.
-
-Flyt:
-
-1. Lag en tag, for eksempel `v2.1.0`.
-2. Push taggen til GitHub.
-3. GitHub Actions bygger macOS-app og Windows-program.
-4. Workflowen oppretter GitHub-utgivelse.
-5. Artefakter lastes opp til releasen.
-
-## Lag release med skript
-
-macOS/Linux:
+Lag og push en semantisk versjonstag:
 
 ```bash
-./scripts/create-release.sh v2.1.0
-```
-
-Windows:
-
-```cmd
-scripts\create-release.bat v2.1.0
-```
-
-Skriptet sjekker arbeidskopien, viser siste commits, ber om bekreftelse og pusher taggen.
-
-## Lag release manuelt
-
-```bash
-git status -sb
 git tag -a v2.1.0 -m "Utgivelse v2.1.0"
 git push origin v2.1.0
 ```
 
-Følg byggingen på:
+Release-workflowen sender den fullstendige taggreferansen til både den gjenbrukbare CI-workflowen og desktop-bygg-workflowen. Hvert jobbsett sjekker ut denne referansen. Desktop-byggeren bekrefter at checkoutens commit-SHA samsvarer med den valgte referansen og utleder appversjonen fra taggen. Publisering venter på hele CI-suiten, release-kontrakttestene, macOS-bygg og røyketest, Windows-bygg og røyketest, og kontroll av de to byggbevisene.
 
-```text
-https://github.com/Reedtrullz/inebotten-discord/actions
-```
+Utgivelsen inneholder per plattform en ZIP-fil, en JSON-manifestfil og en røyketestkvittering, samt `SHA256SUMS`. Manifestet binder sammen full commit-SHA, valgt ref, tagg, versjon, OS/arkitektur, hash av `requirements/desktop.lock`, artefakthash og røyketestkvittering. Publiseringsjobben kontrollerer disse verdiene mot checkouten før den oppretter utgivelsen.
 
-Ferdige filer ligger på:
+## Manuell, ikke-publiserende bygging
 
-```text
-https://github.com/Reedtrullz/inebotten-discord/releases/tag/v2.1.0
-```
+Velg **Build Desktop Apps → Run workflow** i GitHub Actions. Fyll eventuelt inn `ref` med grenen, taggen eller committen som skal bygges. Hvis feltet er tomt, brukes workflowens valgte ref. `version` er valgfritt; for en versjonstagg må verdien stemme med taggen, og for en gren eller commit er standardversjonen `2.0.0`. Uoverensstemmelse avvises. Denne kjøringen laster opp tidsbegrensede CI-bevis og oppretter ingen GitHub-utgivelse.
 
-## Versjonering
+## Lokal macOS-bygging
 
-Bruk semantisk versjonering:
-
-| Del | Bruk |
-|-----|-----|
-| `MAJOR` | Brudd i kompatibilitet |
-| `MINOR` | Nye funksjoner |
-| `PATCH` | Feilrettinger |
-
-Eksempler:
-
-- `v2.0.0`: større release.
-- `v2.1.0`: nye funksjoner.
-- `v2.1.1`: feilretting.
-- `v2.2.0-beta.1`: forhåndsversjon.
-
-## Lokal byggtest
-
-macOS:
+Opprett et eget miljø og installer bare den hash-låste desktop-profilen fra PyPI. Python-distribusjonen må også ha en fungerende Tcl/Tk-runtime for GUI-launcheren; dette leveres ikke av desktop-låsefilen:
 
 ```bash
-cd mac_app
-./build.sh
+python3 -m venv .superpowers/desktop-env
+.superpowers/desktop-env/bin/python -m pip install \
+  --require-hashes --index-url https://pypi.org/simple \
+  -r requirements/desktop.lock
+.superpowers/desktop-env/bin/python scripts/build_desktop.py macos \
+  --ref refs/heads/main \
+  --output-dir .superpowers/receipts/release
 ```
 
-Windows:
+Byggeren nekter å merke en checkout med en annen refs commit og avviser lokale kildeendringer. Den bruker én felles definisjon av versjon, appmetadata, pakkefiler og skjulte importer for begge plattformene. Før den skriver manifestet, starter den det frosne programmet med `--smoke-artifact`. Denne tidlige banen kontrollerer de pakkede filene, blokkerer nettverkstilgang og avslutter før Tk, konfigurasjonsmapper, private data eller tjenester lastes inn.
 
-```cmd
-cd windows_app
-python build.py
-```
-
-## Før release
-
-- Kjør `.venv312/bin/python -m pytest -q` — hele testpakken skal passere.
-- Kjør `.venv312/bin/python -m pytest tests/test_false_positives.py -q` — regresjonstester skal passere.
-- Test intent-routeren med relevante norske prompt-eksempler (spesielt kalender- og søke-intents).
-- Verifiser at confidence-tresholds fungerer: usikre intents skal falle tilbake til AI.
-- Bygg minst én desktop-app lokalt hvis endringen berører launcher eller packaging.
-- Sjekk at `.env`, token og API-nøkler ikke ligger i diffen.
-- Oppdater dokumentasjon hvis brukerflyt, kommandoer eller intent-arkitektur er endret.
-
-## Feilsøking
-
-| Problem | Løsning |
-|---------|---------|
-| Tag finnes allerede | Slett lokal og remote tag, og lag den på nytt |
-| Bygg feiler | Les Actions-loggen og sjekk manglende avhengigheter |
-| Utgivelsen mangler filer | Sjekk at workflowen fikk lov til å opprette utgivelser |
-| macOS-app blokkeres | Se `mac_app/README.md` om Gatekeeper |
-
-Slette og lage tag på nytt:
+De eldre plattformkommandoene videresender til den samme byggeren:
 
 ```bash
-git tag -d v2.1.0
-git push origin :refs/tags/v2.1.0
-git tag -a v2.1.0 -m "Utgivelse v2.1.0"
-git push origin v2.1.0
+mac_app/build.sh --ref refs/heads/main
+python windows_app/build.py --ref refs/heads/main
 ```
+
+Begge krever at den låste desktop-profilen allerede er installert i det aktive Python-miljøet. Kommandoene installerer eller oppgraderer ikke pakker.
+
+## Bevis og akseptgrenser
+
+Kontrollerte artefakter viser hvilken commit og plattform som ble bygget, at de påkrevde kilde- og datafilene finnes i pakken, at den frosne entrypointen kan kjøre den avgrensede røyketesten uten nettverk, og at artefakt og kvittering samsvarer med SHA-256-manifestet. Dette verifiserer ikke Discord-innlogging, eksterne tjenester, brukeroppsett, tilgjengelighet, kodesignering, notarization eller installasjon på en annen maskin. Windows-bygg og signering må bekreftes på Windows og med en faktisk sertifikatbasert signeringsjobb. Workflowen hevder ikke sertifisert signering; selv ad-hoc-signering er ikke et sertifisert distribusjonsstempel.
+
+## Tidligere publiserings- og pakkeavvik
+
+Før denne kontrakten publiserte både release-workflowen og desktop-bygg-workflowen. macOS Python-byggeren utelot `scripts/run_both.py` og `web_console`, mens macOS shell-byggeren og Windows-byggeren pakket scripts, men utelot `web_console`. Den felles kontrakten krever nå blant annet `scripts/run_both.py`, `ai`, `cal_system`, `core`, `features`, `memory`, `utils`, `web_console/templates`, `web_console/static`, AI-promptene og skolekalenderdataene; bygg og røyketest stopper hvis noe mangler.

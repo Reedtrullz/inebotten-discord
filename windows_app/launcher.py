@@ -4,17 +4,24 @@ Inebotten Discord Bot - Windows Launcher
 Simple GUI application for Windows users
 """
 
-import os
 import sys
+from pathlib import Path
+
+# Keep source imports working when the launcher is run from another directory.
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Artifact verification exits before Tk, application configuration, or services load.
+if "--smoke-artifact" in sys.argv[1:]:
+    from scripts.smoke_release_artifact import main as smoke_release_artifact
+
+    raise SystemExit(smoke_release_artifact())
+
+import os
 import subprocess
 import threading
-from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
-
-# Source entry points can be launched from outside the project directory.
-if not getattr(sys, 'frozen', False):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.access_policy import describe_access_settings
 from core.config_schema import hermes_settings_path, update_settings, validate_settings

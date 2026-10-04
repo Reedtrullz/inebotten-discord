@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import stat
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -89,16 +90,30 @@ def test_windows_launcher_uses_self_command_when_frozen(monkeypatch, tmp_path):
     assert module.get_bot_command() == ["C:/tmp/Inebotten.exe", "--run-bot"]
 
 
-def test_mac_pyinstaller_build_bundles_scripts_directory():
-    build_script = (ROOT / "mac_app" / "build.sh").read_text(encoding="utf-8")
-    assert '--add-data="../scripts:scripts"' in build_script
-    assert "--hidden-import=scripts" in build_script
+def test_mac_build_wrapper_delegates_to_shared_builder():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "mac_app" / "build.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--output-dir" in result.stdout
+    assert "macos" in result.stdout
 
 
-def test_windows_pyinstaller_build_bundles_scripts_directory():
-    build_script = (ROOT / "windows_app" / "build.py").read_text(encoding="utf-8")
-    assert "--add-data=../scripts;scripts" in build_script
-    assert "--hidden-import=scripts" in build_script
+def test_windows_build_wrapper_delegates_to_shared_builder():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "windows_app" / "build.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--output-dir" in result.stdout
+    assert "windows" in result.stdout
 
 
 def test_desktop_launchers_preserve_unrelated_settings_and_do_not_log_tokens(monkeypatch, tmp_path):
