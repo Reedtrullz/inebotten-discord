@@ -12,7 +12,7 @@ Background asyncio task that:
 Tracks sent reminders in a JSON file to avoid duplicate pings.
 """
 
-import json
+import copy
 import time
 import asyncio
 from datetime import datetime, timedelta
@@ -20,6 +20,8 @@ from pathlib import Path
 
 from zoneinfo import ZoneInfo
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageMutationError, store_worker, writable_store
+from core.outbound_sender import OutboundSender, DeliveryResult
 
 
 class ReminderChecker:
@@ -38,6 +40,7 @@ class ReminderChecker:
         send_channel_message_func=None,
         send_ping_message_func=None,
         storage_path=None,
+        outbound_sender=None,
     ):
         self.calendar = calendar_manager
         self.reminders = reminder_manager
@@ -45,6 +48,7 @@ class ReminderChecker:
         self.get_channel = get_channel_func
         self.send_channel_message = send_channel_message_func
         self.send_ping_message = send_ping_message_func
+        self.outbound = outbound_sender or OutboundSender(get_channel_func, send_channel_message=send_channel_message_func)
         self.running = False
         self._morning_digest_sent = False
         self._last_gcal_sync = 0
@@ -62,59 +66,81 @@ class ReminderChecker:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.sent_log = {"reminders_sent": {}, "digest_log": {}}
+        self._storage = DocumentOwner(self.storage_path, lambda d: all(
+            isinstance(d.get(key, {}), dict) for key in ('reminders_sent', 'digest_log', 'deliveries')))
+        self.sent_log = self._storage.rollback() or {"reminders_sent": {}, "digest_log": {}, "deliveries": {}}
+
+    @property
+    def sent_log(self):
+        return self._storage.data
+
+    @sent_log.setter
+    def sent_log(self, value):
+        self._storage.data = value
+
+    def close_storage(self):
+        self._storage.close()
 
     async def setup(self):
         """Async initialization"""
         self.sent_log = await self._load_sent_log()
 
     async def _load_sent_log(self):
-        """Load log of sent reminders asynchronously"""
-        if not self.storage_path.exists():
-            return {"reminders_sent": {}, "digest_log": {}}
-
-        def _read():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[REMIND] Sent log load error: {e}")
-                return {"reminders_sent": {}, "digest_log": {}}
-
-        return await asyncio.to_thread(_read)
+        data = await store_worker(self._storage.load)
+        return data or {'reminders_sent': {}, 'digest_log': {}, 'deliveries': {}}
 
     async def _save_sent_log(self):
-        """Save sent log atomically and asynchronously"""
-        def _write():
-            # Prune old entries (> 2 days old) to keep file small
-            cutoff_key = int(time.time()) - 172800
-            reminders_sent = self.sent_log.get("reminders_sent", {})
-            reminders_sent = {
-                k: v for k, v in reminders_sent.items()
-                if isinstance(v, (int, float)) and v > cutoff_key
-            }
-            self.sent_log["reminders_sent"] = reminders_sent
+        candidate = copy.deepcopy(self.sent_log)
+        cutoff = int(time.time()) - 172800
+        candidate['reminders_sent'] = {key: value for key, value in candidate.get('reminders_sent', {}).items()
+                                      if isinstance(value, (int, float)) and value > cutoff}
+        cutoff_date = (datetime.now(ZoneInfo('Europe/Oslo')) - timedelta(days=30)).strftime('%Y-%m-%d')
+        candidate['digest_log'] = {key: value for key, value in candidate.get('digest_log', {}).items()
+                                  if isinstance(value, str) and value >= cutoff_date}
+        # Unresolved acceptance is never discarded into automatic replay.
+        candidate['deliveries'] = {key: value for key, value in candidate.get('deliveries', {}).items()
+                                   if value.get('status') in ('pending', 'unknown') or value.get('updated_at', 0) > cutoff}
+        result = await store_worker(self._storage.commit, candidate, writer=write_json_atomic)
+        if not result.ok:
+            raise StorageMutationError(result.error_code)
+        self.sent_log = candidate
 
-            # Keep only last 30 days of digest logs
-            today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
-            digest_log = self.sent_log.get("digest_log", {})
-            digest_log = {
-                k: v for k, v in digest_log.items()
-                if k >= (datetime.now(ZoneInfo("Europe/Oslo")) - timedelta(days=30)).strftime("%Y-%m-%d")
-            }
-            self.sent_log["digest_log"] = digest_log
-
-            try:
-                write_json_atomic(self.storage_path, self.sent_log)
-            except Exception as e:
-                print(f"[REMIND] Sent log save error: {e}")
-
-        await asyncio.to_thread(_write)
+    @writable_store
+    async def _deliver(self, channel_id, message, delivery_key):
+        receipt = self.sent_log.get('deliveries', {}).get(delivery_key)
+        if receipt and receipt.get('status') in ('pending', 'unknown'):
+            return DeliveryResult('unknown', reason_code='persisted_unresolved_acceptance')
+        if receipt and receipt.get('status') == 'delivered' and time.time() - receipt.get('updated_at', 0) < 3600:
+            return DeliveryResult('delivered', message_id=receipt.get('message_id'), reason_code='persisted_receipt')
+        if len(self.sent_log.get('deliveries', {})) >= 4096:
+            return DeliveryResult('dropped', reason_code='receipt_capacity')
+        self.sent_log.setdefault('deliveries', {})[delivery_key] = {
+            'status': 'pending', 'updated_at': int(time.time()), 'message_id': None,
+            'reason_code': 'send_not_resolved'}
+        await self._save_sent_log()
+        result = DeliveryResult('unknown', reason_code='interrupted')
+        try:
+            result = await self.outbound.send(str(channel_id) if channel_id else '', message,
+                                             delivery_key=f"{delivery_key}:{self.sent_log['deliveries'][delivery_key]['updated_at']}", deadline=time.monotonic()+10)
+            return result
+        except asyncio.CancelledError as error:
+            result = getattr(error, 'delivery_result', result)
+            raise
+        finally:
+            self.sent_log['deliveries'][delivery_key] = {
+                'status': result.status, 'updated_at': int(time.time()),
+                'message_id': result.message_id, 'reason_code': result.reason_code}
+            await self._save_sent_log()
 
     def _has_been_sent(self, item_id, remind_type):
         """Check if a reminder was already sent for this item+type"""
         key = f"{item_id}:{remind_type}"
         sent_at = self.sent_log.setdefault("reminders_sent", {}).get(key)
+        receipt = self.sent_log.get('deliveries', {}).get(key, {})
+        if receipt.get('status') in ('pending', 'unknown'):
+            return True
+        if receipt.get('status') == 'delivered' and time.time() - receipt.get('updated_at', 0) < 3600:
+            return True
         if sent_at is None:
             return False
         # Only suppress within a 60-minute window (allow re-alert for next occurrence)
@@ -122,6 +148,7 @@ class ReminderChecker:
             return True
         return False
 
+    @writable_store
     async def _mark_sent(self, item_id, remind_type):
         """Mark a reminder as sent"""
         key = f"{item_id}:{remind_type}"
@@ -134,6 +161,7 @@ class ReminderChecker:
         digest_log = self.sent_log.get("digest_log", {})
         return digest_log.get(key) == today_key
 
+    @writable_store
     async def _mark_digest_sent_today(self, guild_id, channel_id):
         key = f"{guild_id}:{channel_id}"
         today_key = datetime.now(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d")
@@ -304,8 +332,11 @@ class ReminderChecker:
                     continue
 
                 digest = self._format_morning_digest(items, now)
-                await self._send_to_channel(channel_id, digest)
-                await self._mark_digest_sent_today(guild_id, channel_id)
+                key = f'digest:{guild_id}:{channel_id}:{now.strftime("%Y-%m-%d")}'
+                result = await self._deliver(channel_id, digest, key)
+                if result.status == 'delivered':
+                    await self._mark_digest_sent_today(guild_id, channel_id)
+                    self.stats['digest_sent'] += 1
 
     # ---- Helpers ----
 
@@ -414,7 +445,12 @@ class ReminderChecker:
         else:
             message = f"⏰ **{item['title']}** - {label}{time_str}"
 
-        await self._send_mentions_item(channel_id, item, message)
+        if self._has_been_sent(item['id'], remind_type):
+            return
+        result = await self._send_mentions_item(channel_id, item, message, delivery_key=f"{item['id']}:{remind_type}")
+        if result.status != 'delivered':
+            self.stats['errors'] += 1
+            return
         await self._mark_sent(item["id"], remind_type)
         
         # Update statistics
@@ -450,13 +486,14 @@ class ReminderChecker:
         else:
             message = f"⏰ **{reminder['text']}** - {label}"
 
-        if channel_id:
-            await self._send_to_channel(channel_id, message)
-        else:
-            print(f"[REMIND] No channel_id for reminder: {reminder['text']}")
+        if self._has_been_sent(reminder['id'], remind_type):
+            return
+        result = await self._deliver(channel_id, message, f"{reminder['id']}:{remind_type}")
+        if result.status != 'delivered':
+            self.stats['errors'] += 1
+            return
+        await self._mark_sent(reminder['id'], remind_type)
 
-        await self._mark_sent(reminder["id"], remind_type)
-        
         # Update statistics
         if remind_type == "30min":
             self.stats["30min_sent"] += 1
@@ -465,7 +502,7 @@ class ReminderChecker:
         elif remind_type == "passed":
             self.stats["passed_sent"] += 1
 
-    async def _send_mentions_item(self, channel_id, item, message):
+    async def _send_mentions_item(self, channel_id, item, message, delivery_key=None):
         """Send a message mentioning the item creator"""
         # Try to mention the original creator via Discord user ID
         user_id = item.get("user_id")
@@ -476,29 +513,11 @@ class ReminderChecker:
             # For GCal items, maybe just add a header
             message = f"📅 **Google Calendar Sync**\n\n{message}"
 
-        await self._send_to_channel(channel_id, message)
+        return await self._deliver(channel_id, message, delivery_key)
 
     async def _send_to_channel(self, channel_id, message):
-        """Send a message to a channel_id. Uses the send function if available."""
-        if not channel_id:
-            print("[REMIND] No channel_id to send reminder to")
-            return
-
-        try:
-            if self.get_channel:
-                channel = self.get_channel(int(channel_id))
-                if channel:
-                    await channel.send(message)
-                    print(f"[REMIND] Sent to channel {channel_id}: {message[:80]}")
-                    return
-
-            # Fallback: use send_channel_message
-            if self.send_channel_message:
-                await self.send_channel_message(int(channel_id), message)
-                print(f"[REMIND] Sent (fallback) to channel {channel_id}: {message[:80]}")
-        except Exception as e:
-            print(f"[REMIND] Failed to send to channel {channel_id}: {e}")
-            self.stats["errors"] += 1
+        return await self.outbound.send(str(channel_id) if channel_id else '', message,
+                                        delivery_key=None, deadline=time.monotonic()+10)
 
     # ---- Main loop ----
 

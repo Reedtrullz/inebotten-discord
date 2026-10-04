@@ -196,11 +196,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create core/outbound_sender.py and tests/test_outbound_delivery.py; modify core/rate_limiter.py, features/base_handler.py, core/message_monitor.py, cal_system/reminder_checker.py.
 **Interfaces:** async OutboundSender.send(channel_id: str, text: str, *, delivery_key: str|None, deadline: float) -> DeliveryResult(status delivered|dropped|retryable|forbidden|unknown, message_id: str|None, retry_after_s: float|None, reason_code: str). deadline is monotonic. Delivered requires remote message evidence; unknown means acceptance cannot be resolved.
 
-- [ ] Add test_missing_destination_not_marked_sent, test_concurrent_reservations_keep_existing_limits, test_timeout_after_acceptance_is_unknown, and test_shutdown_preserves_pending_delivery_state.
-- [ ] Reproduce false sent accounting and competing limiter checks with fake channels/clocks.
-- [ ] Reserve capacity before awaiting sends, enforce existing per-second/day/interval rules on all paths, distinguish failure/unknown outcomes, and persist scheduler success only for delivered. Honor Retry-After within the deadline; do not blindly retry unknown acceptance.
-- [ ] Run tests/test_outbound_delivery.py, tests/test_base_handler_rate_limit.py, tests/test_gcal_reminder_routing.py and scheduler regressions; prove cancellation before send releases appropriate reservations.
-- [ ] Review and commit each adapter migration; scan for remaining direct send bypasses and retain documented controller authorization boundaries.
+- [x] Add test_missing_destination_not_marked_sent, test_concurrent_reservations_keep_existing_limits, test_timeout_after_acceptance_is_unknown, and test_shutdown_preserves_pending_delivery_state.
+- [x] Reproduce false sent accounting and competing limiter checks with fake channels/clocks.
+- [x] Reserve capacity before awaiting sends, enforce existing per-second/day/interval rules on all paths, distinguish failure/unknown outcomes, and persist scheduler success only for delivered. Honor Retry-After within the deadline; do not blindly retry unknown acceptance.
+- [x] Run tests/test_outbound_delivery.py, tests/test_base_handler_rate_limit.py, tests/test_gcal_reminder_routing.py and scheduler regressions; prove cancellation before send releases appropriate reservations.
+- [x] Review and commit each adapter migration; scan for remaining direct send bypasses and retain documented controller authorization boundaries.
 
 ### Task 12: I07 — Explicit invocation and calendar scope policy
 

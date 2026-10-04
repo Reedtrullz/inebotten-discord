@@ -78,6 +78,7 @@ class RecordingMessage:
 
     async def reply(self, content, mention_author=False):
         self.replies.append(content)
+        return SimpleNamespace(id=f'reply-{self.id}')
 
 
 class RecordingPollsHandler:

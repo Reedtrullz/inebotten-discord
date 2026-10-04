@@ -14,7 +14,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 8 | I32 | Preserving private onboarding | Planned | — |
 | 9 | I39 | Decide retention and harden the local-only exporter | Planned | — |
 | 10 | I05 | Serialize store ownership and snapshot commits | Implemented locally | 176 focused tests; whole suite before final crash probes 747 passed, 1 live skip, 17 subtests. Barrier, process-exit, cancellation, copied-return and stale-revision receipts. Windows CI added; not remotely verified. |
-| 11 | I03 | One sender with truthful delivery and reserved quotas | Planned | — |
+| 11 | I03 | One sender with truthful delivery and reserved quotas | Implemented locally | 107 focused tests; full non-browser checkpoint 762 passed, 1 live skip, 17 subtests. Remote-ID evidence, pending/unknown persistence, cancellation, quota race, safe interval and bounded 429 retry verified. I10 occurrence identity and I24 complete shutdown remain separate. |
 | 12 | I07 | Explicit invocation and calendar scope policy | Planned | — |
 | 13 | I09 | Explicit calendar time and kind | Planned | — |
 | 14 | I12 | Structured AI outcomes and bounded admission | Planned | — |

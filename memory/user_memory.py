@@ -48,7 +48,7 @@ class UserMemory:
         return await asyncio.to_thread(self._storage.load)
 
     async def _save_memory(self):
-        result = await store_worker(self._storage.commit, self.memory, writer=write_json_atomic)
+        result = await store_worker(self._storage.commit, copy.deepcopy(self.memory), writer=write_json_atomic)
         if not result.ok:
             self.memory = self._storage.rollback()
             raise StorageMutationError(result.error_code)

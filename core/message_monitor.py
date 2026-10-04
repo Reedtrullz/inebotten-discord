@@ -6,6 +6,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 
 import asyncio
 from utils.storage_contract import StorageMutationError
+from core.outbound_sender import monitor_sender
 import os
 import re
 import signal
@@ -145,6 +146,7 @@ class MessageMonitor:
         self.bot = client
         self.hermes = hermes_connector
         self.rate_limiter = rate_limiter
+        monitor_sender(self)
         self.response_gen = response_generator
         self.bot_name = bot_name
         self.bot_mention = f"@{bot_name}"
@@ -1015,37 +1017,14 @@ class MessageMonitor:
         return dashboard
 
     async def _send_response(self, message, response_text):
-        """Send response with proper channel handling."""
-        try:
-            if not response_text:
-                print("[MONITOR] Warning: Attempted to send empty response. Skipping.")
-                return
-
-            if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.rate_limiter.record_sent()
+        """Only acknowledged responses enter counters and conversation history."""
+        result = await monitor_sender(self).reply(message, response_text)
+        if result.status == 'delivered' and result.reason_code == 'remote_message':
             self.response_count += 1
-            print(f"[MONITOR] Response sent to {message.author.name}: {response_text[:100]}...")
-
-            # Add bot response to conversation history
             guild_id = message.guild.id if message.guild else message.channel.id
-            self.conversation.add_message(
-                channel_id=guild_id,
-                user_id=None,
-                username="Inebotten",
-                content=response_text,
-                is_bot=True,
-            )
-
-        except discord.errors.Forbidden:
-            print("[MONITOR] Forbidden: Cannot send message in this channel")
-            self.rate_limiter.record_failure()
-        except discord.errors.HTTPException as e:
-            print(f"[MONITOR] HTTP error sending message: {e}")
-            self.rate_limiter.record_failure(is_rate_limit=(e.status == 429))
+            self.conversation.add_message(channel_id=guild_id, user_id=None,
+                                          username='Inebotten', content=response_text, is_bot=True)
+        return result
 
     def _get_channel_type(self, channel):
         """Get string representation of channel type"""
@@ -1376,6 +1355,7 @@ class SelfbotClient(discord.Client):
             calendar_manager=calendar,
             reminder_manager=reminders,
             get_channel_func=get_channel,
+            outbound_sender=monitor_sender(selected_monitor) if hasattr(selected_monitor, "rate_limiter") else None,
         )
 
     def _setup_signal_handlers(self):

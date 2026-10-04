@@ -197,8 +197,9 @@ class DocumentOwner:
     def data(self, value):
         draft = self._draft.get()
         if draft is not None and (_task_identity() is None or self._nested()):
+            copied = copy.deepcopy(value)
             draft[2].clear()
-            draft[2].update(copy.deepcopy(value))
+            draft[2].update(copied)
         else:
             with self._mutex:
                 if self._async_active:
