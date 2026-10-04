@@ -1,0 +1,47 @@
+# Inebotten portfolio execution status
+
+Execution authorized 4 October 2026. Local implementation, exact-head CI, external/manual acceptance and deployment are recorded separately. Base master: c0b6a321b3e63e154e466604a9980954c502fb4d.
+
+| Task | Proposal | Title | Status | Evidence |
+| --- | --- | --- | --- | --- |
+| 1 | I20 | Hermetic offline verification | Planned | — |
+| 2 | I01 | Preserve events on inconclusive Google lookups | Planned | — |
+| 3 | I02 | One live reminder owner | Planned | — |
+| 4 | I04 | Explicit storage failures and schema compatibility | Planned | — |
+| 5 | I06 | Request-owned locale | Planned | — |
+| 6 | I27 | Forecast validity, location, time, and useful caching | Planned | — |
+| 7 | I28 | Honest currency snapshots | Planned | — |
+| 8 | I32 | Preserving private onboarding | Planned | — |
+| 9 | I39 | Decide retention and harden the local-only exporter | Planned | — |
+| 10 | I05 | Serialize store ownership and snapshot commits | Planned | — |
+| 11 | I03 | One sender with truthful delivery and reserved quotas | Planned | — |
+| 12 | I07 | Explicit invocation and calendar scope policy | Planned | — |
+| 13 | I09 | Explicit calendar time and kind | Planned | — |
+| 14 | I12 | Structured AI outcomes and bounded admission | Planned | — |
+| 15 | I15 | Render all console state consistently | Planned | — |
+| 16 | I16 | Endpoint freshness and owned polling timers | Planned | — |
+| 17 | I21 | Reproducible profiles, typed boundaries, dependency integration | Planned | — |
+| 18 | I29 | Maintained school-year data with coverage | Planned | — |
+| 19 | I33 | Poll lifecycle and vote-safe edits | Planned | — |
+| 20 | I08 | Identity-bound mutations and supported undo | Planned | — |
+| 21 | I11 | Durable Google intent, retries, and conflicts | Planned | — |
+| 22 | I13 | Deliberate memory, retention, and provider sharing | Planned | — |
+| 23 | I17 | Provider-aware actionable readiness | Planned | — |
+| 24 | I18 | Bounded logs and useful diagnostics | Planned | — |
+| 25 | I19 | Typed command catalogue and non-dispatch routing preview | Planned | — |
+| 26 | I22 | One release owner and artifact proof | Planned | — |
+| 27 | I24 | Owned resource shutdown and final counters | Planned | — |
+| 28 | I30 | Bounded cited research with optional extraction | Planned | — |
+| 29 | I14 | Complete self-only private memory exports | Planned | — |
+| 30 | I25 | Opt-in notification preferences and digest cards | Planned | — |
+| 31 | I10 | Series, occurrences, and recurring delivery identities | Planned | — |
+| 32 | I23 | Supported deployment profiles and compatible rollback | Planned | — |
+| 33 | I31 | Safe desktop UI and child-process lifecycle | Planned | — |
+| 34 | I35 | Consistent data backup and staged restore | Planned | — |
+| 35 | I36 | Previewed ICS exchange | Planned | — |
+| 36 | I26 | Authenticated agenda-first calendar workspace | Planned | — |
+| 37 | I34 | Organizer-confirmed group planning and RSVP | Planned | — |
+| 38 | I37 | Supported bot transport feasibility and adapter | Planned | — |
+| 39 | I38 | Allowlisted opt-in workflow recipes | Planned | — |
+
+Ten existing dependency PRs #12–#21 remain under I21 review. No GitHub issues existed at planning refresh.
