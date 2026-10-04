@@ -1321,16 +1321,17 @@ class TestFeatureCommands(unittest.TestCase):
         manager = AuroraForecast()
 
         async def fake_fetch_noaa_data():
+            from datetime import timezone
             return [
                 ["time_tag", "kp"],
                 [
-                    (datetime.now() - timedelta(hours=1)).strftime(
+                    (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
                         "%Y-%m-%dT%H:%M:%SZ"
                     ),
                     "4",
                 ],
                 [
-                    (datetime.now() + timedelta(hours=2)).strftime(
+                    (datetime.now(timezone.utc) + timedelta(hours=2)).strftime(
                         "%Y-%m-%dT%H:%M:%SZ"
                     ),
                     "5",

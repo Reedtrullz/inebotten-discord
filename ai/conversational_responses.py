@@ -53,17 +53,19 @@ class ConversationalResponseGenerator:
         if norwegian_data.get('flaggdag'):
             lines.append(f"🇳🇴 {norwegian_data['flaggdag']}")
         
-        # Weather - conversational
+        # Unavailable and stale states must survive all the way to the response.
         if weather_data:
-            location_str = f" i **{weather_data['location']}**" if weather_data.get('location') else ""
-            lines.append(f"\n🌤️ **Været{location_str}:** {weather_data['conditions']}, **{weather_data['temp']}°C**")
-            if weather_data['conditions'].lower() in ['sol', 'klarvær']:
-                lines.append("Nydelig dag for å være ute! ☀️")
-            elif weather_data['conditions'].lower() in ['regn', 'regnfullt']:
-                lines.append("Perfekt dag for en kopp kaffe inne ☕")
-            elif 'tåke' in weather_data['conditions'].lower():
-                lines.append("Litt mystisk vær i dag 🌫️")
-        
+            english = weather_data.get("locale") == "en"
+            location = weather_data.get("location") or "?"
+            if weather_data.get("status") == "unavailable" or weather_data.get("temp") is None:
+                lines.append(f"\n🌤️ Weather for {location} is unavailable. Try again later." if english else f"\n🌤️ Værdata for {location} er utilgjengelig. Prøv igjen senere.")
+            else:
+                label = ("Stale forecast" if english else "Utdatert varsel") if weather_data.get("status") == "stale" else ("Forecast" if english else "Værvarsel")
+                condition = weather_data.get("conditions") or ("unknown conditions" if english else "ukjent værtilstand")
+                lines.append(f"\n🌤️ **{label} for {location}:** {condition}, **{weather_data['temp']}°C**")
+                if weather_data.get("valid_at"):
+                    lines.append(f"_{weather_data.get('source', 'MET Norway')}; {weather_data['valid_at']}_")
+
         # Sunrise/sunset - quick mention
         location_suffix = f" i **{weather_data['location']}**" if weather_data and weather_data.get('location') else " i dag"
         lines.append(f"\n☀️ Solen går ned _{sunset}_{location_suffix}")

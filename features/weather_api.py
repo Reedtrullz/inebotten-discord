@@ -8,7 +8,9 @@ Free to use with proper attribution
 import aiohttp
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import math
+import time
 
 
 class METWeatherAPI:
@@ -19,11 +21,13 @@ class METWeatherAPI:
     
     BASE_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
     
-    def __init__(self):
+    def __init__(self, *, now=None, monotonic=None):
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.monotonic = monotonic or time.monotonic
         self.session = None
         # Required User-Agent per MET.no terms of service
         self.headers = {
-            "User-Agent": "Inebotten-Discord-Selfbot/1.0 github.com/inebotten"
+            "User-Agent": "Inebotten-Discord-Selfbot/1.0 https://github.com/Reedtrullz/inebotten-discord"
         }
         self.cache = {}
         self.cache_time = 600  # Cache for 10 minutes
@@ -56,20 +60,24 @@ class METWeatherAPI:
         # Check cache
         if cache_key in self.cache:
             cached_data, cached_time = self.cache[cache_key]
-            if (datetime.now() - cached_time).total_seconds() < self.cache_time:
-                return cached_data
+            from features.forecast_service import aware_time
+            expires = cached_data.get("expires_at")
+            if ((self.monotonic() - cached_time) < self.cache_time
+                    and (not expires or aware_time(self.now()) < aware_time(expires))):
+                return dict(cached_data)
         
         try:
             session = await self._get_session()
             url = f"{self.BASE_URL}?lat={lat}&lon={lon}"
             
-            async with session.get(url) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     data = await response.json()
                     weather = self._parse_weather(data, location_name)
                     
                     # Cache the result
-                    self.cache[cache_key] = (weather, datetime.now())
+                    if weather is not None:
+                        self.cache[cache_key] = (weather, self.monotonic())
                     return weather
                 else:
                     print(f"[WEATHER] API error: {response.status}")
@@ -80,53 +88,40 @@ class METWeatherAPI:
             return None
     
     def _parse_weather(self, data, location_name):
-        """
-        Parse MET.no API response into usable format
-        """
+        """Keep forecast point/expiry times; unknown measurements stay unknown."""
         try:
-            properties = data.get('properties', {})
-            timeseries = properties.get('timeseries', [])
-            
+            from features.forecast_service import aware_time
+            timeseries = data["properties"]["timeseries"]
             if not timeseries:
                 return None
-            
-            # Get current forecast (first entry)
-            current = timeseries[0]
-            instant = current.get('data', {}).get('instant', {}).get('details', {})
-            next_1_hours = current.get('data', {}).get('next_1_hours', {}).get('summary', {})
-            next_6_hours = current.get('data', {}).get('next_6_hours', {}).get('details', {})
-            
-            # Extract values
-            temp = instant.get('air_temperature', 0)
-            wind_speed = instant.get('wind_speed', 0)
-            humidity = instant.get('relative_humidity', 0)
-            
-            # Weather condition (symbol code)
-            symbol_code = next_1_hours.get('symbol_code', 'cloudy')
-            
-            # Get high/low from next 6 hours if available
-            temp_high = next_6_hours.get('air_temperature_max', temp + 3)
-            temp_low = next_6_hours.get('air_temperature_min', temp - 3)
-            
-            # Translate symbol code to readable condition
-            condition = self._translate_symbol(symbol_code)
-            
+            now = aware_time(self.now())
+            points = [(aware_time(entry["time"]), entry) for entry in timeseries]
+            past = [point for point in points if point[0] <= now]
+            valid_at, current = max(past, key=lambda p: p[0]) if past else min(points, key=lambda p: p[0])
+            details = current["data"].get("instant", {}).get("details", {})
+            def numeric(name, precision=0, source=details):
+                value = source.get(name)
+                return round(value, precision) if type(value) in (int, float) and math.isfinite(value) else None
+            temperature = numeric("air_temperature")
+            if temperature is None:
+                return None
+            period = next((hours for hours in (1, 6, 12) if f"next_{hours}_hours" in current["data"]), None)
+            symbol = current["data"].get(f"next_{period}_hours", {}).get("summary", {}).get("symbol_code")
+            range_details = current["data"].get("next_6_hours", {}).get("details", {})
             return {
-                'location': location_name,
-                'temp': round(temp),
-                'temp_high': round(temp_high),
-                'temp_low': round(temp_low),
-                'condition': condition,
-                'symbol_code': symbol_code,
-                'wind_speed': round(wind_speed, 1),
-                'humidity': round(humidity),
-                'timestamp': datetime.now().isoformat()
+                "location": location_name, "temp": temperature,
+                "temp_high": numeric("air_temperature_max", source=range_details),
+                "temp_low": numeric("air_temperature_min", source=range_details),
+                "wind_speed": numeric("wind_speed", 1), "humidity": numeric("relative_humidity"),
+                "condition": self._translate_symbol(symbol) if symbol else None,
+                "symbol_code": symbol, "valid_at": valid_at.isoformat(),
+                "expires_at": (valid_at + timedelta(hours=period)).isoformat() if period else None,
+                "timestamp": now.isoformat(),
+                "source_updated_at": data["properties"].get("meta", {}).get("updated_at"),
             }
-            
-        except Exception as e:
-            print(f"[WEATHER] Error parsing weather: {e}")
+        except (ValueError, TypeError, KeyError, IndexError):
             return None
-    
+
     def _translate_symbol(self, symbol_code):
         """
         Translate MET.no symbol code to Norwegian condition
@@ -233,30 +228,12 @@ def extract_city(text):
 
 
 async def get_weather_for_city(city_name='oslo'):
-    """
-    Convenience function to get weather for a Norwegian city
-    
-    Args:
-        city_name: Name of city (oslo, bergen, trondheim, etc.)
-    
-    Returns:
-        Weather dict or None
-    """
-    city = NORWEGIAN_CITIES.get(city_name.lower())
-    
-    if not city:
-        # Default to Oslo if city not found
-        city = NORWEGIAN_CITIES['oslo']
-    
-    api = METWeatherAPI()
-    weather = await api.get_weather(
-        lat=city['lat'],
-        lon=city['lon'],
-        location_name=city['name']
-    )
-    await api.close()
-    
-    return weather
+    """Compatibility reader using the shared service; unknown cities are explicit."""
+    from features.forecast_service import get_forecast_service, resolve_location
+    result = await get_forecast_service().get_weather(resolve_location(city_name))
+    if result.data is None:
+        return None
+    return {**result.data, "location": result.location["name"], "status": result.status, "source": result.source}
 
 
 if __name__ == "__main__":

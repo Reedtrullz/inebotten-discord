@@ -11,12 +11,14 @@ class DailyDigestManager:
     Generates daily digest summaries
     """
     
-    def __init__(self, event_manager=None, birthday_manager=None, crypto_manager=None, aurora_manager=None, watchlist_manager=None):
+    def __init__(self, event_manager=None, birthday_manager=None, crypto_manager=None, aurora_manager=None, watchlist_manager=None, forecast_service=None):
         self.event_manager = event_manager
         self.birthday_manager = birthday_manager
         self.crypto_manager = crypto_manager
         self.aurora_manager = aurora_manager
         self.watchlist_manager = watchlist_manager
+        from features.forecast_service import ForecastService
+        self.forecasts = forecast_service or ForecastService()
     
     async def generate_digest(self, guild_id, lang='no', user_id=None):
         """
@@ -70,7 +72,7 @@ class DailyDigestManager:
         lines.append("────────────────────")
         
         # 1. Weather Section
-        from features.weather_api import get_weather_for_city, METWeatherAPI
+        from features.forecast_service import resolve_location, format_weather
         
         # Determine city for weather
         city_name = 'oslo'
@@ -81,16 +83,12 @@ class DailyDigestManager:
                 city_name = user_mem["location"]
                 print(f"[DIGEST] Using user location for weather: {city_name}")
 
-        weather = await get_weather_for_city(city_name)
-        if weather:
-            emoji = METWeatherAPI().get_weather_emoji(weather['symbol_code'])
-            if lang == 'no':
-                lines.append(f"{emoji} **Været i {weather['location']}:** {weather['temp']}°C ({weather['condition']})")
-                lines.append(f"   ↓ {weather['temp_low']}°C  ↑ {weather['temp_high']}°C")
-            else:
-                lines.append(f"{emoji} **Weather in {weather['location']}:** {weather['temp']}°C ({weather['condition']})")
-                lines.append(f"   ↓ {weather['temp_low']}°C  ↑ {weather['temp_high']}°C")
-            lines.append("")
+        try:
+            result = await self.forecasts.get_weather(resolve_location(city_name))
+            lines.append(format_weather(result, lang))
+        except ValueError as error:
+            lines.append(str(error) if lang == "no" else "Unknown location. Choose a supported city or valid coordinates.")
+        lines.append("")
 
         # 2. Birthdays Section
         if self.birthday_manager:

@@ -219,6 +219,8 @@ class MessageMonitor:
         self.calculator = CalculatorManager()
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
+        from features.forecast_service import ForecastService
+        self.forecasts = ForecastService(aurora_client=self.aurora)
         self.search_manager = SearchManager()
         self.browser_manager = BrowserManager()
         self.detect_search_intent = detect_search_intent
@@ -230,7 +232,8 @@ class MessageMonitor:
             birthday_manager=self.birthdays,
             crypto_manager=self.crypto,
             aurora_manager=self.aurora,
-            watchlist_manager=self.watchlist
+            watchlist_manager=self.watchlist,
+            forecast_service=self.forecasts
         )
 
         self.parse_poll_command = parse_poll_command
@@ -645,15 +648,18 @@ class MessageMonitor:
         content_lower = message.content.lower()
         from features.weather_api import extract_city
 
-        response_text = await self._generate_dashboard(
-            guild_id,
-            city_name=extract_city(message.content),
-            show_navnedag=any(
-                re.search(rf"\b{re.escape(word)}\b", content_lower)
-                for word in ["navnedag", "oppsummering", "brief", "status"]
-            ),
-            user_id=message.author.id,
-        )
+        try:
+            response_text = await self._generate_dashboard(
+                guild_id,
+                city_name=extract_city(message.content),
+                show_navnedag=any(
+                    re.search(rf"\b{re.escape(word)}\b", content_lower)
+                    for word in ["navnedag", "oppsummering", "brief", "status"]
+                ),
+                user_id=message.author.id,
+            )
+        except ValueError as error:
+            response_text = str(error)
         await self._send_response(message, response_text)
 
     async def _send_ai_response(self, message, forced_search_info=None):
@@ -973,44 +979,28 @@ class MessageMonitor:
     async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False, user_id: int = None) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
-        from features.weather_api import METWeatherAPI, NORWEGIAN_CITIES
-
+        from features.forecast_service import ForecastService, resolve_location
+        from core.request_context import current_request
         norwegian_data = get_todays_info()
-        weather_api = METWeatherAPI()
-        
-        # If no city name provided, check user memory
         if not city_name and user_id:
             user_mem = await self.user_memory.get_user(user_id)
-            if user_mem.get("location"):
-                city_name = user_mem["location"]
-                print(f"[MONITOR] Using stored location for dashboard: {city_name}")
-
-        # Get coordinates for city if provided, otherwise default to Oslo
-        city_info = NORWEGIAN_CITIES.get(city_name.lower()) if city_name else NORWEGIAN_CITIES['oslo']
-        
-        weather_data = await weather_api.get_weather(
-            lat=city_info['lat'],
-            lon=city_info['lon'],
-            location_name=city_info['name']
-        )
-        await weather_api.close()
-
-        if weather_data:
-            weather_formatted = {
-                "conditions": weather_data["condition"],
-                "temp": weather_data["temp"],
-                "location": weather_data["location"],
-                "lat": city_info['lat'],
-                "lon": city_info['lon']
-            }
-        else:
-            weather_formatted = {
-                "conditions": "Delvis skyet", 
-                "temp": 8, 
-                "location": city_info['name'],
-                "lat": city_info['lat'],
-                "lon": city_info['lon']
-            }
+            city_name = user_mem.get("location")
+        location = resolve_location(city_name or "oslo")
+        service = getattr(self, "forecasts", None)
+        if service is None:
+            self.forecasts = service = ForecastService(aurora_client=getattr(self, "aurora", None))
+        result = await service.get_weather(location)
+        context = current_request()
+        weather_formatted = {
+            "status": result.status, "source": result.source,
+            "valid_at": result.valid_at.isoformat() if result.valid_at else None,
+            "expires_at": result.expires_at.isoformat() if result.expires_at else None,
+            "fetched_at": result.fetched_at.isoformat(),
+            "locale": context.locale if context else "no",
+            "location": location["name"], "lat": location["lat"], "lon": location["lon"],
+            "temp": result.data.get("temp") if result.data else None,
+            "conditions": result.data.get("condition") if result.data else None,
+        }
 
         upcoming_items = self.calendar.get_upcoming(guild_id, days=7)
 

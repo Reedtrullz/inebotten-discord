@@ -134,11 +134,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create features/forecast_service.py and tests/test_forecast_validity.py; modify features/weather_api.py, features/aurora_forecast.py, core/message_monitor.py, features/daily_digest_manager.py and forecast formatting.
 **Interfaces:** ForecastService receives owned provider clients plus now: Callable[[], datetime] and monotonic: Callable[[], float], defaulting to aware time and monotonic time. ForecastResult(status fresh|stale|unavailable, source: str, fetched_at: aware datetime, valid_at: aware datetime|None, expires_at: aware datetime|None, location: dict, data: dict|None); async ForecastService.get_weather(location: dict) -> ForecastResult; service owns clients/cache and has async close().
 
-- [ ] Add test_failure_never_fabricates_weather, test_unknown_city_is_actionable, test_utc_oslo_select_same_aurora_interval, and test_same_location_reuses_cache with a fake monotonic clock/provider call counter.
-- [ ] Demonstrate fabricated fallback and per-instance cache loss without network.
-- [ ] Replace fallback conditions with unavailable/stale output, resolve validated aliases/coordinates, preserve aware source times, reuse one owned service, and label heuristic scores accurately.
-- [ ] Run tests/test_forecast_validity.py and relevant dashboard/digest regressions; assert one provider call within the existing cache TTL and refresh after expiry.
-- [ ] Review and commit; integrate close ownership in I24. Accuracy/geocoder expansion needs a separate current-source review.
+- [x] Add test_failure_never_fabricates_weather, test_unknown_city_is_actionable, test_utc_oslo_select_same_aurora_interval, and test_same_location_reuses_cache with a fake monotonic clock/provider call counter.
+- [x] Demonstrate fabricated fallback and per-instance cache loss without network.
+- [x] Replace fallback conditions with unavailable/stale output, resolve validated aliases/coordinates, preserve aware source times, reuse one owned service, and label heuristic scores accurately.
+- [x] Run tests/test_forecast_validity.py and relevant dashboard/digest regressions; assert one provider call within the existing cache TTL and refresh after expiry.
+- [x] Review and commit; integrate close ownership in I24. Accuracy/geocoder expansion needs a separate current-source review.
 
 ### Task 7: I28 — Honest currency snapshots
 
