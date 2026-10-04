@@ -581,6 +581,37 @@ class ConsoleServer:
                     await self._send_response(writer, 401, html, content_type="text/html; charset=utf-8")
                 return
 
+            if method == "POST" and path == "/api/setup/settings":
+                from core.config_schema import settings_path, update_settings, validate_settings
+
+                if "application/json" not in headers.get("content-type", "").lower():
+                    await self._send_response(writer, 400, {"error": "JSON settings are required"})
+                    return
+                try:
+                    payload = json.loads(body_bytes.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    await self._send_response(writer, 400, {"error": "Invalid settings payload"})
+                    return
+                changes = payload.get("settings") if isinstance(payload, dict) else None
+                if not isinstance(changes, dict) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in changes.items()
+                ):
+                    await self._send_response(writer, 400, {"error": "Settings must be text fields"})
+                    return
+                errors = validate_settings(changes)
+                if errors:
+                    await self._send_response(writer, 400, {"errors": errors})
+                    return
+                try:
+                    target = settings_path()
+                    update_settings(target, changes)
+                except (OSError, ValueError):
+                    await self._send_response(writer, 500, {"error": "Settings could not be saved"})
+                    return
+                await self._send_response(writer, 200, {"ok": True, "path": str(target)})
+                return
+
             if method == "POST" and path == "/api/gcal/credentials":
                 from cal_system.google_calendar_manager import (
                     get_google_credentials_status,

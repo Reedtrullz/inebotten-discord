@@ -12,6 +12,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
+from core.config_schema import hermes_settings_path, update_settings, validate_settings
+
 
 def get_project_root() -> Path:
     bundle_root = getattr(sys, "_MEIPASS", None)
@@ -223,58 +225,35 @@ class InebottenLauncher:
         self.root.update_idletasks()
     
     def _load_saved_config(self):
-        """Load saved configuration"""
-        config_path = Path.home() / ".hermes" / "discord" / "launcher_config.json"
-        
-        if config_path.exists():
-            try:
-                import json
-                with open(config_path, "r") as f:
-                    config = json.load(f)
-                
-                self.provider_var.set(config.get("provider", "lm_studio"))
-                self.model_var.set(config.get("model", "google/gemma-3-4b-it:free"))
+        """Load only non-secret setup choices from the authoritative env file."""
+        try:
+            from dotenv import dotenv_values
 
-                self._log("Loaded saved configuration")
-            except Exception as e:
-                self._log(f"Error loading config: {e}")
+            config = dotenv_values(hermes_settings_path())
+            provider = config.get("AI_PROVIDER")
+            model = config.get("OPENROUTER_MODEL")
+            if provider:
+                self.provider_var.set(provider)
+            if model:
+                self.model_var.set(model)
+            if provider or model:
+                self._log("Loaded saved setup settings")
+        except (OSError, ValueError):
+            self._log("Could not load saved setup settings")
     
     def _save_config(self):
-        """Save configuration"""
-        config_path = Path.home() / ".hermes" / "discord" / "launcher_config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            import json
-            config = {
-                "provider": self.provider_var.get(),
-                "model": self.model_var.get(),
-            }
-            
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-            
-            messagebox.showinfo("Success", "Configuration saved!")
-            self._log("Configuration saved")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save config: {e}")
+        """Save supported setup settings through the shared private writer."""
+        if not self._create_env_file():
+            return False
+        messagebox.showinfo("Success", "Configuration saved.")
+        self._log("Configuration saved")
+        return True
     
     def _start_bot(self):
         """Start the Discord bot"""
-        # Validate inputs
-        if not self.token_var.get():
-            messagebox.showerror("Error", "Please enter your Discord token")
+        # Empty secret fields preserve their existing values in the private env file.
+        if not self._save_config():
             return
-        
-        if self.provider_var.get() == "openrouter" and not self.openrouter_key_var.get():
-            messagebox.showerror("Error", "Please enter your OpenRouter API key")
-            return
-        
-        # Save config first
-        self._save_config()
-        
-        # Create .env file
-        self._create_env_file()
         
         # Start bot in background thread
         self.running = True
@@ -302,40 +281,33 @@ class InebottenLauncher:
         self.status_var.set("Ready")
     
     def _create_env_file(self):
-        """Create .env file from GUI inputs"""
-        env_path = Path.home() / ".hermes" / "discord" / ".env"
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        env_content = f"""# Discord Selfbot Configuration
-DISCORD_USER_TOKEN={self.token_var.get()}
+        """Validate and atomically update the authoritative private settings file."""
+        changes = {
+            "AI_PROVIDER": self.provider_var.get(),
+            "OPENROUTER_MODEL": self.model_var.get(),
+        }
+        token = self.token_var.get()
+        api_key = self.openrouter_key_var.get()
+        if token:
+            changes["DISCORD_USER_TOKEN"] = token
+        if api_key:
+            changes["OPENROUTER_API_KEY"] = api_key
 
-# AI Provider Selection
-AI_PROVIDER={self.provider_var.get()}
+        errors = validate_settings(changes)
+        if errors:
+            details = "\n".join(f"{error['field']}: {error['reason']}" for error in errors)
+            messagebox.showerror("Invalid configuration", details)
+            return False
 
-# LM Studio Configuration
-HERMES_API_URL=http://127.0.0.1:3000/api/chat
-HERMES_TEMPERATURE=0.7
-HERMES_MAX_TOKENS=200
+        try:
+            env_path = hermes_settings_path()
+            update_settings(env_path, changes)
+        except (OSError, ValueError):
+            messagebox.showerror("Configuration error", "Settings could not be saved. Check the target path and permissions.")
+            return False
 
-# OpenRouter Configuration
-OPENROUTER_API_KEY={self.openrouter_key_var.get()}
-OPENROUTER_MODEL={self.model_var.get()}
-OPENROUTER_TEMPERATURE=0.7
-OPENROUTER_MAX_TOKENS=200
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-
-# Rate Limiting
-MAX_MSGS_PER_SEC=5
-DAILY_QUOTA=10000
-SAFE_INTERVAL=1
-POLL_INTERVAL=8
-"""
-        
-        with open(env_path, "w") as f:
-            f.write(env_content)
-        env_path.chmod(0o600)
-
-        self._log(f"Created .env file at {env_path}")
+        self._log(f"Updated private settings at {env_path}")
+        return True
     
     def _run_bot(self):
         """Run the bot in background thread"""
@@ -355,6 +327,7 @@ POLL_INTERVAL=8
                 bufsize=1,
                 universal_newlines=True,
                 cwd=str(script_dir),
+                env={**os.environ, "HERMES_HOME": str(hermes_settings_path().parent.parent)},
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
             

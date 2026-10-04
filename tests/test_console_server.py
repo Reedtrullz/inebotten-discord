@@ -869,3 +869,73 @@ async def test_internal_exception_returns_generic_error_without_detail():
         assert b"secret-detail" not in response
     finally:
         await stop_server(server, task)
+
+
+async def test_setup_settings_requires_console_auth(tmp_path, monkeypatch):
+    hermes = tmp_path / "hermes"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text("DISCORD_USER_TOKEN=existing-synthetic-token\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    server, task = await start_server()
+    try:
+        body = json.dumps({"settings": {"AI_PROVIDER": "lm_studio"}}).encode()
+        response = await request(
+            "/api/setup/settings",
+            method="POST",
+            body=body,
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"401" in response
+        assert env_path.read_text(encoding="utf-8") == "DISCORD_USER_TOKEN=existing-synthetic-token\n"
+    finally:
+        await stop_server(server, task)
+
+
+async def test_setup_settings_uses_shared_writer_and_returns_no_secret_values(tmp_path, monkeypatch):
+    hermes = tmp_path / "hermes home"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text("# keep\nDISCORD_USER_TOKEN=existing-synthetic-token\nALLOWED_USERS=123,456\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    server, task = await start_server()
+    try:
+        body = json.dumps({"settings": {"AI_PROVIDER": "lm_studio"}}).encode()
+        response = await request(
+            "/api/setup/settings",
+            method="POST",
+            api_key=API_KEY,
+            body=body,
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"200" in response
+        assert env_path.read_text(encoding="utf-8") == (
+            "# keep\nDISCORD_USER_TOKEN=existing-synthetic-token\n"
+            "ALLOWED_USERS=123,456\nAI_PROVIDER=lm_studio\n"
+        )
+        assert b"existing-synthetic-token" not in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_setup_settings_rejects_email_password_without_echoing_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    server, task = await start_server()
+    email = "synthetic-private@example.test"
+    password = "synthetic-private-password"
+    try:
+        body = json.dumps({"settings": {"DISCORD_EMAIL": email, "DISCORD_PASSWORD": password}}).encode()
+        response = await request(
+            "/api/setup/settings",
+            method="POST",
+            api_key=API_KEY,
+            body=body,
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"400" in response
+        assert email.encode() not in response
+        assert password.encode() not in response
+    finally:
+        await stop_server(server, task)

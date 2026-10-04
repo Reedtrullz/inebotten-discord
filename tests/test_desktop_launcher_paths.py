@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import stat
 import sys
 import types
 from pathlib import Path
@@ -98,3 +99,77 @@ def test_windows_pyinstaller_build_bundles_scripts_directory():
     build_script = (ROOT / "windows_app" / "build.py").read_text(encoding="utf-8")
     assert "--add-data=../scripts;scripts" in build_script
     assert "--hidden-import=scripts" in build_script
+
+
+def test_desktop_launchers_preserve_unrelated_settings_and_do_not_log_tokens(monkeypatch, tmp_path):
+    hermes = tmp_path / "Hermes home"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text(
+        "# preserve comment\nDISCORD_USER_TOKEN=existing-synthetic-token\n"
+        "ALLOWED_USERS=123,456\nCONSOLE_API_KEY=synthetic-console-key\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+
+    class Value:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    for platform in ("mac", "windows"):
+        module = _load_module(ROOT / f"{platform}_app" / "launcher.py", f"{platform}_launcher_settings", monkeypatch)
+        launcher = module.InebottenLauncher.__new__(module.InebottenLauncher)
+        launcher.token_var = Value("")
+        launcher.provider_var = Value("lm_studio")
+        launcher.openrouter_key_var = Value("")
+        launcher.model_var = Value("test/model")
+        logs = []
+        launcher._log = logs.append
+
+        launcher._create_env_file()
+
+        contents = env_path.read_text(encoding="utf-8")
+        assert "# preserve comment\n" in contents
+        assert "DISCORD_USER_TOKEN=existing-synthetic-token\n" in contents
+        assert "ALLOWED_USERS=123,456\n" in contents
+        assert "CONSOLE_API_KEY=synthetic-console-key\n" in contents
+        assert all("synthetic" not in message for message in logs)
+        assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+def test_desktop_launchers_load_only_nonsecret_settings_from_authoritative_file(monkeypatch, tmp_path):
+    hermes = tmp_path / "Hermes home"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text(
+        "DISCORD_USER_TOKEN=never-log-this-synthetic-token\n"
+        "AI_PROVIDER=openrouter\nOPENROUTER_MODEL=synthetic/model\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+
+    class Value:
+        def __init__(self):
+            self.value = None
+
+        def set(self, value):
+            self.value = value
+
+    for platform in ("mac", "windows"):
+        module = _load_module(ROOT / f"{platform}_app" / "launcher.py", f"{platform}_launcher_load", monkeypatch)
+        launcher = module.InebottenLauncher.__new__(module.InebottenLauncher)
+        launcher.provider_var = Value()
+        launcher.model_var = Value()
+        logs = []
+        launcher._log = logs.append
+
+        launcher._load_saved_config()
+
+        assert launcher.provider_var.value == "openrouter"
+        assert launcher.model_var.value == "synthetic/model"
+        assert all("never-log-this-synthetic-token" not in message for message in logs)

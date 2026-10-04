@@ -102,8 +102,12 @@ class Config:
         # token cannot silently win.  When no override is configured, retain
         # the local-development convenience of loading .env first.
         hermes_env = hermes_home_path() / 'discord' / '.env'
-        if os.getenv('HERMES_HOME'):
-            env_paths = [hermes_env]
+        if 'HERMES_HOME' in os.environ:
+            if os.environ['HERMES_HOME'].strip():
+                env_paths = [hermes_env]
+            else:
+                print("[CONFIG] Warning: ignoring empty HERMES_HOME; project .env fallback is disabled")
+                env_paths = []
         else:
             env_paths = [Path('.env'), hermes_env]
         
@@ -128,17 +132,19 @@ class Config:
         """
         Validate configuration - ensure we have at least one auth method
         """
+        if self.DISCORD_EMAIL or self.DISCORD_PASSWORD:
+            raise ValueError(
+                "Email/password authentication is unsupported; configure DISCORD_USER_TOKEN."
+            )
+        if self.AI_PROVIDER not in {"lm_studio", "openrouter"}:
+            raise ValueError("AI_PROVIDER must be 'lm_studio' or 'openrouter'.")
+
         has_token = bool(self.DISCORD_TOKEN)
-        has_email_password = bool(self.DISCORD_EMAIL and self.DISCORD_PASSWORD)
         
-        if not has_token and not has_email_password:
+        if not has_token:
             print("[CONFIG] WARNING: No Discord credentials configured!")
             print("  Please set one of the following:")
             print("    - DISCORD_USER_TOKEN (preferred)")
-            print("    - OR both DISCORD_EMAIL and DISCORD_PASSWORD")
-        
-        if not self.DISCORD_TOKEN and has_email_password:
-            print("[CONFIG] Using username/password auth (slower than token)")
         
         # Validate AI provider configuration
         if self.AI_PROVIDER == 'openrouter':
@@ -195,28 +201,20 @@ class Config:
     def get_auth_type(self) -> str:
         """
         Determine which authentication method is configured
-        Returns: 'token' or 'email/password'
+        Returns: 'token' or 'none'
         """
         if self.DISCORD_TOKEN:
             return 'token'
-        elif self.DISCORD_EMAIL and self.DISCORD_PASSWORD:
-            return 'email/password'
         else:
             return 'none'
     
     def get_auth_creds(self):
         """
         Get authentication credentials
-        Returns: dict with token or email/password
+        Returns: dict with token, or None
         """
         if self.DISCORD_TOKEN:
             return {'type': 'token', 'token': self.DISCORD_TOKEN}
-        elif self.DISCORD_EMAIL and self.DISCORD_PASSWORD:
-            return {
-                'type': 'password',
-                'email': self.DISCORD_EMAIL,
-                'password': self.DISCORD_PASSWORD
-            }
         else:
             return None
     
