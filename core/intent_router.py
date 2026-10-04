@@ -153,6 +153,19 @@ class IntentRouter:
         if calendar_item and calendar_item.confidence >= 0.94:
             return calendar_item
 
+        if re.fullmatch(
+            r"(?:poll results?|poll resultater|resultater poll|"
+            r"resultater avstemning|vis resultater(?: for)? "
+            r"(?:poll|avstemning)|avstemning resultater)",
+            re.sub(r"^@inebotten\s*", "", content_lower).strip(),
+        ):
+            return IntentResult(
+                BotIntent.POLL_LIST,
+                0.96,
+                {"history": True},
+                "poll_results_command",
+            )
+
         if has_any_keyword(content_lower, ("polls", "avstemninger", "active polls", "vis poll", "vis avstemning", "list poll", "poll liste", "poll list", "avstemning liste")) and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_LIST, 0.95, {}, "poll_list_keyword")
 
@@ -165,8 +178,27 @@ class IntentRouter:
             return IntentResult(BotIntent.POLL_VOTE, 0.95, {"vote": vote}, "active_poll_vote")
 
         poll_ref = self._parse_poll_reference(content_lower)
-        if has_any_keyword(content_lower, POLL_EDIT_KEYWORDS) and self._has_active_poll(guild_id):
-            return IntentResult(BotIntent.POLL_EDIT, 0.95, {"poll_edit": poll_ref}, "poll_edit_keyword")
+        confirmation = re.fullmatch(
+            r"bekreft poll endring ([a-f0-9]{32}) reset", content_lower
+        )
+        if confirmation or (
+            has_any_keyword(content_lower, POLL_EDIT_KEYWORDS)
+            and self._has_active_poll(guild_id)
+        ):
+            poll_edit = dict(poll_ref)
+            if confirmation:
+                poll_edit = {
+                    "confirm_token": confirmation.group(1),
+                    "confirm_reset": True,
+                }
+            else:
+                poll_edit["changes"] = self._parse_poll_edit_changes(content)
+            return IntentResult(
+                BotIntent.POLL_EDIT,
+                0.95,
+                {"poll_edit": poll_edit},
+                "poll_edit_keyword",
+            )
         if has_any_keyword(content_lower, POLL_DELETE_KEYWORDS) and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_DELETE, 0.95, {"poll_delete": poll_ref}, "poll_delete_keyword")
         if has_any_keyword(content_lower, POLL_CLOSE_KEYWORDS) and self._has_active_poll(guild_id):
@@ -710,6 +742,26 @@ class IntentRouter:
             result["target"] = "siste"
             return result
         return result
+
+    @staticmethod
+    def _parse_poll_edit_changes(content: str) -> Dict[str, Any]:
+        """Parse explicit poll edit fields; never infer them from prose."""
+        changes: Dict[str, Any] = {}
+        question = re.search(
+            r"(?:spørsmål|question|tittel)\s*:\s*(.+?)"
+            r"(?=\s+(?:valg|options)\s*:|$)",
+            content, re.IGNORECASE,
+        )
+        if question:
+            changes["question"] = question.group(1).strip()
+        options = re.search(
+            r"(?:valg|options)\s*:\s*(.+)$", content, re.IGNORECASE
+        )
+        if options:
+            changes["options"] = [
+                part.strip() for part in options.group(1).split("/")
+            ]
+        return changes
 
     def _looks_contextual_enough_for_search(self, content_lower: str, search_info: Dict[str, str]) -> bool:
         if search_info.get("type") == "news":

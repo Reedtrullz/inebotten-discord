@@ -8,8 +8,10 @@ Commands:
 """
 
 from typing import Dict, Any
+import re
 
 from features.base_handler import BaseHandler
+from features.poll_manager import PollStorageError
 
 
 class PollsHandler(BaseHandler):
@@ -28,6 +30,22 @@ class PollsHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
+            if self._is_results_command(message):
+                closed_polls = self.poll.get_closed_polls(guild_id)
+                if not closed_polls:
+                    response_text = (
+                        "Ingen lukkede avstemninger med resultater."
+                    )
+                else:
+                    blocks = []
+                    for poll in closed_polls:
+                        blocks.append(
+                            "🔒 Lukket\n" + self.poll.format_poll(poll)
+                        )
+                    response_text = "\n\n".join(blocks)
+                await self.send_response(message, response_text)
+                return
+
             active_polls = self.poll.get_active_polls(guild_id)
 
             if not active_polls:
@@ -69,6 +87,8 @@ class PollsHandler(BaseHandler):
             response_text = self.poll.format_poll(poll, lang)
             await self.send_response(message, response_text)
 
+        except PollStorageError as e:
+            await self.send_response(message, str(e))
         except Exception as e:
             self.log(f"Error creating poll: {e}")
 
@@ -152,6 +172,21 @@ class PollsHandler(BaseHandler):
             return "\n".join(lines)
         return self.loc.t("poll_not_found")
 
+    @staticmethod
+    def _is_results_command(message) -> bool:
+        content = re.sub(
+            r"^@inebotten\s*", "", getattr(message, "content", ""),
+            flags=re.IGNORECASE,
+        )
+        return bool(
+            re.fullmatch(
+                r"(?:poll results?|poll resultater|resultater poll|"
+                r"resultater avstemning|vis resultater(?: for)? "
+                r"(?:poll|avstemning)|avstemning resultater)",
+                content.strip(), flags=re.IGNORECASE,
+            )
+        )
+
     async def handle_poll_edit(self, message, payload: Dict[str, Any]) -> None:
         """
         Handle poll editing.
@@ -162,35 +197,71 @@ class PollsHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
+            if payload.get("confirm_token"):
+                success, result = self.poll.apply_poll_edit(
+                    guild_id, None, message.author.id,
+                    payload["confirm_token"],
+                    confirm_reset=payload.get("confirm_reset", False),
+                    username=message.author.name,
+                )
+                if success:
+                    response_text = (
+                        self.loc.t("poll_edited")
+                        + "\n\n"
+                        + self.poll.format_poll(result)
+                    )
+                else:
+                    response_text = result
+                await self.send_response(message, response_text)
+                return
+
             target = payload.get("target")
             poll_id = self._resolve_poll_id(guild_id, target)
             if poll_id is None:
-                await self.send_response(message, self._poll_target_response(guild_id, target, "endre"))
+                await self.send_response(
+                    message,
+                    self._poll_target_response(guild_id, target, "endre"),
+                )
                 return
 
-            question = payload.get("question")
-            options = payload.get("options")
+            changes = payload.get("changes", {})
+            if not changes:
+                response_text = (
+                    "Skriv `endre poll N spørsmål: ...` og/eller `valg: A/B`. "
+                    "Strukturelle valgendringer krever `bekreft poll endring "
+                    "TOKEN reset`."
+                )
+                await self.send_response(message, response_text)
+                return
 
-            success, result = self.poll.edit_poll(
-                guild_id=guild_id,
-                poll_id=poll_id,
-                user_id=message.author.id,
-                username=message.author.name,
-                question=question,
-                options=options,
+            preview = self.poll.preview_poll_edit(
+                guild_id, poll_id, changes,
+                message.author.id, message.author.name,
             )
-
-            if success:
-                response_text = self.loc.t("poll_edited") + "\n\n" + self.poll.format_poll(result)
+            if not preview.get("ok"):
+                response_text = preview["error"]
+            elif preview["requires_confirmation"]:
+                labels = ", ".join(
+                    option["text"] for option in preview["options"]
+                )
+                response_text = (
+                    "Endringen vil nullstille stemmene "
+                    f"(revisjon {preview['revision']}). "
+                    f"Nye valg: {labels}. Bekreft med `bekreft poll endring "
+                    f"{preview['token']} reset`."
+                )
             else:
-                if result == "Poll not found":
-                    response_text = self.loc.t("poll_not_found")
-                elif result == "Poll is closed":
-                    response_text = self.loc.t("poll_closed_already")
-                elif "owner" in result.lower():
-                    response_text = self.loc.t("poll_not_owner")
-                else:
-                    response_text = result
+                success, result = self.poll.apply_poll_edit(
+                    guild_id, poll_id, message.author.id,
+                    preview["token"],
+                    username=message.author.name,
+                )
+                response_text = (
+                    self.loc.t("poll_edited")
+                    + "\n\n"
+                    + self.poll.format_poll(result)
+                    if success else result
+                )
 
             await self.send_response(message, response_text)
 

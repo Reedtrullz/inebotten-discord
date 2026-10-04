@@ -175,6 +175,15 @@ class IntentRouterTests(unittest.TestCase):
         result = self.route("polls", active_polls=False)
         self.assertEqual(result.intent, BotIntent.AI_CHAT)
 
+    def test_explicit_poll_results_routes_without_active_polls(self):
+        result = self.route("@inebotten poll results", active_polls=False)
+        self.assertEqual(result.intent, BotIntent.POLL_LIST)
+        self.assertEqual(result.reason, "poll_results_command")
+
+    def test_conversational_poll_results_question_stays_ai_chat(self):
+        result = self.route("can you explain poll results in general?")
+        self.assertEqual(result.intent, BotIntent.AI_CHAT)
+
     def test_prompt_priority_examples(self):
         examples = {
             "status": BotIntent.STATUS,
