@@ -6,26 +6,100 @@ Tracks reminders that can be marked as completed
 
 import re
 import uuid
+import copy
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
-from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store
+from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store, store_worker
+from cal_system.event_schema import Clock, EventTime
+from cal_system.sync_outbox import SyncOwnerMixin, SyncOutbox, enqueue, SyncOperation, remote_completion
+from core.access_policy import AccessPolicy
+from cal_system.mutation_preview import actor_key
 
 
-class ReminderManager:
+class ReminderManager(SyncOwnerMixin):
     """
     Manages reminders that users can mark as completed
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path=None, *, gcal_manager=None, clock=None, access_policy=None):
         if storage_path is None:
             storage_path = hermes_discord_data_path("reminders.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self._storage = DocumentOwner(self.storage_path, bucket_records("text", require_ids=True))
+        self.clock = clock or Clock()
+        self.access_policy = access_policy or AccessPolicy()
+        self.gcal = gcal_manager
+        self.gcal_enabled = gcal_manager is not None
+        self._storage = DocumentOwner(self.storage_path, self._validate_document)
         self.reminders = self._storage.rollback()
+        self._outbox = SyncOutbox(self)
+        self._sync_conflicts = OrderedDict()
+
+    @staticmethod
+    def _validate_document(document):
+        if not bucket_records('text', require_ids=True)(document):
+            return False
+        try:
+            for items in document.values():
+                for item in items:
+                    operations = item.get('sync_operations', [])
+                    if not isinstance(operations, list) or len(operations) > 8:
+                        return False
+                    for raw in operations:
+                        if SyncOperation.from_document(raw).item_id != item['id']:
+                            return False
+        except (TypeError, ValueError, AttributeError, KeyError):
+            return False
+        return True
+
+    @property
+    def items(self):
+        return self.reminders
+
+    @items.setter
+    def items(self, value):
+        self.reminders = value
+
+    def configure_google(self, provider, *, slot=None, access_policy=None):
+        self.gcal, self.gcal_enabled = provider, provider is not None
+        if slot is not None:
+            self._outbox.slot = slot
+        if access_policy is not None:
+            self.access_policy = access_policy
+
+    def _authorize_mutation(self, actor, scope):
+        actor_key(actor)
+        key = scope if scope in self.access_policy.scopes or scope.startswith(('private:', 'group:')) else 'shared'
+        if not self.access_policy.authorize(actor, key, 'write').allowed:
+            raise PermissionError('scope_membership_required')
+
+    def sync_payload(self, item):
+        # Legacy linked reminders patch only their text/completion. A deadline
+        # task is never turned into a newly created timed Google event.
+        return {'summary': item['text'] + (' [FERDIG]' if item.get('completed') else ''),
+                'extendedProperties': {'private': {'inebotten_completed': 'true' if item.get('completed') else 'false'}}}
+
+    def apply_remote_sync_fields(self, item, remote):
+        item['text'], item['completed'] = remote_completion(remote)
+        if remote.get('start'):
+            item['due_date'] = EventTime.from_google(remote).local_date.strftime('%d.%m.%Y')
+
+    def _queue_sync(self, item, kind, scope):
+        if item.get('gcal_event_id'):
+            enqueue(item, kind, scope, payload={} if kind == 'delete' else self.sync_payload(item))
+
+    async def process_due(self, *, deadline):
+        return await self._outbox.process_due(deadline=deadline)
+
+    async def _save_data(self):
+        result = await store_worker(self._storage.commit, copy.deepcopy(self.reminders), writer=write_json_atomic)
+        if not result.ok:
+            self.reminders = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
     @property
     def reminders(self):
@@ -166,12 +240,19 @@ class ReminderManager:
                 target_reminder["completed_count"] = (
                     target_reminder.get("completed_count", 0) + 1
                 )
+                # Legacy reminders have no explicit event duration; advancing a
+                # local deadline must not invent a remote timed event.
+                if target_reminder.get('gcal_event_id'):
+                    target_reminder['sync_blocked'] = 'explicit_event_time_required'
+                    raw = enqueue(target_reminder, 'update', guild_key, payload=self.sync_payload(target_reminder))
+                    raw.update(state='failed', reason_code='explicit_event_time_required')
                 self._save_reminders()
                 return True, target_reminder["text"], next_date
 
         # Non-recurring reminder - mark as completed
         target_reminder["completed"] = True
         target_reminder["completed_at"] = datetime.now().isoformat()
+        self._queue_sync(target_reminder, 'update', guild_key)
         self._save_reminders()
         return True, target_reminder["text"], None
 
@@ -245,7 +326,7 @@ class ReminderManager:
 
         completed = []
         for r in self.reminders[guild_key]:
-            if r["completed"] and r.get("completed_at"):
+            if r["completed"] and r.get("completed_at") and not r.get('_mutation_deleted'):
                 completed_at = datetime.fromisoformat(r["completed_at"])
                 if completed_at >= cutoff:
                     completed.append(r)
@@ -359,7 +440,10 @@ class ReminderManager:
             target["due_date"] = date
         if recurrence is not None:
             target["recurrence"] = recurrence
-
+        self._queue_sync(target, 'update', guild_key)
+        if target.get('gcal_event_id') and (date is not None or recurrence is not None):
+            target['sync_blocked'] = 'explicit_event_time_required'
+            target['sync_operations'][-1].update(state='failed', reason_code='explicit_event_time_required')
         self._save_reminders()
         return target
 
@@ -391,7 +475,13 @@ class ReminderManager:
             raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
 
         target = active[idx]
-        self.reminders[guild_key].remove(target)
+        if target.get('gcal_event_id'):
+            self._queue_sync(target, 'delete', guild_key)
+            target['completed'] = True
+            target['delete_pending'] = True
+            target['_mutation_deleted'] = True
+        else:
+            self.reminders[guild_key].remove(target)
         self._save_reminders()
         return target
 

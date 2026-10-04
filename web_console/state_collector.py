@@ -370,6 +370,12 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
     items = _flatten_calendar_items(permitted)
 
     now = (getattr(getattr(monitor, "calendar", None), "clock", None) or Clock()).now()
+    sync_states = {state: 0 for state in ('pending', 'synced', 'unknown', 'failed', 'conflict')}
+    for item in items:
+        for operation in item.get('sync_operations', []):
+            state = operation.get('state')
+            if state in sync_states:
+                sync_states[state] += 1
     upcoming = []
     event_count = 0
     task_count = 0
@@ -408,6 +414,7 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
         "storage_status": "degraded" if str(path) in _JSON_READ_ERRORS else "ok",
         "storage_error": _JSON_READ_ERRORS.get(str(path)),
         "event_count": event_count,
+        "sync_states": sync_states,
         "scope_policy": policy.describe(),
         "default_scope": policy.default_scope,
         "access_summary": policy_summary(policy) + (' Innhold fra andre områder er skjult; konsollen trenger en verifisert område-identitet.' if withheld else ''),

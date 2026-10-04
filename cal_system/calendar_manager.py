@@ -8,6 +8,7 @@ import re
 import uuid
 import asyncio
 import copy
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
@@ -16,6 +17,7 @@ from cal_system.event_schema import EventTime, Clock
 from core.access_policy import AccessPolicy
 from core.request_context import current_request
 from cal_system.mutation_preview import PreviewCache, actor_key, before_image, validate_calendar_document
+from cal_system.sync_outbox import SyncOutbox, SyncOwnerMixin, enqueue, payload_for_item, remote_evidence, remote_completion
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 from utils.storage_contract import DocumentOwner, StorageMutationError, writable_store, store_worker
@@ -75,7 +77,7 @@ class CalendarDeleteResult(dict):
         return super().__getitem__(key)
 
 
-class CalendarManager:
+class CalendarManager(SyncOwnerMixin):
     """
     Manages calendar items - everything is just something happening on a date
     """
@@ -100,6 +102,47 @@ class CalendarManager:
         self.access_policy = access_policy or AccessPolicy()
         self._storage = DocumentOwner(self.storage_path, validate_calendar_document)
         self.items = self._storage.rollback()  # Will be transitioned to {self.SHARED_KEY: [...]}
+        self._outbox = SyncOutbox(self)
+        self._sync_conflicts = OrderedDict()
+
+    def _queue_sync(self, item, kind, scope=None):
+        if not self.gcal_enabled and not item.get('gcal_event_id') and not item.get('sync_operations'):
+            return
+        active = any(op['state'] != 'synced' for op in item.get('sync_operations', []))
+        if kind != 'create' and not item.get('gcal_event_id') and not active:
+            if kind == 'delete' or item.get('kind') == 'task':
+                return
+            kind = 'create'
+        try:
+            for op in item.get('sync_operations', []):
+                if op['state'] == 'failed' and op['attempts'] == 0 and op['reason_code'] == 'explicit_event_time_required':
+                    op.update(state='synced', reason_code='superseded_after_explicit_time')
+            enqueue(item, kind, scope or item.get('scope_id') or self.scope_key(operation='write'))
+            item.pop('sync_blocked', None)
+        except ValueError:
+            item['sync_blocked'] = 'explicit_event_time_required'
+            if kind != 'create':
+                raw = enqueue(item, kind, scope or item.get('scope_id') or self.scope_key(operation='write'),
+                    payload={'summary': item['title']})
+                raw.update(state='failed', reason_code='explicit_event_time_required')
+
+    async def process_due(self, *, deadline):
+        return await self._outbox.process_due(deadline=deadline)
+
+    def sync_payload(self, item):
+        return payload_for_item(item)
+
+    def apply_remote_sync_fields(self, item, remote):
+        value = EventTime.from_google(remote)
+        item.update(value.fields())
+        item['title'], item['completed'] = remote_completion(remote)
+        item['description'] = remote.get('description', '')
+        rules = remote.get('recurrence', [])
+        mapping = {'RRULE:FREQ=DAILY': 'daily', 'RRULE:FREQ=WEEKLY': 'weekly',
+            'RRULE:FREQ=WEEKLY;INTERVAL=2': 'biweekly', 'RRULE:FREQ=MONTHLY': 'monthly', 'RRULE:FREQ=YEARLY': 'yearly'}
+        item['recurrence'] = mapping.get(rules[0]) if len(rules) == 1 else None
+        item['_remote_recurrence_raw'] = rules
+        item['_recurrence_readonly'] = bool(rules and item['recurrence'] is None)
 
     def _authorize_mutation(self, actor, scope_id):
         actor_key(actor)
@@ -141,7 +184,7 @@ class CalendarManager:
                     item.update(EventTime.from_item(item).validate_local().fields())
                 else:
                     item['completed'] = True
-                if item.get('gcal_event_id'):
+                if self.gcal_enabled or item.get('gcal_event_id') or item.get('sync_operations'):
                     item['_local_sync_pending'] = 'delete' if operation in ('delete', 'clear') else 'update'
             self._previews.clock = self.clock
             return self._previews.create(actor, scope_id, expected_revision, operation, before, after)
@@ -169,6 +212,8 @@ class CalendarManager:
                 kept.append(item)
         replacements = {}
         for before, after in zip(entry['before'], entry['after']):
+            if after.get('_local_sync_pending'):
+                self._queue_sync(after, after['_local_sync_pending'], scope)
             after['_undo_record'] = {'token': undo_token, 'actor': actor_key(actor),
                 'revision': self._storage.revision + 1, 'expires_at': expires,
                 'batch_size': len(entry['before']), 'before': before}
@@ -197,6 +242,9 @@ class CalendarManager:
                 raise ValueError('undo_expired')
             if record['revision'] != self._storage.revision or len(matches) != record['batch_size']:
                 raise ValueError('revision_changed')
+            if any(op['state'] in ('unknown', 'conflict') or op['attempts'] > 0 and op['state'] != 'synced'
+                   for op in item.get('sync_operations', [])):
+                raise ValueError('remote_acceptance_unresolved')
         replacements = {}
         remote_limitations = []
         for _, item in matches:
@@ -206,6 +254,8 @@ class CalendarManager:
                 restored['remote_previous_id'] = restored['gcal_event_id']
                 restored.pop('gcal_event_id', None)
                 restored.pop('gcal_link', None)
+                restored.pop('sync_operations', None)
+                restored.pop('_local_sync_pending', None)
                 remote_limitations.append('Bare lokal gjenoppretting: Google-tilstand og tidligere ID må avklares før ny kobling.')
             replacements[item['id']] = restored
         self.items[scope] = [replacements.get(item['id'], item) for item in self.items[scope]]
@@ -402,6 +452,8 @@ class CalendarManager:
 
         item.update(event_time.fields())
         item["time_interpretation"] = event_time.preview()
+        if self.gcal_enabled and not gcal_event_id:
+            self._queue_sync(item, 'create', guild_key)
         self.items[guild_key].append(item)
         self._save_data_sync()
         return AwaitableDict(item)
@@ -414,24 +466,12 @@ class CalendarManager:
         item["delete_error"] = error or "Google Calendar deletion returned false"
 
     def _delete_from_gcal_or_mark_pending(self, item, *, now=None, context="delete"):
-        if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
+        if not item.get('gcal_event_id') and not any(op['state'] != 'synced' for op in item.get('sync_operations', [])):
             return True
 
-        delete_ok = False
-        error = None
-        try:
-            delete_ok = bool(self.gcal.delete_event(item["gcal_event_id"]))
-        except Exception as e:
-            error = str(e)
-
-        if not delete_ok:
-            title = item.get("title", "Uten tittel")
-            self._mark_delete_pending(item, error, now)
-            print(f"[CAL] GCal {context} failed for {title}: {item['delete_error']}")
-            return False
-
-        print(f"[CAL] Deleted from GCal: {item.get('title', 'Uten tittel')}")
-        return True
+        self._queue_sync(item, 'delete')
+        self._mark_delete_pending(item, 'queued_remote_delete', now)
+        return False
 
     def _delete_item_record(self, guild_key, item_id):
         self.items[guild_key] = [
@@ -594,22 +634,10 @@ class CalendarManager:
         now = datetime.now().isoformat()
 
         for item in items_to_delete:
-            if self.gcal_enabled and item.get("gcal_event_id"):
-                delete_ok = False
-                error = None
-                try:
-                    delete_ok = bool(self.gcal.delete_event(item["gcal_event_id"]))
-                except Exception as e:
-                    error = str(e)
-
-                if not delete_ok:
-                    title = item.get("title", "Uten tittel")
-                    pending_titles.append(title)
-                    self._mark_delete_pending(item, error, now)
-                    print(f"[CAL] GCal clear delete failed for {title}: {item['delete_error']}")
-                    continue
-
-            deleted_ids.add(item.get("id"))
+            if not self._delete_from_gcal_or_mark_pending(item, now=now, context='clear'):
+                pending_titles.append(item.get('title', 'Uten tittel'))
+            else:
+                deleted_ids.add(item.get('id'))
 
         self.items[guild_key] = [
             item for item in self.items[guild_key]
@@ -689,8 +717,7 @@ class CalendarManager:
         item = items[index - 1]
 
         self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
-        self._save_data_sync()
-        self._sync_item_update_to_gcal(item)
+        self._queue_sync(item, 'update')
         self._save_data_sync()
         return AwaitableDict(item)
 
@@ -701,8 +728,7 @@ class CalendarManager:
         for item in self.items.get(guild_key, []):
             if item.get("id") == item_id:
                 self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
-                self._save_data_sync()
-                self._sync_item_update_to_gcal(item)
+                self._queue_sync(item, 'update')
                 self._save_data_sync()
                 return AwaitableDict(item)
         raise ValueError(f"Fant ikke kalenderoppføring med ID: {item_id}")
@@ -732,32 +758,16 @@ class CalendarManager:
                 item[key] = value
         if recurrence is not None:
             item["recurrence"] = recurrence
+            item.pop("_remote_recurrence_raw", None)
+            item.pop("_recurrence_readonly", None)
         if description is not None:
             item["description"] = description
         event_time = EventTime.from_item(item).validate_local()
         item.update(event_time.fields())
 
     def _sync_item_update_to_gcal(self, item):
-        if not (self.gcal_enabled and self.gcal and item.get("gcal_event_id")):
-            return
-        try:
-            result = self.gcal.update_event(
-                item["gcal_event_id"],
-                title=item.get("title"),
-                description=item.get("description"),
-                date_str=item.get("date"),
-                time_str=item.get("time"),
-                recurrence=item.get("recurrence"),
-                rrule_day=item.get("rrule_day") or item.get("recurrence_day"),
-                event_time=EventTime.from_item(item).fields(),
-            )
-            if result and isinstance(result, dict):
-                if result.get("id"):
-                    item["gcal_event_id"] = result["id"]
-                if result.get("htmlLink"):
-                    item["gcal_link"] = result["htmlLink"]
-        except Exception as e:
-            print(f"[CAL] GCal edit sync failed for {item.get('title')}: {e}")
+        """Compatibility adapter: queue intent; never perform inline provider I/O."""
+        self._queue_sync(item, 'update')
 
     @writable_store
     def search_items(self, query):
@@ -802,32 +812,17 @@ class CalendarManager:
         return self._process_completion_sync(guild_key, item)
 
     def _process_completion_sync(self, guild_key, item):
-        """Internal helper to handle completion logic synchronously."""
-        title = item["title"]
-
-        if item.get("recurrence"):
-            # Update to next date
-            next_date = self._calculate_next_date(item["date"], item["recurrence"])
-            item['date'] = next_date
-            item['fold'] = None
+        title = item['title']
+        next_date = None
+        if item.get('recurrence'):
+            next_date = self._calculate_next_date(item['date'], item['recurrence'])
+            item['date'], item['fold'] = next_date, None
             item.update(EventTime.from_item(item).validate_local().fields())
-            self._save_data_sync()
-            return True, title, next_date
         else:
-            # Mark as completed
-            item["completed"] = True
-            self._save_data_sync()
-
-            # Sync to GCal if enabled
-            if self.gcal_enabled and item.get("gcal_event_id"):
-                try:
-                    self.gcal.update_event(item["gcal_event_id"], completed=True)
-                    print(f"[CAL] Marked completed in GCal: {title}")
-                except Exception as e:
-                    print(f"[CAL] GCal update failed: {e}")
-
-            self._save_data_sync()
-            return True, title, None
+            item['completed'] = True
+        self._queue_sync(item, 'update', guild_key)
+        self._save_data_sync()
+        return True, title, next_date
 
     def _calculate_next_date(self, current_date_str, recurrence):
         """Calculate next occurrence date with month-end safety"""
@@ -864,24 +859,71 @@ class CalendarManager:
             print(f"[CALENDAR] Calendar parse error: {e}")
             return None
 
+    async def sync_from_gcal(self, default_guild_id=None, default_channel_id=None, *, deadline=None):
+        import time
+        from cal_system.google_calendar_manager import EventLookup
+        self.scope_key(operation='write')
+        self.last_gcal_sync_error = None
+        if not self.ensure_gcal_configured():
+            self.last_gcal_sync_error = 'Google Calendar er ikke konfigurert eller koblet til ennå.'
+            return 0
+        deadline = deadline or time.monotonic() + 20
+        revision = self._storage.revision
+        document = self.items
+        try:
+            events = await self._outbox.slot.run(lambda: self.gcal.list_upcoming_events(days=90), deadline=deadline)
+            if events is None:
+                self.last_gcal_sync_error = 'Kunne ikke hente hendelser fra Google Calendar.'
+                return 0
+            if not isinstance(events, list):
+                raise ValueError('invalid_event_list')
+            seen = {key for event in events if isinstance(event, dict)
+                    for key in (event.get('id'), event.get('recurringEventId')) if key}
+            lookups = {}
+            today = self.clock.now().date()
+            scope_buckets = self._scope_buckets(operation='write')
+            for scope, items in document.items():
+                if scope not in scope_buckets:
+                    continue
+                for item in items:
+                    remote_id = item.get('gcal_event_id')
+                    if not remote_id or remote_id in seen or item.get('_local_sync_pending') or item.get('_undo_record'):
+                        continue
+                    try:
+                        day = datetime.strptime(item['date'], '%d.%m.%Y').date()
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if today <= day <= today + timedelta(days=90) and len(lookups) < 16:
+                        def lookup(remote_id=remote_id):
+                            try:
+                                if hasattr(self.gcal, 'get_event_outcome'):
+                                    return self.gcal.get_event_outcome(remote_id)
+                                return EventLookup.from_event(remote_id, self.gcal.get_event(remote_id))
+                            except Exception as error:
+                                try:
+                                    return EventLookup.from_error(error)
+                                except ImportError:
+                                    return EventLookup('unavailable', reason_code='optional_google_dependency_missing')
+                        try:
+                            lookups[remote_id] = await self._outbox.slot.run(lookup, deadline=deadline)
+                        except Exception:
+                            lookups[remote_id] = EventLookup('unavailable', reason_code='lookup_deadline')
+        except Exception:
+            self.last_gcal_sync_error = 'Google-lesing er utilgjengelig eller fristen utløp; lokale oppføringer er bevart.'
+            return 0
+        return await self._apply_google_pull(events, lookups, revision, default_guild_id, default_channel_id)
+
     @writable_store
-    async def sync_from_gcal(self, default_guild_id=None, default_channel_id=None):
+    async def _apply_google_pull(self, gcal_events, lookups, expected_revision, default_guild_id=None, default_channel_id=None):
         """
         Pull events from Google Calendar and sync to local store
         """
         self.scope_key(operation='write')
-        self.last_gcal_sync_error = None
-        if not self.ensure_gcal_configured():
-            self.last_gcal_sync_error = "Google Calendar er ikke konfigurert eller koblet til ennå."
+        if expected_revision != self._storage.revision:
+            self.last_gcal_sync_error = 'Kalenderen ble endret under Google-lesing. Ingen innkommende verdier er brukt; prøv en ny synkronisering.'
             return 0
-
+        self._pull_lookups = lookups
         fallback_channel_id = default_channel_id
-
-        print("[CAL] Syncing from Google Calendar...")
-        gcal_events = self.gcal.list_upcoming_events(days=90)
-        if gcal_events is None:
-            self.last_gcal_sync_error = "Kunne ikke hente hendelser fra Google Calendar."
-            return 0
 
         added_count = 0
         updated_count = 0
@@ -898,9 +940,19 @@ class CalendarManager:
                 if item.get("gcal_event_id"):
                     gcal_map[item["gcal_event_id"]] = (guild_id, item)
 
+        for guild_id, items in self.items.items():
+            if guild_id not in self._scope_buckets(operation='write'):
+                continue
+            for item in items:
+                for operation in item.get('sync_operations', []):
+                    if operation['kind'] == 'create' and operation.get('remote_id'):
+                        gcal_map[operation['remote_id']] = (guild_id, item)
+        self._gcal_baseline_changed = False
         processed_recurring_ids = set()
         seen_gcal_ids = set()
         for event in gcal_events:
+            if not isinstance(event, dict):
+                continue
             gcal_id = event.get("id")
             if not gcal_id:
                 continue
@@ -971,6 +1023,10 @@ class CalendarManager:
                 if item.get('_local_sync_pending') or item.get('_mutation_deleted'):
                     self.last_gcal_sync_error = 'Lokal endring venter på avklart Google-synkronisering; innkommende data er bevart uten overskriving.'
                     continue
+                if event.get('etag') and item.get('_remote_etag') != event['etag']:
+                    item['_remote_etag'] = event['etag']
+                    item['_remote_baseline'] = remote_evidence(event)
+                    self._gcal_baseline_changed = True
                 if item.get('kind') == 'task':
                     self.last_gcal_sync_error = 'En koblet oppgave krever eksplisitt valg før remote arrangement endrer den.'
                     continue
@@ -1032,6 +1088,9 @@ class CalendarManager:
                     duration_minutes=remote_time.duration_minutes, fold=remote_time.fold,
                 )
                 
+                if event.get('etag'):
+                    self.items[guild_id][-1]['_remote_etag'] = event['etag']
+                    self.items[guild_id][-1]['_remote_baseline'] = remote_evidence(event)
                 # If it was completed, mark it so (add_item defaults to False)
                 if gcal_completed:
                     self.items[str(guild_id)][-1]["completed"] = True
@@ -1040,7 +1099,7 @@ class CalendarManager:
 
         removed_count = self._remove_missing_gcal_items(seen_gcal_ids, days=90)
 
-        if added_count > 0 or updated_count > 0 or removed_count > 0 or self._gcal_lookup_changed:
+        if added_count > 0 or updated_count > 0 or removed_count > 0 or self._gcal_lookup_changed or self._gcal_baseline_changed:
             await self._save_data()
             print(
                 f"[CAL] Sync complete: {added_count} added, "
@@ -1085,16 +1144,10 @@ class CalendarManager:
                     kept_items.append(item)
                     continue
 
-                outcome = EventLookup("unavailable", reason_code="no_lookup_adapter")
-                try:
-                    if self.gcal and hasattr(self.gcal, "get_event_outcome"):
-                        outcome = self.gcal.get_event_outcome(gcal_id)
-                        if not isinstance(outcome, EventLookup):
-                            outcome = EventLookup("unavailable", reason_code="malformed_response")
-                    elif self.gcal and hasattr(self.gcal, "get_event"):
-                        outcome = EventLookup.from_event(gcal_id, self.gcal.get_event(gcal_id))
-                except Exception as error:
-                    outcome = EventLookup.from_error(error)
+                outcome = getattr(self, '_pull_lookups', {}).get(gcal_id,
+                    EventLookup('unavailable', reason_code='lookup_not_completed'))
+                if not isinstance(outcome, EventLookup):
+                    outcome = EventLookup('unavailable', reason_code='malformed_response')
                 if outcome.status not in ("cancelled", "missing"):
                     if outcome.status == "unavailable":
                         item["gcal_lookup_status"] = outcome.status

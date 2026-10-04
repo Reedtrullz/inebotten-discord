@@ -432,6 +432,7 @@ def test_calendar_scope_policy_explains_owner_and_audience_as_text(page: Any, co
         page,
         "/api/calendar",
         [{
+            "sync_states": {"pending": 2, "unknown": 1, "failed": 3, "conflict": 4, "synced": 5},
             "event_count": 0,
             "task_count": 0,
             "upcoming_events": [],
@@ -461,6 +462,7 @@ def test_calendar_scope_policy_explains_owner_and_audience_as_text(page: Any, co
     rendered = explanation.inner_text()
     for expected in (
         "owner-123", "member-456", "channel-789", "owner and approved members",
+        "Ventende: 2", "Uavklart: 1", "Feilet: 3", "Konflikt: 4", "Bekreftet: 5",
         "owner only", "allowlist", "Legacy group settings apply until reviewed",
     ):
         assert expected in rendered

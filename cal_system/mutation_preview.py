@@ -31,6 +31,17 @@ def validate_calendar_document(document):
         return False
     for items in document.values():
         for item in items:
+            operations = item.get('sync_operations', [])
+            if not isinstance(operations, list) or len(operations) > 8:
+                return False
+            try:
+                from cal_system.sync_outbox import SyncOperation, MAX_OPERATION_BYTES
+                for raw in operations:
+                    op = SyncOperation.from_document(raw)
+                    if op.item_id != item['id'] or len(json.dumps(raw).encode()) > MAX_OPERATION_BYTES:
+                        return False
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return False
             if '_mutation_deleted' in item and type(item['_mutation_deleted']) is not bool:
                 return False
             if '_local_sync_pending' in item and item['_local_sync_pending'] not in ('delete', 'update', 'create'):

@@ -9,6 +9,7 @@ import os
 import sys
 import subprocess
 import warnings
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -396,6 +397,7 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
+        service = None
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
@@ -415,7 +417,11 @@ class GoogleCalendarManager:
 
             items = []
             page_token = None
+            pages = 0
             while True:
+                pages += 1
+                if pages > 16:
+                    raise ValueError("remote_list_limit")
                 events_result = service.events().list(
                     calendarId=self.calendar_id,
                     timeMin=now.isoformat(),
@@ -425,15 +431,24 @@ class GoogleCalendarManager:
                     orderBy="startTime",
                     pageToken=page_token,
                 ).execute()
-                items.extend(events_result.get("items", []))
+                batch = events_result.get("items", [])
+                if not isinstance(batch, list) or len(items) + len(batch) > 4096:
+                    raise ValueError("remote_list_limit")
+                items.extend(batch)
                 page_token = events_result.get("nextPageToken")
                 if not page_token:
                     break
             return items
 
         except Exception as e:
-            print(f"[GCAL] Error listing events: {e}")
+            print("[GCAL] Google-listing utilgjengelig; lokale data er bevart.")
             return None
+        finally:
+            if service is not None:
+                try:
+                    service.close()
+                except Exception:
+                    pass
 
     def get_event(self, event_id):
         """Compatibility reader; reconciliation must use get_event_outcome."""
@@ -442,6 +457,7 @@ class GoogleCalendarManager:
     def get_event_outcome(self, event_id: str) -> EventLookup:
         if not self.enabled:
             return EventLookup("unavailable", reason_code="not_configured")
+        service = None
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
@@ -456,6 +472,79 @@ class GoogleCalendarManager:
             return EventLookup.from_event(event_id, event)
         except Exception as error:
             return EventLookup.from_error(error)
+        finally:
+            if service is not None:
+                try:
+                    service.close()
+                except Exception:
+                    pass
+
+    def apply_sync_operation(self, operation):
+        """Typed direct API adapter; call only through the bounded thread worker."""
+        from cal_system.sync_outbox import RemoteMutation
+        service = None
+        if not self.enabled:
+            return RemoteMutation('auth_error', reason_code='integration_disabled')
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
+            creds = Credentials.from_authorized_user_file(str(self._token_path()), SCOPES)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                self._save_credentials(creds)
+            if not creds.valid:
+                return RemoteMutation('auth_error', reason_code='credentials_invalid')
+            service = build('calendar', 'v3', credentials=creds)
+            if operation.kind == 'create':
+                body = copy.deepcopy(operation.payload)
+                body['id'] = operation.remote_id
+                request = service.events().insert(calendarId=self.calendar_id, body=body)
+            else:
+                if not operation.remote_version:
+                    return RemoteMutation('conflict', reason_code='remote_version_required')
+                if operation.kind == 'delete':
+                    request = service.events().delete(calendarId=self.calendar_id, eventId=operation.remote_id)
+                else:
+                    request = service.events().patch(calendarId=self.calendar_id,
+                        eventId=operation.remote_id, body=copy.deepcopy(operation.payload))
+                request.headers['If-Match'] = operation.remote_version
+            result = request.execute(num_retries=0)
+            return RemoteMutation('acknowledged', result if operation.kind != 'delete' else None)
+        except ImportError:
+            return RemoteMutation('rejected', reason_code='optional_google_dependency_missing')
+        except Exception as error:
+            status = getattr(getattr(error, 'resp', None), 'status', None)
+            content = getattr(error, 'content', b'')
+            reasons = set()
+            if isinstance(content, (str, bytes)) and len(content) <= 16384:
+                try:
+                    details = json.loads(content).get('error', {}).get('errors', [])
+                    reasons = {detail.get('reason') for detail in details if isinstance(detail, dict)}
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            if status == 429 or status == 403 and reasons & {'rateLimitExceeded', 'userRateLimitExceeded'}:
+                headers = getattr(error, 'resp', {})
+                try:
+                    delay = float(headers.get('retry-after', 5))
+                    import math
+                    delay = min(3600, max(0, delay)) if math.isfinite(delay) else 5
+                except (TypeError, ValueError):
+                    delay = 5
+                return RemoteMutation('retryable', reason_code='rate_limited', retry_after_s=delay)
+            if status in (409, 412):
+                return RemoteMutation('conflict', reason_code='remote_conflict')
+            if status in (401, 403):
+                return RemoteMutation('auth_error', reason_code='authorization_required')
+            if status == 400:
+                return RemoteMutation('rejected', reason_code='invalid_request')
+            return RemoteMutation('unknown', reason_code='remote_acceptance_uncertain')
+        finally:
+            if service is not None:
+                try:
+                    service.close()
+                except Exception:
+                    pass  # Cleanup cannot replace confirmed mutation evidence.
 
     def create_event(
         self,

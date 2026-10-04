@@ -280,6 +280,8 @@ class IntentRouter:
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
     def _route_calendar_command(self, content_lower: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
+        if re.fullmatch(r'(?:synk konflikt (?:påminnelse )?[a-f0-9]{32} (?:lokal|google)|bekreft synk (?:påminnelse )?[a-f0-9]{32})', content_lower.strip()):
+            return IntentResult(BotIntent.CALENDAR_SYNC, 1.0, reason='reviewed_sync_choice')
         if not self._has_calendar_context(content_lower):
             # Special case for "synk" / "sync" which can be used without "kalender"
             if not has_any_keyword(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):

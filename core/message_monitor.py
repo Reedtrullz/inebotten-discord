@@ -178,7 +178,10 @@ class MessageMonitor:
         self.nlp_parser = NaturalLanguageParser()
 
         from cal_system.reminder_manager import ReminderManager
-        self.reminders = ReminderManager()
+        self.reminders = ReminderManager(gcal_manager=gcal, access_policy=self.access_policy,
+            clock=self.calendar.clock)
+        self.reminders.configure_google(gcal, slot=self.calendar._outbox.slot,
+            access_policy=self.access_policy)
 
         # Initialize personality and memory systems
         from memory.user_memory import get_user_memory

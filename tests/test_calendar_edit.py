@@ -225,39 +225,29 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["deleted_count"], 0)
         self.assertEqual(result["failed_count"], 1)
-        self.assertEqual(gcal.delete_calls, ["gcal-1"])
+        self.assertEqual(gcal.delete_calls, [])
         pending = manager.items[manager.SHARED_KEY][0]
         self.assertTrue(pending["delete_pending"])
+        self.assertEqual(pending["sync_operations"][-1]["state"], "pending")
         self.assertIn("delete_error", pending)
         self.assertEqual(manager.get_upcoming("123"), [])
 
-    async def test_clear_calendar_removes_local_after_gcal_success(self):
-        class SuccessfulDeleteGCal:
-            def __init__(self):
-                self.delete_calls = []
-
-            def delete_event(self, event_id):
-                self.delete_calls.append(event_id)
-                return True
-
-        gcal = SuccessfulDeleteGCal()
-        manager = CalendarManager(storage_path=Path(self.tmp.name) / "gcal-calendar.json", gcal_manager=gcal)
-        manager.add_item(
-            guild_id="123",
-            user_id="111",
-            username="Alice",
-            title="GCal møte",
-            date_str=_date(1),
-            time_str="09:00",
-            gcal_event_id="gcal-1",
-        )
-
-        result = await manager.clear_calendar("123")
-
-        self.assertEqual(result["deleted_count"], 1)
-        self.assertEqual(result["failed_count"], 0)
-        self.assertEqual(gcal.delete_calls, ["gcal-1"])
+    async def test_clear_calendar_removes_local_after_worker_acceptance(self):
+        import time
+        from tests.test_gcal_outbox import FakeProvider
+        gcal = FakeProvider()
+        manager = CalendarManager(storage_path=Path(self.tmp.name) / 'gcal-calendar.json', gcal_manager=gcal)
+        item = manager.add_item('123', '111', 'Alice', 'GCal møte', _date(1))
+        await manager.process_due(deadline=time.monotonic() + 2)
+        remote_id = manager.items[manager.SHARED_KEY][0]['gcal_event_id']
+        result = await manager.clear_calendar('123')
+        self.assertEqual(result['deleted_count'], 0)
+        self.assertEqual(len(gcal.calls), 1)
+        self.assertEqual(manager.items[manager.SHARED_KEY][0]['sync_operations'][-1]['state'], 'pending')
+        await manager.process_due(deadline=time.monotonic() + 2)
+        self.assertEqual(gcal.remote[remote_id]['status'], 'cancelled')
         self.assertEqual(manager.items[manager.SHARED_KEY], [])
+        manager._storage.close()
 
     async def test_single_gcal_delete_failure_marks_pending_not_removed(self):
         class FailingDeleteGCal:
@@ -284,9 +274,10 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["success"])
         self.assertEqual(result["pending_count"], 1)
-        self.assertEqual(gcal.delete_calls, ["gcal-1"])
+        self.assertEqual(gcal.delete_calls, [])
         pending = manager.items[manager.SHARED_KEY][0]
         self.assertTrue(pending["delete_pending"])
+        self.assertEqual(pending["sync_operations"][-1]["state"], "pending")
         self.assertEqual(manager.get_upcoming("123"), [])
 
     async def test_bulk_gcal_delete_failure_marks_pending_not_removed(self):

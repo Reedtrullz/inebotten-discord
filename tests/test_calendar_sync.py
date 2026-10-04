@@ -154,7 +154,7 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🔄 Synkroniserer med Google Calendar...", responses)
         self.assertNotIn("❌ Google Calendar er ikke konfigurert eller koblet til ennå.", responses)
 
-    def test_local_edit_pushes_full_update_to_gcal(self):
+    def test_local_edit_queues_full_update_before_google_io(self):
         gcal = FakeGCal()
         manager = CalendarManager(storage_path=self.storage_path, gcal_manager=gcal)
         manager.add_item(
@@ -163,17 +163,20 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
             "Alice",
             "Møte",
             "10.06.2027",
-            time_str="09:00",
+            time_str="09:00", duration_minutes=60,
             gcal_event_id="gcal-1",
         )
 
         updated = manager.edit_item(1, title="Nytt møte", date="11.06.2027")
 
-        self.assertEqual(updated["gcal_link"], "https://calendar.example/gcal-1")
-        self.assertEqual(gcal.update_calls[0][0], "gcal-1")
-        self.assertEqual(gcal.update_calls[0][1]["title"], "Nytt møte")
-        self.assertEqual(gcal.update_calls[0][1]["date_str"], "11.06.2027")
-        self.assertEqual(gcal.update_calls[0][1]["time_str"], "09:00")
+        self.assertEqual(gcal.update_calls, [])
+        operation = updated['sync_operations'][-1]
+        self.assertEqual(operation['kind'], 'update')
+        self.assertEqual(operation['remote_id'], 'gcal-1')
+        self.assertEqual(operation['payload']['summary'], 'Nytt møte')
+        self.assertTrue(operation['payload']['start']['dateTime'].startswith('2027-06-11T09:00'))
+        self.assertTrue(operation['payload']['end']['dateTime'].startswith('2027-06-11T10:00'))
+        self.assertEqual(operation['state'], 'pending')
 
     async def test_sync_removes_deleted_gcal_item_inside_sync_window(self):
         tomorrow = datetime.now() + timedelta(days=1)

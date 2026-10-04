@@ -318,11 +318,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create cal_system/sync_outbox.py and tests/test_gcal_outbox.py; modify cal_system/calendar_manager.py, cal_system/reminder_manager.py, cal_system/google_calendar_manager.py, features/calendar_handler.py and web_console/state_collector.py.
 **Interfaces:** SyncOperation(operation_id: str, item_id: str, local_revision: int, kind create|update|delete, remote_id: str|None, remote_version: str|None, state pending|synced|conflict|failed|unknown, attempts: int, retry_at: aware datetime|None). Enqueue and local mutation share one owner-store commit; async process_due(deadline: float) -> list[SyncOperation] uses a bounded worker.
 
-- [ ] Add crashes before/after remote acceptance, stop after acceptance, failed edit versus remote pull, concurrent remote edit, retry exhaustion and slow-provider event-loop heartbeat tests.
-- [ ] Demonstrate remote-first creation and failed-update loss using fake API responses.
-- [ ] Persist intent before I/O, carry revisions/version evidence, classify unknown creates for reconciliation, and check current official Google custom-ID/version semantics before selecting an idempotency adapter. Never blindly repeat an ambiguous create; preserve delete_pending compatibility.
-- [ ] Run tests/test_gcal_outbox.py, tests/test_calendar_sync.py, tests/test_gcal_reminder_routing.py and mutation-preview tests; measure the synthetic heartbeat budget explicitly.
-- [ ] Review and commit slices with crash/restart receipts; conflicts require a displayed reviewed choice, never implicit last-writer-wins.
+- [x] Add crashes before/after remote acceptance, stop after acceptance, failed edit versus remote pull, concurrent remote edit, retry exhaustion and slow-provider event-loop heartbeat tests.
+- [x] Demonstrate remote-first creation and failed-update loss using fake API responses.
+- [x] Persist intent before I/O, carry revisions/version evidence, classify unknown creates for reconciliation, and check current official Google custom-ID/version semantics before selecting an idempotency adapter. Never blindly repeat an ambiguous create; preserve delete_pending compatibility.
+- [x] Run tests/test_gcal_outbox.py, tests/test_calendar_sync.py, tests/test_gcal_reminder_routing.py and mutation-preview tests; measure the synthetic heartbeat budget explicitly.
+- [x] Review and commit slices with crash/restart receipts; conflicts require a displayed reviewed choice, never implicit last-writer-wins.
 
 ### Task 22: I13 — Deliberate memory, retention, and provider sharing
 

@@ -151,7 +151,8 @@ async def test_imported_custom_duration_survives_date_edit_and_remote_update(tmp
     item=manager.items['shared'][0]
     edited=manager.edit_item_by_id(item['id'],date='02.01.2027')
     assert edited['duration_minutes']==135 and edited['time']=='10:00:30'
-    assert EventTime.from_item(update.call_args.kwargs['event_time']).google_times()[1]['dateTime']=='2027-01-02T12:15:30+01:00'
+    update.assert_not_called()
+    assert edited['sync_operations'][-1]['payload']['end']['dateTime']=='2027-01-02T12:15:30+01:00'
 
 
 def test_date_only_can_be_deliberately_edited_to_timed_with_duration(tmp_path):

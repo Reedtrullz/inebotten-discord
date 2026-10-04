@@ -552,6 +552,10 @@ class ConsoleApp {
         lines.push(`Skrivetilgang: ${display(scope.write_policy)}`);
       });
     }
+    if (state.sync_states && typeof state.sync_states === "object") {
+      const labels = { pending: "Ventende", unknown: "Uavklart", failed: "Feilet", conflict: "Konflikt", synced: "Bekreftet" };
+      lines.push("Google: " + Object.entries(labels).map(([key, label]) => `${label}: ${Number(state.sync_states[key]) || 0}`).join(", "));
+    }
     const invocation = state.invocation_policy;
     if (invocation && typeof invocation === "object") {
       lines.push(`Kalleregel: ${display(invocation.mode)}`);

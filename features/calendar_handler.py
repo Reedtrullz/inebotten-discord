@@ -11,6 +11,8 @@ Commands:
 """
 
 import re
+import json
+import time
 from typing import Optional, Dict, Any
 
 from collections import OrderedDict
@@ -267,15 +269,12 @@ class CalendarHandler(BaseHandler):
                 fold=item_data.get("fold"),
             )
 
-            # Commit locally before performing an external effect. I11 owns retries.
-            if self.calendar.gcal_enabled and item:
-                gcal_result = self._sync_to_gcal(item, message)
-                if gcal_result:
-                    item = await self.calendar.attach_gcal_metadata(
-                        item['id'], gcal_result.get('id'), gcal_result.get('htmlLink'))
-
             if item:
                 response_text = self.calendar.format_single_item(item)
+                if item.get('sync_blocked'):
+                    response_text += '\n📌 Bare lokalt: Google-synkronisering krever avklart arrangementstype, dato og varighet.'
+                elif item.get('_local_sync_pending'):
+                    response_text += '\n⏳ Google-endring er lagret som ventende; ekstern gjennomføring er ikke bekreftet.'
             else:
                 response_text = (
                     "❌ Beklager, jeg klarte ikke å legge til i kalenderen. Prøv igjen!"
@@ -291,26 +290,6 @@ class CalendarHandler(BaseHandler):
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error handling calendar item: {e}")
-
-    def _sync_to_gcal(self, item_data: Dict[str, Any], message) -> Optional[Dict]:
-        """
-        Sync a calendar item to Google Calendar with proper timezone support.
-        """
-        from cal_system.event_schema import EventTime
-        try:
-            value = EventTime.from_item(item_data)
-            start, end = value.google_times()
-            return self.calendar.gcal.create_event(
-                title=item_data['title'], start_time=start.get('date') or start.get('dateTime'),
-                end_time=end.get('date') or end.get('dateTime'), all_day=value.all_day,
-                event_timezone=value.timezone, description=item_data.get('description', item_data['title']),
-                recurrence=item_data.get('recurrence'), rrule_day=item_data.get('rrule_day'),
-                discord_user_id=message.author.id, discord_username=message.author.name)
-        except (PermissionError, StorageMutationError):
-            raise
-        except Exception:
-            self.log('Kunne ikke klargjøre Google-synkronisering; lokal oppføring er bevart.')
-            return None
 
     async def handle_list(self, message) -> None:
         """Handle listing calendar items."""
@@ -642,7 +621,53 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, "🔄 Synkroniserer med Google Calendar...")
             
-            count = await self.calendar.sync_from_gcal(default_guild_id=guild_id, default_channel_id=channel_id)
+            deadline = time.monotonic() + 20
+            content = re.sub(r'<@!?\d+>|@inebotten', '', message.content).strip().lower()
+            match = re.fullmatch(r'synk konflikt (?:((?:påminnelse)) )?([a-f0-9]{32}) (lokal|google)', content)
+            confirmation = re.fullmatch(r'bekreft synk (?:((?:påminnelse)) )?([a-f0-9]{32})', content)
+            target = self.calendar
+            if (match and match[1]) or (confirmation and confirmation[1]):
+                target = self.monitor.reminders
+                target.configure_google(self.calendar.gcal, slot=self.calendar._outbox.slot,
+                    access_policy=self.calendar.access_policy)
+            if match:
+                proposal = target.preview_sync_conflict(self._actor(message), match[2],
+                    'use_local' if match[3] == 'lokal' else 'use_remote')
+                effect = proposal.effects[0]
+                def display(value):
+                    return {key: value[key] for key in ('summary', 'description', 'start', 'end', 'recurrence', 'delete') if key in value}
+                prefix = 'påminnelse ' if match[1] else ''
+                review_text = ('⚖️ Se gjennom konflikten før valg:\nLokalt: '
+                    + json.dumps(display(effect['local']), ensure_ascii=False)
+                    + '\nGoogle: ' + json.dumps(display(effect['remote']), ensure_ascii=False)
+                    + f'\nValg: {match[3]}. Erstatter ventende ID-er: ' + ', '.join(effect['pending_operation_ids'])
+                    + f'\nBekreft innen fem minutter: `@inebotten bekreft synk {prefix}{proposal.token}`')
+                if len(review_text) > 1900:
+                    target._sync_conflicts.pop(proposal.token, None)
+                    await self.send_response(message, '❌ Konflikten er for stor til en fullstendig forhåndsvisning i Discord. Ingen bekreftelse er åpnet.')
+                    return
+                await self.send_response(message, review_text)
+                return
+            if confirmation:
+                result = await target.apply_sync_conflict(self._actor(message), confirmation[2], deadline=deadline)
+                await self.send_response(message, '✅ Valget er lagret. '
+                    + ('Google-endringen venter på bekreftet gjennomføring.' if result.state == 'pending' else 'Den gjennomgåtte Google-versjonen er tatt i bruk lokalt.'))
+                return
+            await self.calendar.process_due(deadline=deadline)
+            reminders = getattr(self.monitor, 'reminders', None)
+            if reminders is not None and hasattr(reminders, 'configure_google'):
+                reminders.configure_google(self.calendar.gcal, slot=self.calendar._outbox.slot,
+                    access_policy=self.calendar.access_policy)
+                await reminders.process_due(deadline=deadline)
+            count = await self.calendar.sync_from_gcal(default_guild_id=guild_id,
+                default_channel_id=channel_id, deadline=deadline)
+            states = self.calendar.sync_summary()
+            if states['pending'] or states['unknown'] or states['failed'] or states['conflict']:
+                labels = {'pending': 'ventende', 'unknown': 'uavklart', 'failed': 'feilet', 'conflict': 'konflikt'}
+                await self.send_response(message, '📌 Google-status: ' + ', '.join(
+                    f'{labels[key]}: {states[key]}' for key in ('pending', 'unknown', 'failed', 'conflict'))
+                    + '\nKonflikter: ' + ', '.join(states['conflict_ids'])
+                    + '\nSe gjennom med `@inebotten synk konflikt <ID> lokal|google`.')
             sync_error = getattr(self.calendar, "last_gcal_sync_error", None)
             if sync_error:
                 await self.send_response(message, f"❌ {sync_error}")
@@ -654,6 +679,8 @@ class CalendarHandler(BaseHandler):
                 await self.handle_list(message)
             else:
                 await self.send_response(message, "✅ Synkronisering ferdig. Ingen nye endringer funnet i Google Calendar.")
+        except (ValueError, TimeoutError):
+            await self.send_response(message, '❌ Valget eller Google-svaret er utdatert eller utilgjengelig. Lag en ny forhåndsvisning før bekreftelse.')
         except PermissionError:
             await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:

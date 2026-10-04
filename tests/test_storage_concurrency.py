@@ -138,18 +138,27 @@ async def test_versioned_mutation_rejects_stale_revision_and_copies(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_calendar_handler_persists_link_on_owned_record(tmp_path):
+async def test_calendar_handler_persists_intent_then_worker_receipt_on_owned_record(tmp_path):
+    import time
     from features.calendar_handler import CalendarHandler
     from memory.localization import Localization
-    remote = SimpleNamespace(create_event=lambda **_: {'id': 'remote-id', 'htmlLink': 'https://example.test/event'})
+    from tests.test_gcal_outbox import FakeProvider
+    remote = FakeProvider()
     manager = CalendarManager(storage_path=tmp_path/'calendar.json', gcal_manager=remote)
     handler = CalendarHandler(SimpleNamespace(calendar=manager, nlp_parser=None, rate_limiter=None, loc=Localization(), client=None))
     handler.send_response = AsyncMock()
     message = SimpleNamespace(guild=SimpleNamespace(id='g'), channel=SimpleNamespace(id='c'), author=SimpleNamespace(id='u', name='Tester'))
     await handler.handle_calendar_item(message, {'title': 'Linked', 'date': '01.01.2027'})
     item = json.loads(manager.storage_path.read_text())['document']['shared'][0]
-    assert item['gcal_event_id'] == 'remote-id'
-    assert item['gcal_link'] == 'https://example.test/event'
+    assert item['gcal_event_id'] is None
+    assert item['sync_operations'][0]['state'] == 'pending'
+    assert remote.calls == []
+    await manager.process_due(deadline=time.monotonic() + 2)
+    item = json.loads(manager.storage_path.read_text())['document']['shared'][0]
+    assert item['gcal_event_id'] == remote.calls[0].remote_id
+    assert item['sync_operations'][0]['state'] == 'synced'
+    assert item['_remote_etag'] == remote.remote[item['gcal_event_id']]['etag']
+    manager._storage.close()
 
 @pytest.mark.parametrize('after_replace', [False, True])
 def test_process_exit_leaves_complete_document_and_releases_lock(tmp_path, after_replace):

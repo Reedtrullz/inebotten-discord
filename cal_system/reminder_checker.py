@@ -523,6 +523,22 @@ class ReminderChecker:
 
     # ---- Main loop ----
 
+    async def sync_google(self, *, pull=False):
+        """Share one provider slot across the initialized owner stores."""
+        if not self.calendar or not self.calendar.gcal_enabled:
+            return
+        deadline = time.monotonic() + 20
+        configure = getattr(self.reminders, 'configure_google', None)
+        if callable(configure):
+            configure(self.calendar.gcal, slot=self.calendar._outbox.slot,
+                access_policy=self.calendar.access_policy)
+        await self.calendar.process_due(deadline=deadline)
+        process = getattr(self.reminders, 'process_due', None)
+        if callable(process):
+            await process(deadline=deadline)
+        if pull:
+            await self.calendar.sync_from_gcal(deadline=deadline)
+
     async def start(self):
         """Start the reminder checker background task"""
         self.running = True
@@ -542,10 +558,12 @@ class ReminderChecker:
                     now_ts = self.clock.monotonic()
                     if self._last_gcal_sync is None or now_ts - self._last_gcal_sync > 900:  # 900 seconds = 15 min
                         try:
-                            await self.calendar.sync_from_gcal()
+                            await self.sync_google(pull=True)
                             self._last_gcal_sync = now_ts
                         except Exception as e:
-                            print(f"[REMIND] GCal sync error: {e}")
+                            print("[REMIND] Google-synkronisering utsatt; lokale endringer er bevart.")
+                    else:
+                        await self.sync_google()
             except Exception as e:
                 print(f"[REMIND] Error in checker loop: {e}")
                 self.stats["errors"] += 1
