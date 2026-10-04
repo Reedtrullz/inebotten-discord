@@ -28,7 +28,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 22 | I13 | Deliberate memory, retention, and provider sharing | Implemented locally | Opt-in learning/provider sharing; deliberate facts versus dated topics; known-age expiry; global bounded actual-channel context and self-only local reset. 975 full offline tests, 1 live skip, 19 subtests. Concrete AI dispatch / fallback / policy-revocation probes; persistent-delete failure preserves transient entries. Legacy data and backup/remote exclusions explicit; private full export remains I14. |
 | 23 | I17 | Provider-aware actionable readiness | Planned | — |
 | 24 | I18 | Bounded logs and useful diagnostics | Planned | — |
-| 25 | I19 | Typed command catalogue and non-dispatch routing preview | Planned | — |
+| 25 | I19 | Typed command catalogue and non-dispatch routing preview | In progress | One typed binding per intent, bounded payload validation, same-router inert preview, generated reference and bounded help pages; 100 foundation / routing tests, 17 subtests. Monitor dispatch/help/console consumers await readiness integration before editing shared files. |
 | 26 | I22 | One release owner and artifact proof | Planned | — |
 | 27 | I24 | Owned resource shutdown and final counters | Planned | — |
 | 28 | I30 | Bounded cited research with optional extraction | Planned | — |

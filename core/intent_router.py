@@ -279,6 +279,11 @@ class IntentRouter:
 
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
+    def preview_route(self, text, actor):
+        """Return an inert diagnostic through this same router and catalogue."""
+        from core.command_registry import preview_route
+        return preview_route(self, text, actor)
+
     def _route_calendar_command(self, content_lower: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
         if re.fullmatch(r'(?:synk konflikt (?:påminnelse )?[a-f0-9]{32} (?:lokal|google)|bekreft synk (?:påminnelse )?[a-f0-9]{32})', content_lower.strip()):
             return IntentResult(BotIntent.CALENDAR_SYNC, 1.0, reason='reviewed_sync_choice')
