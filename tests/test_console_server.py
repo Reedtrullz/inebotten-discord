@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import quote_plus
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from web_console.server import ConsoleServer, MAX_BODY_BYTES
 
@@ -258,9 +258,7 @@ async def test_health_no_auth():
         body = json_body(response)
         assert body["status"] in {"healthy", "degraded", "starting"}
         assert body["console"]["status"] == "running"
-        assert "bot" in body
-        assert "persistence" in body
-        assert "tasks" in body
+        assert set(body) == {"status", "console"}
     finally:
         await stop_server(server, task)
 
@@ -288,6 +286,42 @@ async def test_bridge_endpoint():
     try:
         response = await request("/api/bridge", api_key=API_KEY)
         assert b"lm_studio" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_bridge_readiness_details_require_auth_and_are_sanitized():
+    server, task = await start_server()
+    readiness = {
+        "status": "stale",
+        "checked_at": "2026-10-04T12:00:00+00:00",
+        "components": {
+            "provider": {
+                "enabled": True,
+                "required": True,
+                "status": "stale",
+                "checked_at": "2026-10-04T12:00:00+00:00",
+                "reason_code": "inference_acceptance_unobserved",
+                "recovery_action": "Send a normal AI request to verify inference.",
+                "transport_status": "reachable",
+                "model_discovery_status": "catalog_reachable",
+                "inference_acceptance_status": "not_observed",
+            }
+        },
+    }
+    try:
+        unauthorized = await request("/api/bridge")
+        assert b"401" in unauthorized
+
+        with patch("web_console.server.collect_bridge_health", new=AsyncMock(return_value={"status": "healthy", "lm_studio": "connected"})), patch(
+            "web_console.server.collect_provider_readiness", new=AsyncMock(return_value=readiness)
+        ):
+            response = await request("/api/bridge", api_key=API_KEY)
+
+        assert b"200" in response
+        body = json_body(response)
+        assert body["readiness"]["components"]["provider"]["inference_acceptance_status"] == "not_observed"
+        assert "prompt" not in json.dumps(body).lower()
     finally:
         await stop_server(server, task)
 

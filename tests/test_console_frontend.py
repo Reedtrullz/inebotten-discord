@@ -77,6 +77,61 @@ def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> No
     assert page.locator("[data-poll-retry]").count() == 8
 
 
+def test_readiness_panel_updates_from_synthetic_cloud_fixture(page: Any, console_server: ConsoleServer) -> None:
+    """Cloud readiness stays clear when an unused optional bridge is unavailable."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    assert page.locator("#readiness").is_visible()
+
+    page.evaluate(
+        """() => window.consoleApp.updateDashboard('bridge', {
+          status: 'unavailable',
+          lm_studio: 'unknown',
+          readiness: {
+            status: 'ready',
+            checked_at: '2026-10-04T12:00:00+00:00',
+            components: {
+              provider: {
+                enabled: true, required: true, status: 'ready',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'provider_ready',
+                recovery_action: null, transport_status: 'reachable',
+                model_discovery_status: 'catalog_reachable', inference_acceptance_status: 'accepted'
+              },
+              bridge: {
+                enabled: false, required: false, status: 'disabled',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'bridge_not_required',
+                recovery_action: null
+              },
+              google_calendar: {
+                enabled: false, required: false, status: 'disabled',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'google_calendar_disabled',
+                recovery_action: null
+              },
+              scheduler: {
+                enabled: true, required: true, status: 'ready',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'scheduler_running',
+                recovery_action: null
+              },
+              store: {
+                enabled: true, required: true, status: 'ready',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'store_healthy',
+                recovery_action: null
+              },
+              calendar_sync: {
+                enabled: false, required: false, status: 'disabled',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'google_calendar_disabled',
+                recovery_action: null
+              }
+            }
+          }
+        });"""
+    )
+
+    assert "inferens godkjent" in page.locator("#readiness").inner_text()
+    assert "Bridge" in page.locator("#readiness").inner_text()
+    assert "Ikke nødvendig" in page.locator("#readiness").inner_text()
+    assert "Nede" not in page.locator("#bridge").inner_text()
+
+
 def test_gcal_auth_page_renders_after_login(page: Any, console_server: ConsoleServer) -> None:
     """Verify Google Calendar setup page is reachable from an authenticated browser session."""
     _login(page, console_server)
@@ -121,7 +176,7 @@ def test_health_endpoint_no_auth(page: Any, console_server: ConsoleServer) -> No
     body = response.json()
     assert body.get("status") in {"healthy", "degraded", "starting"}
     assert body.get("console", {}).get("status") == "running"
-    assert "persistence" in body
+    assert set(body) == {"status", "console"}
 
 
 def test_theme_toggle_login_page(page: Any, console_server: ConsoleServer) -> None:

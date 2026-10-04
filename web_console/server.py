@@ -20,6 +20,7 @@ from web_console.state_collector import (
     collect_bridge_health,
     collect_calendar_data,
     collect_console_health,
+    collect_provider_readiness,
     collect_intent_stats,
     collect_logs,
     collect_memory_stats,
@@ -671,10 +672,25 @@ class ConsoleServer:
                 html = render_login_page()
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/health":
+                health = await collect_console_health(self.monitor, port=self.port)
+                readiness = await collect_provider_readiness(
+                    self.monitor,
+                    bridge_health=health.get("bridge") if isinstance(health.get("bridge"), dict) else None,
+                )
+                health_status = health.get("status", "starting")
+                if health_status == "starting":
+                    public_status = "starting"
+                elif health_status == "degraded" or readiness.get("status") != "ready":
+                    public_status = "degraded"
+                else:
+                    public_status = "healthy"
                 await self._send_response(
                     writer,
                     200,
-                    await collect_console_health(self.monitor, port=self.port),
+                    {
+                        "status": public_status,
+                        "console": {"status": "running"},
+                    },
                 )
             elif path == "/":
                 data = await StateCollector(self.monitor).collect_all()
@@ -698,6 +714,9 @@ class ConsoleServer:
                 bridge.setdefault("lm_studio", "unknown")
                 bridge.setdefault("requests", 0)
                 bridge.setdefault("errors", 0)
+                bridge["readiness"] = await collect_provider_readiness(
+                    self.monitor, bridge_health=bridge
+                )
                 await self._send_response(writer, 200, bridge)
             elif path == "/api/calendar":
                 await self._send_response(writer, 200, collect_calendar_data(self.monitor))

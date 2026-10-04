@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,11 @@ _DOCUMENT_VALIDATORS = {
     "reminders.json": bucket_records("text"),
     "user_memory.json": user_records,
 }
+
+READINESS_STATUSES = {"ready", "degraded", "unavailable", "stale", "disabled"}
+PROVIDER_EVIDENCE_TTL = timedelta(minutes=15)
+SCHEDULER_STALE_AFTER = timedelta(minutes=3)
+CALENDAR_SYNC_STALE_AFTER_SECONDS = 30 * 60
 
 
 
@@ -95,6 +101,73 @@ def _configured_ai_provider(monitor: object | None = None) -> str:
     return os.getenv("AI_PROVIDER", "lm_studio").strip().lower()
 
 
+def _provider_name(value: object) -> str:
+    name = str(value or "").strip().lower()
+    if name in {"hermes", "local", "lmstudio"}:
+        return "lm_studio"
+    return name
+
+
+def _provider_config(monitor: object | None = None) -> object | None:
+    return getattr(getattr(monitor, "client", None), "config", None)
+
+
+def _provider_contracts(monitor: object | None = None) -> tuple[str, str | None]:
+    config = _provider_config(monitor)
+    configured_provider = (
+        getattr(config, "AI_PROVIDER", None)
+        if config is not None
+        else os.getenv("AI_PROVIDER", "").strip()
+    )
+    primary = _provider_name(configured_provider or "unknown")
+    fallback = _provider_name(getattr(config, "AI_FALLBACK_PROVIDER", None)) or None
+    return primary, fallback
+
+
+def _bridge_contract(monitor: object | None = None) -> tuple[bool, bool]:
+    primary, fallback = _provider_contracts(monitor)
+    enabled = primary == "lm_studio" or fallback == "lm_studio"
+    return enabled, primary == "lm_studio"
+
+
+def _utc_now(now: datetime | None = None) -> datetime:
+    value = now or datetime.now(timezone.utc)
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _health_component(
+    *,
+    enabled: bool,
+    required: bool,
+    status: str,
+    checked_at: str,
+    reason_code: str,
+    recovery_action: str | None = None,
+    **details: Any,
+) -> dict[str, Any]:
+    if status not in READINESS_STATUSES:
+        status = "unavailable"
+    return {
+        "enabled": bool(enabled),
+        "required": bool(required),
+        "status": status,
+        "checked_at": checked_at,
+        "reason_code": reason_code,
+        "recovery_action": recovery_action if status not in {"ready", "disabled"} else None,
+        **details,
+    }
+
+
 def _bridge_endpoint() -> tuple[str, int]:
     host = os.getenv("HERMES_BRIDGE_HOST", "127.0.0.1").strip() or "127.0.0.1"
     connect_host = os.getenv("HERMES_BRIDGE_HEALTH_HOST", "").strip()
@@ -155,16 +228,30 @@ def _collect_task_health(monitor: object | None = None) -> dict[str, Any]:
     if monitor is None or not hasattr(monitor, "get_task_health"):
         return {"status": "unknown", "items": {}}
     try:
-        items = monitor.get_task_health()
+        raw_items = monitor.get_task_health()
+        raw_items = raw_items if isinstance(raw_items, dict) else {}
         degraded_states = {"cancelled", "degraded", "failed"}
         status = "degraded" if any(
             str(task.get("state", "")).lower() in degraded_states
-            for task in items.values()
+            for task in raw_items.values()
             if isinstance(task, dict)
         ) else "ok"
+        items: dict[str, dict[str, Any]] = {}
+        for name, task in raw_items.items():
+            if not isinstance(task, dict):
+                continue
+            safe_name = str(name)[:64]
+            safe = {
+                key: task[key]
+                for key in ("state", "started_at", "last_ok", "finished_at", "last_error_at")
+                if isinstance(task.get(key), (str, int, float, bool))
+            }
+            if str(task.get("state", "")).lower() in degraded_states:
+                safe["reason_code"] = "background_task_failed"
+            items[safe_name] = safe
         return {"status": status, "items": items}
-    except Exception as exc:
-        return {"status": "degraded", "items": {}, "last_error": str(exc)}
+    except Exception:
+        return {"status": "degraded", "items": {}, "reason_code": "task_health_unavailable"}
 
 
 def _collect_persistence_health() -> dict[str, Any]:
@@ -175,27 +262,373 @@ def _collect_persistence_health() -> dict[str, Any]:
         store = get_console_store()
         if hasattr(store, "health"):
             health = dict(store.health())
-            if read_errors:
-                health["status"] = "degraded"
-                health["read_errors"] = read_errors
-            return health
-    except Exception as exc:
-        return {"status": "degraded", "last_error": str(exc)}
-    return {"status": "degraded", "read_errors": read_errors} if read_errors else {"status": "unknown"}
-
-
-def _collect_calendar_sync_health(monitor: object | None = None) -> dict[str, Any]:
-    calendar = getattr(monitor, "calendar", None)
-    if calendar is None:
-        return {"status": "unknown", "gcal_enabled": False}
-
-    last_error = getattr(calendar, "last_gcal_sync_error", None)
-    gcal_enabled = bool(getattr(calendar, "gcal_enabled", False))
+            status = "degraded" if read_errors else str(health.get("status", "unknown"))
+            safe = {
+                key: health[key]
+                for key in (
+                    "stats_schema_version", "stats_storage_status", "sessions_storage_status",
+                    "last_stats_saved_at", "last_log_write_at", "last_error_at",
+                )
+                if isinstance(health.get(key), (str, int, float, bool))
+            }
+            safe["status"] = status
+            if status == "degraded":
+                safe["reason_code"] = "storage_document_invalid" if read_errors else "store_read_or_write_failed"
+            return safe
+    except Exception:
+        return {
+            "status": "degraded",
+            "reason_code": "store_health_unavailable",
+        }
     return {
-        "status": "degraded" if last_error else ("ok" if gcal_enabled else "disabled"),
-        "gcal_enabled": gcal_enabled,
-        "last_error": last_error,
+        "status": "degraded" if read_errors else "unknown",
+        **({"reason_code": "storage_document_invalid"} if read_errors else {}),
     }
+
+
+def _collect_calendar_sync_health(
+    monitor: object | None = None, *, now: datetime | None = None
+) -> dict[str, Any]:
+    checked_at = _utc_now(now).isoformat()
+    calendar = getattr(monitor, "calendar", None)
+    config = _provider_config(monitor)
+    configured = getattr(calendar, "gcal_enabled", None)
+    if configured is None:
+        configured = getattr(config, "GCAL_ENABLED", False)
+    enabled = bool(configured)
+    if not enabled:
+        return _health_component(
+            enabled=False,
+            required=False,
+            status="disabled",
+            checked_at=checked_at,
+            reason_code="google_calendar_disabled",
+            gcal_enabled=False,
+        )
+
+    if getattr(calendar, "last_gcal_sync_error", None):
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="degraded",
+            checked_at=checked_at,
+            reason_code="calendar_sync_failed",
+            recovery_action="Retry calendar sync after confirming Google authorization; local events are retained.",
+            gcal_enabled=True,
+        )
+
+    client = getattr(monitor, "client", None)
+    checker = getattr(client, "reminder_checker", None)
+    last_sync_mono = getattr(checker, "_last_gcal_sync", None)
+    if isinstance(last_sync_mono, (int, float)):
+        age_seconds = max(0.0, time.monotonic() - float(last_sync_mono))
+        if age_seconds <= CALENDAR_SYNC_STALE_AFTER_SECONDS:
+            return _health_component(
+                enabled=True,
+                required=True,
+                status="ready",
+                checked_at=checked_at,
+                reason_code="calendar_sync_recent",
+                gcal_enabled=True,
+                age_seconds=int(age_seconds),
+            )
+
+    task_items = {}
+    task_health = getattr(monitor, "get_task_health", None)
+    if callable(task_health):
+        try:
+            task_items = task_health()
+        except Exception:
+            task_items = {}
+    initial_sync = task_items.get("initial-gcal-sync", {}) if isinstance(task_items, dict) else {}
+    last_ok = _parse_timestamp(initial_sync.get("last_ok")) if isinstance(initial_sync, dict) else None
+    if last_ok is None and isinstance(initial_sync, dict):
+        last_ok = _parse_timestamp(initial_sync.get("finished_at"))
+    age = _utc_now(now) - last_ok if last_ok else None
+    if age is not None and age <= timedelta(seconds=CALENDAR_SYNC_STALE_AFTER_SECONDS):
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="ready",
+            checked_at=checked_at,
+            reason_code="calendar_sync_recent",
+            gcal_enabled=True,
+            age_seconds=max(0, int(age.total_seconds())),
+        )
+
+    return _health_component(
+        enabled=True,
+        required=True,
+        status="stale",
+        checked_at=checked_at,
+        reason_code="calendar_sync_stale",
+        recovery_action="Run a Google Calendar sync and review its result in the authenticated console.",
+        gcal_enabled=True,
+        age_seconds=max(0, int(age.total_seconds())) if age is not None else None,
+    )
+
+
+def _collect_scheduler_readiness(
+    monitor: object | None, *, now: datetime
+) -> dict[str, Any]:
+    checked_at = now.isoformat()
+    if monitor is None:
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="unavailable",
+            checked_at=checked_at,
+            reason_code="scheduler_not_started",
+            recovery_action="Start the bot and wait for the reminder scheduler to start.",
+        )
+
+    tasks = _collect_task_health(monitor)
+    items = tasks.get("items", {}) if isinstance(tasks, dict) else {}
+    scheduler = items.get("reminder-checker") if isinstance(items, dict) else None
+    if not isinstance(scheduler, dict):
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="unavailable",
+            checked_at=checked_at,
+            reason_code="scheduler_not_started",
+            recovery_action="Restart the bot and confirm the reminder scheduler starts.",
+        )
+
+    state = str(scheduler.get("state", "unknown")).lower()
+    if state in {"failed", "cancelled", "degraded"}:
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="degraded",
+            checked_at=checked_at,
+            reason_code="scheduler_failed",
+            recovery_action="Restart the bot and inspect authenticated scheduler diagnostics.",
+        )
+    if state != "running":
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="unavailable",
+            checked_at=checked_at,
+            reason_code="scheduler_not_running",
+            recovery_action="Restart the bot and confirm the reminder scheduler starts.",
+        )
+
+    heartbeat = _parse_timestamp(scheduler.get("last_ok"))
+    if heartbeat is None:
+        heartbeat = _parse_timestamp(scheduler.get("started_at"))
+    age = now - heartbeat if heartbeat else None
+    if age is None or age > SCHEDULER_STALE_AFTER:
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="stale",
+            checked_at=checked_at,
+            reason_code="scheduler_heartbeat_stale",
+            recovery_action="Restart the bot scheduler and confirm its heartbeat advances.",
+            heartbeat_at=heartbeat.isoformat() if heartbeat else None,
+        )
+    return _health_component(
+        enabled=True,
+        required=True,
+        status="ready",
+        checked_at=checked_at,
+        reason_code="scheduler_running",
+        heartbeat_at=heartbeat.isoformat(),
+    )
+
+
+def _collect_store_readiness(*, now: datetime) -> dict[str, Any]:
+    checked_at = now.isoformat()
+    store = _collect_persistence_health()
+    status = str(store.get("status", "unavailable")).lower()
+    if status in {"ok", "healthy", "ready"}:
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="ready",
+            checked_at=checked_at,
+            reason_code="store_healthy",
+        )
+    if status == "degraded":
+        return _health_component(
+            enabled=True,
+            required=True,
+            status="degraded",
+            checked_at=checked_at,
+            reason_code="store_write_or_read_failed",
+            recovery_action="Check console-store permissions and available space; preserve existing files before repair.",
+        )
+    return _health_component(
+        enabled=True,
+        required=True,
+        status="unavailable",
+        checked_at=checked_at,
+        reason_code="store_unavailable",
+        recovery_action="Restore console-store access, then restart the console.",
+    )
+
+
+def _provider_snapshot(monitor: object | None) -> dict[str, Any]:
+    getter = getattr(monitor, "get_provider_readiness", None)
+    if callable(getter):
+        try:
+            snapshot = getter()
+        except Exception:
+            snapshot = None
+    else:
+        snapshot = getattr(monitor, "_provider_readiness", None)
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+def _provider_readiness_component(
+    monitor: object | None,
+    bridge: dict[str, Any],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    provider, _fallback = _provider_contracts(monitor)
+    config = _provider_config(monitor)
+    enabled = provider in {"lm_studio", "openrouter"}
+    probe = _provider_snapshot(monitor).get("probe")
+    inference = _provider_snapshot(monitor).get("inference")
+    probe = probe if isinstance(probe, dict) else {}
+    inference = inference if isinstance(inference, dict) else {}
+    probe_ok = probe.get("ok") if type(probe.get("ok")) is bool else None
+    probe_at = _parse_timestamp(probe.get("checked_at"))
+    inference_at = _parse_timestamp(inference.get("checked_at"))
+    inference_status = str(inference.get("status", "")).lower()
+    inference_provider = _provider_name(inference.get("provider"))
+    inference_fresh = inference_at is not None and now - inference_at <= PROVIDER_EVIDENCE_TTL
+    inference_accepted = (
+        inference_status == "success"
+        and bool(inference.get("accepted", True))
+        and inference_fresh
+    )
+    bridge_connected = (
+        bridge.get("lm_studio") == "connected"
+        and bridge.get("status") not in {"unavailable", "error"}
+    )
+    if provider == "lm_studio":
+        transport = "reachable" if bridge_connected or inference_accepted else (
+            "unavailable" if bridge.get("status") in {"unavailable", "error"} else "unverified"
+        )
+        model_discovery = "catalog_reachable" if bridge_connected else (
+            "unavailable" if transport == "unavailable" else "unverified"
+        )
+    else:
+        transport = "reachable" if inference_accepted or probe_ok is True else (
+            "unavailable" if probe_ok is False else "unverified"
+        )
+        model_discovery = "catalog_reachable" if probe_ok is True else (
+            "unavailable" if probe_ok is False else "unverified"
+        )
+    inference_label = "accepted" if inference_accepted else (
+        "rejected" if inference_status and inference_status != "success" and inference_fresh else "not_observed"
+    )
+
+    missing_credentials = provider == "openrouter" and config is not None and not getattr(config, "OPENROUTER_API_KEY", None)
+    used_fallback = bool(inference.get("fallback")) or (
+        inference_accepted and inference_provider and inference_provider != provider
+    )
+    if not enabled:
+        status, reason, action = "unavailable", "provider_contract_missing", "Select a supported AI provider in private setup, then restart the bot."
+    elif missing_credentials:
+        status, reason, action = "unavailable", "provider_credentials_missing", "Set the selected provider credentials in private setup, then restart the bot."
+    elif transport == "unavailable" and not inference_accepted:
+        status, reason, action = "unavailable", "provider_unreachable", "Check the selected provider service and configured endpoint, then reconnect."
+    elif inference_status == "auth_error" and inference_fresh:
+        status, reason, action = "unavailable", "provider_auth_rejected", "Review provider credentials and model access in private setup."
+    elif inference_status in {"busy", "retryable"} and inference_fresh:
+        status, reason, action = "degraded", "provider_request_failed", "Wait for provider capacity to recover, then retry a normal request."
+    elif inference_accepted and inference_provider == provider and not used_fallback:
+        status, reason, action = "ready", "provider_inference_accepted", None
+    elif used_fallback:
+        status, reason, action = "degraded", "fallback_provider_served", "Review primary provider availability; the configured fallback served the last request."
+    else:
+        status, reason, action = "stale", "inference_acceptance_unobserved", "Send a normal AI request through the bot to verify a model response."
+
+    return _health_component(
+        enabled=enabled,
+        required=True,
+        status=status,
+        checked_at=now.isoformat(),
+        reason_code=reason,
+        recovery_action=action,
+        provider=provider,
+        transport_status=transport,
+        model_discovery_status=model_discovery,
+        inference_acceptance_status=inference_label,
+        provider_checked_at=probe_at.isoformat() if probe_at else None,
+        inference_checked_at=inference_at.isoformat() if inference_at else None,
+    )
+
+
+async def collect_provider_readiness(
+    monitor: object | None = None,
+    *,
+    bridge_health: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build redacted readiness from configuration and observed outcomes only."""
+    checked = _utc_now(now)
+    bridge_enabled, bridge_required = _bridge_contract(monitor)
+    if bridge_health is None:
+        bridge_health = await collect_bridge_health(monitor) if bridge_enabled else {"status": "disabled"}
+    provider = _provider_readiness_component(monitor, bridge_health, now=checked)
+    if not bridge_enabled:
+        bridge = _health_component(
+            enabled=False,
+            required=False,
+            status="disabled",
+            checked_at=checked.isoformat(),
+            reason_code="bridge_not_required",
+        )
+    elif bridge_health.get("lm_studio") == "connected" and bridge_health.get("status") not in {"unavailable", "error"}:
+        bridge = _health_component(
+            enabled=True,
+            required=bridge_required,
+            status="ready",
+            checked_at=checked.isoformat(),
+            reason_code="bridge_model_catalog_reachable",
+        )
+    else:
+        bridge = _health_component(
+            enabled=True,
+            required=bridge_required,
+            status="unavailable",
+            checked_at=checked.isoformat(),
+            reason_code="bridge_unreachable",
+            recovery_action="Start the Hermes bridge and confirm LM Studio is running with the configured model.",
+        )
+
+    calendar_sync = _collect_calendar_sync_health(monitor, now=checked)
+    google_calendar = dict(calendar_sync)
+    scheduler = _collect_scheduler_readiness(monitor, now=checked)
+    store = _collect_store_readiness(now=checked)
+    components = {
+        "provider": provider,
+        "bridge": bridge,
+        "google_calendar": google_calendar,
+        "scheduler": scheduler,
+        "store": store,
+        "calendar_sync": calendar_sync,
+    }
+    required_statuses = [
+        component["status"]
+        for component in components.values()
+        if component["enabled"] and component["required"]
+    ]
+    if "unavailable" in required_statuses:
+        status = "unavailable"
+    elif "degraded" in required_statuses:
+        status = "degraded"
+    elif "stale" in required_statuses:
+        status = "stale"
+    else:
+        status = "ready"
+    return {"status": status, "checked_at": checked.isoformat(), "components": components}
 
 
 def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
@@ -260,14 +693,14 @@ def collect_bot_status(monitor: object | None = None) -> dict[str, Any]:
         if (
             tasks.get("status") == "degraded"
             or persistence.get("status") == "degraded"
-            or calendar_sync.get("status") == "degraded"
+            or calendar_sync.get("status") in {"degraded", "stale", "unavailable"}
         ):
             status = "degraded"
             if tasks.get("status") == "degraded":
                 degraded_reasons.append("tasks_degraded")
             if persistence.get("status") == "degraded":
                 degraded_reasons.append("persistence_degraded")
-            if calendar_sync.get("status") == "degraded":
+            if calendar_sync.get("status") in {"degraded", "stale", "unavailable"}:
                 degraded_reasons.append("calendar_sync_degraded")
 
         return {
@@ -295,7 +728,7 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
     persistence = bot.get("persistence") or _collect_persistence_health()
     tasks = bot.get("tasks") or _collect_task_health(monitor)
     ai_provider = _configured_ai_provider(monitor)
-    bridge_required = ai_provider == "lm_studio"
+    _bridge_enabled, bridge_required = _bridge_contract(monitor)
     bridge_degraded = bridge.get("status") in {"error", "unavailable", "unhealthy", "degraded"} or bridge.get("lm_studio") == "disconnected"
 
     if bot.get("status") == "starting":
@@ -323,6 +756,18 @@ async def collect_console_health(monitor: object | None = None, *, port: int | N
 
 
 async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]:
+    enabled, required = _bridge_contract(monitor)
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if not enabled:
+        return {
+            "status": "disabled",
+            "lm_studio": "disabled",
+            "enabled": False,
+            "required": False,
+            "checked_at": checked_at,
+            "requests": 0,
+            "errors": 0,
+        }
     host, port = _bridge_endpoint()
     try:
         reader, writer = await asyncio.wait_for(
@@ -349,6 +794,9 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
                 return {
                     "status": status,
                     "lm_studio": lm_studio,
+                    "enabled": True,
+                    "required": required,
+                    "checked_at": checked_at,
                     "host": host,
                     "port": port,
                     "requests": payload.get("requests", 0),
@@ -357,7 +805,15 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
     except Exception:
         pass
 
-    return {"status": "unavailable", "host": host, "port": port}
+    return {
+        "status": "unavailable",
+        "lm_studio": "unknown",
+        "enabled": True,
+        "required": required,
+        "checked_at": checked_at,
+        "host": host,
+        "port": port,
+    }
 
 
 def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[str, Any]:
@@ -599,10 +1055,49 @@ def generate_mock_data() -> dict[str, Any]:
             "monitor_ready": True,
         },
         "bridge": {
-            "status": "healthy",
-            "lm_studio": "connected",
+            "status": "unavailable",
+            "lm_studio": "unknown",
             "requests": 1337,
             "errors": 3,
+        },
+        "readiness": {
+            "status": "ready",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "components": {
+                "provider": {
+                    "enabled": True, "required": True, "status": "ready",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "reason_code": "provider_inference_accepted", "recovery_action": None,
+                    "provider": "openrouter", "transport_status": "reachable",
+                    "model_discovery_status": "catalog_reachable",
+                    "inference_acceptance_status": "accepted",
+                },
+                "bridge": {
+                    "enabled": False, "required": False, "status": "disabled",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "reason_code": "bridge_not_required", "recovery_action": None,
+                },
+                "google_calendar": {
+                    "enabled": False, "required": False, "status": "disabled",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "reason_code": "google_calendar_disabled", "recovery_action": None,
+                },
+                "scheduler": {
+                    "enabled": True, "required": True, "status": "ready",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "reason_code": "scheduler_running", "recovery_action": None,
+                },
+                "store": {
+                    "enabled": True, "required": True, "status": "ready",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "reason_code": "store_healthy", "recovery_action": None,
+                },
+                "calendar_sync": {
+                    "enabled": False, "required": False, "status": "disabled",
+                    "checked_at": datetime.now(timezone.utc).isoformat(),
+                    "reason_code": "google_calendar_disabled", "recovery_action": None,
+                },
+            },
         },
         "calendar": {
             "event_count": 12,
@@ -673,9 +1168,11 @@ class StateCollector:
         self.monitor = monitor
 
     async def collect_all(self) -> dict[str, Any]:
+        bridge = await collect_bridge_health(self.monitor)
         return {
             "status": collect_bot_status(self.monitor),
-            "bridge": await collect_bridge_health(self.monitor),
+            "bridge": bridge,
+            "readiness": await collect_provider_readiness(self.monitor, bridge_health=bridge),
             "calendar": collect_calendar_data(self.monitor),
             "polls": collect_poll_data(self.monitor),
             "rate_limits": collect_rate_limits(self.monitor),

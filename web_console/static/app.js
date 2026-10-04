@@ -313,11 +313,14 @@ class ConsoleApp {
         break;
       }
       case "bridge": {
-        setText("bridge.status", data.status);
-        setText("bridge.lm_studio", data.lm_studio);
-        setText("bridge.requests", data.requests);
-        setText("bridge.errors", data.errors);
-        this.updateBridgeBadge(data.status);
+        const bridgeReadiness = data.readiness?.components?.bridge;
+        const bridgeDisabled = bridgeReadiness?.status === "disabled";
+        setText("bridge.status", bridgeDisabled ? "Ikke nødvendig" : data.status);
+        setText("bridge.lm_studio", bridgeDisabled ? "Ikke i bruk" : data.lm_studio);
+        setText("bridge.requests", bridgeDisabled ? "–" : data.requests);
+        setText("bridge.errors", bridgeDisabled ? "–" : data.errors);
+        this.updateBridgeBadge(bridgeDisabled ? "disabled" : data.status);
+        if (data.readiness) this.renderSection("readiness", data.readiness);
         break;
       }
       case "calendar":
@@ -362,7 +365,57 @@ class ConsoleApp {
     const rateLimits = sectionName === "rate-limits";
     const state = sectionState;
 
-    if (sectionName === "calendar") {
+    if (sectionName === "readiness") {
+      const container = document.querySelector("#readiness [data-readiness-list]");
+      const badge = document.querySelector('#readiness [data-metric="readiness.status"]');
+      const statusLabels = {
+        ready: "Klar", degraded: "Svekket", unavailable: "Utilgjengelig",
+        stale: "Utdatert", disabled: "Deaktivert",
+      };
+      const statusClass = {
+        ready: "badge-online", degraded: "badge-warning", unavailable: "badge-error",
+        stale: "badge-warning", disabled: "badge-neutral",
+      };
+      const labelFor = (value) => statusLabels[String(value || "").toLowerCase()] || "Ukjent";
+      if (badge) {
+        const status = String(state.status || "stale").toLowerCase();
+        badge.className = `badge ${statusClass[status] || "badge-warning"}`;
+        badge.textContent = labelFor(status);
+      }
+      if (container) {
+        container.replaceChildren();
+        const labels = {
+          provider: "Valgt AI-provider", bridge: "Bridge", google_calendar: "Google Calendar",
+          scheduler: "Påminnelsesplanlegger", store: "Konsolllager", calendar_sync: "Kalendersynkronisering",
+        };
+        const components = state.components && typeof state.components === "object" ? state.components : {};
+        Object.entries(labels).forEach(([key, label]) => {
+          const item = components[key];
+          if (!item || typeof item !== "object") return;
+          const row = make("div", "mini-row readiness-row");
+          const summary = make("span");
+          summary.append(make("strong", "", label));
+          if (key === "provider") {
+            const evidenceLabel = (value) => ({
+              reachable: "tilkoblet", unavailable: "utilgjengelig", unverified: "ikke verifisert",
+              catalog_reachable: "modelliste tilgjengelig",
+              accepted: "inferens godkjent", not_observed: "inferens ikke observert", rejected: "inferens feilet",
+            }[String(value || "").toLowerCase()] || "ikke verifisert");
+            const evidence = make("small", "", `Transport: ${evidenceLabel(item.transport_status)} · modelliste: ${evidenceLabel(item.model_discovery_status)} · faktisk inferens: ${evidenceLabel(item.inference_acceptance_status)}`);
+            summary.append(document.createElement("br"), evidence);
+          }
+          if (item.recovery_action) {
+            summary.append(document.createElement("br"), make("small", "", item.recovery_action));
+          }
+          const status = String(item.status || "unavailable").toLowerCase();
+          const statusLabel = key === "bridge" && status === "disabled" ? "Ikke nødvendig" : labelFor(status);
+          const badge = make("strong", `badge ${statusClass[status] || "badge-warning"}`, statusLabel);
+          row.append(summary, badge);
+          container.append(row);
+        });
+        if (!container.childElementCount) container.append(empty("Venter på readiness-data."));
+      }
+    } else if (sectionName === "calendar") {
       const card = document.querySelector("#calendar .card-body");
       if (card) {
         card.querySelector(".mini-list, .empty-state")?.remove();
@@ -599,6 +652,11 @@ class ConsoleApp {
     const badge = document.querySelector("#bridge .badge");
     if (!badge) return;
     const s = String(status || "").toLowerCase();
+    if (s === "disabled") {
+      badge.className = "badge badge-neutral";
+      badge.textContent = "Ikke nødvendig";
+      return;
+    }
     const ok = ["online", "connected", "ok", "healthy", "running", "active", "true", "yes"];
     const err = ["offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"];
     if (ok.includes(s)) {
@@ -726,8 +784,8 @@ class ConsoleApp {
         add("Discord-tilkobling", data.discord_connected ? "Ja" : "Nei");
         break;
       case "bridge":
-        add("Status", data.status || "N/A");
-        add("LM Studio", data.lm_studio || "N/A");
+        add("Status", data.readiness?.components?.bridge?.status === "disabled" ? "Ikke nødvendig" : data.status || "N/A");
+        add("LM Studio", data.readiness?.components?.bridge?.status === "disabled" ? "Ikke i bruk" : data.lm_studio || "N/A");
         add("Forespørsler", data.requests ?? 0);
         add("Feil", data.errors ?? 0);
         break;

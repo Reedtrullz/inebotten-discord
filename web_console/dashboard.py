@@ -59,9 +59,11 @@ def _status_badge(status: object) -> str:
     if isinstance(status, bool):
         return "badge-online" if status else "badge-error"
     s = str(status or "").lower()
-    if s in ("online", "connected", "ok", "healthy", "running", "active", "true", "yes"):
+    if s in ("online", "connected", "ok", "healthy", "ready", "running", "active", "true", "yes"):
         return "badge-online"
-    if s in ("offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"):
+    if s in ("disabled", "not_required"):
+        return "badge-neutral"
+    if s in ("offline", "disconnected", "error", "unhealthy", "unavailable", "stopped", "inactive", "false", "no"):
         return "badge-error"
     return "badge-warning"
 
@@ -250,6 +252,9 @@ def _signal_card(tone: str, symbol: str, title: str, detail: str, value: object)
 def _render_overview_section(data: dict[str, Any]) -> str:
     status = _section(data, "status")
     bridge = _section(data, "bridge")
+    readiness = _section(data, "readiness")
+    components = readiness.get("components", {}) if isinstance(readiness.get("components"), dict) else {}
+    bridge_readiness = components.get("bridge", {}) if isinstance(components, dict) else {}
     intents = _section(data, "intents")
     logs = _section(data, "logs")
     calendar = _section(data, "calendar")
@@ -265,10 +270,12 @@ def _render_overview_section(data: dict[str, Any]) -> str:
     event_count = _safe_int(calendar, "event_count", default=0)
     task_count = _safe_int(calendar, "task_count", default=0)
 
+    bridge_required = bool(bridge_readiness.get("required", True))
+    readiness_status = str(readiness.get("status", "")).lower()
     has_attention = (
         _status_badge(bot_status) != "badge-online"
-        or _status_badge(bridge_status) == "badge-error"
-        or bridge_errors > 0
+        or readiness_status in {"degraded", "unavailable", "stale"}
+        or (bridge_required and (_status_badge(bridge_status) == "badge-error" or bridge_errors > 0))
         or log_counts["error"] > 0
     )
 
@@ -294,8 +301,9 @@ def _render_overview_section(data: dict[str, Any]) -> str:
         ]
     )
 
-    bridge_tone = "ok" if _status_badge(bridge_status) == "badge-online" and bridge_errors == 0 else "warn"
-    if _status_badge(bridge_status) == "badge-error":
+    bridge_disabled = bridge_readiness.get("status") == "disabled"
+    bridge_tone = "ok" if bridge_disabled or (_status_badge(bridge_status) == "badge-online" and bridge_errors == 0) else "warn"
+    if bridge_required and _status_badge(bridge_status) == "badge-error":
         bridge_tone = "error"
     fallback_tone = "warn" if fallback_count > 5 else "ok"
     log_tone = "error" if log_counts["error"] else ("warn" if log_counts["warn"] else "ok")
@@ -303,7 +311,7 @@ def _render_overview_section(data: dict[str, Any]) -> str:
     signals = "\n".join(
         [
             _signal_card("ok" if _status_badge(bot_status) == "badge-online" else "warn", "OK", "Bot", f"Status: {bot_status}", _badge_text(bot_status, ok="Online")),
-            _signal_card(bridge_tone, "AI", "Bridge", f"LM Studio: {bridge.get('lm_studio', 'ukjent')}", _badge_text(bridge_status, ok="Tilkoblet", error="Nede")),
+            _signal_card(bridge_tone, "AI", "Bridge", "Ikke nødvendig for valgt provider" if bridge_disabled else f"LM Studio: {bridge.get('lm_studio', 'ukjent')}", "Ikke nødvendig" if bridge_disabled else _badge_text(bridge_status, ok="Tilkoblet", error="Nede")),
             _signal_card(fallback_tone, "?", "Fallbacks", "Lav trygghet eller AI-chat-ruting", fallback_count),
             _signal_card(log_tone, "!", "Logger", f"{log_counts['warn']} varsler, {log_counts['error']} feil", len(log_lines) if isinstance(log_lines, list) else 0),
         ]
@@ -357,23 +365,97 @@ def _render_status_section(data: dict[str, Any]) -> str:
 
 def _render_bridge_section(data: dict[str, Any]) -> str:
     bridge = _section(data, "bridge")
+    readiness = _section(data, "readiness")
+    components = readiness.get("components", {}) if isinstance(readiness.get("components"), dict) else {}
+    bridge_readiness = components.get("bridge", {}) if isinstance(components, dict) else {}
+    bridge_disabled = bridge_readiness.get("status") == "disabled"
     bridge_status = bridge.get("status", "ukjent")
     err_val = _safe_int(data, "bridge", "errors", default=0)
     metrics = "\n".join(
         [
-            _metric_tile("Status", bridge_status, metric="bridge.status"),
-            _metric_tile("LM Studio", bridge.get("lm_studio", "N/A"), metric="bridge.lm_studio"),
-            _metric_tile("Forespørsler", bridge.get("requests", 0), metric="bridge.requests"),
-            _metric_tile("Feil", err_val, metric="bridge.errors"),
+            _metric_tile("Status", "Ikke nødvendig" if bridge_disabled else bridge_status, metric="bridge.status"),
+            _metric_tile("LM Studio", "Ikke i bruk" if bridge_disabled else bridge.get("lm_studio", "N/A"), metric="bridge.lm_studio"),
+            _metric_tile("Forespørsler", "–" if bridge_disabled else bridge.get("requests", 0), metric="bridge.requests"),
+            _metric_tile("Feil", "–" if bridge_disabled else err_val, metric="bridge.errors"),
         ]
     )
+    display_status = "disabled" if bridge_disabled else bridge_status
+    description = "Ikke nødvendig for valgt provider." if bridge_disabled else "AI-broen og LM Studio-kontakten."
     return f"""<article class="card" id="bridge">
   <div class="card-header">
-    <div><h3>Bridge</h3><p class="muted">AI-broen og LM Studio-kontakten.</p></div>
-    <span class="badge {_status_badge(bridge_status)}">{escape(_badge_text(bridge_status, ok="Tilkoblet", error="Frakoblet"))}</span>
+    <div><h3>Bridge</h3><p class="muted">{escape(description)}</p></div>
+    <span class="badge {_status_badge(display_status)}">{escape("Ikke nødvendig" if bridge_disabled else _badge_text(bridge_status, ok="Tilkoblet", error="Frakoblet"))}</span>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
   <div class="card-footer">{_poll_controls("/api/bridge")}{_modal_button("bridge")}</div>
+</article>"""
+
+
+def _readiness_label(status: object) -> str:
+    return {
+        "ready": "Klar",
+        "degraded": "Svekket",
+        "unavailable": "Utilgjengelig",
+        "stale": "Utdatert",
+        "disabled": "Deaktivert",
+    }.get(str(status or "").lower(), "Ukjent")
+
+
+def _verification_label(value: object) -> str:
+    return {
+        "reachable": "tilkoblet",
+        "unavailable": "utilgjengelig",
+        "unverified": "ikke verifisert",
+        "catalog_reachable": "modelliste tilgjengelig",
+        "accepted": "inferens godkjent",
+        "not_observed": "inferens ikke observert",
+        "rejected": "inferens feilet",
+    }.get(str(value or "").lower(), "ikke verifisert")
+
+
+def _render_readiness_section(data: dict[str, Any]) -> str:
+    readiness = _section(data, "readiness")
+    components = readiness.get("components", {})
+    rows: list[str] = []
+    labels = {
+        "provider": "Valgt AI-provider",
+        "bridge": "Bridge",
+        "google_calendar": "Google Calendar",
+        "scheduler": "Påminnelsesplanlegger",
+        "store": "Konsolllager",
+        "calendar_sync": "Kalendersynkronisering",
+    }
+    if isinstance(components, dict):
+        for key, label in labels.items():
+            item = components.get(key)
+            if not isinstance(item, dict):
+                continue
+            detail = ""
+            if key == "provider":
+                detail = (
+                    "Transport: " + _verification_label(item.get("transport_status"))
+                    + " · modelliste: " + _verification_label(item.get("model_discovery_status"))
+                    + " · faktisk inferens: " + _verification_label(item.get("inference_acceptance_status"))
+                )
+            action = item.get("recovery_action")
+            status_label = "Ikke nødvendig" if key == "bridge" and item.get("status") == "disabled" else _readiness_label(item.get("status"))
+            rows.append(
+                '<div class="mini-row readiness-row">'
+                f'<span><strong>{escape(label)}</strong><br><small>{escape(detail)}</small>'
+                + (f'<br><small>{escape(str(action))}</small>' if action else "")
+                + "</span>"
+                + f'<strong class="badge {_status_badge(item.get("status"))}">{escape(status_label)}</strong>'
+                + "</div>"
+            )
+    body = "".join(rows) or '<div class="empty-state">Venter på readiness-data.</div>'
+    overall = readiness.get("status", "stale")
+    return f"""<article class="card" id="readiness">
+  <div class="card-header">
+    <div><h3>Provider readiness</h3><p class="muted">Tilkobling, modelliste og faktisk svar vises som separate signaler.</p></div>
+    <span class="badge {_status_badge(overall)}" data-metric="readiness.status">{escape(_readiness_label(overall))}</span>
+  </div>
+  <div class="card-body" data-readiness-list>{body}</div>
+  <div class="card-footer"><span class="muted">Oppdateres sammen med Bridge-diagnostikken.</span></div>
 </article>"""
 
 
@@ -603,6 +685,7 @@ def _render_diagnostics_section(data: dict[str, Any]) -> str:
     </div>
   </div>
   <div class="diagnostics-grid">
+    {_render_readiness_section(data)}
     {_render_bridge_section(data)}
     {_render_rate_limits_section(data)}
     {_render_intents_section(data)}

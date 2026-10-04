@@ -16,7 +16,7 @@ import signal
 import subprocess
 import sys
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 
@@ -270,6 +270,7 @@ class MessageMonitor:
         self._last_persisted_rate_stats: dict[str, int] = {}
         self._background_tasks = set()
         self._task_health: dict[str, dict[str, object]] = {}
+        self._provider_readiness: dict[str, object] = {"probe": None, "inference": None}
 
         self.handlers = {}
         self._register_handlers()
@@ -304,6 +305,50 @@ class MessageMonitor:
 
         task.add_done_callback(_done_callback)
         return task
+
+    async def _run_with_health_heartbeat(self, awaitable, name, *, interval=60):
+        """Keep long-running scheduler liveness fresh without changing its loop."""
+        task = asyncio.create_task(awaitable)
+        try:
+            while True:
+                done, _pending = await asyncio.wait({task}, timeout=interval)
+                if task in done:
+                    return task.result()
+                self._mark_task_ok(name)
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    def record_provider_health_check(self, healthy):
+        """Retain only startup reachability evidence; discard provider text."""
+        self._provider_readiness["probe"] = {
+            "ok": bool(healthy),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def record_provider_inference(self, result):
+        """Retain outcome metadata from a real request, never its prompt or text."""
+        status = str(getattr(result, "status", "unavailable")).lower()
+        if status not in {"success", "busy", "retryable", "auth_error", "unavailable"}:
+            status = "unavailable"
+        provider = str(getattr(result, "provider", "unknown")).strip().lower()
+        if not re.fullmatch(r"[a-z0-9_.-]{1,32}", provider):
+            provider = "unknown"
+        accepted = status == "success" and bool(getattr(result, "text", None))
+        self._provider_readiness["inference"] = {
+            "status": status,
+            "provider": provider,
+            "fallback": bool(getattr(result, "fallback", False)),
+            "accepted": accepted,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_provider_readiness(self):
+        return {
+            key: dict(value) if isinstance(value, dict) else None
+            for key, value in self._provider_readiness.items()
+        }
 
     def _set_task_health(self, name, **updates):
         health = self._task_health.setdefault(name, {"state": "unknown"})
@@ -858,6 +903,7 @@ class MessageMonitor:
 
                         if not isinstance(result, AIResult):
                             result = AIResult("unavailable", None, "monitor", None)
+                        self.record_provider_inference(result)
                         if result.status == "success" and result.text:
                             print(
                                 f"[MONITOR] AI response from {result.provider} "
@@ -1359,7 +1405,9 @@ class SelfbotClient(discord.Client):
 
         if reminder_checker:
             self.reminder_checker_task = monitor._track_background_task(
-                reminder_checker.start(),
+                monitor._run_with_health_heartbeat(
+                    reminder_checker.start(), "reminder-checker"
+                ),
                 "reminder-checker",
             )
             print("[BOT] Calendar reminder checker started")
@@ -1371,6 +1419,10 @@ class SelfbotClient(discord.Client):
             return
 
         healthy, message = await self.hermes.check_health()
+        if self.monitor is not None:
+            record_probe = getattr(self.monitor, "record_provider_health_check", None)
+            if callable(record_probe):
+                record_probe(healthy)
         if healthy:
             print(f"[BOT] AI connector: {message}")
         else:
