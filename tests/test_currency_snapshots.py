@@ -157,3 +157,16 @@ async def test_utility_handler_delivers_current_quote_refusal():
 
     assert len(sent) == 1
     assert "Ingen fersk valutakurs" in sent[0]
+
+
+def test_parsed_currency_amount_keeps_decimal_precision_before_float_adapter():
+    manager = CalculatorManager()
+    result = manager.calculate(manager.parse_command('9007199254740993 USD til USD'))
+    assert '9,007,199,254,740,993.00' in result
+
+
+@pytest.mark.parametrize('rate', ['NaN', 'Infinity', '-Infinity'])
+def test_snapshot_refuses_non_finite_rates(rate):
+    with pytest.raises(ValueError, match='finite'):
+        rate_snapshot(source='synthetic', effective_at=None, base='USD',
+                      rates={'USD': Decimal(1), 'NOK': Decimal(rate)}, status='demonstration')

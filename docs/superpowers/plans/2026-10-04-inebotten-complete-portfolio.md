@@ -146,11 +146,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify features/calculator_manager.py and features/utility_handler.py; create tests/test_currency_snapshots.py.
 **Interfaces:** RateSnapshot(source: str, effective_at: aware datetime|None, base: str, rates: dict[str, Decimal], status fresh|stale|demonstration); convert_currency(amount: Decimal, source: str, target: str, snapshot: RateSnapshot) -> Decimal. Current fixed values are demonstration data with unknown effective time.
 
-- [ ] Add test_fixed_rates_are_labeled_estimates, test_inverse_and_cross_pair_use_one_snapshot, test_unknown_pair_refuses, and precision cases for fiat/BTC.
-- [ ] Confirm current output omits source/effective-time context.
-- [ ] Use one base-rate snapshot, explicit rounding and estimate wording; refuse requests requiring a current quote when no current snapshot exists.
-- [ ] Run tests/test_currency_snapshots.py and utility routing regressions; preserve ordinary math/unit results.
-- [ ] Review and commit; a live provider is a later optional adapter, not a silently chosen dependency.
+- [x] Add test_fixed_rates_are_labeled_estimates, test_inverse_and_cross_pair_use_one_snapshot, test_unknown_pair_refuses, and precision cases for fiat/BTC.
+- [x] Confirm current output omits source/effective-time context.
+- [x] Use one base-rate snapshot, explicit rounding and estimate wording; refuse requests requiring a current quote when no current snapshot exists.
+- [x] Run tests/test_currency_snapshots.py and utility routing regressions; preserve ordinary math/unit results.
+- [x] Review and commit; a live provider is a later optional adapter, not a silently chosen dependency.
 
 ### Task 8: I32 — Preserving private onboarding
 

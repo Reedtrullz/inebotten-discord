@@ -34,6 +34,8 @@ class RateSnapshot:
         base = self.base.upper()
         if base not in normalized or normalized[base] != Decimal("1"):
             raise ValueError("base rate must be present and equal to 1")
+        if any(not rate.is_finite() for rate in normalized.values()):
+            raise ValueError("rates must be finite")
         if any(rate <= 0 for rate in normalized.values()):
             raise ValueError("rates must be positive")
         if self.status == "fresh" and self.effective_at is None:
@@ -160,6 +162,7 @@ class CalculatorManager:
                 return {
                     "type": "currency",
                     "amount": amount,
+                    "amount_decimal": match.group(1),
                     "from": from_unit,
                     "to": to_unit,
                     "requires_current": bool(
@@ -238,7 +241,7 @@ class CalculatorManager:
 
     def _convert_currency(self, cmd, lang):
         """Convert currency"""
-        amount = Decimal(str(cmd["amount"]))
+        amount = Decimal(cmd.get("amount_decimal", str(cmd["amount"])))
         from_curr = cmd["from"].lower()
         to_curr = cmd["to"].lower()
         snapshot = self.rate_snapshot

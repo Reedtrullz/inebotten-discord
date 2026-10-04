@@ -10,7 +10,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 4 | I04 | Explicit storage failures and schema compatibility | Implemented locally | 158 focused tests; full non-browser suite 711 passed, 1 live skip, 17 subtests; separate browser suite 24 passed. Synthetic migration/downgrade/write-failure receipts. |
 | 5 | I06 | Request-owned locale | Implemented locally | 99 routing/locale tests with 17 subtests; interleaved locales, immutable views and exception cleanup verified. |
 | 6 | I27 | Forecast validity, location, time, and useful caching | Implemented locally | 198 forecast/dashboard/routing tests passed; unavailable/stale, shared cache, UTC/Oslo/DST and NOAA object/table formats verified. Shutdown integration remains I24. |
-| 7 | I28 | Honest currency snapshots | Planned | — |
+| 7 | I28 | Honest currency snapshots | Implemented locally | 110 currency/routing tests, 17 subtests; full suite 740 passed, 1 live skip, 17 subtests. Decimal token precision and finite-rate refusal verified. |
 | 8 | I32 | Preserving private onboarding | Planned | — |
 | 9 | I39 | Decide retention and harden the local-only exporter | Planned | — |
 | 10 | I05 | Serialize store ownership and snapshot commits | Planned | — |
