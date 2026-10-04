@@ -228,7 +228,8 @@ class MessageMonitor:
             crypto_manager=self.crypto,
             aurora_manager=self.aurora,
             watchlist_manager=self.watchlist,
-            forecast_service=self.forecasts
+            forecast_service=self.forecasts,
+            user_memory=self.user_memory,
         )
 
         self.parse_poll_command = parse_poll_command
@@ -1413,6 +1414,8 @@ class SelfbotClient(discord.Client):
             health_callback=getattr(selected_monitor, 'record_scheduler_iteration', None),
             get_channel_func=get_channel,
             outbound_sender=monitor_sender(selected_monitor) if hasattr(selected_monitor, "rate_limiter") else None,
+            user_memory=getattr(selected_monitor, 'user_memory', None),
+            daily_digest=getattr(selected_monitor, 'daily_digest', None),
         )
 
     def _setup_signal_handlers(self):

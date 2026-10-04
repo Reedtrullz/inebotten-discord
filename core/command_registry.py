@@ -95,12 +95,17 @@ def _validator(intent, argument):
             raise ValueError('invalid_history')
         if argument == 'memory':
             fields = payload['memory']
-            if set(fields) - {'action', 'confirmed', 'changes', 'value', 'private'}:
+            if set(fields) - {'action', 'confirmed', 'changes', 'value', 'private', 'item_id', 'minutes'}:
                 raise ValueError('self_only_memory')
-            actions = {'memory_view': {'view', 'policy', 'school_locality'},
+            actions = {'memory_view': {'view', 'policy', 'school_locality', 'notification', 'notification_view', 'snooze'},
                        'memory_export': {'export'}, 'memory_delete': {'delete'}}[intent.value]
             if fields.get('action') not in actions or ('confirmed' in fields and type(fields['confirmed']) is not bool):
                 raise ValueError('invalid_memory_action')
+            action_fields = {'view': {'action'}, 'policy': {'action', 'changes'}, 'school_locality': {'action', 'value'},
+                             'export': {'action', 'private'}, 'delete': {'action', 'confirmed'},
+                             'notification': {'action', 'changes'}, 'notification_view': {'action'}, 'snooze': {'action', 'item_id', 'minutes'}}
+            if set(fields) - action_fields[fields['action']]:
+                raise ValueError('unexpected_memory_fields')
             if 'private' in fields and (fields['action'] != 'export' or type(fields['private']) is not bool):
                 raise ValueError('invalid_private_export')
             if fields['action'] == 'policy':
@@ -111,6 +116,15 @@ def _validator(intent, argument):
                 MemoryPolicy(**changes)
             if fields['action'] == 'school_locality' and fields.get('value') not in ('oslo', 'trondheim'):
                 raise ValueError('invalid_locality')
+            if fields['action'] == 'notification':
+                from cal_system.notification_preferences import NotificationProfile
+                changes = fields.get('changes')
+                if not isinstance(changes, dict) or not changes or set(changes) - {'enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'morning_time', 'timezone', 'card_ids'}:
+                    raise ValueError('invalid_notification_changes')
+                NotificationProfile.from_document(dict(NotificationProfile(False, 'shared', None).document(), **changes))
+            if fields['action'] == 'snooze' and (not _nonblank(fields.get('item_id')) or len(fields['item_id']) > 100
+                or type(fields.get('minutes')) is not int or not 1 <= fields['minutes'] <= 1440):
+                raise ValueError('invalid_snooze')
         return copy.deepcopy(payload)
     return validate
 
@@ -165,7 +179,7 @@ COMMANDS = (
     _spec('daily_digest', 'Vis dagens valgte oversikt', 'daglig oppsummering', 'daily_digest.handle_daily_digest', mutation='provider'),
     _spec('birthday_edit', 'Endre bursdagsoppføring', 'endre bursdag Ola 15.05', 'birthdays.handle_birthday_edit', '*', 'write', 'channel'),
     _spec('set_location', 'Lagre eget stedsvalg', 'jeg bor i Oslo', '_handle_set_location', 'city', 'write', 'self'),
-    _spec('memory_view', 'Vis eller styr eget minne', ('vis minnet mitt', 'minne læring på', 'minne del med ingen', 'minne private fakta av', 'minne behold tema 7 dager', 'minne kommune oslo'), 'memory.handle_memory', 'memory', 'mixed', 'self'),
+    _spec('memory_view', 'Vis minne og velg egne varsler', ('vis minnet mitt', 'minne læring på', 'minne del med ingen', 'minne private fakta av', 'minne behold tema 7 dager', 'minne kommune oslo', 'varsler på', 'varsler av', 'varsler status', 'varsler tidssone Europe/Oslo', 'varsler forvarsel 30,10,0 minutter', 'varsler stille 22:00-07:00', 'varsler morgen 09:00', 'varsler kort kalender,vær', 'slumre #<ID> 10 minutter'), 'memory.handle_memory', 'memory', 'mixed', 'self'),
     _spec('memory_export', 'Eksporter eget minne privat som komplett JSON', ('eksporter minnet mitt', 'eksporter minnet mitt privat'), 'memory.handle_memory', 'memory', scope='self'),
     _spec('memory_delete', 'Bekreft lokal sletting av eget minne', 'slett minnet mitt bekreft', 'memory.handle_memory', 'memory', 'write', 'self'),
     _spec('search', 'Søk offentlig informasjon', 'søk på nett Oslo', '_registry_search', 'search', 'provider'),

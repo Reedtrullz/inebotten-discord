@@ -120,15 +120,15 @@ class OutboundSender:
         self._tasks = set()
 
     async def send(self, channel_id: str, text: str, *, delivery_key: str | None = None,
-                   deadline: float, attachments: tuple[Attachment, ...] = (), _dispatch=None) -> DeliveryResult:
+                   deadline: float, attachments: tuple[Attachment, ...] = (), _dispatch=None, _can_dispatch=None) -> DeliveryResult:
         task = asyncio.current_task()
         self._tasks.add(task)
         try:
-            return await self._send(channel_id, text, delivery_key=delivery_key, deadline=deadline, attachments=attachments, _dispatch=_dispatch)
+            return await self._send(channel_id, text, delivery_key=delivery_key, deadline=deadline, attachments=attachments, _dispatch=_dispatch, _can_dispatch=_can_dispatch)
         finally:
             self._tasks.discard(task)
 
-    async def _send(self, channel_id: str, text: str, *, delivery_key=None, deadline, attachments=(), _dispatch=None):
+    async def _send(self, channel_id: str, text: str, *, delivery_key=None, deadline, attachments=(), _dispatch=None, _can_dispatch=None):
         if not math.isfinite(deadline) or deadline <= time.monotonic():
             return DeliveryResult('dropped', reason_code='deadline_expired')
         if self._closed:
@@ -163,7 +163,7 @@ class OutboundSender:
         result = DeliveryResult('unknown', reason_code='interrupted')
         attempt_state = {'started': False}
         try:
-            result = await self._attempt(channel_id, text, deadline, _dispatch, attempt_state, attachments)
+            result = await self._attempt(channel_id, text, deadline, _dispatch, attempt_state, attachments, _can_dispatch)
             return result
         except asyncio.CancelledError as error:
             if not attempt_state['started']:
@@ -179,7 +179,7 @@ class OutboundSender:
                 if not future.done():
                     future.set_result(result)
 
-    async def _attempt(self, channel_id, text, deadline, dispatch, attempt_state, attachments):
+    async def _attempt(self, channel_id, text, deadline, dispatch, attempt_state, attachments, can_dispatch):
         if dispatch is None:
             try:
                 channel = self.get_channel(int(channel_id)) if self.get_channel else None
@@ -212,6 +212,12 @@ class OutboundSender:
                     if token is None:
                         self._quota.record_dropped()
                         return DeliveryResult('dropped', reason_code='quota_or_deadline')
+                    # Trusted synchronous policy callback, checked after quota waits.
+                    if can_dispatch is not None and not can_dispatch():
+                        self._quota.release(token, attempted=False)
+                        token = None
+                        self._quota.record_dropped()
+                        return DeliveryResult('dropped', reason_code='authorization_changed')
                     if attachments:
                         import discord
                         for item in attachments:

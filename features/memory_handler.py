@@ -35,12 +35,52 @@ class MemoryHandler(BaseHandler):
             elif action == 'school_locality':
                 await self.monitor.user_memory.set_saved_fact(message.author.id, 'school_locality', payload['value'])
                 await self.send_response(message, '✅ Skolekommunen er lagret som et bevisst valg. Den brukes automatisk bare i direktemelding.')
+            elif action == 'notification':
+                await self._handle_notification(message, payload['changes'])
+            elif action == 'notification_view':
+                await self._handle_notification(message, None)
+            elif action == 'snooze':
+                await self.monitor.handlers['reminders'].handle_snooze(message, payload)
             else:
                 await self._handle_view(message)
         except (StorageMutationError, OSError):
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except ValueError:
-            await self.send_response(message, '❌ Ugyldig minnekontroll. Velg en støttet provider eller behold tema i 1–365 dager.')
+            await self.send_response(message, '❌ Ugyldig kontroll. Velg støttet provider, klokkeslett, kort eller minuttgrense (0–1440).')
+        except PermissionError:
+            await self.send_response(message, '❌ Dette kalenderområdet eller denne destinasjonen er ikke godkjent for deg.')
+
+    async def _handle_notification(self, message, changes):
+        from cal_system.notification_preferences import NotificationProfile
+        from core.request_context import current_request
+        actor = current_request()
+        calendar = self.monitor.calendar
+        scope_id = calendar.access_policy.default_scope
+        if actor is None or actor.user_id != str(message.author.id) or actor.channel_id != str(message.channel.id):
+            raise PermissionError('notification_actor_required')
+        if not calendar.access_policy.authorize(actor, scope_id, 'read').allowed:
+            raise PermissionError('notification_scope_denied')
+        prior = self.monitor.user_memory.notification_profile(actor.user_id, scope_id)
+        if changes is None:
+            if prior is None:
+                await self.send_response(message, 'Du har ingen egen varselprofil. Eksisterende legacy-varsler gjelder; `varsler på` velger denne kanalen, og `varsler av` pauser dine varsler.')
+            else:
+                quiet = f'{prior.quiet_start:%H:%M}–{prior.quiet_end:%H:%M}' if prior.quiet_start else 'av'
+                morning = f'{prior.morning_time:%H:%M}' if prior.morning_time else 'av'
+                await self.send_response(message, f'Egne varsler: {"på" if prior.enabled else "pauset"}; kanal {prior.destination_id}; '
+                    f'forvarsel {list(prior.lead_minutes)} minutter; stille {quiet}; morgen {morning}; '
+                    f'kort {", ".join(prior.card_ids) or "ingen"}; {prior.timezone}.')
+            return
+        if set(changes) - {'enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'morning_time', 'timezone', 'card_ids'}:
+            raise ValueError('invalid_notification_changes')
+        value = (prior or NotificationProfile(False, scope_id, actor.channel_id)).document()
+        value.update(changes)
+        if changes.get('enabled') is True:
+            value['destination_id'] = actor.channel_id  # explicit enable selects this already-authorized audience
+        profile = NotificationProfile.from_document(value)
+        await self.monitor.user_memory.set_notification_profile(actor.user_id, profile)
+        await self.send_response(message, f'✅ Egne varsler er {"på" if profile.enabled else "pauset"} for dette kalenderområdet. '
+            'Valgene gjelder bare deg og valgt kanal; bruk `varsler av` for å pause.')
 
     async def _handle_view(self, message) -> None:
         text = await self.monitor.user_memory.format_user_memory_for_user(

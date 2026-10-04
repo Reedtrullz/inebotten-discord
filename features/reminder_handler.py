@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple
 from cal_system.reminder_manager import parse_reminder_command
 from features.base_handler import BaseHandler
 from utils.storage_contract import StorageMutationError
+from datetime import timedelta
 
 
 class ReminderHandler(BaseHandler):
@@ -33,6 +34,28 @@ class ReminderHandler(BaseHandler):
     def __init__(self, monitor):
         super().__init__(monitor)
         self.reminders = monitor.reminders
+
+    async def handle_snooze(self, message, payload):
+        from cal_system.notification_preferences import occurrence_identity
+        from core.request_context import current_request
+        actor = current_request()
+        calendar = self.monitor.calendar
+        if actor is None or actor.user_id != str(message.author.id):
+            raise PermissionError('snooze_actor_required')
+        scope = calendar.scope_key(operation='read')
+        minutes = payload['minutes']
+        if type(minutes) is not int or not 1 <= minutes <= 1440:
+            raise ValueError('invalid_snooze_minutes')
+        items = [i for bucket in calendar._scope_buckets() for i in calendar.items.get(bucket, [])]
+        items += [i for values in self.reminders.reminders.values() for i in values
+                  if i.get('scope_id', 'shared') == scope]
+        matches = [i for i in items if i['id'] == payload['item_id'] and str(i.get('user_id')) == actor.user_id
+                   and not i.get('completed') and not i.get('_mutation_deleted') and not i.get('delete_pending')]
+        if len(matches) != 1:
+            raise PermissionError('snooze_own_active_item_required')
+        due = calendar.clock.now('UTC') + timedelta(minutes=minutes)
+        await self.monitor.user_memory.set_notification_snooze(actor.user_id, scope, matches[0]['id'], occurrence_identity(matches[0]), due)
+        await self.send_response(message, f'✅ Egen påminnelse slumret {minutes} minutter. Stille timer gjelder fortsatt.')
 
     def _parse_edit_command(self, content: str) -> Tuple[Optional[int], Dict[str, str]]:
         """

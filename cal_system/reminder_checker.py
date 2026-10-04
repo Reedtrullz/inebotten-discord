@@ -44,6 +44,8 @@ class ReminderChecker:
         outbound_sender=None,
         clock=None,
         health_callback=None,
+        user_memory=None,
+        daily_digest=None,
     ):
         self.clock = clock or Clock(wall=lambda: datetime.now(timezone.utc))
         self.calendar = calendar_manager
@@ -54,6 +56,8 @@ class ReminderChecker:
         self.send_ping_message = send_ping_message_func
         self.outbound = outbound_sender or OutboundSender(get_channel_func, send_channel_message=send_channel_message_func)
         self.health_callback = health_callback
+        self.user_memory = user_memory
+        self.daily_digest = daily_digest
         self.running = False
         self._morning_digest_sent = False
         self._last_gcal_sync = None
@@ -111,11 +115,13 @@ class ReminderChecker:
         self.sent_log = candidate
 
     @writable_store
-    async def _deliver(self, channel_id, message, delivery_key):
+    async def _deliver(self, channel_id, message, delivery_key, *, can_dispatch=None, deadline=None):
+        if can_dispatch is not None and not can_dispatch():
+            return DeliveryResult('dropped', reason_code='authorization_changed')
         receipt = self.sent_log.get('deliveries', {}).get(delivery_key)
         if receipt and receipt.get('status') in ('pending', 'unknown'):
             return DeliveryResult('unknown', reason_code='persisted_unresolved_acceptance')
-        if receipt and receipt.get('status') == 'delivered' and time.time() - receipt.get('updated_at', 0) < 3600:
+        if receipt and receipt.get('status') == 'delivered' and (delivery_key.startswith(('profile:', 'snooze:')) or time.time() - receipt.get('updated_at', 0) < 3600):
             return DeliveryResult('delivered', message_id=receipt.get('message_id'), reason_code='persisted_receipt')
         if len(self.sent_log.get('deliveries', {})) >= 4096:
             return DeliveryResult('dropped', reason_code='receipt_capacity')
@@ -126,7 +132,8 @@ class ReminderChecker:
         result = DeliveryResult('unknown', reason_code='interrupted')
         try:
             result = await self.outbound.send(str(channel_id) if channel_id else '', message,
-                                             delivery_key=f"{delivery_key}:{self.sent_log['deliveries'][delivery_key]['updated_at']}", deadline=time.monotonic()+10)
+                                             delivery_key=f"{delivery_key}:{self.sent_log['deliveries'][delivery_key]['updated_at']}", deadline=deadline or time.monotonic()+10,
+                                             **({'_can_dispatch': can_dispatch} if can_dispatch is not None else {}))
             return result
         except asyncio.CancelledError as error:
             result = getattr(error, 'delivery_result', result)
@@ -278,7 +285,7 @@ class ReminderChecker:
                     if item.get("completed"):
                         continue
                     try:
-                        item_date = self._parse_item_datetime(item)
+                        item_date = self._event_end(item) or self._parse_item_datetime(item)
                     except (ValueError, TypeError):
                         continue
                     if item_date is None:
@@ -333,6 +340,7 @@ class ReminderChecker:
                     continue
 
                 items = self.calendar.get_upcoming(guild_id, days=1)
+                items = [item for item in items if self._legacy_allowed(item)]
                 if not items:
                     continue
 
@@ -344,6 +352,111 @@ class ReminderChecker:
                     self.stats['digest_sent'] += 1
 
     # ---- Helpers ----
+
+    def _profile_scope(self, item):
+        # Unscoped legacy records stay shared even when the current default is private.
+        return item.get('scope_id') or 'shared'
+
+    def _legacy_allowed(self, item):
+        return self.user_memory is None or self.user_memory.notification_profile(item.get('user_id', ''), self._profile_scope(item)) is None
+
+    def _event_end(self, item):
+        try:
+            value = EventTime.from_item(item)
+            if value.kind == 'event' and not value.all_day and value.duration_minutes is not None:
+                return value.aware_start().astimezone(timezone.utc) + timedelta(minutes=value.duration_minutes)
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    async def check_notification_profiles(self):
+        """Only explicitly configured actors/destinations; no discovery or fan-out."""
+        if self.user_memory is None:
+            return
+        from core.request_context import RequestContext, request_scope
+        from cal_system.notification_preferences import after_quiet_hours, local_instant, occurrence_identity
+        now = self.clock.now('UTC')
+        deadline = time.monotonic() + 10
+        for user_id, profile in self.user_memory.notification_profiles():
+            if time.monotonic() >= deadline:
+                return
+            if not profile.enabled or not profile.destination_id:
+                continue
+            policy = getattr(self.calendar, 'access_policy', None)
+            scope = policy.scopes.get(profile.scope_id) if policy else None
+            actor = RequestContext('notification', user_id, profile.destination_id, None, 'no',
+                'dm' if scope and scope.kind == 'private_user' else 'guild')
+            if policy and not policy.authorize(actor, profile.scope_id, 'read').allowed:
+                continue
+            if policy:
+                import discord
+                channel = self.get_channel(int(profile.destination_id)) if self.get_channel else None
+                if asyncio.iscoroutine(channel):
+                    async with asyncio.timeout(2):
+                        channel = await channel
+                if channel is None:
+                    continue
+                if scope.kind == 'private_user' and (not isinstance(channel, discord.DMChannel)
+                    or str(getattr(getattr(channel, 'recipient', None), 'id', '')) != user_id):
+                    continue
+                if isinstance(channel, discord.DMChannel):
+                    if str(getattr(getattr(channel, 'recipient', None), 'id', '')) != user_id:
+                        continue
+                    actor = RequestContext('notification', user_id, profile.destination_id, None, 'no', 'dm')
+            with request_scope(actor):
+                # Revocation/destination changes during provider or quota awaits
+                # invalidate this captured profile before the actual transport call.
+                can_dispatch = lambda user=user_id, selected=profile, audience=actor: (
+                    self.user_memory.notification_profile(user, selected.scope_id) == selected
+                    and (not policy or self.calendar.access_policy.authorize(audience, selected.scope_id, 'read').allowed))
+                buckets = self._calendar_buckets() if self.calendar else {}
+                items = [i for bucket, values in buckets.items() for i in values
+                         if self._profile_scope(i) == profile.scope_id and str(i.get('user_id')) == user_id and not i.get('completed')]
+                if self.reminders:
+                    items += [dict(i, _reminder=True) for values in self.reminders.reminders.values() for i in values
+                              if self._profile_scope(i) == profile.scope_id and str(i.get('user_id')) == user_id
+                              and not i.get('completed') and not i.get('_mutation_deleted') and not i.get('delete_pending')]
+                for item in items:
+                    start = self._parse_due_date(item['due_date']) if item.get('_reminder') and item.get('due_date') else self._parse_item_datetime(item)
+                    if start is None:
+                        continue
+                    start = start.astimezone(timezone.utc)
+                    occurrence = occurrence_identity(item)
+                    for lead in profile.lead_minutes:
+                        if time.monotonic() >= deadline:
+                            return
+                        due = after_quiet_hours(profile, start - timedelta(minutes=lead))
+                        if due <= start and timedelta() <= now - due < timedelta(minutes=5):
+                            title = item.get('title', item.get('text', 'Påminnelse'))
+                            await self._deliver(profile.destination_id, f'🔔 {title} · valgt forvarsel: {lead} minutter.',
+                                f'profile:{profile.scope_id}:{user_id}:{occurrence}:lead:{lead}', can_dispatch=can_dispatch, deadline=deadline)
+                indexed = {i['id']: i for i in items}
+                for snooze in self.user_memory.notification_snoozes(user_id, profile.scope_id):
+                    item = indexed.get(snooze['item_id'])
+                    if item is None or occurrence_identity(item) != snooze['occurrence_id']:
+                        continue
+                    due = after_quiet_hours(profile, datetime.fromisoformat(snooze['due_at']))
+                    if timedelta() <= now - due < timedelta(minutes=5):
+                        result = await self._deliver(profile.destination_id, f"🔔 Slumret: {item.get('title', item.get('text', 'Påminnelse'))}",
+                            f"snooze:{user_id}:{snooze['key']}:{snooze['due_at']}", can_dispatch=can_dispatch, deadline=deadline)
+                        if result.status == 'delivered':
+                            await self.user_memory.acknowledge_notification_snooze(user_id, snooze['key'], snooze['due_at'])
+                if profile.morning_time is not None and self.daily_digest and profile.card_ids:
+                    local = now.astimezone(ZoneInfo(profile.timezone))
+                    due = after_quiet_hours(profile, local_instant(local.date(), profile.morning_time, profile.timezone))
+                    if timedelta() <= now - due < timedelta(minutes=5):
+                        key = f'profile:{profile.scope_id}:{user_id}:digest:{local.date()}'
+                        receipt = self.sent_log.get('deliveries', {}).get(key, {})
+                        if receipt.get('status') in ('delivered', 'pending', 'unknown'):
+                            continue
+                        try:
+                            async with asyncio.timeout_at(deadline):
+                                text = await self.daily_digest.generate_digest(profile.scope_id, user_id=user_id, card_ids=profile.card_ids)
+                        except TimeoutError:
+                            return
+                        result = await self._deliver(profile.destination_id, text, key, can_dispatch=can_dispatch, deadline=deadline)
+                        if result.status == 'delivered':
+                            self.stats['digest_sent'] += 1
 
     def _calendar_buckets(self):
         from core.request_context import current_request
@@ -425,6 +538,8 @@ class ReminderChecker:
     async def _send_item_reminder(self, item, remind_type, label):
         """Send a reminder for a calendar item in its original channel"""
         channel_id = item.get("channel_id")
+        if not self._legacy_allowed(item):
+            return
         time_str = f" kl. {item['time']}" if item.get("time") else ""
 
         # Different messages based on reminder type
@@ -441,10 +556,10 @@ class ReminderChecker:
                 f"Lykke til! 🎉"
             )
         elif remind_type == "passed":
+            ended = self._event_end(item)
+            wording = 'Akkurat ferdig' if ended is not None and ended <= self.clock.now() else 'Starttidspunktet er passert'
             message = (
-                f"✅ **Akkurat ferdig: {item['title']}**\n\n"
-                f"Håper det gikk bra!{time_str}\n\n"
-                f"Bra jobba! 👍"
+                f"📅 **{wording}: {item['title']}**{time_str}"
             )
         else:
             message = f"⏰ **{item['title']}** - {label}{time_str}"
@@ -468,6 +583,8 @@ class ReminderChecker:
     async def _send_reminder_remind(self, reminder, remind_type, label):
         """Send a reminder for a reminder item"""
         channel_id = reminder.get("channel_id")
+        if not self._legacy_allowed(reminder):
+            return
         
         # Different messages based on reminder type
         if remind_type == "30min":
@@ -484,8 +601,7 @@ class ReminderChecker:
             )
         elif remind_type == "passed":
             message = (
-                f"✅ **Ferdig: {reminder['text']}**\n\n"
-                f"Bra jobba! 👍"
+                f"🔔 **Fristen er passert: {reminder['text']}**"
             )
         else:
             message = f"⏰ **{reminder['text']}** - {label}"
@@ -555,6 +671,7 @@ class ReminderChecker:
                 await self.check_event_now()
                 await self.check_event_passed()
                 await self.check_morning_digest()
+                await self.check_notification_profiles()
 
                 # Periodic Google Calendar sync (every 15 minutes)
                 if self.calendar and self.calendar.gcal_enabled:

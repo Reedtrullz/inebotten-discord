@@ -42,13 +42,30 @@ def validate_memory(document):
         return False
     try:
         for user in document.values():
+            from cal_system.notification_preferences import NotificationProfile
+            profiles = user.get('notification_profiles', {})
+            if not isinstance(profiles, dict) or len(profiles) > 16:
+                return False
+            for scope, value in profiles.items():
+                if NotificationProfile.from_document(value).scope_id != scope:
+                    return False
+            snoozes = user.get('notification_snoozes', {})
+            if not isinstance(snoozes, dict) or len(snoozes) > 100:
+                return False
+            for key, value in snoozes.items():
+                if (not isinstance(key, str) or len(key) > 400 or not isinstance(value, dict)
+                    or set(value) != {'scope_id', 'item_id', 'occurrence_id', 'due_at'}
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 100 for k, v in value.items() if k != 'due_at')
+                    or not isinstance(value['due_at'], str) or len(value['due_at']) > 100
+                    or datetime.fromisoformat(value['due_at']).tzinfo is None):
+                    return False
             if 'memory_policy' in user:
                 MemoryPolicy(**user['memory_policy'])
             if 'topic_timestamps' in user and (not isinstance(user['topic_timestamps'], dict)
                 or any(not isinstance(key, str) or not isinstance(value, str) for key, value in user['topic_timestamps'].items())):
                 return False
         return True
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, KeyError):
         return False
 
 
@@ -130,6 +147,54 @@ class UserMemory:
     def policy_for_user(self, user_id):
         user = self.memory.get(str(user_id), {})
         return MemoryPolicy(**user.get('memory_policy', {}))
+
+    def notification_profile(self, user_id, scope_id):
+        from cal_system.notification_preferences import NotificationProfile
+        value = self.memory.get(str(user_id), {}).get('notification_profiles', {}).get(scope_id)
+        return NotificationProfile.from_document(value) if value is not None else None
+
+    def notification_profiles(self):
+        return [(user_id, self.notification_profile(user_id, scope)) for user_id, user in self.memory.items()
+                for scope in user.get('notification_profiles', {})]
+
+    @writable_store
+    async def set_notification_profile(self, user_id, profile):
+        from cal_system.notification_preferences import NotificationProfile
+        profile = NotificationProfile.from_document(profile.document())
+        user = await self.get_user(user_id)
+        profiles = user.setdefault('notification_profiles', {})
+        if profile.scope_id not in profiles and len(profiles) >= 16:
+            raise ValueError('notification_profile_capacity')
+        profiles[profile.scope_id] = profile.document()
+        await self._save_memory()
+        return profile
+
+    def notification_snoozes(self, user_id, scope_id):
+        return [dict(value, key=key) for key, value in self.memory.get(str(user_id), {}).get('notification_snoozes', {}).items()
+                if value['scope_id'] == scope_id]
+
+    @writable_store
+    async def set_notification_snooze(self, user_id, scope_id, item_id, occurrence_id, due):
+        if due.tzinfo is None or any(not isinstance(v, str) or not 1 <= len(v) <= 100 for v in (scope_id, item_id, occurrence_id)):
+            raise ValueError('invalid_snooze')
+        profile = self.notification_profile(user_id, scope_id)
+        if not profile or not profile.enabled or not profile.destination_id:
+            raise ValueError('notification_profile_required')
+        user = await self.get_user(user_id)
+        snoozes = user.setdefault('notification_snoozes', {})
+        key = json.dumps([scope_id, item_id, occurrence_id], separators=(',', ':'))
+        if key not in snoozes and len(snoozes) >= 100:
+            raise ValueError('snooze_capacity')
+        snoozes[key] = {'scope_id': scope_id, 'item_id': item_id, 'occurrence_id': occurrence_id,
+                        'due_at': due.astimezone(timezone.utc).isoformat()}
+        await self._save_memory()
+
+    @writable_store
+    async def acknowledge_notification_snooze(self, user_id, key, due_at):
+        snoozes = self.memory.get(str(user_id), {}).get('notification_snoozes', {})
+        if key in snoozes and snoozes[key]['due_at'] == due_at:
+            del snoozes[key]
+            await self._save_memory()
 
     @writable_store
     async def set_policy(self, user_id, **changes):

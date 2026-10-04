@@ -447,6 +447,37 @@ class IntentRouter:
         cleaned = cleaned.replace("@inebotten", "").strip()
         lower = re.sub(r"\s+", " ", cleaned.lower()).strip(" .!?")
 
+        if lower == 'varsler status':
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'notification_view'}}, 'notification_status')
+
+        notification = None
+        if lower in ('varsler på', 'varsler av'):
+            notification = {'enabled': lower.endswith('på')}
+        zone = re.fullmatch(r'varsler tidssone ([A-Za-z_+-]+(?:/[A-Za-z_+-]+){0,2})', cleaned, flags=re.IGNORECASE)
+        if zone:
+            notification = {'timezone': zone[1]}
+        leads = re.fullmatch(r'varsler forvarsel ([0-9]{1,4}(?:,[0-9]{1,4}){0,7}) minutter', lower)
+        if leads:
+            notification = {'lead_minutes': [int(v) for v in leads[1].split(',')]}
+        quiet = re.fullmatch(r'varsler stille ([0-9]{2}:[0-9]{2})-([0-9]{2}:[0-9]{2})', lower)
+        if quiet:
+            notification = {'quiet_start': quiet[1], 'quiet_end': quiet[2]}
+        if lower == 'varsler stille av':
+            notification = {'quiet_start': None, 'quiet_end': None}
+        morning = re.fullmatch(r'varsler morgen ([0-9]{2}:[0-9]{2}|av)', lower)
+        if morning:
+            notification = {'morning_time': None if morning[1] == 'av' else morning[1]}
+        cards = re.fullmatch(r'varsler kort ([a-zæøå]+(?:,[a-zæøå]+){0,6})', lower)
+        if cards:
+            aliases = {'dato': 'date', 'kalender': 'calendar', 'vær': 'weather', 'bursdager': 'birthdays',
+                       'marked': 'market', 'nordlys': 'aurora', 'vaktliste': 'watchlist'}
+            notification = {'card_ids': [aliases.get(v, v) for v in cards[1].split(',')]}
+        if notification is not None:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'notification', 'changes': notification}}, 'explicit_notification_control')
+        snooze = re.fullmatch(r'slumre #([a-z0-9_-]{1,100}) ([0-9]{1,4}) minutter', lower)
+        if snooze:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'snooze', 'item_id': snooze[1], 'minutes': int(snooze[2])}}, 'explicit_snooze')
+
         changes = None
         if lower in ('minne læring på', 'minne læring av'):
             changes = {'learning_enabled': lower.endswith('på')}

@@ -47,7 +47,7 @@ Område og rettigheter kontrolleres ved faktisk kjøring; forhåndsvisning kjør
 | daily_digest | `daglig oppsummering` | provider | invocation | Vis dagens valgte oversikt |
 | birthday_edit | `endre bursdag Ola 15.05` | write | channel | Endre bursdagsoppføring |
 | set_location | `jeg bor i Oslo` | write | self | Lagre eget stedsvalg |
-| memory_view | `vis minnet mitt`<br>`minne læring på`<br>`minne del med ingen`<br>`minne private fakta av`<br>`minne behold tema 7 dager`<br>`minne kommune oslo` | mixed | self | Vis eller styr eget minne |
+| memory_view | `vis minnet mitt`<br>`minne læring på`<br>`minne del med ingen`<br>`minne private fakta av`<br>`minne behold tema 7 dager`<br>`minne kommune oslo`<br>`varsler på`<br>`varsler av`<br>`varsler status`<br>`varsler tidssone Europe/Oslo`<br>`varsler forvarsel 30,10,0 minutter`<br>`varsler stille 22:00-07:00`<br>`varsler morgen 09:00`<br>`varsler kort kalender,vær`<br>`slumre #<ID> 10 minutter` | mixed | self | Vis minne og velg egne varsler |
 | memory_export | `eksporter minnet mitt`<br>`eksporter minnet mitt privat` | read | self | Eksporter eget minne privat som komplett JSON |
 | memory_delete | `slett minnet mitt bekreft` | write | self | Bekreft lokal sletting av eget minne |
 | search | `søk på nett Oslo` | provider | invocation | Søk offentlig informasjon |

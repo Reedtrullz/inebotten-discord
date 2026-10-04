@@ -430,11 +430,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify cal_system/reminder_checker.py, features/reminder_handler.py, features/daily_digest_manager.py, features/daily_digest_handler.py, memory/user_memory.py and core/command_registry.py; create tests/test_notification_preferences.py.
 **Interfaces:** NotificationProfile(enabled: bool, scope_id: str, destination_id: str|None, lead_minutes: list[int], quiet_start: time|None, quiet_end: time|None, morning_time: time|None, timezone: str, card_ids: list[str]); next_delivery(profile, event_time, clock) -> aware datetime|None. Snoozes persist item/occurrence identity and due instant.
 
-- [ ] Add quiet hours crossing midnight/DST, snooze/restart, opt-out, absent destination, selected-card provider failure and wall-clock-jump fixtures.
-- [ ] Pin legacy notification stages as explicit compatibility behavior; identify misleading post-start “finished” wording.
-- [ ] Add opt-in controls without expanding recipients, persist snooze/preference state, share requested/proactive digest cards with provenance/degraded output, and use actual end semantics for finished messages.
-- [ ] Run tests/test_notification_preferences.py, outbound delivery, calendar time and memory-policy tests; assert only selected recipients/cards are considered.
-- [ ] Review and commit slices; end-user preference acceptance remains a stated manual gate.
+- [x] Add quiet hours crossing midnight/DST, snooze/restart, opt-out, absent destination, selected-card provider failure and wall-clock-jump fixtures.
+- [x] Pin legacy notification stages as explicit compatibility behavior; identify misleading post-start “finished” wording.
+- [x] Add opt-in controls without expanding recipients, persist snooze/preference state, share requested/proactive digest cards with provenance/degraded output, and use actual end semantics for finished messages.
+- [x] Run tests/test_notification_preferences.py, outbound delivery, calendar time and memory-policy tests; assert only selected recipients/cards are considered.
+- [x] Review and commit slices; end-user preference acceptance remains a stated manual gate.
 
 ### Task 31: I10 — Series, occurrences, and recurring delivery identities
 
