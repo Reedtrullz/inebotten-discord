@@ -292,11 +292,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify features/poll_manager.py, features/polls_handler.py, core/intent_router.py and command metadata when available; extend tests/test_poll_manager_edit_delete.py and tests/test_poll_target.py; create tests/test_poll_lifecycle.py.
 **Interfaces:** poll records gain revision and stable option IDs; vote rejects expired/closed at the manager boundary. preview_poll_edit(poll_id: str, changes: dict) -> dict declares preserve_votes or reset_votes; apply requires matching revision and actor.
 
-- [ ] Add exact-expiry/direct-vote, label-only edit, removed-option, stale reset preview, non-owner and closed-results tests.
-- [ ] Reproduce the expired-active manager vote and destructive option replacement with fake clocks/data.
-- [ ] Enforce expiry in domain logic, retain existing close/ownership behavior, preserve harmless votes, and require confirmation for structural resets; expose closed results through a scoped read command.
-- [ ] Run tests/test_poll_lifecycle.py, tests/test_poll_manager_edit_delete.py, tests/test_poll_target.py and routing false-positive tests.
-- [ ] Review and commit; no anonymous-voting or completeness guarantee is introduced.
+- [x] Add exact-expiry/direct-vote, label-only edit, removed-option, stale reset preview, non-owner and closed-results tests.
+- [x] Reproduce the expired-active manager vote and destructive option replacement with fake clocks/data.
+- [x] Enforce expiry in domain logic, retain existing close/ownership behavior, preserve harmless votes, and require confirmation for structural resets; expose closed results through a scoped read command.
+- [x] Run tests/test_poll_lifecycle.py, tests/test_poll_manager_edit_delete.py, tests/test_poll_target.py and routing false-positive tests.
+- [x] Review and commit; no anonymous-voting or completeness guarantee is introduced.
 
 ## Wave 3 — Recoverable operations and maintainable surfaces
 

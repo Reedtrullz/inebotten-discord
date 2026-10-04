@@ -87,8 +87,8 @@ class PollsHandler(BaseHandler):
             response_text = self.poll.format_poll(poll, lang)
             await self.send_response(message, response_text)
 
-        except PollStorageError as e:
-            await self.send_response(message, str(e))
+        except PollStorageError:
+            await self.send_response(message, "❌ Kunne ikke lagre avstemningen; ingen opprettelse er bekreftet.")
         except Exception as e:
             self.log(f"Error creating poll: {e}")
 
@@ -136,7 +136,7 @@ class PollsHandler(BaseHandler):
                 if success:
                     response_text = self.loc.t("vote_registered", num=option_index)
                 else:
-                    response_text = self.loc.t("vote_error", error=msg)
+                    response_text = self.loc.t("vote_error", error=self._poll_error(msg))
 
             await self.send_response(message, response_text)
 
@@ -174,10 +174,7 @@ class PollsHandler(BaseHandler):
 
     @staticmethod
     def _is_results_command(message) -> bool:
-        content = re.sub(
-            r"^@inebotten\s*", "", getattr(message, "content", ""),
-            flags=re.IGNORECASE,
-        )
+        content = re.sub(r"<@!?\d+>", "", getattr(message, "content", "")).replace("@inebotten", "").strip()
         return bool(
             re.fullmatch(
                 r"(?:poll results?|poll resultater|resultater poll|"
@@ -186,6 +183,21 @@ class PollsHandler(BaseHandler):
                 content.strip(), flags=re.IGNORECASE,
             )
         )
+
+    def _poll_error(self, error):
+        if self.loc.current_lang == 'en':
+            return error
+        if 'expired' in error.lower():
+            return 'Avstemningen er utløpt; den kan ikke endres eller motta stemmer.'
+        if 'owner' in error.lower() or 'actor' in error.lower():
+            return 'Bare avstemningens eier kan bekrefte denne endringen.'
+        if 'stale' in error.lower() or 'preview' in error.lower():
+            return 'Forhåndsvisningen er utløpt eller endret. Lag en ny forhåndsvisning.'
+        if 'saved' in error.lower():
+            return 'Endringen kunne ikke lagres; ingen endring er bekreftet.'
+        if 'confirmation' in error.lower():
+            return 'Denne valgendringen krever bekreftelse på nullstilling av stemmene.'
+        return 'Avstemningsendringen er ugyldig eller utilgjengelig. Kontroller valg og status.'
 
     async def handle_poll_edit(self, message, payload: Dict[str, Any]) -> None:
         """
@@ -211,7 +223,7 @@ class PollsHandler(BaseHandler):
                         + self.poll.format_poll(result)
                     )
                 else:
-                    response_text = result
+                    response_text = self._poll_error(result)
                 await self.send_response(message, response_text)
                 return
 
@@ -227,7 +239,7 @@ class PollsHandler(BaseHandler):
             changes = payload.get("changes", {})
             if not changes:
                 response_text = (
-                    "Skriv `endre poll N spørsmål: ...` og/eller `valg: A/B`. "
+                    "Skriv `endre poll N spørsmål: ...`, `etikett OPTION_ID: ...` for navn, eller `valg: A/B` for erstatning. "
                     "Strukturelle valgendringer krever `bekreft poll endring "
                     "TOKEN reset`."
                 )
@@ -239,15 +251,15 @@ class PollsHandler(BaseHandler):
                 message.author.id, message.author.name,
             )
             if not preview.get("ok"):
-                response_text = preview["error"]
+                response_text = self._poll_error(preview["error"])
             elif preview["requires_confirmation"]:
                 labels = ", ".join(
                     option["text"] for option in preview["options"]
                 )
                 response_text = (
-                    "Endringen vil nullstille stemmene "
+                    "Endringen vil nullstille stemmene (også ved like mange nye valg) "
                     f"(revisjon {preview['revision']}). "
-                    f"Nye valg: {labels}. Bekreft med `bekreft poll endring "
+                    f"Nye valg: {labels}. Forhåndsvisningen varer fem minutter. Bekreft med `@inebotten bekreft poll endring "
                     f"{preview['token']} reset`."
                 )
             else:
@@ -260,7 +272,7 @@ class PollsHandler(BaseHandler):
                     self.loc.t("poll_edited")
                     + "\n\n"
                     + self.poll.format_poll(result)
-                    if success else result
+                    if success else self._poll_error(result)
                 )
 
             await self.send_response(message, response_text)
@@ -299,7 +311,7 @@ class PollsHandler(BaseHandler):
                 elif "owner" in result.lower():
                     response_text = self.loc.t("poll_not_owner")
                 else:
-                    response_text = result
+                    response_text = self._poll_error(result)
 
             await self.send_response(message, response_text)
 
@@ -339,7 +351,7 @@ class PollsHandler(BaseHandler):
                 elif "owner" in result.lower():
                     response_text = self.loc.t("poll_not_owner")
                 else:
-                    response_text = result
+                    response_text = self._poll_error(result)
 
             await self.send_response(message, response_text)
 

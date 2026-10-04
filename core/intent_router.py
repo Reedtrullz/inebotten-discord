@@ -157,7 +157,7 @@ class IntentRouter:
             r"(?:poll results?|poll resultater|resultater poll|"
             r"resultater avstemning|vis resultater(?: for)? "
             r"(?:poll|avstemning)|avstemning resultater)",
-            re.sub(r"^@inebotten\s*", "", content_lower).strip(),
+            re.sub(r"<@!?\d+>", "", content_lower).replace("@inebotten", "").strip(),
         ):
             return IntentResult(
                 BotIntent.POLL_LIST,
@@ -169,17 +169,10 @@ class IntentRouter:
         if has_any_keyword(content_lower, ("polls", "avstemninger", "active polls", "vis poll", "vis avstemning", "list poll", "poll liste", "poll list", "avstemning liste")) and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_LIST, 0.95, {}, "poll_list_keyword")
 
-        poll_cmd = self.monitor.parse_poll_command(content)
-        if poll_cmd:
-            return IntentResult(BotIntent.POLL_CREATE, 0.95, {"poll": poll_cmd}, "poll_parser")
-
-        vote = self.monitor.parse_vote(content)
-        if vote and self._has_active_poll(guild_id):
-            return IntentResult(BotIntent.POLL_VOTE, 0.95, {"vote": vote}, "active_poll_vote")
-
+        poll_command = re.sub(r"<@!?\d+>", "", content_lower).replace("@inebotten", "").strip()
         poll_ref = self._parse_poll_reference(content_lower)
         confirmation = re.fullmatch(
-            r"bekreft poll endring ([a-f0-9]{32}) reset", content_lower
+            r"bekreft poll endring ([a-f0-9]{32}) reset", poll_command
         )
         if confirmation or (
             has_any_keyword(content_lower, POLL_EDIT_KEYWORDS)
@@ -203,6 +196,15 @@ class IntentRouter:
             return IntentResult(BotIntent.POLL_DELETE, 0.95, {"poll_delete": poll_ref}, "poll_delete_keyword")
         if has_any_keyword(content_lower, POLL_CLOSE_KEYWORDS) and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_CLOSE, 0.95, {"poll_close": poll_ref}, "poll_close_keyword")
+
+        poll_cmd = self.monitor.parse_poll_command(content)
+        if poll_cmd:
+            return IntentResult(BotIntent.POLL_CREATE, 0.95, {"poll": poll_cmd}, "poll_parser")
+
+        vote = self.monitor.parse_vote(content)
+        if vote and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_VOTE, 0.95, {"vote": vote}, "active_poll_vote")
+
 
         countdown_result = self.monitor.countdown.parse_countdown_query(content)
         if countdown_result:
@@ -761,6 +763,9 @@ class IntentRouter:
             changes["options"] = [
                 part.strip() for part in options.group(1).split("/")
             ]
+        rename = re.search(r"(?:etikett|label)\s+([a-f0-9]{32})\s*:\s*(.+)$", content, re.IGNORECASE)
+        if rename:
+            changes['option_labels'] = {rename.group(1): rename.group(2).strip()}
         return changes
 
     def _looks_contextual_enough_for_search(self, content_lower: str, search_info: Dict[str, str]) -> bool:

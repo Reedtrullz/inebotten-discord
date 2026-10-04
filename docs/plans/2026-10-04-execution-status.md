@@ -22,7 +22,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 16 | I16 | Endpoint freshness and owned polling timers | Implemented locally | Child 4e11fdf integrated; two parent RED-to-GREEN race corrections for stale 401 and late replies. 42 separate browser/security tests; syntax/fatal lint/diff checks pass. |
 | 17 | I21 | Reproducible profiles, typed boundaries, dependency integration | Planned | — |
 | 18 | I29 | Maintained school-year data with coverage | Planned | — |
-| 19 | I33 | Poll lifecycle and vote-safe edits | Planned | — |
+| 19 | I33 | Poll lifecycle and vote-safe edits | Implemented locally | Child 083d169 integrated; eight observed parent RED probes fixed replacement/ID-label semantics, bounded TTL previews, preserving schema ownership, real mention/routing and expired console counts. Full non-browser suite 862 passed, 1 live skip, 17 subtests. |
 | 20 | I08 | Identity-bound mutations and supported undo | Planned | — |
 | 21 | I11 | Durable Google intent, retries, and conflicts | Planned | — |
 | 22 | I13 | Deliberate memory, retention, and provider sharing | Planned | — |

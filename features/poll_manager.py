@@ -5,14 +5,38 @@ Simple, conversational polls for quick decisions
 """
 
 import copy
-import json
+import time
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import random
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, writable_store
+
+
+def validate_poll_document(document):
+    try:
+        for bucket in document.values():
+            if not isinstance(bucket, dict):
+                return False
+            for poll_id, poll in bucket.items():
+                if (not isinstance(poll, dict) or poll.get('id') != poll_id
+                        or not isinstance(poll.get('question'), str)
+                        or poll.get('status') not in ('active', 'closed')
+                        or type(poll.get('revision', 0)) is not int or poll.get('revision', 0) < 0
+                        or not isinstance(poll.get('options'), list) or not 1 <= len(poll['options']) <= 10):
+                    return False
+                datetime.fromisoformat(poll['expires_at'])
+                if any(not isinstance(option, dict) or not isinstance(option.get('text'), str)
+                       or not isinstance(option.get('votes'), list)
+                       or any(not isinstance(voter, str) for voter in option['votes'])
+                       for option in poll['options']):
+                    return False
+        return True
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 class PollStorageError(RuntimeError):
@@ -24,35 +48,49 @@ class PollManager:
     Manages quick polls for group decisions
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path=None, *, monotonic=None):
+        self._monotonic = monotonic or time.monotonic
         if storage_path is None:
             storage_path = hermes_discord_data_path("polls.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.polls = self._load_polls()
+        self._storage = DocumentOwner(self.storage_path, validate_poll_document)
+        self.polls = self._storage.rollback()
         self.emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         self._edit_previews = {}
         self._upgrade_legacy_records()
 
+    @property
+    def polls(self):
+        return self._storage.data
+
+    @polls.setter
+    def polls(self, value):
+        self._storage.data = value
+
+    def close_storage(self):
+        self._storage.close()
+
     def _load_polls(self):
-        """Load polls from storage"""
-        if self.storage_path.exists():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[FEATURES] Poll load error: {e}")
-                return {}
-        return {}
+        return self._storage.load()
 
     def _save_polls(self):
-        """Save polls to storage"""
-        write_json_atomic(self.storage_path, self.polls)
+        result = self._storage.commit(self.polls, writer=write_json_atomic)
+        if not result.ok:
+            raise PollStorageError('Poll could not be saved')
+
+    def _prune_previews(self):
+        now = self._monotonic()
+        self._edit_previews = {token: preview for token, preview in self._edit_previews.items()
+                               if preview['expires_at'] > now}
+        while len(self._edit_previews) > 128:
+            self._edit_previews.pop(next(iter(self._edit_previews)))
 
     def _upgrade_legacy_records(self):
         """Add stable IDs and revisions to records from old versions."""
-        for guild_polls in self.polls.values():
+        records = self.polls
+        for guild_polls in records.values():
             for poll_id, poll in guild_polls.items():
                 poll.setdefault("revision", 0)
                 for index, option in enumerate(poll.get("options", [])):
@@ -62,6 +100,8 @@ class PollManager:
                             uuid.NAMESPACE_URL, f"{poll_id}:option:{index}"
                         ).hex,
                     )
+
+        self.polls = records
 
     @staticmethod
     def _is_expired(poll):
@@ -86,6 +126,7 @@ class PollManager:
             return False
         return True
 
+    @writable_store
     def create_poll(self, guild_id, question, options, created_by, created_by_id=None):
         """
         Create a new poll
@@ -117,8 +158,8 @@ class PollManager:
             ],
             "created_by": created_by,
             "created_by_id": created_by_id,
-            "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(days=7)).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
             "status": "active",
             "revision": 0,
         }
@@ -142,8 +183,9 @@ class PollManager:
     def get_poll(self, guild_id, poll_id):
         """Get a poll by guild and poll ID. Returns dict or None."""
         guild_key = str(guild_id)
-        if guild_key in self.polls and poll_id in self.polls[guild_key]:
-            return self.polls[guild_key][poll_id]
+        records = self.polls
+        if guild_key in records and poll_id in records[guild_key]:
+            return records[guild_key][poll_id]
         return None
 
     def is_poll_owner(self, poll, user_id, username=None):
@@ -159,6 +201,7 @@ class PollManager:
             return poll.get("created_by") == username
         return False
 
+    @writable_store
     def edit_poll(self, guild_id, poll_id, user_id, username=None, question=None, options=None):
         """
         Edit an existing active poll.
@@ -185,7 +228,7 @@ class PollManager:
                 return False, (
                     "Structural edits require a reset preview and confirmation"
                 )
-            changes["options"] = options
+            changes["option_labels"] = {option["id"]: label for option, label in zip(poll["options"], options)}
         preview = self.preview_poll_edit(
             guild_key, poll_id, changes, user_id, username
         )
@@ -197,10 +240,12 @@ class PollManager:
             guild_key, poll_id, user_id, preview["token"]
         )
 
+    @writable_store
     def preview_poll_edit(
         self, guild_id, poll_id, changes, actor_id, username=None
     ):
         """Build an actor- and revision-bound preview for a poll edit."""
+        self._prune_previews()
         poll = self.get_poll(guild_id, poll_id)
         if poll is None:
             return {"ok": False, "error": "Poll not found"}
@@ -211,7 +256,7 @@ class PollManager:
         if (
             not isinstance(changes, dict)
             or not changes
-            or set(changes) - {"question", "options"}
+            or set(changes) - {"question", "options", "option_labels"}
         ):
             return {"ok": False, "error": "Invalid poll changes"}
 
@@ -240,7 +285,7 @@ class PollManager:
                     "error": "Poll needs 1-10 non-empty options",
                 }
             old_options = poll["options"]
-            reset_votes = len(labels) != len(old_options)
+            reset_votes = labels != [option["text"] for option in old_options]
             if reset_votes:
                 proposed["options"] = [
                     {
@@ -261,9 +306,21 @@ class PollManager:
         else:
             reset_votes = False
 
+        if 'option_labels' in changes:
+            labels = changes['option_labels']
+            known = {option['id'] for option in poll['options']}
+            if ('options' in changes or not isinstance(labels, dict) or not labels
+                    or set(labels) - known or any(not isinstance(text, str) or not text.strip() for text in labels.values())):
+                return {'ok': False, 'error': 'Invalid option label changes'}
+            for option in proposed['options']:
+                if option['id'] in labels:
+                    option['text'] = labels[option['id']].strip()
+        if len(self._edit_previews) >= 128:
+            self._edit_previews.pop(next(iter(self._edit_previews)))
         token = uuid.uuid4().hex
         self._edit_previews[token] = {
             "guild_id": str(guild_id),
+            "expires_at": self._monotonic() + 300,
             "poll_id": poll_id,
             "actor_id": str(actor_id),
             "revision": poll.get("revision", 0),
@@ -281,11 +338,13 @@ class PollManager:
             "options": copy.deepcopy(proposed["options"]),
         }
 
+    @writable_store
     def apply_poll_edit(
         self, guild_id, poll_id, actor_id, preview_token, confirm_reset=False,
         username=None,
     ):
         """Apply when actor, revision, and reset confirmation match."""
+        self._prune_previews()
         preview = self._edit_previews.get(preview_token)
         if preview is None:
             return False, "Poll edit preview is missing or stale"
@@ -319,6 +378,7 @@ class PollManager:
         self._edit_previews.pop(preview_token, None)
         return True, proposed
 
+    @writable_store
     def delete_poll(self, guild_id, poll_id, user_id, username=None):
         """
         Delete a poll.
@@ -343,6 +403,7 @@ class PollManager:
             return False, "Poll deletion could not be saved"
         return True, "Poll deleted"
 
+    @writable_store
     def vote(self, guild_id, poll_id, option_num, user_id, username):
         """
         Cast a vote
@@ -430,14 +491,20 @@ class PollManager:
             bar = "█" * bar_length + "░" * (10 - bar_length)
 
             lines.append(f"{option['emoji']} {option['text']}")
+            if option.get("id"):
+                lines.append(f"   Valg-ID: `{option['id']}`")
             lines.append(f"   {bar} {votes} {vote_label} ({percentage:.0f}%)")
             lines.append("")
 
         lines.append(f"{total_label}: {total_votes} {vote_label}")
-        lines.append(f"💡 {vote_hint} (1-{len(poll['options'])})")
+        if poll.get('status') == 'closed' or self._is_expired(poll):
+            lines.append('🔒 Avstemningen er lukket eller utløpt; nye stemmer avvises.' if lang == 'no' else 'Closed or expired; new votes are refused.')
+        else:
+            lines.append(f"💡 {vote_hint} (1-{len(poll['options'])})")
 
         return "\n".join(lines)
 
+    @writable_store
     def close_poll(self, guild_id, poll_id, user_id=None, username=None):
         """
         Close a poll. If user_id is provided, checks ownership.

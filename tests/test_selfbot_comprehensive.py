@@ -200,9 +200,11 @@ class TestPollManager(unittest.TestCase):
     def setUp(self):
         self.temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.json')
         self.temp_file.close()
+        Path(self.temp_file.name).write_text("{}")  # A valid empty store, not corrupt zero-byte data.
         self.manager = PollManager(storage_path=self.temp_file.name)
     
     def tearDown(self):
+        self.manager.close_storage()
         if os.path.exists(self.temp_file.name):
             os.unlink(self.temp_file.name)
     
@@ -557,6 +559,7 @@ class TestIntegration(unittest.TestCase):
         """Test complete poll creation and voting flow"""
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.json')
         temp_file.close()
+        Path(temp_file.name).write_text("{}")
         manager = PollManager(storage_path=temp_file.name)
         
         # Parse command

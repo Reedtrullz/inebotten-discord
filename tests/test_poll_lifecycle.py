@@ -37,7 +37,7 @@ class PollLifecycleTests(unittest.TestCase):
         old_ids = [option["id"] for option in self.poll["options"]]
         self.pm.vote("123", self.poll["id"], 1, "2", "Voter")
         preview = self.pm.preview_poll_edit(
-            "123", self.poll["id"], {"options": ["Margherita", "Soup"]}, "1"
+            "123", self.poll["id"], {"option_labels": {old_ids[0]: "Margherita"}}, "1"
         )
         self.assertEqual(preview["effect"], "preserve_votes")
         success, result = self.pm.apply_poll_edit(
@@ -109,8 +109,9 @@ class PollLifecycleTests(unittest.TestCase):
             )
         self.assertFalse(success)
         self.assertIn("could not be saved", error.lower())
-        self.assertEqual(self.poll["options"][0]["votes"], [])
-        self.assertEqual(self.poll["revision"], before_revision)
+        current = self.pm.get_poll("123", self.poll["id"])
+        self.assertEqual(current["options"][0]["votes"], [])
+        self.assertEqual(current["revision"], before_revision)
 
     def test_create_write_failure_raises_typed_error(self):
         with patch.object(
@@ -128,10 +129,12 @@ class PollLifecycleTests(unittest.TestCase):
         poll = self.pm.create_poll(
             "123", "Legacy?", ["One", "Two"], "Owner", "1"
         )
-        raw = self.pm.polls["123"][poll["id"]]
+        records = self.pm.polls
+        raw = records["123"][poll["id"]]
         raw.pop("revision")
         for option in raw["options"]:
             option.pop("id")
+        self.pm.polls = records
         self.pm._save_polls()
         reloaded = PollManager(storage_path=self.pm.storage_path)
         first = reloaded.get_poll("123", poll["id"])
