@@ -7,10 +7,42 @@ from dataclasses import dataclass, field, replace
 import inspect
 import hashlib
 import math
+import io
+import re
 import time
 from typing import Literal, Any, Protocol
 
 from core.rate_limiter import RateLimiter
+
+
+MAX_ATTACHMENT_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Attachment:
+    filename: str
+    content_type: str
+    data: bytes = field(repr=False)
+
+
+def _attachment_identity(attachments):
+    if not isinstance(attachments, tuple) or len(attachments) > 4:
+        raise ValueError('invalid_attachments')
+    digest = hashlib.sha256()
+    total = 0
+    for item in attachments:
+        if (not isinstance(item, Attachment) or not isinstance(item.filename, str)
+            or not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}', item.filename)
+            or not isinstance(item.content_type, str) or not re.fullmatch(r'[a-z0-9.+-]+/[a-z0-9.+-]+', item.content_type)
+            or type(item.data) is not bytes or not item.data):
+            raise ValueError('invalid_attachment')
+        total += len(item.data)
+        if total > MAX_ATTACHMENT_BYTES:
+            raise ValueError('attachment_too_large')
+        for value in (item.filename.encode(), item.content_type.encode(), item.data):
+            digest.update(len(value).to_bytes(8, 'big'))
+            digest.update(value)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -32,6 +64,7 @@ class OutboundSenderProtocol(Protocol):
         *,
         delivery_key: str | None = None,
         deadline: float,
+        attachments: tuple[Attachment, ...] = (),
     ) -> DeliveryResult: ...
 
 
@@ -87,21 +120,27 @@ class OutboundSender:
         self._tasks = set()
 
     async def send(self, channel_id: str, text: str, *, delivery_key: str | None = None,
-                   deadline: float, _dispatch=None) -> DeliveryResult:
+                   deadline: float, attachments: tuple[Attachment, ...] = (), _dispatch=None) -> DeliveryResult:
         task = asyncio.current_task()
         self._tasks.add(task)
         try:
-            return await self._send(channel_id, text, delivery_key=delivery_key, deadline=deadline, _dispatch=_dispatch)
+            return await self._send(channel_id, text, delivery_key=delivery_key, deadline=deadline, attachments=attachments, _dispatch=_dispatch)
         finally:
             self._tasks.discard(task)
 
-    async def _send(self, channel_id: str, text: str, *, delivery_key=None, deadline, _dispatch=None):
+    async def _send(self, channel_id: str, text: str, *, delivery_key=None, deadline, attachments=(), _dispatch=None):
         if not math.isfinite(deadline) or deadline <= time.monotonic():
             return DeliveryResult('dropped', reason_code='deadline_expired')
         if self._closed:
             return DeliveryResult('dropped', reason_code='sender_closed')
         if not channel_id or not text:
             return DeliveryResult('dropped', reason_code='missing_destination_or_text')
+        try:
+            attachment_key = _attachment_identity(attachments)
+        except ValueError:
+            return DeliveryResult('dropped', reason_code='invalid_attachments')
+        if delivery_key and attachments:
+            delivery_key = f'{delivery_key}:attachments:{attachment_key}'
         if delivery_key:
             if delivery_key in self._results:
                 return replace(self._results[delivery_key], reason_code='cached_receipt')
@@ -124,7 +163,7 @@ class OutboundSender:
         result = DeliveryResult('unknown', reason_code='interrupted')
         attempt_state = {'started': False}
         try:
-            result = await self._attempt(channel_id, text, deadline, _dispatch, attempt_state)
+            result = await self._attempt(channel_id, text, deadline, _dispatch, attempt_state, attachments)
             return result
         except asyncio.CancelledError as error:
             if not attempt_state['started']:
@@ -140,7 +179,7 @@ class OutboundSender:
                 if not future.done():
                     future.set_result(result)
 
-    async def _attempt(self, channel_id, text, deadline, dispatch, attempt_state):
+    async def _attempt(self, channel_id, text, deadline, dispatch, attempt_state, attachments):
         if dispatch is None:
             try:
                 channel = self.get_channel(int(channel_id)) if self.get_channel else None
@@ -150,6 +189,8 @@ class OutboundSender:
                 if channel is not None:
                     dispatch = channel.send
                 elif self.send_channel_message:
+                    if attachments:
+                        return DeliveryResult('dropped', reason_code='attachments_unsupported')
                     dispatch = lambda content: self.send_channel_message(int(channel_id), content)
                 else:
                     self._quota.record_dropped()
@@ -163,15 +204,23 @@ class OutboundSender:
         for attempt in range(2):
             token = None
             started = False
+            files = []
+            buffers = []
             try:
                 async with asyncio.timeout_at(deadline):
                     token = await self._quota.reserve(deadline)
                     if token is None:
                         self._quota.record_dropped()
                         return DeliveryResult('dropped', reason_code='quota_or_deadline')
+                    if attachments:
+                        import discord
+                        for item in attachments:
+                            buffer = io.BytesIO(item.data)
+                            buffers.append(buffer)
+                            files.append(discord.File(buffer, filename=item.filename))
                     started = True
                     attempt_state['started'] = True
-                    message = await dispatch(text)
+                    message = await dispatch(text, files=files) if files else await dispatch(text)
                 message_id = getattr(message, 'id', None)
                 if type(message_id) not in (str, int) or not str(message_id):
                     self._quota.finish(token, unknown=True)
@@ -217,20 +266,24 @@ class OutboundSender:
                 self._quota.record_failure()
                 return DeliveryResult('unknown' if started else 'retryable', reason_code='send_failed' if started else 'reservation_failed')
             finally:
+                for file in files:
+                    file.close()
+                for buffer in buffers:
+                    buffer.close()
                 if token is not None:
                     self._quota.release(token, attempted=started)
         return DeliveryResult('retryable', reason_code='retry_budget')
 
-    async def reply(self, message, text, *, deadline=None, mention_author=False):
+    async def reply(self, message, text, *, deadline=None, mention_author=False, attachments=()):
         import discord
         if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
             dispatch = message.channel.send
         else:
-            dispatch = lambda content: message.reply(content, mention_author=mention_author)
+            dispatch = lambda content, **kwargs: message.reply(content, mention_author=mention_author, **kwargs)
         content_key = hashlib.sha256(text.encode()).hexdigest() if text else 'empty'
         key = f'reply:{message.channel.id}:{message.id}:{content_key}' if getattr(message, 'id', None) is not None else None
         return await self.send(str(message.channel.id), text, delivery_key=key,
-                               deadline=deadline or time.monotonic()+10, _dispatch=dispatch)
+                               deadline=deadline or time.monotonic()+10, attachments=attachments, _dispatch=dispatch)
 
     def close(self):
         self._closed = True

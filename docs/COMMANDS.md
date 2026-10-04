@@ -48,7 +48,7 @@ Område og rettigheter kontrolleres ved faktisk kjøring; forhåndsvisning kjør
 | birthday_edit | `endre bursdag Ola 15.05` | write | channel | Endre bursdagsoppføring |
 | set_location | `jeg bor i Oslo` | write | self | Lagre eget stedsvalg |
 | memory_view | `vis minnet mitt`<br>`minne læring på`<br>`minne del med ingen`<br>`minne private fakta av`<br>`minne behold tema 7 dager`<br>`minne kommune oslo` | mixed | self | Vis eller styr eget minne |
-| memory_export | `eksporter minnet mitt` | read | self | Eksporter eget minne |
+| memory_export | `eksporter minnet mitt`<br>`eksporter minnet mitt privat` | read | self | Eksporter eget minne privat som komplett JSON |
 | memory_delete | `slett minnet mitt bekreft` | write | self | Bekreft lokal sletting av eget minne |
 | search | `søk på nett Oslo` | provider | invocation | Søk offentlig informasjon |
 | dashboard | `vis dashboard` | provider | invocation | Vis forespurt oversikt |

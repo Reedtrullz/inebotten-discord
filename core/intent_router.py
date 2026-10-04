@@ -482,7 +482,7 @@ class IntentRouter:
             return IntentResult(
                 BotIntent.MEMORY_EXPORT,
                 0.99,
-                {"memory": {"action": "export"}},
+                {"memory": {"action": "export", **({'private': True} if lower.endswith(' privat') else {})}},
                 "memory_export_keyword",
             )
         if any(phrase in lower for phrase in ("vis minnet mitt", "mitt minne", "brukerminne", "hva husker du om meg")):

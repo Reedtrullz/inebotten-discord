@@ -418,11 +418,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify features/memory_handler.py, memory/user_memory.py, core/outbound_sender.py and core/command_registry.py; extend tests/test_user_memory_controls.py; create tests/test_memory_export_delivery.py.
 **Interfaces:** export_user_memory retains self-only access and returns a complete snapshot. Extend sender with keyword attachments: tuple[Attachment,...]=(); Attachment(filename: str, content_type: str, data: bytes). First version delivers a bounded JSON attachment in an already private invocation or explicitly requested private DM, using the sender's DeliveryResult.
 
-- [ ] Add exports exceeding 1,800 characters, byte-limit refusal, cross-user refusal, unavailable private destination and failed-delivery tests; parse the bytes and compare them to the exact exported snapshot.
-- [ ] Reproduce current truncation without printing personal data.
-- [ ] Replace truncated code blocks with complete artifacts and metadata; group requests get safe instructions/explicit private choice, never a silent public fallback. Check actual current transport attachment limits before setting the configured limit.
-- [ ] Run tests/test_memory_export_delivery.py, tests/test_user_memory_controls.py and outbound quota/delivery tests.
-- [ ] Review and commit; authenticated downloads can follow separately, with their own ownership/expiry contract.
+- [x] Add exports exceeding 1,800 characters, byte-limit refusal, cross-user refusal, unavailable private destination and failed-delivery tests; parse the bytes and compare them to the exact exported snapshot.
+- [x] Reproduce current truncation without printing personal data.
+- [x] Replace truncated code blocks with complete artifacts and metadata; group requests get safe instructions/explicit private choice, never a silent public fallback. Check actual current transport attachment limits before setting the configured limit.
+- [x] Run tests/test_memory_export_delivery.py, tests/test_user_memory_controls.py and outbound quota/delivery tests.
+- [x] Review and commit; authenticated downloads can follow separately, with their own ownership/expiry contract.
 
 ### Task 30: I25 — Opt-in notification preferences and digest cards
 

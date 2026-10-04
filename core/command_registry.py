@@ -95,12 +95,14 @@ def _validator(intent, argument):
             raise ValueError('invalid_history')
         if argument == 'memory':
             fields = payload['memory']
-            if set(fields) - {'action', 'confirmed', 'changes', 'value'}:
+            if set(fields) - {'action', 'confirmed', 'changes', 'value', 'private'}:
                 raise ValueError('self_only_memory')
             actions = {'memory_view': {'view', 'policy', 'school_locality'},
                        'memory_export': {'export'}, 'memory_delete': {'delete'}}[intent.value]
             if fields.get('action') not in actions or ('confirmed' in fields and type(fields['confirmed']) is not bool):
                 raise ValueError('invalid_memory_action')
+            if 'private' in fields and (fields['action'] != 'export' or type(fields['private']) is not bool):
+                raise ValueError('invalid_private_export')
             if fields['action'] == 'policy':
                 from memory.user_memory import MemoryPolicy
                 changes = fields.get('changes')
@@ -164,7 +166,7 @@ COMMANDS = (
     _spec('birthday_edit', 'Endre bursdagsoppføring', 'endre bursdag Ola 15.05', 'birthdays.handle_birthday_edit', '*', 'write', 'channel'),
     _spec('set_location', 'Lagre eget stedsvalg', 'jeg bor i Oslo', '_handle_set_location', 'city', 'write', 'self'),
     _spec('memory_view', 'Vis eller styr eget minne', ('vis minnet mitt', 'minne læring på', 'minne del med ingen', 'minne private fakta av', 'minne behold tema 7 dager', 'minne kommune oslo'), 'memory.handle_memory', 'memory', 'mixed', 'self'),
-    _spec('memory_export', 'Eksporter eget minne', 'eksporter minnet mitt', 'memory.handle_memory', 'memory', scope='self'),
+    _spec('memory_export', 'Eksporter eget minne privat som komplett JSON', ('eksporter minnet mitt', 'eksporter minnet mitt privat'), 'memory.handle_memory', 'memory', scope='self'),
     _spec('memory_delete', 'Bekreft lokal sletting av eget minne', 'slett minnet mitt bekreft', 'memory.handle_memory', 'memory', 'write', 'self'),
     _spec('search', 'Søk offentlig informasjon', 'søk på nett Oslo', '_registry_search', 'search', 'provider'),
     _spec('dashboard', 'Vis forespurt oversikt', 'vis dashboard', '_send_dashboard_response', mutation='provider'),
