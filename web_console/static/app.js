@@ -11,6 +11,7 @@ class ConsoleApp {
     this.pollingBackoff = {};
     this._focusTrapHandler = null;
     this._lastFocusedElement = null;
+    this.openSection = null;
     this.isDemo = document.body.classList.contains("demo-mode");
     this.pollingConfig = {
       "/api/status": { interval: 5000, lastFetch: 0 },
@@ -235,6 +236,239 @@ class ConsoleApp {
         setText("logs.count", Array.isArray(data.logs) ? data.logs.length : 0);
         break;
     }
+    this.renderSection(section, data);
+  }
+
+  renderSection(sectionName, sectionState) {
+    if (!sectionState || typeof sectionState !== "object") return;
+    const setText = (selector, value) => {
+      document.querySelectorAll(selector).forEach((element) => {
+        element.textContent = value ?? "N/A";
+      });
+    };
+    const make = (tag, className, text) => {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = String(text);
+      return element;
+    };
+    const empty = (message) => make("div", "empty-state", message);
+    const rateLimits = sectionName === "rate-limits";
+    const state = sectionState;
+
+    if (sectionName === "calendar") {
+      const card = document.querySelector("#calendar .card-body");
+      if (card) {
+        card.querySelector(".mini-list, .empty-state")?.remove();
+        const events = Array.isArray(state.upcoming_events) ? state.upcoming_events.slice(0, 3) : [];
+        if (events.length) {
+          const list = make("div", "mini-list");
+          events.forEach((event) => {
+            if (!event || typeof event !== "object") return;
+            const row = make("div", "mini-row");
+            const title = event.title || event.name || "Uten tittel";
+            const date = event.date || event.when || event.start || "Ukjent tid";
+            const when = event.time ? `${date} ${event.time}`.trim() : date;
+            row.append(make("span", "", title), make("strong", "", when));
+            list.append(row);
+          });
+          card.append(list);
+        } else {
+          card.append(empty("Ingen kommende kalenderhendelser."));
+        }
+      }
+      setText("#calendar .card-header .badge", `${state.event_count ?? 0} hendelser`);
+      const overviewCalendar = document.querySelector('[data-metric="overview.calendar"]');
+      if (overviewCalendar) overviewCalendar.textContent = `${state.event_count ?? 0} / ${state.task_count ?? 0}`;
+      this.renderCalendarScope(card, state, make);
+    } else if (sectionName === "polls") {
+      const body = document.querySelector("#polls .card-body");
+      if (body) {
+        body.replaceChildren();
+        const polls = Array.isArray(state.polls) ? state.polls.slice(0, 5) : [];
+        if (!polls.length) {
+          body.append(empty("Ingen aktive avstemninger akkurat nå."));
+        } else {
+          const list = make("div", "mini-list");
+          polls.forEach((poll) => {
+            if (!poll || typeof poll !== "object") return;
+            const item = make("div", "poll-detail");
+            item.append(make("strong", "", poll.question || poll.title || "Uten spørsmål"));
+            if (poll.votes && typeof poll.votes === "object" && !Array.isArray(poll.votes)) {
+              const votes = Object.entries(poll.votes);
+              const total = votes.reduce((sum, [, count]) => sum + (Number.isFinite(Number(count)) ? Number(count) : 0), 0);
+              const bars = make("div", "poll-bars");
+              votes.forEach(([option, rawCount]) => {
+                const count = Number.isFinite(Number(rawCount)) ? Number(rawCount) : 0;
+                const row = make("div", "poll-row");
+                const track = make("div", "bar-track");
+                const fill = make("div", "bar-fill");
+                fill.style.width = `${total > 0 ? Math.max(0, Math.min(100, count / total * 100)) : 0}%`;
+                track.append(fill);
+                row.append(make("span", "", option), track, make("strong", "", count));
+                bars.append(row);
+              });
+              item.append(bars);
+            } else if (Number.isFinite(Number(poll.vote_count))) {
+              item.append(make("span", "muted", `${Number(poll.vote_count)} stemmer`));
+            }
+            list.append(item);
+          });
+          body.append(list);
+        }
+      }
+    } else if (rateLimits) {
+      const body = document.querySelector("#rate-limits .card-body");
+      if (body) {
+        body.replaceChildren();
+        const users = state.user_stats && typeof state.user_stats === "object" ? Object.entries(state.user_stats) : [];
+        if (!users.length) {
+          body.append(empty("Ingen rate-limit-data ennå."));
+        } else {
+          const counts = users.map(([user, raw]) => [user, typeof raw === "object" && raw !== null ? Number(raw.requests ?? raw.count ?? 0) || 0 : Number(raw) || 0]);
+          const total = Math.max(...counts.map(([, count]) => count), 1);
+          const shell = make("div", "table-shell");
+          const table = make("table");
+          const head = make("thead");
+          const headRow = make("tr");
+          ["Bruker", "Antall", "Bruk"].forEach((label) => headRow.append(make("th", "", label)));
+          head.append(headRow);
+          const tbody = make("tbody");
+          counts.sort((a, b) => b[1] - a[1]).slice(0, 5).forEach(([user, count]) => {
+            const row = make("tr");
+            const usage = make("div", "usage-bar bar-track");
+            const fill = make("div", "bar-fill");
+            fill.style.width = `${Math.max(0, Math.min(100, count / total * 100))}%`;
+            usage.append(fill);
+            const usageCell = make("td");
+            usageCell.append(usage);
+            row.append(make("td", "", user), make("td", "", count), usageCell);
+            tbody.append(row);
+          });
+          table.append(head, tbody);
+          shell.append(table);
+          body.append(shell);
+        }
+      }
+    } else if (sectionName === "intents") {
+      const body = document.querySelector("#intents .card-body");
+      if (body) {
+        body.replaceChildren();
+        const intents = state.intent_counts && typeof state.intent_counts === "object" ? Object.entries(state.intent_counts) : [];
+        if (!intents.length) {
+          body.append(empty("Ingen intent-data ennå."));
+        } else {
+          const shell = make("div", "table-shell");
+          const table = make("table");
+          const head = make("thead");
+          const headRow = make("tr");
+          ["Intent", "Antall"].forEach((label) => headRow.append(make("th", "", label)));
+          head.append(headRow);
+          const bodyRows = make("tbody");
+          intents.sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0)).slice(0, 5).forEach(([intent, count]) => {
+            const row = make("tr");
+            row.append(make("td", "", intent), make("td", "", count));
+            bodyRows.append(row);
+          });
+          table.append(head, bodyRows);
+          shell.append(table);
+          body.append(shell);
+        }
+      }
+    } else if (sectionName === "logs") {
+      const lines = Array.isArray(state.logs) ? state.logs.map((line) => String(line)) : [];
+      const container = document.getElementById("log-container");
+      if (container) {
+        container.replaceChildren();
+        if (lines.length) {
+          const pre = make("pre");
+          lines.forEach((line, index) => {
+            if (index) pre.append(document.createTextNode("\n"));
+            const upper = line.toUpperCase();
+            const kind = upper.includes("ERROR") || upper.includes("CRITICAL") ? "log-error" : upper.includes("WARN") ? "log-warn" : upper.includes("INFO") ? "log-info" : "log-debug";
+            pre.append(make("span", kind, line));
+          });
+          container.append(pre);
+        } else {
+          container.append(empty("Ingen logger tilgjengelig"));
+        }
+      }
+      const activity = document.querySelector("#activity .activity-list");
+      if (activity) {
+        activity.replaceChildren();
+        if (!lines.length) {
+          activity.append(empty("Ingen aktivitet fanget ennå."));
+        } else {
+          lines.slice(-4).reverse().forEach((line) => {
+            const upper = line.toUpperCase();
+            const tone = upper.includes("ERROR") || upper.includes("CRITICAL") ? "log-error" : upper.includes("WARN") ? "log-warn" : upper.includes("INFO") ? "log-info" : "log-debug";
+            const title = line.includes("]") ? line.split("]", 2)[1].trim() : line;
+            const prefix = line.includes("[") ? line.split("[", 1)[0].trim() : "Nylig";
+            const item = make("div", "activity-item");
+            item.append(make("strong", tone, title.slice(0, 120)), make("span", "", prefix));
+            activity.append(item);
+          });
+        }
+      }
+      setText('[data-metric="logs.count"]', lines.length);
+    }
+
+    if (this.openSection === sectionName && !document.getElementById("section-modal")?.hidden) {
+      this.updateSectionModal(sectionName);
+    }
+    this.updateOverview();
+  }
+
+  updateOverview() {
+    const calendar = this.data.calendar || {};
+    const polls = this.data.polls || {};
+    const calendarMetric = document.querySelector('[data-metric="overview.calendar"]');
+    if (calendarMetric) calendarMetric.textContent = `${calendar.event_count ?? 0} / ${calendar.task_count ?? 0}`;
+    const pollMetric = document.querySelector('[data-metric="overview.polls"]');
+    if (pollMetric) pollMetric.textContent = polls.active_polls ?? 0;
+  }
+
+  calendarScopeLines(state) {
+    const lines = [];
+    const display = (value) => Array.isArray(value)
+      ? value.join(", ")
+      : value === undefined || value === null || value === "" ? "Ingen" : String(value);
+    if (state.access_summary) lines.push(`Tilgang: ${display(state.access_summary)}`);
+    if (state.default_scope) lines.push(`Standardområde: ${display(state.default_scope)}`);
+    if (Array.isArray(state.scope_policy)) {
+      state.scope_policy.forEach((scope) => {
+        if (!scope || typeof scope !== "object") return;
+        lines.push(`Område: ${display(scope.scope_id)} (${display(scope.kind)})`);
+        lines.push(`Eier: ${display(scope.owner_id)}`);
+        lines.push(`Godkjente medlemmer: ${display(scope.collaborator_ids)}`);
+        lines.push(`Kanaler: ${display(scope.channel_ids)}`);
+        lines.push(`Lesetilgang: ${display(scope.read_policy)}`);
+        lines.push(`Skrivetilgang: ${display(scope.write_policy)}`);
+      });
+    }
+    const invocation = state.invocation_policy;
+    if (invocation && typeof invocation === "object") {
+      lines.push(`Kalleregel: ${display(invocation.mode)}`);
+      lines.push(`Tillatte brukere: ${display(invocation.allowed_users)}`);
+      lines.push(`Tillatte kanaler: ${display(invocation.allowed_channels)}`);
+      lines.push(`Omvei for gruppedirektemeldinger: ${invocation.legacy_group_dm_bypass ? "Ja" : "Nei"}`);
+      if (invocation.inherited_defaults) {
+        lines.push(`Advarsel om arvede standarder: ${display(invocation.inherited_defaults)}`);
+      }
+    }
+    return lines;
+  }
+
+  renderCalendarScope(card, state, make) {
+    card.querySelector("[data-calendar-scope]")?.remove();
+    const lines = this.calendarScopeLines(state);
+    if (!lines.length) return;
+    const explanation = make("section", "calendar-scope");
+    explanation.dataset.calendarScope = "";
+    explanation.setAttribute("aria-label", "Tilgang og målgruppe");
+    explanation.append(make("h4", "", "Tilgang og målgruppe"));
+    explanation.append(make("p", "calendar-scope-summary", lines.join("\n")));
+    card.append(explanation);
   }
 
   updateShellStatus() {
@@ -290,6 +524,7 @@ class ConsoleApp {
     if (!modal || !title || !content) return;
     title.textContent = data.title || "Detaljer";
     content.textContent = data.content || "";
+    this.openSection = section;
     modal.hidden = false;
     document.body.classList.add("modal-open");
     this._trapFocus(modal);
@@ -304,6 +539,7 @@ class ConsoleApp {
     this._untrapFocus();
     this._lastFocusedElement?.focus();
     this._lastFocusedElement = null;
+    this.openSection = null;
   }
 
   _trapFocus(modal) {
@@ -348,6 +584,24 @@ class ConsoleApp {
     const data = section === "rate-limits"
       ? (this.data["rate-limits"] || this.data.rate_limits || {})
       : (this.data[section] || {});
+    this.openModal(section, { title: titles[section] || "Detaljer", content: this.sectionModalText(section, data) });
+  }
+
+  updateSectionModal(section) {
+    const titles = {
+      status: "Bot-status", bridge: "Bridge", calendar: "Kalender", polls: "Avstemninger",
+      "rate-limits": "Rate limits", intents: "Intents", memory: "Minne", logs: "Logger",
+    };
+    const data = section === "rate-limits"
+      ? (this.data["rate-limits"] || this.data.rate_limits || {})
+      : (this.data[section] || {});
+    const title = document.getElementById("modal-title");
+    const content = document.getElementById("modal-content");
+    if (title) title.textContent = titles[section] || "Detaljer";
+    if (content) content.textContent = this.sectionModalText(section, data);
+  }
+
+  sectionModalText(section, data) {
     const lines = [];
     const add = (label, value) => lines.push(`${label}: ${value ?? "N/A"}`);
     const addBlank = () => lines.push("");
@@ -377,13 +631,39 @@ class ConsoleApp {
             const when = event.when || event.start || event.date || "Ukjent tid";
             lines.push(`- ${title} — ${when}`);
           });
+        } else {
+          addBlank();
+          lines.push("Kommende hendelser: Ingen kommende kalenderhendelser.");
+        }
+        const scopeLines = this.calendarScopeLines(data);
+        if (scopeLines.length) {
+          addBlank();
+          lines.push("Tilgang og målgruppe:");
+          lines.push(...scopeLines);
         }
         break;
       case "polls":
         add("Aktive avstemninger", data.active_polls ?? 0);
+        if (Array.isArray(data.polls) && data.polls.length) {
+          addBlank();
+          data.polls.forEach((poll) => {
+            lines.push(`${poll.question || poll.title || "Uten spørsmål"}`);
+            if (poll.votes && typeof poll.votes === "object") {
+              Object.entries(poll.votes).forEach(([option, count]) => lines.push(`- ${option}: ${count}`));
+            } else if (Number.isFinite(Number(poll.vote_count))) {
+              lines.push(`- Stemmer: ${Number(poll.vote_count)}`);
+            }
+          });
+        } else {
+          add("Detaljer", "Ingen aktive avstemninger akkurat nå.");
+        }
         break;
       case "rate-limits":
         add("Totale forespørsler", data.summary?.total_requests ?? 0);
+        Object.entries(data.user_stats || {}).forEach(([user, raw]) => {
+          const count = typeof raw === "object" && raw !== null ? raw.requests ?? raw.count ?? "N/A" : raw;
+          lines.push(`- ${user}: ${count}`);
+        });
         break;
       case "intents":
         add("Fallbacks", data.fallback_count ?? 0);
@@ -409,8 +689,7 @@ class ConsoleApp {
       default:
         lines.push("Ingen detaljer tilgjengelig");
     }
-
-    this.openModal(section, { title: titles[section] || "Detaljer", content: lines.join("\n") });
+    return lines.join("\n");
   }
 }
 

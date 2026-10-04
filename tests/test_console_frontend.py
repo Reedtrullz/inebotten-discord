@@ -1,5 +1,6 @@
 """Comprehensive frontend tests for the Inebotten web console."""
 
+import json
 from typing import Any
 
 import pytest
@@ -262,3 +263,209 @@ def test_demo_page_has_no_console_warnings(page: Any, console_server: ConsoleSer
 
     warnings = [message for message in messages if message.startswith(("warning:", "error:"))]
     assert warnings == []
+
+
+def _poll_synthetic_state(page: Any, endpoint: str, responses: list[dict[str, Any]]) -> None:
+    """Drive the real browser poller with generated loopback API payloads."""
+    index = 0
+
+    def respond(route: Any) -> None:
+        nonlocal index
+        payload = responses[index]
+        index = min(index + 1, len(responses) - 1)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route(f"**{endpoint}**", respond)
+    page.evaluate(
+        """async (endpoint) => {
+          const app = window.consoleApp;
+          app.isPolling = true;
+          app.pollingConfig[endpoint].lastFetch = 0;
+          await app.pollEndpoint(endpoint);
+        }""",
+        endpoint,
+    )
+
+
+def test_calendar_details_and_open_modal_follow_latest_poll(page: Any, console_server: ConsoleServer) -> None:
+    """Calendar details, count and modal must use the same fetched snapshot."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    hostile_title = '<img src=x onerror="window.pwned=true"> New event'
+    refreshed_title = '<script>window.pwned=true</script> Newest event'
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [
+            {
+                "event_count": 1,
+                "task_count": 2,
+                "upcoming_events": [{"title": hostile_title, "date": "2026-10-05"}],
+            },
+            {
+                "event_count": 1,
+                "task_count": 2,
+                "upcoming_events": [{"title": refreshed_title, "date": "2026-10-06"}],
+            },
+        ],
+    )
+
+    assert page.locator('[data-metric="calendar.events"]').first.inner_text() == "1"
+    assert any(hostile_title in row for row in page.locator("#calendar .mini-row").all_inner_texts())
+    assert page.locator("#calendar img").count() == 0
+
+    page.locator('#calendar [data-section-modal="calendar"]').click()
+    modal = page.locator("#modal-content")
+    assert hostile_title in modal.inner_text()
+    close_button = page.locator(".modal-close")
+    close_button.focus()
+    page.evaluate(
+        """async () => {
+          window.consoleApp.pollingConfig['/api/calendar'].lastFetch = 0;
+          await window.consoleApp.pollEndpoint('/api/calendar');
+        }"""
+    )
+    assert refreshed_title in page.locator("#calendar .mini-row").inner_text()
+    assert refreshed_title in modal.inner_text()
+    assert page.evaluate("document.activeElement.className") == "modal-close"
+    assert page.evaluate("window.pwned || false") is False
+
+
+def test_removing_last_calendar_event_renders_empty_state(page: Any, console_server: ConsoleServer) -> None:
+    """A transition from one event to none must remove stale detail rows."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [
+            {"event_count": 1, "task_count": 0, "upcoming_events": [{"title": "One event", "date": "Tomorrow"}]},
+            {"event_count": 0, "task_count": 0, "upcoming_events": []},
+        ],
+    )
+    page.evaluate(
+        """async () => {
+          window.consoleApp.pollingConfig['/api/calendar'].lastFetch = 0;
+          await window.consoleApp.pollEndpoint('/api/calendar');
+        }"""
+    )
+
+    assert page.locator('[data-metric="calendar.events"]').first.inner_text() == "0"
+    assert page.locator("#calendar .mini-row").count() == 0
+    assert page.locator("#calendar .empty-state").inner_text() == "Ingen kommende kalenderhendelser."
+
+
+def test_poll_details_render_actual_collector_payload_and_modal(page: Any, console_server: ConsoleServer) -> None:
+    """Poll title and vote count from the existing API appear in card and modal."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    _poll_synthetic_state(
+        page,
+        "/api/polls",
+        [{"active_polls": 1, "polls": [{"title": "Dinner choice", "vote_count": 7}]}],
+    )
+
+    assert "Dinner choice" in page.locator("#polls .card-body").inner_text()
+    assert "7" in page.locator("#polls .card-body").inner_text()
+    page.locator('#polls [data-section-modal="polls"]').click()
+    assert "Dinner choice" in page.locator("#modal-content").inner_text()
+    assert "7" in page.locator("#modal-content").inner_text()
+
+
+def test_latest_logs_render_as_text_and_copy_matches_visible_lines(page: Any, console_server: ConsoleServer) -> None:
+    """Log detail and copy output must follow the latest response safely."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    hostile_line = '<svg onload="window.pwned=true"> latest log'
+    _poll_synthetic_state(page, "/api/logs?lines=50", [{"logs": [hostile_line]}])
+    page.evaluate(
+        """() => Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {writeText: async (text) => { window.copiedLogs = text; }}
+        })"""
+    )
+
+    visible = page.locator("#log-container")
+    assert hostile_line in visible.inner_text()
+    assert visible.locator("svg").count() == 0
+    page.locator("[data-copy-logs]").click()
+    page.wait_for_function("window.copiedLogs !== undefined")
+
+    assert page.evaluate("window.copiedLogs") == visible.inner_text()
+    assert page.evaluate("window.pwned || false") is False
+
+
+def test_calendar_refresh_keeps_keyboard_focus_and_narrow_layout(page: Any, console_server: ConsoleServer) -> None:
+    """Updating details keeps the open dialog usable at a narrow viewport."""
+    page.set_viewport_size({"width": 375, "height": 812})
+    page.goto(f"{_base_url(console_server)}/demo")
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [{"event_count": 1, "task_count": 0, "upcoming_events": [{"title": "Focused event", "date": "Today"}]}],
+    )
+    page.locator('#calendar [data-section-modal="calendar"]').click()
+    dialog = page.locator('[role="dialog"]')
+    close_button = page.locator(".modal-close")
+    close_button.focus()
+    page.evaluate(
+        """async () => {
+          window.consoleApp.pollingConfig['/api/calendar'].lastFetch = 0;
+          await window.consoleApp.pollEndpoint('/api/calendar');
+        }"""
+    )
+
+    assert page.evaluate("document.activeElement.className") == "modal-close"
+    assert "Focused event" in page.locator("#modal-content").inner_text()
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth") is True
+    close_button.press("Tab")
+    assert dialog.is_visible()
+
+
+def test_calendar_scope_policy_explains_owner_and_audience_as_text(page: Any, console_server: ConsoleServer) -> None:
+    """Optional scope fields explain access without interpreting hostile text as markup."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    hostile_summary = '<img src=x onerror="window.scopePwned=true"> Owner controls writes'
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [{
+            "event_count": 0,
+            "task_count": 0,
+            "upcoming_events": [],
+            "scope_policy": [{
+                "scope_id": "private-calendar",
+                "kind": "private",
+                "owner_id": "owner-123",
+                "collaborator_ids": ["member-456"],
+                "channel_ids": ["channel-789"],
+                "read_policy": "owner and approved members",
+                "write_policy": "owner only",
+            }],
+            "default_scope": "private-calendar",
+            "access_summary": hostile_summary,
+            "invocation_policy": {
+                "mode": "allowlist",
+                "allowed_users": ["owner-123", "member-456"],
+                "allowed_channels": ["channel-789"],
+                "legacy_group_dm_bypass": False,
+                "inherited_defaults": "Legacy group settings apply until reviewed",
+            },
+        }],
+    )
+
+    explanation = page.locator("#calendar [data-calendar-scope]")
+    assert explanation.is_visible()
+    rendered = explanation.inner_text()
+    for expected in (
+        "owner-123", "member-456", "channel-789", "owner and approved members",
+        "owner only", "allowlist", "Legacy group settings apply until reviewed",
+    ):
+        assert expected in rendered
+    assert hostile_summary in rendered
+    assert explanation.locator("img").count() == 0
+
+    page.locator('#calendar [data-section-modal="calendar"]').click()
+    assert hostile_summary in page.locator("#modal-content").inner_text()
+    assert "owner-123" in page.locator("#modal-content").inner_text()
+    assert page.evaluate("window.scopePwned || false") is False

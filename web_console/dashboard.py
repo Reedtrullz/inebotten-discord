@@ -279,8 +279,8 @@ def _render_overview_section(data: dict[str, Any]) -> str:
         [
             f'<div class="hero-stat"><span>Oppetid</span><strong data-metric="status.uptime">{escape(_uptime_fmt(_safe_int(status, "uptime_seconds", default=-1)))}</strong></div>',
             f'<div class="hero-stat"><span>Servere</span><strong data-metric="status.guilds">{escape(str(status.get("guilds", "N/A")))}</strong></div>',
-            f'<div class="hero-stat"><span>Kalender</span><strong>{event_count} / {task_count}</strong></div>',
-            f'<div class="hero-stat"><span>Avstemninger</span><strong data-metric="polls.active">{active_polls}</strong></div>',
+            f'<div class="hero-stat"><span>Kalender</span><strong data-metric="overview.calendar">{event_count} / {task_count}</strong></div>',
+            f'<div class="hero-stat"><span>Avstemninger</span><strong data-metric="overview.polls">{active_polls}</strong></div>',
         ]
     )
 

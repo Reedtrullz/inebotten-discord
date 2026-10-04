@@ -612,6 +612,12 @@ pre {
   padding: 0.6rem 0;
 }
 
+.poll-detail {
+  min-width: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
 .mini-row:last-child {
   border-bottom: 0;
 }
@@ -653,6 +659,11 @@ pre {
   min-width: 28rem;
 }
 
+.table-shell td,
+.table-shell th {
+  overflow-wrap: anywhere;
+}
+
 .usage-bar {
   width: 6rem;
 }
@@ -674,6 +685,24 @@ pre {
   border-radius: var(--radius-md);
   padding: 1rem;
   text-align: center;
+}
+
+.calendar-scope {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.85rem;
+}
+
+.calendar-scope h4 {
+  margin: 0 0 0.5rem;
+}
+
+.calendar-scope-summary {
+  margin: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .badge {

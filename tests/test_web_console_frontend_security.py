@@ -19,3 +19,11 @@ def test_modal_details_are_built_as_plain_text_not_html_strings():
     assert "content = `<table" not in app_js
     assert "openModal(section, { title:" in app_js
     assert "content.textContent" in app_js
+
+
+def test_dynamic_console_renderers_use_dom_text_instead_of_html_sinks():
+    app_js = (ROOT / "web_console" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "renderSection(sectionName, sectionState)" in app_js
+    assert "createElement(tag)" in app_js
+    assert "textContent" in app_js
+    assert ".innerHTML" not in app_js
