@@ -19,7 +19,7 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 13 | I09 | Explicit calendar time and kind | Implemented locally | 117 focused tests; full non-browser suite 837 passed, 1 live skip, 17 subtests. All-day, duration, seconds, task refusal, DST gap/fold, Oslo-midnight, before-save interpretation and preserving invalid edits verified. No live account migration. |
 | 14 | I12 | Structured AI outcomes and bounded admission | Planned | — |
 | 15 | I15 | Render all console state consistently | Implemented locally | Child 9caeeba reviewed/integrated; three parent RED-to-GREEN consumer corrections (absent card, owned modal snapshot, explicit calendar kind counts). 35 browser/security tests; 89 calendar/policy regressions. |
-| 16 | I16 | Endpoint freshness and owned polling timers | Planned | — |
+| 16 | I16 | Endpoint freshness and owned polling timers | Implemented locally | Child 4e11fdf integrated; two parent RED-to-GREEN race corrections for stale 401 and late replies. 42 separate browser/security tests; syntax/fatal lint/diff checks pass. |
 | 17 | I21 | Reproducible profiles, typed boundaries, dependency integration | Planned | — |
 | 18 | I29 | Maintained school-year data with coverage | Planned | — |
 | 19 | I33 | Poll lifecycle and vote-safe edits | Planned | — |

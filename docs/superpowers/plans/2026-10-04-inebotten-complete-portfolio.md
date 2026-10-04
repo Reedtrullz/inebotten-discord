@@ -256,11 +256,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify web_console/static/app.js and web_console/dashboard.py; extend tests/test_console_frontend.py and tests/test_web_console_frontend_security.py.
 **Interfaces:** one endpoint entry owns timerId, controller, generation, lastSuccess, status and deadline. stopPolling invalidates the generation, clears timers and aborts requests; an old callback cannot restart a chain.
 
-- [ ] Add repeated hide/show, hung fetch, one failing card, manual retry, auth expiry and wall-clock-jump scenarios; assert one pending chain per endpoint and truthful stale labels.
-- [ ] Reproduce retained-timeout behavior with controlled browser timers.
-- [ ] Store timer handles, use monotonic elapsed deadlines, publish per-endpoint states and an honest overview, retaining current 5s/10s/30s intervals, backoff and visibility pause.
-- [ ] Run the listed frontend tests and fixture request-count assertions; one healthy endpoint cannot refresh another's timestamp.
-- [ ] Review and commit; integrate I15 renderers when available.
+- [x] Add repeated hide/show, hung fetch, one failing card, manual retry, auth expiry and wall-clock-jump scenarios; assert one pending chain per endpoint and truthful stale labels.
+- [x] Reproduce retained-timeout behavior with controlled browser timers.
+- [x] Store timer handles, use monotonic elapsed deadlines, publish per-endpoint states and an honest overview, retaining current 5s/10s/30s intervals, backoff and visibility pause.
+- [x] Run the listed frontend tests and fixture request-count assertions; one healthy endpoint cannot refresh another's timestamp.
+- [x] Review and commit; integrate I15 renderers when available.
 
 ### Task 17: I21 — Reproducible profiles, typed boundaries, dependency integration
 

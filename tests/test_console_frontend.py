@@ -606,3 +606,48 @@ def test_poll_deadlines_ignore_wall_clock_jumps(page: Any, console_server: Conso
     page.clock.fast_forward(5000)
 
     assert page.evaluate("window.__requestCounts['/api/status']") == 2
+
+
+def test_old_poll_generation_cannot_expire_new_auth_session(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("""async () => {
+        let first = true;
+        window.fetch = async (url) => {
+            if (String(url) === '/api/status' && first) {
+                first = false;
+                return new Promise(resolve => { window.resolveOldPoll = resolve; });
+            }
+            return {status: 200, ok: true, json: async () => ({})};
+        };
+        const app=window.consoleApp;
+        app.isDemo=false;
+        app.startPolling();
+        app.stopPolling();
+        app.startPolling();
+        for (let turn=0; turn<10; turn++) await Promise.resolve();
+        window.resolveOldPoll({status:401, ok:false, json:async()=>({})});
+        for (let turn=0; turn<10; turn++) await Promise.resolve();
+    }""")
+    assert page.evaluate('window.consoleApp.authExpired') is False
+    assert page.evaluate('window.consoleApp.isPolling') is True
+    assert page.locator('#auth-expired').is_hidden()
+
+
+def test_reply_after_elapsed_deadline_cannot_refresh_endpoint(page: Any, console_server: ConsoleServer) -> None:
+    page.clock.install(time='2026-10-04T09:00:00')
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("""async () => {
+        window.fetch=async (url) => String(url)==='/api/calendar'
+            ? new Promise(resolve => {window.resolveLateCalendar=resolve;})
+            : {status:200,ok:true,json:async()=>({})};
+        window.consoleApp.isDemo=false;
+        window.consoleApp.startPolling();
+        for(let turn=0;turn<10;turn++) await Promise.resolve();
+    }""")
+    page.clock.fast_forward(16000)
+    page.evaluate("""async () => {
+        window.resolveLateCalendar({status:200,ok:true,json:async()=>({event_count:123,task_count:0,upcoming_events:[]})});
+        for(let turn=0;turn<10;turn++) await Promise.resolve();
+    }""")
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/calendar'].lastSuccess") is None
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/calendar'].status") == 'timeout'

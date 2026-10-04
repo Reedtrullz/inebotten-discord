@@ -221,6 +221,11 @@ class ConsoleApp {
         credentials: "same-origin",
         signal: controller.signal,
       });
+      if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== controller) return;
+      if (controller.signal.aborted || performance.now() >= entry.deadline) {
+        entry.timedOut = true;
+        throw new DOMException('Deadline exceeded', 'AbortError');
+      }
       if (response.status === 401) {
         this.authExpired = true;
         this.stopPolling();
@@ -233,6 +238,10 @@ class ConsoleApp {
 
       const data = await response.json();
       if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== controller) return;
+      if (controller.signal.aborted || performance.now() >= entry.deadline) {
+        entry.timedOut = true;
+        throw new DOMException('Deadline exceeded', 'AbortError');
+      }
       const key = endpoint.replace("/api/", "").replace("?lines=50", "");
       this.data[key] = data;
       this.pollingBackoff[endpoint] = 0;
