@@ -8,7 +8,7 @@ import json
 import re
 import uuid
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
@@ -795,7 +795,7 @@ class CalendarManager:
 
         removed_count = self._remove_missing_gcal_items(seen_gcal_ids, days=90)
 
-        if added_count > 0 or updated_count > 0 or removed_count > 0:
+        if added_count > 0 or updated_count > 0 or removed_count > 0 or self._gcal_lookup_changed:
             await self._save_data()
             print(
                 f"[CAL] Sync complete: {added_count} added, "
@@ -809,12 +809,19 @@ class CalendarManager:
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         cutoff = today + timedelta(days=days)
         removed_count = 0
+        self._gcal_lookup_changed = False
+        from cal_system.google_calendar_manager import EventLookup
 
         for guild_id, items in list(self.items.items()):
             kept_items = []
             for item in items:
                 gcal_id = item.get("gcal_event_id")
                 if not gcal_id or gcal_id in seen_gcal_ids:
+                    if gcal_id in seen_gcal_ids:
+                        for key in ("gcal_lookup_status", "gcal_lookup_reason", "gcal_lookup_checked_at"):
+                            if key in item:
+                                item.pop(key)
+                                self._gcal_lookup_changed = True
                     kept_items.append(item)
                     continue
 
@@ -828,14 +835,28 @@ class CalendarManager:
                     kept_items.append(item)
                     continue
 
-                remote_event = None
-                if self.gcal and hasattr(self.gcal, "get_event"):
-                    try:
-                        remote_event = self.gcal.get_event(gcal_id)
-                    except Exception as e:
-                        print(f"[CAL] GCal get_event failed for {gcal_id}: {e}")
-
-                if remote_event and remote_event.get("status") != "cancelled":
+                outcome = EventLookup("unavailable", reason_code="no_lookup_adapter")
+                try:
+                    if self.gcal and hasattr(self.gcal, "get_event_outcome"):
+                        outcome = self.gcal.get_event_outcome(gcal_id)
+                        if not isinstance(outcome, EventLookup):
+                            outcome = EventLookup("unavailable", reason_code="malformed_response")
+                    elif self.gcal and hasattr(self.gcal, "get_event"):
+                        outcome = EventLookup.from_event(gcal_id, self.gcal.get_event(gcal_id))
+                except Exception as error:
+                    outcome = EventLookup.from_error(error)
+                if outcome.status not in ("cancelled", "missing"):
+                    if outcome.status == "unavailable":
+                        item["gcal_lookup_status"] = outcome.status
+                        item["gcal_lookup_reason"] = outcome.reason_code
+                        item["gcal_lookup_checked_at"] = datetime.now(timezone.utc).isoformat()
+                        self._gcal_lookup_changed = True
+                        self.last_gcal_sync_error = "Google-oppslag kunne ikke bekreftes; lokale hendelser er beholdt."
+                    else:
+                        for key in ("gcal_lookup_status", "gcal_lookup_reason", "gcal_lookup_checked_at"):
+                            if key in item:
+                                item.pop(key)
+                                self._gcal_lookup_changed = True
                     kept_items.append(item)
                     continue
 

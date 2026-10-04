@@ -9,9 +9,11 @@ import os
 import sys
 import subprocess
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from utils.json_storage import write_json_atomic
 
@@ -39,6 +41,58 @@ if str(SKILL_PATH) not in sys.path:
     sys.path.insert(0, str(SKILL_PATH))
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+
+@dataclass(frozen=True)
+class EventLookup:
+    """A remote lookup's evidence, never an implicit permission to delete."""
+
+    status: Literal["live", "cancelled", "missing", "unavailable"]
+    event: dict | None = None
+    retry_after_s: float | None = None
+    reason_code: str = "unknown"
+
+    @classmethod
+    def from_event(cls, event_id: str, event: object) -> "EventLookup":
+        if not isinstance(event, dict) or event.get("id") != event_id:
+            return cls("unavailable", reason_code="malformed_response")
+        if event.get("status") == "cancelled":
+            return cls("cancelled", event, reason_code="cancelled")
+        start = event.get("start")
+        if (event.get("status", "confirmed") not in ("confirmed", "tentative")
+                or not isinstance(start, dict)
+                or not (start.get("date") or start.get("dateTime"))):
+            return cls("unavailable", reason_code="malformed_response")
+        return cls("live", event, reason_code="ok")
+
+    @classmethod
+    def from_error(cls, error: Exception) -> "EventLookup":
+        # Only the structured Google HTTP exception can establish deletion.
+        from googleapiclient.errors import HttpError
+        if not isinstance(error, HttpError):
+            return cls("unavailable", reason_code="transport_error")
+        reason = "http_error"
+        try:
+            body = json.loads(error.content)
+            reason = body["error"]["errors"][0]["reason"]
+            if not isinstance(reason, str):
+                reason = "http_error"
+        except (ValueError, KeyError, IndexError, TypeError):
+            pass
+        retry = None
+        raw_retry = error.resp.get("retry-after")
+        if raw_retry:
+            try:
+                retry = max(0.0, float(raw_retry))
+            except (ValueError, TypeError):
+                try:
+                    retry = max(0.0, (parsedate_to_datetime(raw_retry) - datetime.now(timezone.utc)).total_seconds())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+        # This adapter only issues events.get, never sync-token or delete calls.
+        # Google's 404 is ambiguous; even an accessible list is not event proof.
+        status = "missing" if error.resp.status == 410 and reason == "deleted" else "unavailable"
+        return cls(status, retry_after_s=retry, reason_code=reason)
 
 
 def get_hermes_home() -> Path:
@@ -381,31 +435,26 @@ class GoogleCalendarManager:
             return None
 
     def get_event(self, event_id):
-        """Fetch a single event by ID; returns None if missing or unavailable."""
-        if not self.enabled:
-            return None
+        """Compatibility reader; reconciliation must use get_event_outcome."""
+        return self.get_event_outcome(event_id).event
 
+    def get_event_outcome(self, event_id: str) -> EventLookup:
+        if not self.enabled:
+            return EventLookup("unavailable", reason_code="not_configured")
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
+            creds = Credentials.from_authorized_user_file(str(self._token_path()), SCOPES)
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
                 self._save_credentials(creds)
-
             service = build("calendar", "v3", credentials=creds)
-            return (
-                service.events()
-                .get(calendarId=self.calendar_id, eventId=event_id)
-                .execute()
-            )
-        except Exception as e:
-            print(f"[GCAL] Error fetching event {event_id}: {e}")
-            return None
+            event = service.events().get(calendarId=self.calendar_id, eventId=event_id).execute()
+            return EventLookup.from_event(event_id, event)
+        except Exception as error:
+            return EventLookup.from_error(error)
 
     def create_event(
         self,

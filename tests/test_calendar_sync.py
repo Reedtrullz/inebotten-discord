@@ -177,7 +177,7 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sync_removes_deleted_gcal_item_inside_sync_window(self):
         tomorrow = datetime.now() + timedelta(days=1)
-        gcal = FakeGCal(events=[])
+        gcal = FakeGCal(events=[], fetched_events={"missing-gcal": {"id": "missing-gcal", "status": "cancelled"}})
         manager = CalendarManager(storage_path=self.storage_path, gcal_manager=gcal)
         manager.items = {
             manager.SHARED_KEY: [

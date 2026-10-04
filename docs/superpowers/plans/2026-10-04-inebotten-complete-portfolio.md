@@ -86,11 +86,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify cal_system/google_calendar_manager.py, cal_system/calendar_manager.py, tests/test_calendar_sync.py; create tests/test_gcal_lookup_outcomes.py.
 **Interfaces:** get_event_outcome(event_id: str) -> EventLookup; define EventLookup in cal_system/google_calendar_manager.py with status live|cancelled|missing|unavailable, event: dict|None, retry_after_s: float|None, reason_code: str. Keep get_event for legacy readers; deletion callers use the explicit outcome.
 
-- [ ] Add test_none_timeout_and_permission_preserve_local_item and test_authoritative_cancel_removes_item, asserting preserved IDs/fields and warning state for None/403/429/5xx/malformed responses.
-- [ ] Reproduce the narrow deletion failure with fake API objects.
-- [ ] Map errors without suppressing meaning; classify missing only when the adapter establishes authoritative absence in an accessible calendar. A bare ambiguous error/404 is insufficient. Update reconciliation to retain uncertain items.
-- [ ] Run tests/test_gcal_lookup_outcomes.py and tests/test_calendar_sync.py; preserve pagination and mixed-batch regressions.
-- [ ] Review compatibility and commit; no live Google account is needed for this PR.
+- [x] Add test_none_timeout_and_permission_preserve_local_item and test_authoritative_cancel_removes_item, asserting preserved IDs/fields and warning state for None/403/429/5xx/malformed responses.
+- [x] Reproduce the narrow deletion failure with fake API objects.
+- [x] Map errors without suppressing meaning; classify missing only when the adapter establishes authoritative absence in an accessible calendar. A bare ambiguous error/404 is insufficient. Update reconciliation to retain uncertain items.
+- [x] Run tests/test_gcal_lookup_outcomes.py and tests/test_calendar_sync.py; preserve pagination and mixed-batch regressions.
+- [x] Review compatibility and commit; no live Google account is needed for this PR.
 
 ### Task 3: I02 — One live reminder owner
 
