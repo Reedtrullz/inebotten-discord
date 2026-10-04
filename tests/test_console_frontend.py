@@ -469,3 +469,18 @@ def test_calendar_scope_policy_explains_owner_and_audience_as_text(page: Any, co
     assert hostile_summary in page.locator("#modal-content").inner_text()
     assert "owner-123" in page.locator("#modal-content").inner_text()
     assert page.evaluate("window.scopePwned || false") is False
+
+
+def test_calendar_poll_is_safe_when_auxiliary_page_has_no_calendar_card(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("document.getElementById('calendar').remove()")
+    page.evaluate("window.consoleApp.updateDashboard('calendar', {event_count: 0, task_count: 0, upcoming_events: [], access_summary: 'Delt område'})")
+    assert page.evaluate("window.consoleApp.authExpired") is False
+
+
+def test_section_renderer_owns_latest_modal_and_overview_snapshot(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("window.consoleApp.showSectionModal('calendar')")
+    page.evaluate("window.consoleApp.renderSection('calendar', {event_count: 1, task_count: 0, upcoming_events: [{title: 'Latest owned snapshot', date: 'Tomorrow'}]})")
+    assert 'Latest owned snapshot' in page.locator('#modal-content').inner_text()
+    assert page.locator('[data-metric="overview.calendar"]').inner_text()=='1 / 0'

@@ -15,10 +15,10 @@ Execution authorized 4 October 2026. Local implementation, exact-head CI, extern
 | 9 | I39 | Decide retention and harden the local-only exporter | Planned | — |
 | 10 | I05 | Serialize store ownership and snapshot commits | Implemented locally | 176 focused tests; whole suite before final crash probes 747 passed, 1 live skip, 17 subtests. Barrier, process-exit, cancellation, copied-return and stale-revision receipts. Windows CI added; not remotely verified. |
 | 11 | I03 | One sender with truthful delivery and reserved quotas | Implemented locally | 107 focused tests; full non-browser checkpoint 762 passed, 1 live skip, 17 subtests. Remote-ID evidence, pending/unknown persistence, cancellation, quota race, safe interval and bounded 429 retry verified. I10 occurrence identity and I24 complete shutdown remain separate. |
-| 12 | I07 | Explicit invocation and calendar scope policy | Policy implemented; console presentation pending I15 | 26 permission tests; full non-browser suite 815 passed, 1 live skip, 17 subtests. Preserving legacy/orphan scopes, audience checks, preview-only migration and CLI/desktop explanations verified. |
+| 12 | I07 | Explicit invocation and calendar scope policy | Implemented locally | 26 permission tests and I15 integrated text-safe console audience explanation; 35 browser/security tests. Legacy/orphan scopes preserved; no live data moved. |
 | 13 | I09 | Explicit calendar time and kind | Implemented locally | 117 focused tests; full non-browser suite 837 passed, 1 live skip, 17 subtests. All-day, duration, seconds, task refusal, DST gap/fold, Oslo-midnight, before-save interpretation and preserving invalid edits verified. No live account migration. |
 | 14 | I12 | Structured AI outcomes and bounded admission | Planned | — |
-| 15 | I15 | Render all console state consistently | Planned | — |
+| 15 | I15 | Render all console state consistently | Implemented locally | Child 9caeeba reviewed/integrated; three parent RED-to-GREEN consumer corrections (absent card, owned modal snapshot, explicit calendar kind counts). 35 browser/security tests; 89 calendar/policy regressions. |
 | 16 | I16 | Endpoint freshness and owned polling timers | Planned | — |
 | 17 | I21 | Reproducible profiles, typed boundaries, dependency integration | Planned | — |
 | 18 | I29 | Maintained school-year data with coverage | Planned | — |

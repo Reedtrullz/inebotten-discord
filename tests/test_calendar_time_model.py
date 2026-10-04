@@ -207,3 +207,16 @@ async def test_handler_date_edit_accepts_explicit_fold_in_one_change(tmp_path):
     await handler.handle_edit(message)
     updated=manager.items['shared'][0]
     assert updated['id']==item['id'] and updated['date']=='31.10.2027' and updated['fold']==1
+
+
+def test_console_counts_use_explicit_kind_instead_of_missing_time_guess(tmp_path, monkeypatch):
+    import json
+    from web_console.state_collector import collect_calendar_data
+    monkeypatch.setenv('HERMES_HOME',str(tmp_path))
+    path=tmp_path/'discord/data/calendar.json';path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'shared':[
+        {'id':'event','title':'All day event','kind':'event','date':'01.01.2027','time':None},
+        {'id':'task','title':'Timed task','kind':'task','date':'01.01.2027','time':'10:00'}]}))
+    result=collect_calendar_data()
+    assert result['event_count']==1 and result['task_count']==1
+    assert {item['kind'] for item in result['upcoming_events']}=={'event','task'}

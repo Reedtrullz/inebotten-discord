@@ -241,6 +241,7 @@ class ConsoleApp {
 
   renderSection(sectionName, sectionState) {
     if (!sectionState || typeof sectionState !== "object") return;
+    this.data[sectionName] = sectionState;
     const setText = (selector, value) => {
       document.querySelectorAll(selector).forEach((element) => {
         element.textContent = value ?? "N/A";
@@ -460,6 +461,7 @@ class ConsoleApp {
   }
 
   renderCalendarScope(card, state, make) {
+    if (!card) return;
     card.querySelector("[data-calendar-scope]")?.remove();
     const lines = this.calendarScopeLines(state);
     if (!lines.length) return;

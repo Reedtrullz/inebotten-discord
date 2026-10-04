@@ -212,7 +212,7 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 - [x] Pin current sharing/allowlist behavior as compatibility fixtures before migration.
 - [x] Centralize policy checks, add explicit configured modes and scope IDs, validate personal-ID defaults in setup, and produce a reviewed migration preview before moving existing data.
 - [x] Run tests/test_calendar_access_policy.py, tests/test_mention_gate.py, tests/test_calendar_edit.py and console authorization fixtures.
-- [ ] Review and commit; accept the user-facing explanation only when setup/console can show exactly who can read/write each scope.
+- [x] Review and commit; accept the user-facing explanation only when setup/console can show exactly who can read/write each scope.
 
 ### Task 13: I09 — Explicit calendar time and kind
 
@@ -244,11 +244,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify web_console/static/app.js, web_console/dashboard.py, web_console/state_collector.py, web_console/templates/base.html and web_console/static/main.css as required; extend tests/test_console_frontend.py and tests/test_web_console_frontend_security.py.
 **Interfaces:** renderSection(sectionName, sectionState) updates visible detail rows and the corresponding modal from the same latest state; state objects retain existing API compatibility.
 
-- [ ] Add browser fixtures changing counts/details, deleting the final event, updating logs/copy output and refreshing an open modal. Assert focus survives and hostile text stays text.
-- [ ] Capture the current count/detail mismatch in a deterministic local browser fixture.
-- [ ] Implement text-safe renderers, meaningful empty/loading/error states and shared visible/modal snapshots; retain responsive layout and existing accessibility affordances.
-- [ ] Run the two listed frontend files separately from async tests; check keyboard focus and narrow viewport with fixtures.
-- [ ] Review screenshots/state assertions and commit; no frontend-framework change.
+- [x] Add browser fixtures changing counts/details, deleting the final event, updating logs/copy output and refreshing an open modal. Assert focus survives and hostile text stays text.
+- [x] Capture the current count/detail mismatch in a deterministic local browser fixture.
+- [x] Implement text-safe renderers, meaningful empty/loading/error states and shared visible/modal snapshots; retain responsive layout and existing accessibility affordances.
+- [x] Run the two listed frontend files separately from async tests; check keyboard focus and narrow viewport with fixtures.
+- [x] Review screenshots/state assertions and commit; no frontend-framework change.
 
 ### Task 16: I16 — Endpoint freshness and owned polling timers
 

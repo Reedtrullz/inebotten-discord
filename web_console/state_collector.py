@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.json_storage import hermes_discord_data_path
+from cal_system.event_schema import Clock
 from core.access_policy import AccessPolicy, policy_summary, invocation_description
 
 from utils.storage_contract import load_document, bucket_records, user_records
@@ -366,7 +367,7 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
     withheld = set(data) - set(permitted)
     items = _flatten_calendar_items(permitted)
 
-    now = datetime.now()
+    now = (getattr(getattr(monitor, "calendar", None), "clock", None) or Clock()).now()
     upcoming = []
     event_count = 0
     task_count = 0
@@ -375,17 +376,12 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
         if item.get("completed") or item.get("delete_pending"):
             continue
 
-        event_count += 1
-
-        title = str(item.get("title", "")).strip()
-        item_type = str(item.get("type", "")).strip().lower()
-        if item_type == "task" or (
-            not item.get("time")
-            and not item.get("recurrence")
-            and not item.get("gcal_event_id")
-            and not item.get("gcal_link")
-        ):
+        title = str(item.get('title', '')).strip()
+        item_type = item.get('kind', item.get('type', 'event'))
+        if item_type == 'task':
             task_count += 1
+        else:
+            event_count += 1
 
         item_date = _parse_date(item.get("date"))
         if item_date is None or item_date.date() < now.date():
@@ -394,6 +390,10 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
         upcoming.append(
             {
                 "title": title,
+                "kind": item_type,
+                "timezone": item.get("timezone", "Europe/Oslo"),
+                "all_day": item.get("all_day", not bool(item.get("time"))),
+                "duration_minutes": item.get("duration_minutes"),
                 "date": item.get("date"),
                 "time": item.get("time"),
                 "recurrence": item.get("recurrence"),
