@@ -1348,9 +1348,15 @@ class TestFeatureCommands(unittest.TestCase):
         """Test 87: School holidays: 'skoleferie oslo'"""
         from features.school_holidays import get_school_holidays
 
-        result = get_school_holidays("oslo")
+        class FrozenDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 10, 4)
 
-        self.assertIsNotNone(result)
+        with patch("features.school_holidays.date", FrozenDate):
+            result = get_school_holidays("oslo")
+
+        self.assertTrue(any(holiday["name"] == "Juleferie" for holiday in result))
 
     def test_88_birthday_save(self):
         """Test 88: Birthday: 'bursdag 15.03'"""

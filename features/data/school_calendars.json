@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "max_verified_age_days": 365,
+  "calendars": {
+    "oslo": {
+      "name": "Oslo",
+      "school_years": {
+        "2026-2027": {
+          "coverage": "verified",
+          "coverage_note": "Dekker den publiserte felles skoleruta for offentlige grunnskoler og videregående skoler. Oslo kommune opplyser at datoer kan endres når Utdanningsdirektoratets eksamensplan foreligger; planleggingsdager er inkludert i oppførte ferier og fridager.",
+          "coverage_note_en": "Covers the published shared calendar for public primary and upper secondary schools. Oslo municipality says dates may change when the national exam schedule is published; planning days are included in the listed holidays and days off.",
+          "verified_at": "2026-10-04",
+          "source_refs": [
+            "https://www.oslo.kommune.no/skole-og-utdanning/ferie-og-fridager-i-skolen/"
+          ],
+          "holidays": [
+            {"name": "Høstferie", "start": "2026-09-28", "end": "2026-10-02"},
+            {"name": "Juleferie", "start": "2026-12-21", "end": "2027-01-01"},
+            {"name": "Vinterferie", "start": "2027-02-22", "end": "2027-02-26"},
+            {"name": "Påskeferie", "start": "2027-03-22", "end": "2027-03-30"},
+            {"name": "Kristi Himmelfartsdag", "start": "2027-05-06", "end": "2027-05-06"},
+            {"name": "Inneklemt fridag", "start": "2027-05-07", "end": "2027-05-07"},
+            {"name": "Grunnlovsdag / 2. pinsedag", "start": "2027-05-17", "end": "2027-05-17"},
+            {
+              "name": "Sommerferie",
+              "start": "2027-06-19",
+              "end": "2027-08-15",
+              "source_note": "Inclusive interval after the published last school day (18 June 2027) and before the published first school day of 2027/2028 (16 August 2027)."
+            }
+          ]
+        }
+      }
+    },
+    "trondheim": {
+      "name": "Trondheim",
+      "school_years": {
+        "2026-2027": {
+          "coverage": "partial",
+          "coverage_note": "Delvis dekning for kommunale barne- og ungdomsskoler: felles ferier og publiserte skolefrie dager er tatt med. Planleggingsdager varierer mellom skoler og SFO og må kontrolleres på den enkelte skoles nettside.",
+          "coverage_note_en": "Partial coverage for municipal primary and lower secondary schools: shared holidays and published school-free days are listed. Planning days vary by school and SFO and must be checked on the individual school's website.",
+          "verified_at": "2026-10-04",
+          "source_refs": [
+            "https://www.trondheim.kommune.no/tema/skole/trondheimsskolen/overganger/ferie-og-fridager/"
+          ],
+          "holidays": [
+            {"name": "Høstferie", "start": "2026-10-05", "end": "2026-10-09"},
+            {
+              "name": "Juleferie",
+              "start": "2026-12-19",
+              "end": "2027-01-03",
+              "source_note": "Inclusive break interval between last school day before Christmas (18 December 2026) and first school day after (4 January 2027), as published by Trondheim municipality."
+            },
+            {"name": "Skolefri", "start": "2027-01-29", "end": "2027-01-29"},
+            {"name": "Vinterferie", "start": "2027-02-22", "end": "2027-02-26"},
+            {"name": "Påskeferie", "start": "2027-03-22", "end": "2027-03-29"},
+            {"name": "Skolefri", "start": "2027-05-07", "end": "2027-05-07"},
+            {
+              "name": "Sommerferie",
+              "start": "2027-06-19",
+              "end": "2027-08-22",
+              "source_note": "Inclusive interval after the published last school day (18 June 2027) and before the published first school day of 2027/2028 (23 August 2027)."
+            }
+          ]
+        }
+      }
+    }
+  }
+}
