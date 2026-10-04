@@ -43,6 +43,7 @@ class ReminderChecker:
         storage_path=None,
         outbound_sender=None,
         clock=None,
+        health_callback=None,
     ):
         self.clock = clock or Clock(wall=lambda: datetime.now(timezone.utc))
         self.calendar = calendar_manager
@@ -52,6 +53,7 @@ class ReminderChecker:
         self.send_channel_message = send_channel_message_func
         self.send_ping_message = send_ping_message_func
         self.outbound = outbound_sender or OutboundSender(get_channel_func, send_channel_message=send_channel_message_func)
+        self.health_callback = health_callback
         self.running = False
         self._morning_digest_sent = False
         self._last_gcal_sync = None
@@ -544,6 +546,7 @@ class ReminderChecker:
         self.running = True
         print("[REMIND] Reminder checker started")
         while self.running:
+            successful = False
             try:
                 prune = getattr(self.calendar, 'prune_mutation_history', None)
                 if callable(prune):
@@ -564,9 +567,13 @@ class ReminderChecker:
                             print("[REMIND] Google-synkronisering utsatt; lokale endringer er bevart.")
                     else:
                         await self.sync_google()
+                successful = True
             except Exception as e:
                 print(f"[REMIND] Error in checker loop: {e}")
                 self.stats["errors"] += 1
+
+            if callable(self.health_callback):
+                self.health_callback(successful)
 
             # Check every 60 seconds
             for _ in range(60):

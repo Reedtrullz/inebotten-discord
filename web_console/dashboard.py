@@ -447,11 +447,11 @@ def _render_readiness_section(data: dict[str, Any]) -> str:
                 + f'<strong class="badge {_status_badge(item.get("status"))}">{escape(status_label)}</strong>'
                 + "</div>"
             )
-    body = "".join(rows) or '<div class="empty-state">Venter på readiness-data.</div>'
+    body = "".join(rows) or '<div class="empty-state">Venter på driftsstatus.</div>'
     overall = readiness.get("status", "stale")
     return f"""<article class="card" id="readiness">
   <div class="card-header">
-    <div><h3>Provider readiness</h3><p class="muted">Tilkobling, modelliste og faktisk svar vises som separate signaler.</p></div>
+    <div><h3>Driftsklarhet</h3><p class="muted">Tilkobling, modelliste og faktisk svar vises som separate signaler.</p></div>
     <span class="badge {_status_badge(overall)}" data-metric="readiness.status">{escape(_readiness_label(overall))}</span>
   </div>
   <div class="card-body" data-readiness-list>{body}</div>

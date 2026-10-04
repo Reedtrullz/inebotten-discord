@@ -344,11 +344,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify web_console/state_collector.py, web_console/dashboard.py, web_console/server.py, core/message_monitor.py; create tests/test_provider_health.py; extend tests/test_console_server.py.
 **Interfaces:** subsystem health exposes enabled, required, status ready|degraded|unavailable|stale|disabled, checked_at, reason_code and recovery_action. Provider readiness distinguishes transport/model verification from inference acceptance; public health stays minimal.
 
-- [ ] Add local-only, cloud-only, disabled Google, unreachable optional bridge, stale scheduler and sanitized-error fixtures.
-- [ ] Demonstrate optional bridge presentation confusion without calling any provider.
-- [ ] Consume configured provider contracts, add scheduler/store/sync status, and show recovery instructions only for relevant failures; authenticate detailed diagnostics.
-- [ ] Run tests/test_provider_health.py, tests/test_console_server.py and frontend fixture checks; prove model-list success cannot assert inference ready.
-- [ ] Review and commit; no recurring billable inference probes.
+- [x] Add local-only, cloud-only, disabled Google, unreachable optional bridge, stale scheduler and sanitized-error fixtures.
+- [x] Demonstrate optional bridge presentation confusion without calling any provider.
+- [x] Consume configured provider contracts, add scheduler/store/sync status, and show recovery instructions only for relevant failures; authenticate detailed diagnostics.
+- [x] Run tests/test_provider_health.py, tests/test_console_server.py and frontend fixture checks; prove model-list success cannot assert inference ready.
+- [x] Review and commit; no recurring billable inference probes.
 
 ### Task 24: I18 — Bounded logs and useful diagnostics
 

@@ -250,3 +250,98 @@ def test_monitor_readiness_records_outcome_without_prompt_or_response():
     assert snapshot["inference"]["accepted"] is True
     assert snapshot["inference"]["provider"] == "openrouter"
     assert "PRIVATE_RESPONSE_TEXT" not in json.dumps(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_unknown_required_provider_cannot_disappear_from_aggregate(monkeypatch):
+    monitor = _monitor('unsupported', inference_status=None, inference_at=None)
+    _patch_local_state(monkeypatch, monitor)
+    result = await state_collector.collect_provider_readiness(monitor, now=NOW)
+    assert result['components']['provider']['status'] == 'unavailable'
+    assert result['status'] == 'unavailable'
+
+
+@pytest.mark.asyncio
+async def test_future_provider_and_scheduler_evidence_is_not_fresh(monkeypatch):
+    monitor = _monitor(inference_at=NOW + timedelta(hours=2))
+    monitor.get_task_health = lambda: {'reminder-checker': {'state': 'running', 'last_ok': _stamp(NOW + timedelta(hours=2))}}
+    _patch_local_state(monkeypatch, monitor)
+    result = await state_collector.collect_provider_readiness(monitor, now=NOW)
+    assert result['components']['provider']['status'] != 'ready'
+    assert result['components']['scheduler']['status'] == 'stale'
+
+
+@pytest.mark.asyncio
+async def test_hung_scheduler_cannot_gain_success_from_timer():
+    import asyncio
+    monitor = MessageMonitor.__new__(MessageMonitor)
+    old = _stamp(NOW - timedelta(minutes=10))
+    monitor._task_health = {'reminder-checker': {'state': 'running', 'last_ok': old}}
+    blocked = asyncio.Event()
+    monitor._background_tasks = set()
+    task = monitor._track_background_task(blocked.wait(), 'reminder-checker')
+    await asyncio.sleep(.02)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert monitor._task_health['reminder-checker']['last_ok'] == old
+
+
+@pytest.mark.asyncio
+async def test_fallback_acceptance_is_not_primary_transport_proof(monkeypatch):
+    monitor = _monitor('lm_studio', probe_ok=False, inference_provider='openrouter')
+    _patch_local_state(monkeypatch, monitor)
+    result = await state_collector.collect_provider_readiness(monitor, bridge_health={'status': 'unavailable', 'lm_studio': 'disconnected'}, now=NOW)
+    assert result['components']['provider']['transport_status'] == 'unavailable'
+    assert result['components']['provider']['status'] != 'ready'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed', [False, True])
+async def test_real_checker_reports_completed_iteration_and_failure(tmp_path, failed):
+    from unittest.mock import AsyncMock
+    from cal_system.reminder_checker import ReminderChecker
+    monitor = MessageMonitor.__new__(MessageMonitor)
+    monitor._task_health = {}
+    checker = ReminderChecker(storage_path=tmp_path / 'synthetic.json',
+                              health_callback=monitor.record_scheduler_iteration)
+    try:
+        checker.check_upcoming_30min = AsyncMock(side_effect=ValueError('synthetic') if failed else None)
+        checker.check_event_now = AsyncMock()
+        checker.check_event_passed = AsyncMock()
+        checker.check_morning_digest = AsyncMock()
+        def stop_after_completion(successful):
+            monitor.record_scheduler_iteration(successful)
+            checker.running = False
+        checker.health_callback = stop_after_completion
+        await checker.start()
+        health = monitor.get_task_health()['reminder-checker']
+        if failed:
+            assert health['state'] == 'degraded' and 'last_ok' not in health
+        else:
+            assert health['state'] == 'running'
+            assert datetime.fromisoformat(health['last_ok']).utcoffset() == timedelta(0)
+    finally:
+        checker.close_storage()
+
+
+@pytest.mark.asyncio
+async def test_failed_bridge_probe_closes_owned_writer(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    reader = SimpleNamespace(read=AsyncMock(side_effect=TimeoutError('synthetic')))
+    writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), close=Mock(), wait_closed=AsyncMock())
+    monkeypatch.setattr(state_collector.asyncio, 'open_connection', AsyncMock(return_value=(reader, writer)))
+    result = await state_collector.collect_bridge_health(_monitor('lm_studio'))
+    assert result['status'] == 'unavailable'
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_old_or_future_catalogue_probe_is_unverified(monkeypatch):
+    for checked in (NOW - timedelta(days=1), NOW + timedelta(hours=1)):
+        monitor = _monitor(inference_status=None, inference_at=None)
+        monitor._provider_readiness['probe']['checked_at'] = _stamp(checked)
+        _patch_local_state(monkeypatch, monitor)
+        result = await state_collector.collect_provider_readiness(monitor, now=NOW)
+        assert result['components']['provider']['transport_status'] == 'unverified'
+        assert result['components']['provider']['model_discovery_status'] == 'unverified'

@@ -279,26 +279,26 @@ class MessageMonitor:
     def _track_background_task(self, coro, name):
         task = asyncio.create_task(coro, name=name)
         self._background_tasks.add(task)
-        self._set_task_health(name, state="running", started_at=datetime.now().isoformat(), last_error=None)
+        self._set_task_health(name, state="running", started_at=datetime.now(timezone.utc).isoformat(), last_error=None)
 
         def _done_callback(done_task):
             self._background_tasks.discard(done_task)
             if done_task.cancelled():
-                self._set_task_health(name, state="cancelled", finished_at=datetime.now().isoformat())
+                self._set_task_health(name, state="cancelled", finished_at=datetime.now(timezone.utc).isoformat())
                 return
             try:
                 exc = done_task.exception()
             except Exception:
                 return
             if exc:
-                self._mark_task_error(name, exc, state="failed", finished_at=datetime.now().isoformat())
+                self._mark_task_error(name, exc, state="failed", finished_at=datetime.now(timezone.utc).isoformat())
                 print(f"[MONITOR] Background task {name} failed: {exc}")
             else:
                 self._set_task_health(
                     name,
                     state="completed",
-                    finished_at=datetime.now().isoformat(),
-                    last_ok=datetime.now().isoformat(),
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    last_ok=datetime.now(timezone.utc).isoformat(),
                     last_error=None,
                     exception_type=None,
                 )
@@ -306,22 +306,18 @@ class MessageMonitor:
         task.add_done_callback(_done_callback)
         return task
 
-    async def _run_with_health_heartbeat(self, awaitable, name, *, interval=60):
-        """Keep long-running scheduler liveness fresh without changing its loop."""
-        task = asyncio.create_task(awaitable)
-        try:
-            while True:
-                done, _pending = await asyncio.wait({task}, timeout=interval)
-                if task in done:
-                    return task.result()
-                self._mark_task_ok(name)
-        except asyncio.CancelledError:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            raise
+    def record_scheduler_iteration(self, successful):
+        if successful:
+            self._mark_task_ok('reminder-checker')
+        else:
+            self._set_task_health('reminder-checker', state='degraded',
+                reason_code='scheduler_iteration_failed',
+                last_error_at=datetime.now(timezone.utc).isoformat())
 
     def record_provider_health_check(self, healthy):
         """Retain only startup reachability evidence; discard provider text."""
+        if not isinstance(getattr(self, '_provider_readiness', None), dict):
+            self._provider_readiness = {'probe': None, 'inference': None}
         self._provider_readiness["probe"] = {
             "ok": bool(healthy),
             "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -336,6 +332,8 @@ class MessageMonitor:
         if not re.fullmatch(r"[a-z0-9_.-]{1,32}", provider):
             provider = "unknown"
         accepted = status == "success" and bool(getattr(result, "text", None))
+        if not isinstance(getattr(self, '_provider_readiness', None), dict):
+            self._provider_readiness = {'probe': None, 'inference': None}
         self._provider_readiness["inference"] = {
             "status": status,
             "provider": provider,
@@ -358,7 +356,7 @@ class MessageMonitor:
         self._set_task_health(
             name,
             state="running",
-            last_ok=datetime.now().isoformat(),
+            last_ok=datetime.now(timezone.utc).isoformat(),
             last_error=None,
             exception_type=None,
         )
@@ -369,7 +367,7 @@ class MessageMonitor:
             state=state,
             last_error=str(exc),
             exception_type=type(exc).__name__,
-            last_error_at=datetime.now().isoformat(),
+            last_error_at=datetime.now(timezone.utc).isoformat(),
             **extra,
         )
 
@@ -1405,9 +1403,7 @@ class SelfbotClient(discord.Client):
 
         if reminder_checker:
             self.reminder_checker_task = monitor._track_background_task(
-                monitor._run_with_health_heartbeat(
-                    reminder_checker.start(), "reminder-checker"
-                ),
+                reminder_checker.start(),
                 "reminder-checker",
             )
             print("[BOT] Calendar reminder checker started")
@@ -1444,6 +1440,7 @@ class SelfbotClient(discord.Client):
         return ReminderChecker(
             calendar_manager=calendar,
             reminder_manager=reminders,
+            health_callback=getattr(selected_monitor, 'record_scheduler_iteration', None),
             get_channel_func=get_channel,
             outbound_sender=monitor_sender(selected_monitor) if hasattr(selected_monitor, "rate_limiter") else None,
         )

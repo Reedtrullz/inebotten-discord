@@ -127,6 +127,8 @@ def _provider_contracts(monitor: object | None = None) -> tuple[str, str | None]
 def _bridge_contract(monitor: object | None = None) -> tuple[bool, bool]:
     primary, fallback = _provider_contracts(monitor)
     enabled = primary == "lm_studio" or fallback == "lm_studio"
+    if primary == "unknown" and any(os.getenv(key) for key in ("HERMES_BRIDGE_HOST", "HERMES_BRIDGE_PORT")):
+        enabled = True  # Explicit endpoint diagnostics during partial startup; optional.
     return enabled, primary == "lm_studio"
 
 
@@ -313,7 +315,7 @@ def _collect_calendar_sync_health(
             status="degraded",
             checked_at=checked_at,
             reason_code="calendar_sync_failed",
-            recovery_action="Retry calendar sync after confirming Google authorization; local events are retained.",
+            recovery_action="Kontroller Google-tilgangen og prøv synkronisering igjen. Lokale hendelser er bevart.",
             gcal_enabled=True,
         )
 
@@ -321,8 +323,8 @@ def _collect_calendar_sync_health(
     checker = getattr(client, "reminder_checker", None)
     last_sync_mono = getattr(checker, "_last_gcal_sync", None)
     if isinstance(last_sync_mono, (int, float)):
-        age_seconds = max(0.0, time.monotonic() - float(last_sync_mono))
-        if age_seconds <= CALENDAR_SYNC_STALE_AFTER_SECONDS:
+        age_seconds = time.monotonic() - float(last_sync_mono)
+        if 0 <= age_seconds <= CALENDAR_SYNC_STALE_AFTER_SECONDS:
             return _health_component(
                 enabled=True,
                 required=True,
@@ -345,7 +347,7 @@ def _collect_calendar_sync_health(
     if last_ok is None and isinstance(initial_sync, dict):
         last_ok = _parse_timestamp(initial_sync.get("finished_at"))
     age = _utc_now(now) - last_ok if last_ok else None
-    if age is not None and age <= timedelta(seconds=CALENDAR_SYNC_STALE_AFTER_SECONDS):
+    if age is not None and timedelta(0) <= age <= timedelta(seconds=CALENDAR_SYNC_STALE_AFTER_SECONDS):
         return _health_component(
             enabled=True,
             required=True,
@@ -362,7 +364,7 @@ def _collect_calendar_sync_health(
         status="stale",
         checked_at=checked_at,
         reason_code="calendar_sync_stale",
-        recovery_action="Run a Google Calendar sync and review its result in the authenticated console.",
+        recovery_action="Kjør Google-synkronisering og kontroller resultatet i den innloggede konsollen.",
         gcal_enabled=True,
         age_seconds=max(0, int(age.total_seconds())) if age is not None else None,
     )
@@ -379,7 +381,7 @@ def _collect_scheduler_readiness(
             status="unavailable",
             checked_at=checked_at,
             reason_code="scheduler_not_started",
-            recovery_action="Start the bot and wait for the reminder scheduler to start.",
+            recovery_action="Start boten og vent på påminnelsesplanleggeren.",
         )
 
     tasks = _collect_task_health(monitor)
@@ -392,7 +394,7 @@ def _collect_scheduler_readiness(
             status="unavailable",
             checked_at=checked_at,
             reason_code="scheduler_not_started",
-            recovery_action="Restart the bot and confirm the reminder scheduler starts.",
+            recovery_action="Start boten på nytt og kontroller at påminnelsesplanleggeren starter.",
         )
 
     state = str(scheduler.get("state", "unknown")).lower()
@@ -403,7 +405,7 @@ def _collect_scheduler_readiness(
             status="degraded",
             checked_at=checked_at,
             reason_code="scheduler_failed",
-            recovery_action="Restart the bot and inspect authenticated scheduler diagnostics.",
+            recovery_action="Start boten på nytt og kontroller planleggerdiagnostikken i den innloggede konsollen.",
         )
     if state != "running":
         return _health_component(
@@ -412,21 +414,21 @@ def _collect_scheduler_readiness(
             status="unavailable",
             checked_at=checked_at,
             reason_code="scheduler_not_running",
-            recovery_action="Restart the bot and confirm the reminder scheduler starts.",
+            recovery_action="Start boten på nytt og kontroller at påminnelsesplanleggeren starter.",
         )
 
     heartbeat = _parse_timestamp(scheduler.get("last_ok"))
     if heartbeat is None:
         heartbeat = _parse_timestamp(scheduler.get("started_at"))
     age = now - heartbeat if heartbeat else None
-    if age is None or age > SCHEDULER_STALE_AFTER:
+    if age is None or not timedelta(0) <= age <= SCHEDULER_STALE_AFTER:
         return _health_component(
             enabled=True,
             required=True,
             status="stale",
             checked_at=checked_at,
             reason_code="scheduler_heartbeat_stale",
-            recovery_action="Restart the bot scheduler and confirm its heartbeat advances.",
+            recovery_action="Start planleggeren på nytt og kontroller at fullførte arbeidsrunder registreres.",
             heartbeat_at=heartbeat.isoformat() if heartbeat else None,
         )
     return _health_component(
@@ -458,7 +460,7 @@ def _collect_store_readiness(*, now: datetime) -> dict[str, Any]:
             status="degraded",
             checked_at=checked_at,
             reason_code="store_write_or_read_failed",
-            recovery_action="Check console-store permissions and available space; preserve existing files before repair.",
+            recovery_action="Kontroller konsolllagerets rettigheter og ledig plass. Bevar eksisterende filer før reparasjon.",
         )
     return _health_component(
         enabled=True,
@@ -466,7 +468,7 @@ def _collect_store_readiness(*, now: datetime) -> dict[str, Any]:
         status="unavailable",
         checked_at=checked_at,
         reason_code="store_unavailable",
-        recovery_action="Restore console-store access, then restart the console.",
+        recovery_action="Gjenopprett tilgang til konsolllageret og start konsollen på nytt.",
     )
 
 
@@ -497,28 +499,31 @@ def _provider_readiness_component(
     inference = inference if isinstance(inference, dict) else {}
     probe_ok = probe.get("ok") if type(probe.get("ok")) is bool else None
     probe_at = _parse_timestamp(probe.get("checked_at"))
+    if probe_at is None or not timedelta(0) <= now - probe_at <= PROVIDER_EVIDENCE_TTL:
+        probe_ok = None
     inference_at = _parse_timestamp(inference.get("checked_at"))
     inference_status = str(inference.get("status", "")).lower()
     inference_provider = _provider_name(inference.get("provider"))
-    inference_fresh = inference_at is not None and now - inference_at <= PROVIDER_EVIDENCE_TTL
+    inference_fresh = inference_at is not None and timedelta(0) <= now - inference_at <= PROVIDER_EVIDENCE_TTL
     inference_accepted = (
         inference_status == "success"
         and bool(inference.get("accepted", True))
         and inference_fresh
     )
+    primary_accepted = inference_accepted and inference_provider == provider
     bridge_connected = (
         bridge.get("lm_studio") == "connected"
         and bridge.get("status") not in {"unavailable", "error"}
     )
     if provider == "lm_studio":
-        transport = "reachable" if bridge_connected or inference_accepted else (
+        transport = "reachable" if bridge_connected or primary_accepted else (
             "unavailable" if bridge.get("status") in {"unavailable", "error"} else "unverified"
         )
         model_discovery = "catalog_reachable" if bridge_connected else (
             "unavailable" if transport == "unavailable" else "unverified"
         )
     else:
-        transport = "reachable" if inference_accepted or probe_ok is True else (
+        transport = "reachable" if primary_accepted or probe_ok is True else (
             "unavailable" if probe_ok is False else "unverified"
         )
         model_discovery = "catalog_reachable" if probe_ok is True else (
@@ -533,21 +538,21 @@ def _provider_readiness_component(
         inference_accepted and inference_provider and inference_provider != provider
     )
     if not enabled:
-        status, reason, action = "unavailable", "provider_contract_missing", "Select a supported AI provider in private setup, then restart the bot."
+        status, reason, action = "unavailable", "provider_contract_missing", "Velg en støttet AI-provider i privat oppsett og start boten på nytt."
     elif missing_credentials:
-        status, reason, action = "unavailable", "provider_credentials_missing", "Set the selected provider credentials in private setup, then restart the bot."
+        status, reason, action = "unavailable", "provider_credentials_missing", "Legg inn valgt providers legitimasjon i privat oppsett og start boten på nytt."
     elif transport == "unavailable" and not inference_accepted:
-        status, reason, action = "unavailable", "provider_unreachable", "Check the selected provider service and configured endpoint, then reconnect."
+        status, reason, action = "unavailable", "provider_unreachable", "Kontroller valgt providers tjeneste og tilkoblingsadresse, og koble til igjen."
     elif inference_status == "auth_error" and inference_fresh:
-        status, reason, action = "unavailable", "provider_auth_rejected", "Review provider credentials and model access in private setup."
+        status, reason, action = "unavailable", "provider_auth_rejected", "Kontroller providers legitimasjon og modelltilgang i privat oppsett."
     elif inference_status in {"busy", "retryable"} and inference_fresh:
-        status, reason, action = "degraded", "provider_request_failed", "Wait for provider capacity to recover, then retry a normal request."
+        status, reason, action = "degraded", "provider_request_failed", "Vent på ledig kapasitet hos provider og prøv en vanlig forespørsel igjen."
     elif inference_accepted and inference_provider == provider and not used_fallback:
         status, reason, action = "ready", "provider_inference_accepted", None
     elif used_fallback:
-        status, reason, action = "degraded", "fallback_provider_served", "Review primary provider availability; the configured fallback served the last request."
+        status, reason, action = "degraded", "fallback_provider_served", "Kontroller hovedprovider. Den konfigurerte reserveprovideren svarte sist."
     else:
-        status, reason, action = "stale", "inference_acceptance_unobserved", "Send a normal AI request through the bot to verify a model response."
+        status, reason, action = "stale", "inference_acceptance_unobserved", "Send en vanlig AI-forespørsel til boten for å kontrollere et faktisk modellsvar."
 
     return _health_component(
         enabled=enabled,
@@ -600,7 +605,7 @@ async def collect_provider_readiness(
             status="unavailable",
             checked_at=checked.isoformat(),
             reason_code="bridge_unreachable",
-            recovery_action="Start the Hermes bridge and confirm LM Studio is running with the configured model.",
+            recovery_action="Start Hermes-broen og kontroller at LM Studio kjører med valgt modell.",
         )
 
     calendar_sync = _collect_calendar_sync_health(monitor, now=checked)
@@ -618,7 +623,7 @@ async def collect_provider_readiness(
     required_statuses = [
         component["status"]
         for component in components.values()
-        if component["enabled"] and component["required"]
+        if component["required"]
     ]
     if "unavailable" in required_statuses:
         status = "unavailable"
@@ -768,19 +773,18 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
             "requests": 0,
             "errors": 0,
         }
-    host, port = _bridge_endpoint()
+    host, port, writer = "unknown", None, None
     try:
+        host, port = _bridge_endpoint()
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
             timeout=2.5,
         )
         request = b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
         writer.write(request)
-        await writer.drain()
+        await asyncio.wait_for(writer.drain(), timeout=2.5)
 
         response = await asyncio.wait_for(reader.read(4096), timeout=2.5)
-        writer.close()
-        await writer.wait_closed()
 
         header_end = response.find(b"\r\n\r\n")
         if header_end > 0:
@@ -804,6 +808,13 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
                 }
     except Exception:
         pass
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2.5)
+            except Exception:
+                pass
 
     return {
         "status": "unavailable",
