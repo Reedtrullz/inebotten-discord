@@ -208,10 +208,10 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create core/access_policy.py and tests/test_calendar_access_policy.py; modify core/config.py, core/message_monitor.py, cal_system/calendar_manager.py, features/calendar_handler.py and web_console/state_collector.py.
 **Interfaces:** authorize(actor: RequestContext, scope_id: str, operation: str) -> AccessDecision(allowed: bool, reason_code: str). Scope records contain kind legacy_shared|private_user|approved_group, owner_id, collaborator IDs and read/write policy; invocation allowlists remain separate.
 
-- [ ] Add a matrix for empty/nonempty allowlists, guild/DM/group-DM, owner/collaborator/outsider, and read/write. Assert legacy shared data is not silently privatized or duplicated.
-- [ ] Pin current sharing/allowlist behavior as compatibility fixtures before migration.
-- [ ] Centralize policy checks, add explicit configured modes and scope IDs, validate personal-ID defaults in setup, and produce a reviewed migration preview before moving existing data.
-- [ ] Run tests/test_calendar_access_policy.py, tests/test_mention_gate.py, tests/test_calendar_edit.py and console authorization fixtures.
+- [x] Add a matrix for empty/nonempty allowlists, guild/DM/group-DM, owner/collaborator/outsider, and read/write. Assert legacy shared data is not silently privatized or duplicated.
+- [x] Pin current sharing/allowlist behavior as compatibility fixtures before migration.
+- [x] Centralize policy checks, add explicit configured modes and scope IDs, validate personal-ID defaults in setup, and produce a reviewed migration preview before moving existing data.
+- [x] Run tests/test_calendar_access_policy.py, tests/test_mention_gate.py, tests/test_calendar_edit.py and console authorization fixtures.
 - [ ] Review and commit; accept the user-facing explanation only when setup/console can show exactly who can read/write each scope.
 
 ### Task 13: I09 — Explicit calendar time and kind

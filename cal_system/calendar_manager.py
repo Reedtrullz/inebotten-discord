@@ -12,6 +12,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
+from core.access_policy import AccessPolicy
+from core.request_context import current_request
+
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store, store_worker
 
@@ -75,7 +78,7 @@ class CalendarManager:
     Manages calendar items - everything is just something happening on a date
     """
 
-    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None):
+    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None, access_policy=None):
         if storage_path is None:
             storage_path = hermes_discord_data_path("calendar.json")
 
@@ -87,8 +90,31 @@ class CalendarManager:
         self.owner_name = owner_name
         self.last_gcal_sync_error = None
         self.SHARED_KEY = "shared"
+        self.access_policy = access_policy or AccessPolicy()
         self._storage = DocumentOwner(self.storage_path, bucket_records("title", require_ids=True))
         self.items = self._storage.rollback()  # Will be transitioned to {self.SHARED_KEY: [...]}
+
+    def scope_key(self, guild_id=None, operation='read'):
+        key = str(guild_id) if guild_id is not None and str(guild_id) in self.access_policy.scopes else self.access_policy.default_scope
+        decision = self.access_policy.authorize(current_request(), key, operation)
+        if not decision.allowed:
+            raise PermissionError(decision.reason_code)
+        return key
+
+    def _scope_buckets(self, operation='read'):
+        key = self.scope_key(operation=operation)
+        return {bucket for bucket in self.items if bucket == key or (
+            key == self.SHARED_KEY and bucket not in self.access_policy.scopes and not bucket.startswith(('private:', 'group:')))}
+
+    def preview_scope_migration(self, source, target):
+        actor = current_request()
+        for scope in (source, target):
+            if not self.access_policy.authorize(actor, scope, 'write').allowed:
+                raise PermissionError('scope_membership_required')
+        return {'source_scope': source, 'target_scope': target,
+                'item_ids': [item['id'] for item in self.items.get(source, [])],
+                'source_revision': self._storage.revision, 'requires_confirmation': True,
+                'warnings': ['Dette er bare en forhåndsvisning; eksisterende data er ikke flyttet.']}
 
     def ensure_gcal_configured(self):
         """Refresh or lazily initialize Google Calendar integration."""
@@ -116,7 +142,7 @@ class CalendarManager:
         
         # Migration to shared calendar if multiple buckets exist or if only old guild-specific buckets exist
         keys = list(self.items.keys())
-        if self.items and (len(keys) > 1 or (len(keys) == 1 and keys[0] != self.SHARED_KEY)):
+        if self.access_policy.default_scope == self.SHARED_KEY and not any(key.startswith(('private:', 'group:')) or key in self.access_policy.scopes and key != self.SHARED_KEY for key in keys) and self.items and (len(keys) > 1 or (len(keys) == 1 and keys[0] != self.SHARED_KEY)):
             print(f"[CAL] Migrating {len(keys)} channel-specific calendars to one grand shared calendar...")
             merged = []
             seen_ids = set()
@@ -179,12 +205,13 @@ class CalendarManager:
         """Add a new item to the calendar"""
         date_str = self._normalize_date_format(date_str)
 
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         if guild_key not in self.items:
             self.items[guild_key] = []
 
         item = {
             "id": str(uuid.uuid4()),
+            "scope_id": guild_key,
             "user_id": user_id,
             "username": username,
             "title": title,
@@ -265,7 +292,7 @@ class CalendarManager:
     @writable_store
     def delete_item(self, guild_id, item_num):
         """Delete an item by its list number (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         items = self.get_upcoming(guild_key, days=365)
 
         if item_num is not None and 1 <= item_num <= len(items):
@@ -292,7 +319,7 @@ class CalendarManager:
     @writable_store
     async def delete_item_by_title(self, guild_id, title_search):
         """Delete a single item by title matching (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         if guild_key not in self.items:
             return False, None
 
@@ -319,7 +346,7 @@ class CalendarManager:
     @writable_store
     async def delete_items_by_title(self, guild_id, title_search):
         """Delete multiple items by title matching (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         if guild_key not in self.items:
             return CalendarDeleteResult(
                 {
@@ -376,7 +403,7 @@ class CalendarManager:
     @writable_store
     async def clear_calendar(self, guild_id):
         """Delete all items from the shared calendar (ignoring guild_id)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         if guild_key not in self.items or not self.items[guild_key]:
             return {
                 "requested_count": 0,
@@ -424,7 +451,7 @@ class CalendarManager:
     @writable_store
     def complete_item(self, guild_id, item_num=None, item_id=None):
         """Mark an item as complete (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         items = self.get_upcoming(guild_key, days=365)
 
         if item_id:
@@ -442,7 +469,7 @@ class CalendarManager:
     @writable_store
     async def complete_item_by_title(self, guild_id, title_search):
         """Mark an item as complete by title matching (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         items = self.get_upcoming(guild_key, days=365)
 
         title_search = title_search.lower()
@@ -455,7 +482,7 @@ class CalendarManager:
     @writable_store
     async def complete_items_by_title(self, guild_id, title_search):
         """Mark multiple items as complete by title matching (ignoring guild_id for shared calendar)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='write')
         items = self.get_upcoming(guild_key, days=365)
 
         title_search = title_search.lower()
@@ -477,7 +504,7 @@ class CalendarManager:
     @writable_store
     def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None):
         """Edit a calendar item by its list number (1-based, matching delete/complete patterns)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(operation='write')
         items = self.get_upcoming(guild_key, days=365)
 
         if index is None or not (1 <= index <= len(items)):
@@ -494,7 +521,7 @@ class CalendarManager:
     @writable_store
     def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None):
         """Edit a calendar item by stable ID, including past/non-upcoming entries."""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(operation='write')
         for item in self.items.get(guild_key, []):
             if item.get("id") == item_id:
                 self._apply_item_updates(item, title, date, time, recurrence, description)
@@ -506,7 +533,7 @@ class CalendarManager:
 
     @writable_store
     def attach_gcal_metadata(self, item_id, event_id, link):
-        for item in self.items.get(self.SHARED_KEY, []):
+        for item in self.items.get(self.scope_key(operation='write'), []):
             if item['id'] == item_id:
                 item['gcal_event_id'] = event_id
                 item['gcal_link'] = link
@@ -550,7 +577,7 @@ class CalendarManager:
     @writable_store
     def search_items(self, query):
         """Search calendar items by title (case-insensitive substring match)"""
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(operation='read')
         items = self.items.get(guild_key, [])
 
         query = query.lower()
@@ -570,7 +597,7 @@ class CalendarManager:
         lines = [f"🔎 **Kalenderoppføringer som matcher \"{query}\":**"]
         upcoming_index_by_id = {
             item.get("id"): index
-            for index, item in enumerate(self.get_upcoming(self.SHARED_KEY, days=365), 1)
+            for index, item in enumerate(self.get_upcoming(self.scope_key(operation='read'), days=365), 1)
         }
         for item in matches[:10]:
             time_str = f" kl. {item['time']}" if item.get("time") else ""
@@ -655,6 +682,7 @@ class CalendarManager:
         """
         Pull events from Google Calendar and sync to local store
         """
+        self.scope_key(operation='write')
         self.last_gcal_sync_error = None
         if not self.ensure_gcal_configured():
             self.last_gcal_sync_error = "Google Calendar er ikke konfigurert eller koblet til ennå."
@@ -677,6 +705,8 @@ class CalendarManager:
         # occurrence, while "recurringEventId" points back to the master event.
         gcal_map = {}
         for guild_id, items in self.items.items():
+            if guild_id not in self._scope_buckets(operation='write'):
+                continue
             for item in items:
                 if item.get("gcal_event_id"):
                     gcal_map[item["gcal_event_id"]] = (guild_id, item)
@@ -800,7 +830,7 @@ class CalendarManager:
                     updated_count += 1
             else:
                 # New item from GCal
-                guild_id = self.SHARED_KEY
+                guild_id = self.scope_key(operation='write')
                 
                 await self.add_item(
                     guild_id=guild_id,
@@ -840,6 +870,8 @@ class CalendarManager:
         from cal_system.google_calendar_manager import EventLookup
 
         for guild_id, items in list(self.items.items()):
+            if guild_id not in self._scope_buckets(operation='write'):
+                continue
             kept_items = []
             for item in items:
                 gcal_id = item.get("gcal_event_id")
@@ -899,7 +931,7 @@ class CalendarManager:
         """
         Get upcoming calendar items (ignoring guild_id for shared calendar)
         """
-        guild_key = self.SHARED_KEY
+        guild_key = self.scope_key(guild_id, operation='read')
 
         if guild_key not in self.items:
             return []
@@ -931,7 +963,7 @@ class CalendarManager:
         """
         Format calendar items for display (ignoring guild_id for shared calendar)
         """
-        items = self.get_upcoming(self.SHARED_KEY, days=days, include_completed=False)
+        items = self.get_upcoming(guild_id, days=days, include_completed=False)
 
         if not items:
             return None

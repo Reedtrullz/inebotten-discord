@@ -199,6 +199,8 @@ class CalendarHandler(BaseHandler):
                 await self.send_response(message, "🔎 Skriv hva du vil søke etter i kalenderen.")
                 return
             await self.send_response(message, self.calendar.format_search_results(query))
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -267,6 +269,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -302,6 +306,8 @@ class CalendarHandler(BaseHandler):
                 discord_user_id=message.author.id,
                 discord_username=message.author.name,
             )
+        except PermissionError:
+            raise
         except StorageMutationError:
             raise
         except Exception as e:
@@ -326,6 +332,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -335,7 +343,7 @@ class CalendarHandler(BaseHandler):
         """Handle clearing the entire calendar."""
         try:
             guild_id = self.get_guild_id(message)
-            current_count = len(self.calendar.items.get(self.calendar.SHARED_KEY, []))
+            current_count = len(self.calendar.items.get(self.calendar.scope_key(operation='write'), []))
 
             if current_count == 0:
                 await self.send_response(message, "📭 Kalenderen er allerede tom.")
@@ -367,6 +375,8 @@ class CalendarHandler(BaseHandler):
             else:
                 await self.send_response(message, "📭 Kalenderen er allerede tom.")
 
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -461,6 +471,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -540,6 +552,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -717,6 +731,8 @@ class CalendarHandler(BaseHandler):
                     message, self.loc.t("calendar_edit_not_found", num=index)
                 )
 
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -749,6 +765,8 @@ class CalendarHandler(BaseHandler):
                 await self.handle_list(message)
             else:
                 await self.send_response(message, "✅ Synkronisering ferdig. Ingen nye endringer funnet i Google Calendar.")
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -797,6 +815,8 @@ class CalendarHandler(BaseHandler):
                 else:
                     await self.send_response(message, "❌ " + result)
                     
+        except PermissionError:
+            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:

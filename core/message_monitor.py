@@ -7,6 +7,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 import asyncio
 from utils.storage_contract import StorageMutationError
 from core.outbound_sender import monitor_sender
+from core.access_policy import AccessPolicy, invocation_decision
 import os
 import re
 import signal
@@ -163,7 +164,9 @@ class MessageMonitor:
         else:
             print("[MONITOR] Google Calendar integration enabled")
 
+        self.access_policy = AccessPolicy.from_config(self.client.config)
         self.calendar = CalendarManager(
+            access_policy=self.access_policy,
             gcal_manager=gcal,
             owner_email=getattr(self.client.config, 'DISCORD_EMAIL', None),
             owner_name=getattr(self.client.config, 'CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
@@ -451,20 +454,13 @@ class MessageMonitor:
         if message.author.id == self.client.user.id:
             return
 
-        # Security & Privacy Gate: Only respond to authorized users
-        # This is a selfbot, so we should be very strict about who can trigger AI/actions.
-        allowed_users = getattr(self.client.config, 'ALLOWED_USERS', [])
-        if allowed_users and message.author.id not in allowed_users:
+        invocation = invocation_decision(
+            RequestContext.from_message(message, 'no'),
+            mode=getattr(self.client.config, 'INVOCATION_MODE', 'legacy'),
+            allowed_users=getattr(self.client.config, 'ALLOWED_USERS', []),
+            allowed_channels=getattr(self.client.config, 'ALLOWED_CHANNELS', []))
+        if not invocation.allowed:
             return
-
-        # Optional: Channel restriction for non-DM channels
-        allowed_channels = getattr(self.client.config, 'ALLOWED_CHANNELS', [])
-        if allowed_channels and not isinstance(message.channel, discord.DMChannel):
-            if message.channel.id not in allowed_channels:
-                # If it's a group DM, we might still want to allow it, 
-                # but the user specifically pointed to one channel.
-                if not isinstance(message.channel, discord.GroupChannel):
-                    return
 
         authorized_message = self.authorize_message(message)
         if not authorized_message:

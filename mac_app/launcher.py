@@ -16,6 +16,7 @@ from tkinter import ttk, messagebox, scrolledtext
 if not getattr(sys, 'frozen', False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.access_policy import describe_access_settings
 from core.config_schema import hermes_settings_path, update_settings, validate_settings
 
 
@@ -228,6 +229,7 @@ class InebottenLauncher:
             from dotenv import dotenv_values
 
             config = dotenv_values(hermes_settings_path(), interpolate=False)
+            self._log(describe_access_settings(config))
             provider = config.get("AI_PROVIDER")
             model = config.get("OPENROUTER_MODEL")
             if provider:

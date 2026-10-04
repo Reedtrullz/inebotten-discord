@@ -12,12 +12,20 @@ class RequestContext:
     channel_id: str
     guild_id: str | None
     locale: str
+    channel_kind: str = 'unknown'
 
     @classmethod
     def from_message(cls, message, locale: str):
         guild = getattr(message, 'guild', None)
+        import discord
+        channel = message.channel
+        kind = 'guild' if guild else 'unknown'
+        if isinstance(channel, discord.DMChannel):
+            kind = 'dm'
+        elif isinstance(channel, discord.GroupChannel):
+            kind = 'group_dm'
         return cls(str(getattr(message, 'id', None) or uuid4()), str(message.author.id),
-                   str(message.channel.id), str(guild.id) if guild else None, locale)
+                   str(message.channel.id), str(guild.id) if guild else None, locale, channel_kind=kind)
 
 
 _ACTIVE: ContextVar[RequestContext | None] = ContextVar('inebotten_request', default=None)

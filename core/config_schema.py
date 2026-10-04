@@ -19,6 +19,8 @@ _SUPPORTED_SETTINGS = {
     "HERMES_API_URL",
     "GCAL_ENABLED",
     "GOOGLE_CALENDAR_ID",
+    "INVOCATION_MODE", "ALLOWED_USERS", "ALLOWED_CHANNELS", "CALENDAR_MODE",
+    "CALENDAR_OWNER_ID", "CALENDAR_COLLABORATORS", "CALENDAR_GROUP_CHANNELS",
 }
 _KEY_LINE = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=)(.*)$")
 
@@ -42,6 +44,15 @@ def validate_settings(values: dict[str, str]) -> list[dict[str, str]]:
             errors.append({"field": field, "reason": "must not be empty"})
         elif field == "OPENROUTER_API_KEY" and not value:
             errors.append({"field": field, "reason": "must not be empty"})
+        elif field == 'INVOCATION_MODE' and value not in ('legacy', 'allowlist'):
+            errors.append({'field': field, 'reason': 'unsupported invocation mode'})
+        elif field == 'CALENDAR_MODE' and value not in ('legacy_shared', 'private_user', 'approved_group'):
+            errors.append({'field': field, 'reason': 'unsupported calendar mode'})
+        elif field == 'CALENDAR_OWNER_ID' and value and (not value.isdigit() or int(value) <= 0):
+            errors.append({'field': field, 'reason': 'must be one positive Discord user ID'})
+        elif field in ('CALENDAR_OWNER_ID', 'CALENDAR_COLLABORATORS', 'CALENDAR_GROUP_CHANNELS', 'ALLOWED_USERS', 'ALLOWED_CHANNELS'):
+            if any(not part.strip().isdigit() or int(part.strip()) <= 0 for part in value.split(',') if part.strip()):
+                errors.append({'field': field, 'reason': 'must contain positive Discord IDs'})
         elif field == "AI_PROVIDER" and value not in {"lm_studio", "openrouter"}:
             errors.append({"field": field, "reason": "unsupported value"})
         elif field == 'OPENROUTER_MODEL' and not value.strip():
@@ -57,6 +68,11 @@ def validate_settings(values: dict[str, str]) -> list[dict[str, str]]:
                 errors.append({'field': field, 'reason': 'must be an HTTP(S) URL without embedded credentials'})
         elif field == "GCAL_ENABLED" and value.strip().lower() not in {"true", "false"}:
             errors.append({"field": field, "reason": "must be true or false"})
+    mode = values.get('CALENDAR_MODE')
+    if mode in ('private_user', 'approved_group') and (not isinstance(values.get('CALENDAR_OWNER_ID'), str) or not values.get('CALENDAR_OWNER_ID', '').strip()):
+        errors.append({'field': 'CALENDAR_OWNER_ID', 'reason': 'explicit owner ID required for this scope'})
+    if mode == 'approved_group' and (not isinstance(values.get('CALENDAR_GROUP_CHANNELS'), str) or not values.get('CALENDAR_GROUP_CHANNELS', '').strip()):
+        errors.append({'field': 'CALENDAR_GROUP_CHANNELS', 'reason': 'explicit group audience required'})
     return errors
 
 

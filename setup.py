@@ -136,14 +136,40 @@ def setup_google_calendar():
         return {'GCAL_ENABLED': 'False'}
     return {'GCAL_ENABLED': 'False'}
 
-def generate_env(discord_token, ai_config, gcal_config):
+def setup_access():
+    from core.access_policy import describe_access_settings
+    print('\nKalendertilgang: 1 = behold delt legacy-kalender, 2 = privat bruker, 3 = godkjent gruppe.')
+    choice = get_input('Velg kalenderområde', '1')
+    mode = {'1': 'legacy_shared', '2': 'private_user', '3': 'approved_group'}.get(choice)
+    if mode is None:
+        raise RuntimeError('Ugyldig kalenderområde.')
+    values = {'CALENDAR_MODE': mode}
+    if mode != 'legacy_shared':
+        values['CALENDAR_OWNER_ID'] = get_input('Eierens Discord-bruker-ID', required=True)
+    if mode == 'approved_group':
+        values['CALENDAR_COLLABORATORS'] = get_input('Godkjente bruker-ID-er, kommaseparert')
+        values['CALENDAR_GROUP_CHANNELS'] = get_input('Godkjente kanal-ID-er, kommaseparert', required=True)
+    print('Invokasjon: 1 = legacy-regler, 2 = eksplisitte brukere og gruppekanaler.')
+    invocation = get_input('Velg invokasjonsmodus', '2')
+    if invocation not in ('1', '2'):
+        raise RuntimeError('Ugyldig invokasjonsmodus.')
+    values['INVOCATION_MODE'] = 'allowlist' if invocation == '2' else 'legacy'
+    values['ALLOWED_USERS'] = get_input('Tillatte bruker-ID-er, kommaseparert', required=invocation == '2')
+    values['ALLOWED_CHANNELS'] = get_input('Tillatte gruppekanal-ID-er, kommaseparert; tomt avviser grupper i allowlist-modus')
+    errors = validate_settings(values)
+    if errors:
+        raise RuntimeError('; '.join(error['field'] + ': ' + error['reason'] for error in errors))
+    print(describe_access_settings(values))
+    return values
+
+def generate_env(discord_token, ai_config, gcal_config, access_config=None):
     try:
         env_path = settings_path()
     except ValueError:
         print(f"  {Colors.FAIL}HERMES_HOME must name a configuration directory.{Colors.ENDC}")
         return False
     print(f"\n{Colors.BOLD}Step 5: Updating private settings at {env_path}{Colors.ENDC}")
-    changes = {"DISCORD_USER_TOKEN": discord_token, **ai_config, **gcal_config}
+    changes = {"DISCORD_USER_TOKEN": discord_token, **ai_config, **gcal_config, **(access_config or {})}
     errors = validate_settings(changes)
     if errors:
         for error in errors:
@@ -173,8 +199,9 @@ def main():
         token = setup_discord()
         ai_config = setup_ai()
         gcal_config = setup_google_calendar()
+        access_config = setup_access()
         
-        if not generate_env(token, ai_config, gcal_config):
+        if not generate_env(token, ai_config, gcal_config, access_config):
             sys.exit(1)
         
         print(f"\n{Colors.BOLD}{Colors.GREEN}============================================================{Colors.ENDC}")

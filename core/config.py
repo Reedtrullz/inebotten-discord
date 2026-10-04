@@ -83,6 +83,13 @@ class Config:
         self.ALLOWED_CHANNELS = [int(c.strip()) for c in os.getenv('ALLOWED_CHANNELS', '1178146867540930601').split(',') if c.strip()]
         self.CALENDAR_OWNER_NAME = os.getenv('CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
         
+        self.INVOCATION_MODE = os.getenv('INVOCATION_MODE', 'legacy')
+        self.CALENDAR_MODE = os.getenv('CALENDAR_MODE', 'legacy_shared')
+        self.CALENDAR_OWNER_ID = os.getenv('CALENDAR_OWNER_ID', '').strip()
+        self.CALENDAR_COLLABORATORS = self._split_csv(os.getenv('CALENDAR_COLLABORATORS', ''))
+        self.CALENDAR_GROUP_CHANNELS = self._split_csv(os.getenv('CALENDAR_GROUP_CHANNELS', ''))
+        self.AUTHORIZATION_DEFAULTS_INHERITED = 'ALLOWED_USERS' not in os.environ or 'ALLOWED_CHANNELS' not in os.environ
+
         # Monitoring
         self.POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', 8))  # seconds
         
@@ -138,6 +145,17 @@ class Config:
             )
         if self.AI_PROVIDER not in {"lm_studio", "openrouter"}:
             raise ValueError("AI_PROVIDER must be 'lm_studio' or 'openrouter'.")
+
+        from core.config_schema import validate_settings
+        errors = validate_settings({
+            'INVOCATION_MODE': getattr(self, 'INVOCATION_MODE', 'legacy'),
+            'CALENDAR_MODE': getattr(self, 'CALENDAR_MODE', 'legacy_shared'),
+            'CALENDAR_OWNER_ID': getattr(self, 'CALENDAR_OWNER_ID', ''),
+            'CALENDAR_GROUP_CHANNELS': ','.join(getattr(self, 'CALENDAR_GROUP_CHANNELS', [])),
+            'CALENDAR_COLLABORATORS': ','.join(getattr(self, 'CALENDAR_COLLABORATORS', [])),
+        })
+        if errors:
+            raise ValueError('; '.join(error['field'] + ': ' + error['reason'] for error in errors))
 
         has_token = bool(self.DISCORD_TOKEN)
         

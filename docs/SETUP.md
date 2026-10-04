@@ -27,3 +27,6 @@ python scripts/run_offline_tests.py --python .venv312/bin/python -- tests/test_c
 
 
 Verdier i `.env` behandles som bokstavelig tekst, også `${…}` i en nøkkel; oppsettet utfører ingen variabelinterpolering. Endring av ett felt bevarer andre felter, kommentarer og linjeskift. En valgt OpenRouter-provider beholdes selv når API-nøkkelen mangler; oppsett/status skal vise det manglende feltet, uten å bytte provider i skjul. URL-felt avviser ugyldige URL-er og innbakte brukernavn/passord uten å vise den innsendte verdien. Source-launcherne finner prosjektmodulene også når de startes fra en annen katalog. Faktisk Tk-visning, signerte bundles og macOS/Windows-prosesslivsløp krever egne I31/I22-prøver.
+
+
+Kalenderområdet og invokasjonsmodus velges nå separat i CLI-oppsettet. Se [kalendertilgang](calendar-access.md) for felt, tom-listesemantikk, eier/medlemsregler og preview før flytting. Desktop viser samme forklaring i oppsettsloggen; bruk CLI eller den validerte settings-ruten for å endre disse feltene. Eksisterende delte data forblir delt også når et nytt privat område velges.

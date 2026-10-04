@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from utils.json_storage import hermes_discord_data_path
+from core.access_policy import AccessPolicy, policy_summary, invocation_description
+
 from utils.storage_contract import load_document, bucket_records, user_records
 
 _JSON_READ_ERRORS: dict[str, str] = {}
@@ -355,10 +357,14 @@ async def collect_bridge_health(monitor: object | None = None) -> dict[str, Any]
     return {"status": "unavailable", "host": host, "port": port}
 
 
-def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:
+def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[str, Any]:
     path = hermes_discord_data_path("calendar.json")
     data = _read_json_file(path, {})
-    items = _flatten_calendar_items(data)
+    policy = getattr(monitor, 'access_policy', None) or AccessPolicy()
+    permitted = {scope_id: values for scope_id, values in data.items()
+                 if policy.authorize(actor, scope_id if scope_id in policy.scopes or scope_id.startswith(('private:', 'group:')) else 'shared', 'read').allowed}
+    withheld = set(data) - set(permitted)
+    items = _flatten_calendar_items(permitted)
 
     now = datetime.now()
     upcoming = []
@@ -400,6 +406,11 @@ def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:
         "storage_status": "degraded" if str(path) in _JSON_READ_ERRORS else "ok",
         "storage_error": _JSON_READ_ERRORS.get(str(path)),
         "event_count": event_count,
+        "scope_policy": policy.describe(),
+        "default_scope": policy.default_scope,
+        "access_summary": policy_summary(policy) + (' Innhold fra andre områder er skjult; konsollen trenger en verifisert område-identitet.' if withheld else ''),
+        "withheld_scope_count": len(withheld),
+        "invocation_policy": invocation_description(getattr(getattr(monitor, 'client', None), 'config', None)),
         "upcoming_events": upcoming[:5],
         "task_count": task_count,
     }
