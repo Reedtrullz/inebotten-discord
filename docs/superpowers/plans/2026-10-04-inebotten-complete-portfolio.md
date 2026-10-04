@@ -280,11 +280,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify features/school_holidays.py, features/school_holidays_handler.py; create features/data/school_calendars.json and tests/test_school_calendar_coverage.py; update relevant user documentation.
 **Interfaces:** get_school_schedule(locality_id: str, school_year: str, today: date) -> SchoolSchedule(coverage verified|partial|unavailable, source_refs: list[str], verified_at: date|None, holidays: list[dict]). Dates and locality IDs come from reviewed authoritative sources.
 
-- [ ] Add audit-date expiry, year rollover, differing localities, invalid ranges, unknown locality and incomplete coverage fixtures.
-- [ ] Reproduce the empty upcoming result from the populated 2025–2026 table at 4 October 2026.
-- [ ] Build loader/coverage wording, replace unsupported blanket assumptions with reviewed locality records, and add yearly-expiry maintenance checks. Verify each real date/source before committing data.
-- [ ] Run tests/test_school_calendar_coverage.py and holiday/routing regressions; unavailable coverage must not read as “no holidays.”
-- [ ] Review dataset provenance and commit. Persisted locality preferences integrate after I13; initial explicit selection works without them.
+- [x] Add audit-date expiry, year rollover, differing localities, invalid ranges, unknown locality and incomplete coverage fixtures.
+- [x] Reproduce the empty upcoming result from the populated 2025–2026 table at 4 October 2026.
+- [x] Build loader/coverage wording, replace unsupported blanket assumptions with reviewed locality records, and add yearly-expiry maintenance checks. Verify each real date/source before committing data.
+- [x] Run tests/test_school_calendar_coverage.py and holiday/routing regressions; unavailable coverage must not read as “no holidays.”
+- [x] Review dataset provenance and commit. Persisted locality preferences integrate after I13; initial explicit selection works without them.
 
 ### Task 19: I33 — Poll lifecycle and vote-safe edits
 

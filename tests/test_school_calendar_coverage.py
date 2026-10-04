@@ -328,3 +328,25 @@ def test_future_review_date_is_not_reported_as_expired(tmp_path, monkeypatch):
     assert schedule.coverage == "partial"
     assert "fremtiden" in schedule.coverage_note.lower()
     assert "utløpt" not in schedule.coverage_note.lower()
+
+
+def test_two_supported_localities_require_an_unambiguous_choice():
+    assert school_holidays.get_locality_from_location('Skoleferie Oslo eller Trondheim?') is None
+    text = school_holidays.format_holidays_list(None, today=real_date(2026, 10, 4))
+    assert 'Oslo' in text and 'Trondheim' in text
+    assert 'Høstferie' not in text
+
+
+async def test_handler_honors_requested_unavailable_year(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from memory.localization import Localization
+    from features.school_holidays_handler import SchoolHolidaysHandler
+    _freeze_today(monkeypatch, real_date(2026, 10, 4))
+    handler = SchoolHolidaysHandler(SimpleNamespace(rate_limiter=None, loc=Localization(), client=None))
+    handler.send_response = AsyncMock()
+    message = SimpleNamespace(content='skoleferie Oslo 2027–2028')
+    await handler.handle_school_holidays(message)
+    text = handler.send_response.await_args.args[1]
+    assert '2027–2028' in text and 'ikke tilgjengelig' in text
+    assert 'Høstferie' not in text

@@ -38,10 +38,9 @@ def parse_date(date_str: str) -> date:
 def get_locality_from_location(location_hint: str) -> Optional[str]:
     """Recognize only municipality names with reviewed local calendars."""
     normalized = (location_hint or "").casefold()
-    for locality_id in ("oslo", "trondheim"):
-        if re.search(rf"(?<!\w){locality_id}(?!\w)", normalized):
-            return locality_id
-    return None
+    matches = [locality_id for locality_id in ("oslo", "trondheim")
+        if re.search(rf"(?<!\w){locality_id}(?!\w)", normalized)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def get_fylke_from_location(location_hint: str) -> Optional[str]:
@@ -351,7 +350,7 @@ def format_holidays_list(
             lines.extend(
                 [
                     "",
-                    "Ingen publiserte ferier i perioden; delvis dekning betyr at dette ikke bekrefter at alle dager er fridager.",
+                    "Ingen publiserte ferier i perioden; delvis dekning betyr at dette ikke bekrefter at alle fridager er oppført.",
                 ]
             )
     elif schedule.coverage == "verified":
