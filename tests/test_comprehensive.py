@@ -1715,15 +1715,14 @@ class TestErrorHandling(unittest.TestCase):
             corrupted_file = Path(tmpdir) / "corrupted.json"
             corrupted_file.write_text("{invalid json")
 
-            # Should not crash
-            try:
-                manager = CalendarManager(storage_path=corrupted_file)
-                # Should initialize with empty data
-                events = manager.get_upcoming("test_guild", days=30)
-                self.assertIsNotNone(events)
-            except Exception as e:
-                # Should handle gracefully, not crash
-                self.fail(f"Should not crash on corrupted JSON: {e}")
+            # Startup survives, but unavailable data must not look like an empty calendar.
+            from utils.storage_contract import StorageMutationError
+            original = corrupted_file.read_bytes()
+            manager = CalendarManager(storage_path=corrupted_file)
+            self.assertEqual(manager.storage_state.status, "corrupt")
+            with self.assertRaises(StorageMutationError):
+                manager.get_upcoming("test_guild", days=30)
+            self.assertEqual(corrupted_file.read_bytes(), original)
 
     def test_120_calculator_injection_blocked(self):
         """Test 120: Calculator injection blocked"""

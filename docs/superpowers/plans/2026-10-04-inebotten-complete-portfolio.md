@@ -110,11 +110,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify utils/json_storage.py, cal_system/calendar_manager.py, cal_system/reminder_manager.py, memory/user_memory.py, web_console/console_store.py and affected handlers; create utils/storage_contract.py and tests/test_storage_outcomes.py.
 **Interfaces:** load_document(path: Path, schema_version: int) -> StorageLoad(status missing|valid|corrupt|unsupported, document: dict|None, error_code: str|None). commit_document(path: Path, document: dict, schema_version: int) -> StorageCommit(ok: bool, error_code: str|None). Managers expose failed mutations; never respond success before commit succeeds.
 
-- [ ] Add test_corrupt_bytes_are_preserved, test_save_failure_returns_failure, and test_newer_schema_is_read_only; assert wrong-shape/truncated files and original mutation state remain recoverable.
-- [ ] Reproduce default-empty/false-success behavior with fixture stores and injected write errors.
-- [ ] Introduce validation/version envelopes, read-only degraded state, per-store legacy backup before migration, and rollback of uncommitted in-memory mutations. Adapt every touched handler.
-- [ ] Run tests/test_storage_outcomes.py, tests/test_calendar_edit.py, tests/test_reminder_crud.py, tests/test_user_memory_controls.py, tests/test_console_server.py, and relevant hardening regressions.
-- [ ] Review each adoption slice; commit only with a fixture migration and downgrade refusal receipt. No automatic corrupt-file repair.
+- [x] Add test_corrupt_bytes_are_preserved, test_save_failure_returns_failure, and test_newer_schema_is_read_only; assert wrong-shape/truncated files and original mutation state remain recoverable.
+- [x] Reproduce default-empty/false-success behavior with fixture stores and injected write errors.
+- [x] Introduce validation/version envelopes, read-only degraded state, per-store legacy backup before migration, and rollback of uncommitted in-memory mutations. Adapt every touched handler.
+- [x] Run tests/test_storage_outcomes.py, tests/test_calendar_edit.py, tests/test_reminder_crud.py, tests/test_user_memory_controls.py, tests/test_console_server.py, and relevant hardening regressions.
+- [x] Review each adoption slice; commit only with a fixture migration and downgrade refusal receipt. No automatic corrupt-file repair.
 
 ### Task 5: I06 — Request-owned locale
 

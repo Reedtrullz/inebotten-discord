@@ -4,13 +4,13 @@ Reminder Manager for Inebotten
 Tracks reminders that can be marked as completed
 """
 
-import json
 import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store
 
 
 class ReminderManager:
@@ -24,23 +24,23 @@ class ReminderManager:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.reminders = self._load_reminders()
+        self._storage = DocumentOwner(self.storage_path, bucket_records("text", require_ids=True))
+        self.reminders = self._storage.rollback()
+
+    @property
+    def storage_state(self):
+        return self._storage.state
 
     def _load_reminders(self):
-        """Load reminders from storage"""
-        if self.storage_path.exists():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[CALENDAR] Reminder load error: {e}")
-                return {}
-        return {}
+        return self._storage.load()
 
     def _save_reminders(self):
-        """Save reminders to storage"""
-        write_json_atomic(self.storage_path, self.reminders)
+        result = self._storage.commit(self.reminders, writer=write_json_atomic)
+        if not result.ok:
+            self.reminders = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
+    @writable_store
     def add_reminder(
         self,
         guild_id,
@@ -105,6 +105,7 @@ class ReminderManager:
 
         return reminder_id
 
+    @writable_store
     def complete_reminder(self, guild_id, reminder_num=None, reminder_id=None):
         """
         Mark a reminder as completed
@@ -201,6 +202,7 @@ class ReminderManager:
             print(f"[CALENDAR] Reminder parse error: {e}")
             return None
 
+    @writable_store
     def get_active_reminders(self, guild_id, include_events=True):
         """
         Get all active (incomplete) reminders
@@ -221,6 +223,7 @@ class ReminderManager:
 
         return active
 
+    @writable_store
     def get_completed_reminders(self, guild_id, days=7):
         """
         Get recently completed reminders
@@ -287,6 +290,7 @@ class ReminderManager:
 
         return "\n".join(lines) if lines else None
 
+    @writable_store
     def delete_old_completed(self, guild_id, days=7):
         """Delete reminders completed more than N days ago"""
         guild_key = str(guild_id)
@@ -308,6 +312,7 @@ class ReminderManager:
 
         self._save_reminders()
 
+    @writable_store
     def edit_reminder(self, guild_id, index, title=None, date=None, time=None, recurrence=None):
         """
         Edit an existing reminder by its 1-based index in active reminders.
@@ -350,6 +355,7 @@ class ReminderManager:
         self._save_reminders()
         return target
 
+    @writable_store
     def delete_reminder_by_id(self, guild_id, index):
         """
         Delete a reminder by its 1-based index in active reminders.
@@ -381,6 +387,7 @@ class ReminderManager:
         self._save_reminders()
         return target
 
+    @writable_store
     def search_reminders(self, guild_id, query):
         """
         Search all reminders (active and completed) by title text.

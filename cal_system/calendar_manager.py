@@ -4,7 +4,6 @@ Simple Calendar Manager for Inebotten
 Everything is just a calendar item with a date
 """
 
-import json
 import re
 import uuid
 import asyncio
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store
 
 
 class AwaitableDict(dict):
@@ -86,7 +86,8 @@ class CalendarManager:
         self.owner_name = owner_name
         self.last_gcal_sync_error = None
         self.SHARED_KEY = "shared"
-        self.items = {}  # Will be transitioned to {self.SHARED_KEY: [...]}
+        self._storage = DocumentOwner(self.storage_path, bucket_records("title", require_ids=True))
+        self.items = self._storage.rollback()  # Will be transitioned to {self.SHARED_KEY: [...]}
 
     def ensure_gcal_configured(self):
         """Refresh or lazily initialize Google Calendar integration."""
@@ -132,32 +133,23 @@ class CalendarManager:
             
         print(f"[CAL] Calendar system initialized with {sum(len(v) for v in self.items.values())} items")
 
+    @property
+    def storage_state(self):
+        return self._storage.state
+
     async def _load_data(self) -> Dict:
-        """Load calendar data from JSON file asynchronously"""
-        if not self.storage_path.exists():
-            return {}
-
-        def _read():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[CAL] Error loading calendar data: {e}")
-                return {}
-
-        return await asyncio.to_thread(_read)
+        return await asyncio.to_thread(self._storage.load)
 
     async def _save_data(self):
-        """Save calendar data to JSON file atomically and asynchronously"""
         await asyncio.to_thread(self._save_data_sync)
 
     def _save_data_sync(self):
-        """Save calendar data to JSON file atomically."""
-        try:
-            write_json_atomic(self.storage_path, self.items, indent=2)
-        except Exception as e:
-            print(f"[CAL] Error saving calendar data: {e}")
+        result = self._storage.commit(self.items, writer=write_json_atomic)
+        if not result.ok:
+            self.items = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
+    @writable_store
     def add_item(
         self,
         guild_id,
@@ -258,6 +250,7 @@ class CalendarManager:
         requested["deleted_titles"] = [title]
         return requested
 
+    @writable_store
     def delete_item(self, guild_id, item_num):
         """Delete an item by its list number (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -284,6 +277,7 @@ class CalendarManager:
             )
         )
 
+    @writable_store
     async def delete_item_by_title(self, guild_id, title_search):
         """Delete a single item by title matching (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -310,6 +304,7 @@ class CalendarManager:
             }
         )
 
+    @writable_store
     async def delete_items_by_title(self, guild_id, title_search):
         """Delete multiple items by title matching (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -366,6 +361,7 @@ class CalendarManager:
             }
         )
 
+    @writable_store
     async def clear_calendar(self, guild_id):
         """Delete all items from the shared calendar (ignoring guild_id)"""
         guild_key = self.SHARED_KEY
@@ -413,6 +409,7 @@ class CalendarManager:
             "pending_titles": pending_titles,
         }
 
+    @writable_store
     def complete_item(self, guild_id, item_num=None, item_id=None):
         """Mark an item as complete (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -430,6 +427,7 @@ class CalendarManager:
 
         return AwaitableValue((False, None, None))
 
+    @writable_store
     async def complete_item_by_title(self, guild_id, title_search):
         """Mark an item as complete by title matching (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -442,6 +440,7 @@ class CalendarManager:
 
         return False, None, None
 
+    @writable_store
     async def complete_items_by_title(self, guild_id, title_search):
         """Mark multiple items as complete by title matching (ignoring guild_id for shared calendar)"""
         guild_key = self.SHARED_KEY
@@ -463,6 +462,7 @@ class CalendarManager:
 
         return count, completed_titles, has_recurring
 
+    @writable_store
     def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None):
         """Edit a calendar item by its list number (1-based, matching delete/complete patterns)"""
         guild_key = self.SHARED_KEY
@@ -474,17 +474,19 @@ class CalendarManager:
         item = items[index - 1]
 
         self._apply_item_updates(item, title, date, time, recurrence, description)
+        self._save_data_sync()
         self._sync_item_update_to_gcal(item)
-
         self._save_data_sync()
         return AwaitableDict(item)
 
+    @writable_store
     def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None):
         """Edit a calendar item by stable ID, including past/non-upcoming entries."""
         guild_key = self.SHARED_KEY
         for item in self.items.get(guild_key, []):
             if item.get("id") == item_id:
                 self._apply_item_updates(item, title, date, time, recurrence, description)
+                self._save_data_sync()
                 self._sync_item_update_to_gcal(item)
                 self._save_data_sync()
                 return AwaitableDict(item)
@@ -523,6 +525,7 @@ class CalendarManager:
         except Exception as e:
             print(f"[CAL] GCal edit sync failed for {item.get('title')}: {e}")
 
+    @writable_store
     def search_items(self, query):
         """Search calendar items by title (case-insensitive substring match)"""
         guild_key = self.SHARED_KEY
@@ -577,7 +580,8 @@ class CalendarManager:
         else:
             # Mark as completed
             item["completed"] = True
-            
+            self._save_data_sync()
+
             # Sync to GCal if enabled
             if self.gcal_enabled and item.get("gcal_event_id"):
                 try:
@@ -624,6 +628,7 @@ class CalendarManager:
             print(f"[CALENDAR] Calendar parse error: {e}")
             return None
 
+    @writable_store
     async def sync_from_gcal(self, default_guild_id=None, default_channel_id=None):
         """
         Pull events from Google Calendar and sync to local store
@@ -867,6 +872,7 @@ class CalendarManager:
 
         return removed_count
 
+    @writable_store
     def get_upcoming(self, guild_id, days=30, include_completed=False):
         """
         Get upcoming calendar items (ignoring guild_id for shared calendar)

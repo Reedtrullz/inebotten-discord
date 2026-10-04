@@ -5,6 +5,7 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+from utils.storage_contract import StorageMutationError
 import os
 import re
 import signal
@@ -494,6 +495,9 @@ class MessageMonitor:
             print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
             await self._handle_intent(message, route)
             self.intent_stats[route.intent.value]["count"] += 1
+        except StorageMutationError:
+            self.error_count += 1
+            await self._send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as exc:
             import traceback
 

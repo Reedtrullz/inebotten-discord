@@ -49,7 +49,7 @@ def test_delete_user_memory_persists_and_does_not_touch_other_users():
 
         deleted = _run(memory.delete_user_memory("u1"))
 
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored = json.loads(path.read_text(encoding="utf-8"))["document"]
 
     assert deleted is True
     assert "u1" not in stored

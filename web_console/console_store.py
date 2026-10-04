@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from utils.json_storage import hermes_discord_data_dir, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageLoad, StorageMutationError
 
 
 STATS_SCHEMA_VERSION = 2
@@ -39,6 +40,12 @@ class ConsoleStore:
         self._sessions_file = self._data_dir / "sessions.json"
         self._first_start_file = self._data_dir / "first_start.txt"
         self._lock = threading.RLock()
+        self._stats_storage = DocumentOwner(self._stats_file, lambda d: (
+            d.get("version") == STATS_SCHEMA_VERSION and isinstance(d.get("intents", {}), dict)
+            and isinstance(d.get("rate_limits", {}), dict)))
+        self._sessions_storage = DocumentOwner(self._sessions_file, lambda d: all(
+            isinstance(value, dict) and type(value.get("expires_at")) in (int, float)
+            for value in d.values()))
         self._last_error: str | None = None
         self._last_error_at: str | None = None
         self._last_stats_saved_at: str | None = None
@@ -82,6 +89,7 @@ class ConsoleStore:
     def save_stats(self, intent_stats: dict[str, Any], rate_limit_stats: dict[str, int]) -> bool:
         try:
             existing = self._load_stats_raw()
+            self._stats_storage.require_writable()
             existing["version"] = STATS_SCHEMA_VERSION
             existing.setdefault("intents", {})
             existing.setdefault("rate_limits", {})
@@ -99,7 +107,9 @@ class ConsoleStore:
             existing["last_saved"] = datetime.now().isoformat()
 
             with self._lock:
-                write_json_atomic(self._stats_file, existing, indent=None)
+                result = self._stats_storage.commit(existing, writer=write_json_atomic)
+                if not result.ok:
+                    raise StorageMutationError(result.error_code)
             self._record_success("stats")
             return True
         except Exception as exc:
@@ -113,23 +123,21 @@ class ConsoleStore:
         return self._load_stats_raw().get("rate_limits", {})
 
     def _load_stats_raw(self) -> dict[str, Any]:
-        try:
-            if self._stats_file.exists():
-                with self._lock, self._stats_file.open("r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if not isinstance(data, dict) or data.get("version") != STATS_SCHEMA_VERSION:
-                    self._record_error("load_stats", ValueError("unsupported stats schema"))
-                    return _empty_stats()
-                data.setdefault("intents", {})
-                data.setdefault("rate_limits", {})
-                data.setdefault("last_saved", None)
-                if self._last_error and self._last_error.startswith("load_stats:"):
-                    self._last_error = None
-                    self._last_error_at = None
-                return data
-        except Exception as exc:
-            self._record_error("load_stats", exc)
-        return _empty_stats()
+        with self._lock:
+            data = self._stats_storage.load()
+            if self._stats_storage.state.status == "corrupt" and data == {}:
+                # A payload version mismatch is unsupported, not permission to reset.
+                from utils.storage_contract import load_document
+                raw = load_document(self._stats_file, 1)
+                if raw.status == "valid" and raw.document.get("version") != STATS_SCHEMA_VERSION:
+                    self._stats_storage.state = StorageLoad("unsupported", error_code="unsupported_stats_schema")
+            state = self._stats_storage.state
+            if state.status in ("corrupt", "unsupported"):
+                self._record_error("load_stats", StorageMutationError(state.error_code))
+                return _empty_stats()
+            if self._last_error and self._last_error.startswith("load_stats:"):
+                self._last_error = self._last_error_at = None
+            return data or _empty_stats()
 
     def create_session(self, ttl_seconds: int, binding_hash: str | None = None) -> str:
         """Create and persist a browser session token; returns the raw token."""
@@ -137,6 +145,7 @@ class ConsoleStore:
         expires_at = int(time.time()) + max(1, ttl_seconds)
         with self._lock:
             sessions = self._load_sessions_raw_unlocked()
+            self._sessions_storage.require_writable()
             self._prune_sessions_unlocked(sessions)
             sessions[self._hash_token(token)] = {
                 "created_at": int(time.time()),
@@ -185,22 +194,16 @@ class ConsoleStore:
                 self._save_sessions_unlocked(sessions)
 
     def _load_sessions_raw_unlocked(self) -> dict[str, dict[str, Any]]:
-        try:
-            if self._sessions_file.exists():
-                with self._sessions_file.open("r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict):
-                    return {
-                        str(key): value
-                        for key, value in data.items()
-                        if isinstance(value, dict)
-                    }
-        except Exception:
-            pass
-        return {}
+        data = self._sessions_storage.load()
+        if self._sessions_storage.state.status in ("corrupt", "unsupported"):
+            self._record_error("load_sessions", StorageMutationError(self._sessions_storage.state.error_code))
+        return data
 
     def _save_sessions_unlocked(self, sessions: dict[str, dict[str, Any]]) -> None:
-        write_json_atomic(self._sessions_file, sessions)
+        result = self._sessions_storage.commit(sessions, writer=write_json_atomic)
+        if not result.ok:
+            self._record_error("save_sessions", StorageMutationError(result.error_code))
+            raise StorageMutationError(result.error_code)
 
     def _prune_sessions_unlocked(self, sessions: dict[str, dict[str, Any]]) -> bool:
         now = int(time.time())
@@ -234,6 +237,8 @@ class ConsoleStore:
         return {
             "status": "degraded" if self._last_error or stats_read_error else "ok",
             "stats_schema_version": STATS_SCHEMA_VERSION,
+            "stats_storage_status": self._stats_storage.state.status,
+            "sessions_storage_status": self._sessions_storage.state.status,
             "last_stats_saved_at": self._last_stats_saved_at,
             "last_log_write_at": self._last_log_write_at,
             "last_error": self._last_error,
@@ -242,18 +247,8 @@ class ConsoleStore:
         }
 
     def _stats_read_error(self) -> str | None:
-        try:
-            if not self._stats_file.exists():
-                return None
-            with self._lock, self._stats_file.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            if not isinstance(data, dict):
-                return "stats file is not a JSON object"
-            if data.get("version") != STATS_SCHEMA_VERSION:
-                return "unsupported stats schema"
-            return None
-        except Exception as exc:
-            return str(exc)
+        self._load_stats_raw()
+        return self._stats_storage.state.error_code
 
     def _record_success(self, operation: str) -> None:
         now = datetime.now().isoformat()

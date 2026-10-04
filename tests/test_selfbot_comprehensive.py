@@ -439,6 +439,7 @@ class TestReminderManager(unittest.TestCase):
     def setUp(self):
         self.temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.json')
         self.temp_file.close()
+        os.unlink(self.temp_file.name)  # A new store is absent, not truncated JSON.
         self.manager = ReminderManager(storage_path=self.temp_file.name)
     
     def tearDown(self):

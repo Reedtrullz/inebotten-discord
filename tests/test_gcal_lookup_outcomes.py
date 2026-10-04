@@ -41,7 +41,7 @@ async def test_none_timeout_and_permission_preserve_local_item(tmp_path, result)
     assert after['gcal_lookup_status'] == 'unavailable'
     assert after['gcal_lookup_checked_at']
     assert manager.last_gcal_sync_error
-    assert json.loads((tmp_path/'calendar.json').read_text())[manager.SHARED_KEY][0]['id'] == before['id']
+    assert json.loads((tmp_path/'calendar.json').read_text())["document"][manager.SHARED_KEY][0]['id'] == before['id']
 
 
 @pytest.mark.asyncio

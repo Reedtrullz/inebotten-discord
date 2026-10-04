@@ -12,8 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from utils.json_storage import hermes_discord_data_path
+from utils.storage_contract import load_document, bucket_records, user_records
 
 _JSON_READ_ERRORS: dict[str, str] = {}
+_DOCUMENT_VALIDATORS = {
+    "calendar.json": bucket_records("title"),
+    "reminders.json": bucket_records("text"),
+    "user_memory.json": user_records,
+}
+
 
 
 def _read_json_file(path: Path, default: Any) -> Any:
@@ -21,8 +28,16 @@ def _read_json_file(path: Path, default: Any) -> Any:
         if not path.exists():
             _JSON_READ_ERRORS.pop(str(path), None)
             return default
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
+        if path.name in ("calendar.json", "reminders.json", "user_memory.json"):
+            outcome = load_document(path, 1)
+            if outcome.status not in ("valid", "missing"):
+                raise ValueError(outcome.error_code)
+            data = outcome.document or default
+            if not _DOCUMENT_VALIDATORS[path.name](data):
+                raise ValueError("invalid_shape")
+        else:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
         _JSON_READ_ERRORS.pop(str(path), None)
         return data
     except Exception as exc:
@@ -47,8 +62,15 @@ def _probe_json_files() -> dict[str, str]:
         if not path.exists():
             continue
         try:
-            with path.open("r", encoding="utf-8") as handle:
-                json.load(handle)
+            if name in _DOCUMENT_VALIDATORS:
+                result = load_document(path, 1)
+                if result.status not in ("valid", "missing"):
+                    raise ValueError(result.error_code)
+                if not _DOCUMENT_VALIDATORS[name](result.document or {}):
+                    raise ValueError("invalid_shape")
+            else:
+                with path.open("r", encoding="utf-8") as handle:
+                    json.load(handle)
             errors.pop(str(path), None)
             _JSON_READ_ERRORS.pop(str(path), None)
         except Exception as exc:
@@ -375,6 +397,8 @@ def collect_calendar_data(monitor: object | None = None) -> dict[str, Any]:
     upcoming.sort(key=lambda value: _parse_date(value.get("date")) or datetime.max)
 
     return {
+        "storage_status": "degraded" if str(path) in _JSON_READ_ERRORS else "ok",
+        "storage_error": _JSON_READ_ERRORS.get(str(path)),
         "event_count": event_count,
         "upcoming_events": upcoming[:5],
         "task_count": task_count,

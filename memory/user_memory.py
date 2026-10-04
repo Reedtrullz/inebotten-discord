@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageMutationError, user_records, writable_store
 
 
 class UserMemory:
@@ -24,34 +25,27 @@ class UserMemory:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.memory = {}
+        self._storage = DocumentOwner(self.storage_path, user_records)
+        self.memory = self._storage.rollback()
 
     async def setup(self):
         """Async initialization"""
         self.memory = await self._load_memory()
 
+    @property
+    def storage_state(self):
+        return self._storage.state
+
     async def _load_memory(self):
-        """Load memory from storage asynchronously"""
-        if not self.storage_path.exists():
-            return {}
-
-        def _read():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[MEMORY] User memory load error: {e}")
-                return {}
-
-        return await asyncio.to_thread(_read)
+        return await asyncio.to_thread(self._storage.load)
 
     async def _save_memory(self):
-        """Save memory to storage atomically and asynchronously"""
-        try:
-            await asyncio.to_thread(write_json_atomic, self.storage_path, self.memory)
-        except Exception as e:
-            print(f"[MEMORY] User memory save error: {e}")
+        result = await asyncio.to_thread(self._storage.commit, self.memory, writer=write_json_atomic)
+        if not result.ok:
+            self.memory = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
+    @writable_store
     async def get_user(self, user_id, username=None):
         """
         Get or create user memory
@@ -85,6 +79,7 @@ class UserMemory:
 
         return self.memory[user_key]
 
+    @writable_store
     async def update_last_interaction(self, user_id, topic=None, username=None):
         """Update last interaction time and optionally topic"""
         user = await self.get_user(user_id, username)
@@ -104,6 +99,7 @@ class UserMemory:
 
         await self._save_memory()
 
+    @writable_store
     async def add_interest(self, user_id, interest):
         """Add an interest for a user"""
         user = await self.get_user(user_id)
@@ -111,6 +107,7 @@ class UserMemory:
             user["interests"].append(interest)
             await self._save_memory()
 
+    @writable_store
     async def set_preference(self, user_id, key, value):
         """Set a user preference"""
         user = await self.get_user(user_id)
@@ -119,6 +116,7 @@ class UserMemory:
         user["preferences"][key] = value
         await self._save_memory()
 
+    @writable_store
     async def set_location(self, user_id, location):
         """Set user location"""
         user = await self.get_user(user_id)
@@ -219,6 +217,7 @@ class UserMemory:
 
         return " | ".join(context_parts) if context_parts else ""
 
+    @writable_store
     async def export_user_memory(self, user_id):
         """Return a copy of one user's stored memory without creating new data."""
         user = self.memory.get(str(user_id))
@@ -246,6 +245,7 @@ class UserMemory:
         ]
         return "\n".join(lines)
 
+    @writable_store
     async def delete_user_memory(self, user_id):
         """Delete one user's stored memory, returning True if anything was removed."""
         user_key = str(user_id)

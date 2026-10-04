@@ -4,6 +4,7 @@
 import json
 
 from features.base_handler import BaseHandler
+from utils.storage_contract import StorageMutationError
 
 
 class MemoryHandler(BaseHandler):
@@ -12,12 +13,15 @@ class MemoryHandler(BaseHandler):
     async def handle_memory(self, message, payload=None) -> None:
         action = (payload or {}).get("action", "view")
 
-        if action == "export":
-            await self._handle_export(message)
-        elif action == "delete":
-            await self._handle_delete(message, confirmed=bool((payload or {}).get("confirmed")))
-        else:
-            await self._handle_view(message)
+        try:
+            if action == "export":
+                await self._handle_export(message)
+            elif action == "delete":
+                await self._handle_delete(message, confirmed=bool((payload or {}).get("confirmed")))
+            else:
+                await self._handle_view(message)
+        except (StorageMutationError, OSError):
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
 
     async def _handle_view(self, message) -> None:
         text = await self.monitor.user_memory.format_user_memory_for_user(

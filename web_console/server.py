@@ -560,7 +560,11 @@ class ConsoleServer:
                 submitted_key = form_data.get("api_key", "")
                 if self._valid_api_key(submitted_key):
                     self._clear_login_failures(peer_key)
-                    token = self.store.create_session(self.session_ttl_seconds, self._session_binding_hash())
+                    try:
+                        token = self.store.create_session(self.session_ttl_seconds, self._session_binding_hash())
+                    except (OSError, RuntimeError):
+                        await self._send_response(writer, 503, {"error": "Session storage unavailable"})
+                        return
                     await self._send_response(
                         writer,
                         302,

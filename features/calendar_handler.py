@@ -14,6 +14,7 @@ import re
 from typing import Optional, Dict, Any
 
 from features.base_handler import BaseHandler
+from utils.storage_contract import StorageMutationError
 
 
 class CalendarHandler(BaseHandler):
@@ -198,6 +199,8 @@ class CalendarHandler(BaseHandler):
                 await self.send_response(message, "🔎 Skriv hva du vil søke etter i kalenderen.")
                 return
             await self.send_response(message, self.calendar.format_search_results(query))
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error searching calendar: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under søk i kalenderen.")
@@ -233,21 +236,6 @@ class CalendarHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
 
-            # Sync to Google Calendar if available
-            gcal_event_id = None
-            gcal_link = None
-
-            if self.calendar.gcal_enabled:
-                try:
-                    self.log(f"Syncing to Google Calendar: {item_data['title']}")
-                    gcal_result = self._sync_to_gcal(item_data, message)
-                    if gcal_result:
-                        gcal_event_id = gcal_result.get("id")
-                        gcal_link = gcal_result.get("htmlLink")
-                        self.log(f"GCal sync successful: {gcal_link}")
-                except Exception as e:
-                    self.log(f"GCal sync failed: {e}")
-
             # Add to calendar
             item = await self.calendar.add_item(
                 guild_id=guild_id,
@@ -258,10 +246,18 @@ class CalendarHandler(BaseHandler):
                 time_str=item_data.get("time"),
                 recurrence=item_data.get("recurrence"),
                 recurrence_day=item_data.get("recurrence_day"),
-                gcal_event_id=gcal_event_id,
-                gcal_link=gcal_link,
+                gcal_event_id=None,
+                gcal_link=None,
                 channel_id=message.channel.id,
             )
+
+            # Commit locally before performing an external effect. I11 owns retries.
+            if self.calendar.gcal_enabled and item:
+                gcal_result = self._sync_to_gcal(item_data, message)
+                if gcal_result:
+                    item["gcal_event_id"] = gcal_result.get("id")
+                    item["gcal_link"] = gcal_result.get("htmlLink")
+                    await self.calendar._save_data()
 
             if item:
                 response_text = self.calendar.format_single_item(item)
@@ -272,6 +268,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error handling calendar item: {e}")
 
@@ -305,6 +303,8 @@ class CalendarHandler(BaseHandler):
                 discord_user_id=message.author.id,
                 discord_username=message.author.name,
             )
+        except StorageMutationError:
+            raise
         except Exception as e:
             self.log(f"Error preparing GCal sync: {e}")
             return None
@@ -327,6 +327,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error listing calendar: {e}")
 
@@ -366,6 +368,8 @@ class CalendarHandler(BaseHandler):
             else:
                 await self.send_response(message, "📭 Kalenderen er allerede tom.")
 
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error clearing calendar: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under tømming av kalenderen.")
@@ -458,6 +462,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error deleting item: {e}")
 
@@ -535,6 +541,8 @@ class CalendarHandler(BaseHandler):
 
             await self.send_response(message, response_text)
 
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error completing item: {e}")
 
@@ -710,6 +718,8 @@ class CalendarHandler(BaseHandler):
                     message, self.loc.t("calendar_edit_not_found", num=index)
                 )
 
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error editing item: {e}")
 
@@ -740,6 +750,8 @@ class CalendarHandler(BaseHandler):
                 await self.handle_list(message)
             else:
                 await self.send_response(message, "✅ Synkronisering ferdig. Ingen nye endringer funnet i Google Calendar.")
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error syncing calendar: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under synkronisering med Google Calendar.")
@@ -786,6 +798,8 @@ class CalendarHandler(BaseHandler):
                 else:
                     await self.send_response(message, "❌ " + result)
                     
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error handling calendar auth: {e}")
             await self.send_response(message, "❌ Beklager, det oppstod en feil under autentiseringen.")
