@@ -15,9 +15,10 @@ from typing import List, Dict, Optional, Any
 from cal_system.event_schema import EventTime, Clock
 from core.access_policy import AccessPolicy
 from core.request_context import current_request
+from cal_system.mutation_preview import PreviewCache, actor_key, before_image, validate_calendar_document
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
-from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store, store_worker
+from utils.storage_contract import DocumentOwner, StorageMutationError, writable_store, store_worker
 
 
 class AwaitableDict(dict):
@@ -79,7 +80,7 @@ class CalendarManager:
     Manages calendar items - everything is just something happening on a date
     """
 
-    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None, access_policy=None, clock=None):
+    def __init__(self, storage_path=None, gcal_manager=None, owner_email=None, owner_name=None, access_policy=None, clock=None, undo_retention_seconds=86400):
         if storage_path is None:
             storage_path = hermes_discord_data_path("calendar.json")
 
@@ -92,9 +93,168 @@ class CalendarManager:
         self.last_gcal_sync_error = None
         self.SHARED_KEY = "shared"
         self.clock = clock or Clock()
+        if type(undo_retention_seconds) is not int or not 1 <= undo_retention_seconds <= 604800:
+            raise ValueError('invalid_undo_retention')
+        self.undo_retention_seconds = undo_retention_seconds
+        self._previews = PreviewCache(self.clock)
         self.access_policy = access_policy or AccessPolicy()
-        self._storage = DocumentOwner(self.storage_path, bucket_records("title", require_ids=True))
+        self._storage = DocumentOwner(self.storage_path, validate_calendar_document)
         self.items = self._storage.rollback()  # Will be transitioned to {self.SHARED_KEY: [...]}
+
+    def _authorize_mutation(self, actor, scope_id):
+        actor_key(actor)
+        if not self.access_policy.authorize(actor, scope_id, 'write').allowed:
+            raise PermissionError('scope_membership_required')
+
+    def preview_mutation(self, actor, scope_id, item_ids, operation, expected_revision, *, changes=None):
+        self._authorize_mutation(actor, scope_id)
+        if operation not in ('delete', 'clear', 'edit', 'complete'):
+            raise ValueError('unsupported_mutation')
+        if len(set(item_ids)) != len(item_ids):
+            raise ValueError('duplicate_selection')
+        if not item_ids or len(item_ids) > self._previews.max_items:
+            raise ValueError('invalid_selection_size')
+        with self._storage.transaction(write=False):
+            if self._storage._async_active:
+                raise StorageMutationError('store_busy')
+            if expected_revision != self._storage.revision:
+                raise ValueError('revision_changed')
+            records = {item['id']: item for item in self.items.get(scope_id, [])
+                       if not item.get('_mutation_deleted') and not item.get('delete_pending')}
+            if any(item_id not in records for item_id in item_ids):
+                raise ValueError('selection_changed')
+            if operation == 'clear' and set(item_ids) != set(records):
+                raise ValueError('selection_changed')
+            before = [before_image(records[item_id]) for item_id in item_ids]
+            after = copy.deepcopy(before)
+            for item in after:
+                if operation in ('delete', 'clear'):
+                    item['_mutation_deleted'] = True
+                    item['completed'] = True
+                    if item.get('gcal_event_id'):
+                        item['delete_pending'] = True
+                elif operation == 'edit':
+                    self._apply_item_updates(item, **(changes or {}))
+                elif item.get('recurrence'):
+                    item['date'] = self._calculate_next_date(item['date'], item['recurrence'])
+                    item['fold'] = None
+                    item.update(EventTime.from_item(item).validate_local().fields())
+                else:
+                    item['completed'] = True
+                if item.get('gcal_event_id'):
+                    item['_local_sync_pending'] = 'delete' if operation in ('delete', 'clear') else 'update'
+            self._previews.clock = self.clock
+            return self._previews.create(actor, scope_id, expected_revision, operation, before, after)
+
+    @writable_store
+    async def apply_preview(self, actor, token):
+        self._previews.clock = self.clock
+        entry = self._previews.get(actor, token)
+        scope = entry['scope']
+        self._authorize_mutation(actor, scope)
+        if entry['revision'] != self._storage.revision:
+            raise ValueError('revision_changed')
+        records = {item['id']: item for item in self.items.get(scope, [])}
+        if any(item['id'] not in records or before_image(records[item['id']]) != item for item in entry['before']):
+            raise ValueError('selection_changed')
+        undo_token = uuid.uuid4().hex
+        expires = (self.clock.now() + timedelta(seconds=self.undo_retention_seconds)).isoformat()
+        # Keep one bounded inverse batch per scope. Old local tombstones no longer
+        # support undo; pending external deletes remain until reconciled by I11.
+        kept = []
+        selected = {item['id'] for item in entry['before']}
+        for item in self.items.get(scope, []):
+            item.pop('_undo_record', None)
+            if item['id'] in selected or not item.get('_mutation_deleted') or item.get('_local_sync_pending'):
+                kept.append(item)
+        replacements = {}
+        for before, after in zip(entry['before'], entry['after']):
+            after['_undo_record'] = {'token': undo_token, 'actor': actor_key(actor),
+                'revision': self._storage.revision + 1, 'expires_at': expires,
+                'batch_size': len(entry['before']), 'before': before}
+            replacements[after['id']] = after
+        self.items[scope] = [replacements.get(item['id'], item) for item in kept]
+        await self._save_data()
+        self._previews.entries.pop(token, None)
+        return {'applied_count': len(replacements), 'operation': entry['operation'],
+                'undo_token': undo_token, 'undo_expires_at': expires,
+                'remote_pending': any(item.get('_local_sync_pending') for item in replacements.values()),
+                'items': [before_image(item) for item in replacements.values()]}
+
+    @writable_store
+    async def undo_mutation(self, actor, token):
+        matches = [(scope, item) for scope, items in self.items.items() for item in items
+                   if item.get('_undo_record', {}).get('token') == token]
+        if not matches:
+            raise ValueError('undo_missing')
+        scope = matches[0][0]
+        self._authorize_mutation(actor, scope)
+        for item_scope, item in matches:
+            record = item['_undo_record']
+            if item_scope != scope or record['actor'] != actor_key(actor):
+                raise PermissionError('undo_actor_mismatch')
+            if self.clock.now() >= datetime.fromisoformat(record['expires_at']):
+                raise ValueError('undo_expired')
+            if record['revision'] != self._storage.revision or len(matches) != record['batch_size']:
+                raise ValueError('revision_changed')
+        replacements = {}
+        remote_limitations = []
+        for _, item in matches:
+            restored = copy.deepcopy(item['_undo_record']['before'])
+            if restored.get('gcal_event_id'):
+                restored['remote_relink_required'] = True
+                restored['remote_previous_id'] = restored['gcal_event_id']
+                restored.pop('gcal_event_id', None)
+                restored.pop('gcal_link', None)
+                remote_limitations.append('Bare lokal gjenoppretting: Google-tilstand og tidligere ID må avklares før ny kobling.')
+            replacements[item['id']] = restored
+        self.items[scope] = [replacements.get(item['id'], item) for item in self.items[scope]]
+        await self._save_data()
+        return {'restored_count': len(replacements), 'remote_limitations': remote_limitations}
+
+    async def prune_mutation_history(self):
+        # A clean/read-only store must not claim writer ownership for a no-op.
+        if not any(item.get('_undo_record') and
+                   self.clock.now() >= datetime.fromisoformat(item['_undo_record']['expires_at'])
+                   for items in self.items.values() for item in items):
+            return False
+        return await self._prune_expired_mutations()
+
+    @writable_store
+    async def _prune_expired_mutations(self):
+        """Drop expired inverse data; preserve unresolved external delete intent."""
+        changed = False
+        for scope, items in list(self.items.items()):
+            kept = []
+            for item in items:
+                record = item.get('_undo_record')
+                if record and self.clock.now() >= datetime.fromisoformat(record['expires_at']):
+                    item.pop('_undo_record')
+                    changed = True
+                    if item.get('_mutation_deleted') and not item.get('_local_sync_pending'):
+                        continue
+                kept.append(item)
+            self.items[scope] = kept
+        if changed:
+            await self._save_data()
+        return changed
+
+    def display_snapshot(self, scope_id, days=90):
+        self.scope_key(scope_id, operation='read')
+        revision, document = self._storage.published_snapshot()
+        today = self.clock.now().date()
+        cutoff = today + timedelta(days=days)
+        items = []
+        for item in document.get(scope_id, []):
+            if item.get('completed') or item.get('delete_pending') or item.get('_mutation_deleted'):
+                continue
+            try:
+                day = datetime.strptime(item['date'], '%d.%m.%Y').date()
+                if today <= day <= cutoff:
+                    items.append(item)
+            except (KeyError, ValueError, TypeError):
+                continue
+        return revision, sorted(items, key=lambda item: datetime.strptime(item['date'], '%d.%m.%Y'))[:10]
 
     def scope_key(self, guild_id=None, operation='read'):
         key = str(guild_id) if guild_id is not None and str(guild_id) in self.access_policy.scopes else self.access_policy.default_scope
@@ -144,6 +304,7 @@ class CalendarManager:
     async def setup(self):
         """Async initialization and migration to shared calendar"""
         self.items = await self._load_data()
+        await self.prune_mutation_history()
         
         # Migration to shared calendar if multiple buckets exist or if only old guild-specific buckets exist
         keys = list(self.items.keys())
@@ -607,7 +768,7 @@ class CalendarManager:
         query = query.lower()
         matching = [
             item for item in items
-            if not item.get("delete_pending") and query in item.get("title", "").lower()
+            if not item.get("delete_pending") and not item.get('_mutation_deleted') and query in item.get("title", "").lower()
         ]
 
         return matching
@@ -627,13 +788,13 @@ class CalendarManager:
             time_str = f" kl. {item['time']}" if item.get("time") else ""
             status = "✅" if item.get("completed") else "📌"
             index = upcoming_index_by_id.get(item.get("id"))
-            prefix = f"**{index}.** " if index is not None else ""
+            prefix = f"`#{item['id'][:8]}` "
             lines.append(f"{status} {prefix}{item.get('title', '')} — _{item.get('date', '')}{time_str}_")
 
         if len(matches) > 10:
             lines.append(f"\n… og {len(matches) - 10} til.")
 
-        lines.append("\nNumrene matcher `@inebotten kalender`-lista.")
+        lines.append("\nBruk ID-en for å velge en bestemt oppføring; numre krever en fersk vist kalenderliste.")
         return "\n".join(lines)
 
     async def _process_completion(self, guild_key, item):
@@ -744,6 +905,10 @@ class CalendarManager:
             if not gcal_id:
                 continue
             canonical_gcal_id = event.get("recurringEventId") or gcal_id
+            if any(item.get('remote_relink_required') and item.get('remote_previous_id') in (gcal_id, canonical_gcal_id)
+                   for bucket in self._scope_buckets(operation='write') for item in self.items.get(bucket, [])):
+                self.last_gcal_sync_error = 'En lokalt gjenopprettet oppføring krever avklart Google-kobling før import.'
+                continue
             seen_gcal_ids.add(gcal_id)
             seen_gcal_ids.add(canonical_gcal_id)
             is_recurring_instance = bool(event.get("recurringEventId"))
@@ -803,6 +968,9 @@ class CalendarManager:
             if matched_gcal_key:
                 # Existing item, check for updates
                 guild_id, item = gcal_map[matched_gcal_key]
+                if item.get('_local_sync_pending') or item.get('_mutation_deleted'):
+                    self.last_gcal_sync_error = 'Lokal endring venter på avklart Google-synkronisering; innkommende data er bevart uten overskriving.'
+                    continue
                 if item.get('kind') == 'task':
                     self.last_gcal_sync_error = 'En koblet oppgave krever eksplisitt valg før remote arrangement endrer den.'
                     continue
@@ -894,6 +1062,9 @@ class CalendarManager:
                 continue
             kept_items = []
             for item in items:
+                if item.get('_local_sync_pending') or item.get('_undo_record'):
+                    kept_items.append(item)
+                    continue
                 gcal_id = item.get("gcal_event_id")
                 if not gcal_id or gcal_id in seen_gcal_ids:
                     if gcal_id in seen_gcal_ids:
@@ -961,7 +1132,7 @@ class CalendarManager:
 
         upcoming = []
         for item in self.items[guild_key]:
-            if item.get("delete_pending"):
+            if item.get("delete_pending") or item.get('_mutation_deleted'):
                 continue
             if not include_completed and item.get("completed"):
                 continue
@@ -979,11 +1150,12 @@ class CalendarManager:
         upcoming.sort(key=lambda x: datetime.strptime(x["date"], "%d.%m.%Y"))
         return upcoming
 
-    def format_list(self, guild_id, days=90, show_completed=False, footer=None):
+    def format_list(self, guild_id, days=90, show_completed=False, footer=None, *, items=None):
         """
         Format calendar items for display (ignoring guild_id for shared calendar)
         """
-        items = self.get_upcoming(guild_id, days=days, include_completed=False)
+        if items is None:
+            items = self.get_upcoming(guild_id, days=days, include_completed=False)
 
         if not items:
             return None
@@ -1020,7 +1192,7 @@ class CalendarManager:
             creator_str = f" ({item.get('username', 'Ukjent')})"
 
             lines.append(
-                f"{status_indicator} **{i}.** {title_display} — _{item['date']}{time_str}_{creator_str}{recurrence_str}"
+                f"{status_indicator} **{i}.** `#{item['id'][:8]}` {title_display} — _{item['date']}{time_str}_{creator_str}{recurrence_str}"
             )
 
         if show_completed:

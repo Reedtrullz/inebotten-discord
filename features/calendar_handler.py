@@ -13,6 +13,8 @@ Commands:
 import re
 from typing import Optional, Dict, Any
 
+from collections import OrderedDict
+from core.request_context import RequestContext
 from features.base_handler import BaseHandler
 from utils.storage_contract import StorageMutationError
 
@@ -29,6 +31,7 @@ class CalendarHandler(BaseHandler):
         super().__init__(monitor)
         self.calendar = monitor.calendar
         self.nlp_parser = monitor.nlp_parser
+        self._displayed_lists = OrderedDict()
 
     def _extract_search_text(self, content: str) -> Optional[str]:
         """Extract the item title/query from calendar mutation commands."""
@@ -109,19 +112,19 @@ class CalendarHandler(BaseHandler):
             "ferdig": ("fullføre", "ferdig", f"eller `@inebotten ferdig alle {query}` for alle treff."),
             "rediger": ("redigere", "rediger", ""),
         }
-        verb, command, extra_hint = action_labels[action]
+        verb, command, extra_hint = action_labels.get(action, ('endre', 'slett', ''))
         lines = [f"📋 Fant {len(matches)} treff for \"{query}\" i kalenderen:"]
         for index, item in matches[:10]:
             time_str = f" kl. {item['time']}" if item.get("time") else ""
             lines.append(
-                f"📅 {index}. {item.get('title', 'Uten tittel')} — "
+                f"📅 `#{item['id'][:8]}` {item.get('title', 'Uten tittel')} — "
                 f"{item.get('date', '')}{time_str}"
             )
 
         if len(matches) > 10:
             lines.append(f"\n… og {len(matches) - 10} til.")
 
-        hint = f"\nBruk `@inebotten {command} [nummer]` for å {verb} én bestemt"
+        hint = f"\nBruk `@inebotten {command} [ID]` for å {verb} én bestemt"
         if extra_hint:
             hint += f", {extra_hint}"
         else:
@@ -313,7 +316,12 @@ class CalendarHandler(BaseHandler):
         """Handle listing calendar items."""
         try:
             guild_id = self.get_guild_id(message)
-            calendar_text = self.calendar.format_list(guild_id, days=90)
+            actor = self._actor(message)
+            scope = self.calendar.scope_key(operation='read')
+            await self.calendar.prune_mutation_history()
+            revision, displayed = self.calendar.display_snapshot(scope)
+            calendar_text = self.calendar.format_list(guild_id, days=90, items=displayed)
+            self._remember_list(actor, scope, displayed, revision)
 
             if calendar_text:
                 response_text = calendar_text
@@ -334,49 +342,103 @@ class CalendarHandler(BaseHandler):
         except Exception as e:
             self.log(f"Error listing calendar: {e}")
 
+    def _actor(self, message):
+        return self.request_context or RequestContext.from_message(message, 'no')
+
+    def _list_key(self, actor, scope):
+        return (actor.user_id, actor.channel_id, actor.guild_id, actor.channel_kind, scope)
+
+    def _remember_list(self, actor, scope, items, revision):
+        self._displayed_lists[self._list_key(actor, scope)] = (
+            revision, [item['id'] for item in items[:10]], self.calendar.clock.monotonic() + 300)
+        while len(self._displayed_lists) > 128:
+            self._displayed_lists.popitem(last=False)
+
+    def _select_items(self, message, query, *, bulk=False, action='slett'):
+        actor = self._actor(message)
+        scope = self.calendar.scope_key(operation='write')
+        explicit_id = (query or '').startswith('#')
+        index = None if explicit_id else self._extract_target_index(query)
+        query = (query or '').lstrip('#')
+        revision = self.calendar._storage.revision
+        if index is not None:
+            display = self._displayed_lists.get(self._list_key(actor, scope))
+            if display is None or self.calendar.clock.monotonic() >= display[2]:
+                raise ValueError('Vis kalenderlisten før du bruker et nummer.')
+            if display[0] != self.calendar._storage.revision:
+                raise ValueError('Kalenderlisten er endret. Vis listen på nytt før du velger et nummer.')
+            if not 1 <= index <= len(display[1]):
+                raise ValueError('Nummeret finnes ikke i den viste listen.')
+            ids = [display[1][index - 1]]
+            revision = display[0]
+        else:
+            items = self.calendar.get_upcoming(scope, days=365)
+            # Short IDs have exact prefix semantics; never choose a title's first match.
+            ids = [item['id'] for item in items if len(query or '') >= 8 and item['id'].startswith(query)]
+            if not ids and not explicit_id:
+                ids = [item['id'] for item in items if (query or '').lower() in item['title'].lower()]
+            if len(ids) > 1 and not bulk:
+                matches = [(n, item) for n, item in enumerate(items, 1) if item['id'] in ids]
+                raise ValueError(self._format_match_prompt(query, matches, action=action))
+        if not ids:
+            raise ValueError('Fant ikke oppføringen i den synlige kalenderlisten.')
+        return actor, scope, ids, revision
+
+    async def _request_preview(self, message, operation, query=None, *, changes=None, clear=False):
+        if clear:
+            actor = self._actor(message)
+            scope = self.calendar.scope_key(operation='write')
+            revision = self.calendar._storage.revision
+            ids = [item['id'] for item in self.calendar.items.get(scope, [])
+                   if not item.get('_mutation_deleted') and not item.get('delete_pending')]
+            if not ids:
+                await self.send_response(message, '📭 Kalenderen er allerede tom.')
+                return
+        else:
+            bulk_title = self._extract_bulk_title(query or '')
+            action = {'delete': 'slett', 'complete': 'ferdig', 'edit': 'rediger'}[operation]
+            actor, scope, ids, revision = self._select_items(message, bulk_title or query, bulk=bool(bulk_title), action=action)
+        proposal = self.calendar.preview_mutation(actor, scope, ids, operation,
+            revision, changes=changes)
+        labels = {'delete': 'sletting', 'clear': 'tømming', 'complete': 'fullføring', 'edit': 'redigering'}
+        lines = [f"⚠️ Forhåndsvisning av {labels[operation]} — {len(ids)} oppføringer:"]
+        for effect in proposal.effects:
+            line = f"• `#{effect['item_id'][:8]}` {effect['title']}"
+            if operation == 'edit':
+                after = effect['after']
+                line += f" → {after['title']} — {after.get('date', '')} {after.get('time') or ''}"
+                line += f" ({after.get('kind')}, {after.get('timezone')}; varighet {after.get('duration_minutes') or 'ukjent'})"
+            if operation == 'complete' and effect['before'].get('recurrence'):
+                line += f" → neste dato {effect['after']['date']}"
+            lines.append(line)
+        if any(effect['remote_pending'] for effect in proposal.effects):
+            lines.append('Google-endringer lagres som ventende lokalt; ekstern gjennomføring er ikke bekreftet.')
+        lines.append(f"Send `@inebotten bekreft kalender {proposal.token}` innen fem minutter.")
+        await self.send_response(message, '\n'.join(lines))
+
     async def handle_clear(self, message) -> None:
-        """Handle clearing the entire calendar."""
+        """Create or apply an exact selection, or restore its local inverse."""
         try:
-            guild_id = self.get_guild_id(message)
-            current_count = len(self.calendar.items.get(self.calendar.scope_key(operation='write'), []))
-
-            if current_count == 0:
-                await self.send_response(message, "📭 Kalenderen er allerede tom.")
-                return
-
-            confirmed_count = self._clear_confirmation_count(message.content)
-            if confirmed_count != current_count:
-                await self.send_response(
-                    message,
-                    "⚠️ **Dette sletter hele kalenderen.**\n"
-                    f"Akkurat nå ligger det {current_count} elementer der.\n"
-                    f"Send `@inebotten tøm kalender bekreft {current_count}` hvis du virkelig vil gjøre det.",
-                )
-                return
-
-            result = await self.calendar.clear_calendar(guild_id)
-            deleted_count = result.get("deleted_count", 0)
-            failed_count = result.get("failed_count", 0)
-
-            if failed_count > 0:
-                await self.send_response(
-                    message,
-                    "⚠️ **Kalenderen er delvis tømt.** "
-                    f"Slettet {deleted_count} elementer, men {failed_count} Google Calendar-elementer "
-                    "kunne ikke slettes og er markert for ny sletting.",
-                )
-            elif deleted_count > 0:
-                await self.send_response(message, f"🗑️ **Kalenderen er tømt!** Slettet {deleted_count} elementer.")
+            match = re.search(r'\b(bekreft|confirm|angre|undo)\s+(?:kalender\s+)?([A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])', message.content, re.I)
+            if match:
+                actor, token = self._actor(message), match.group(2)
+                if match.group(1).lower() in ('angre', 'undo'):
+                    result = await self.calendar.undo_mutation(actor, token)
+                    text = f"↩️ Gjenopprettet {result['restored_count']} oppføringer lokalt."
+                    if result['remote_limitations']:
+                        text += '\n' + result['remote_limitations'][0]
+                else:
+                    result = await self.calendar.apply_preview(actor, token)
+                    label = {'clear': 'Slettet', 'delete': 'Slettet', 'complete': 'Fullført', 'edit': 'Oppdatert'}[result['operation']]
+                    text = f"✅ {label} {result['applied_count']} oppføringer lokalt."
+                    text += f"\nAngre med `@inebotten angre kalender {result['undo_token']}` før {result['undo_expires_at']}."
+                    if result['remote_pending']:
+                        text += '\nGoogle-endring venter; lokal lagring bekrefter ikke ekstern gjennomføring.'
+                await self.send_response(message, text)
             else:
-                await self.send_response(message, "📭 Kalenderen er allerede tom.")
-
-        except PermissionError:
-            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
-        except StorageMutationError:
-            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
-        except Exception as e:
-            self.log(f"Error clearing calendar: {e}")
-            await self.send_response(message, "❌ Beklager, det oppstod en feil under tømming av kalenderen.")
+                await self._request_preview(message, 'clear', clear=True)
+        except (ValueError, PermissionError, StorageMutationError) as error:
+            await self.send_response(message, f'❌ Endringen ble ikke utført: {error}. Vis kalenderen og lag en ny forhåndsvisning.')
 
     def _clear_is_confirmed(self, content: str) -> bool:
         """Require an explicit confirmation token for whole-calendar deletion."""
@@ -399,160 +461,16 @@ class CalendarHandler(BaseHandler):
         return int(match.group(1))
 
     async def handle_delete(self, message) -> None:
-        """Handle calendar item deletion."""
         try:
-            guild_id = self.get_guild_id(message)
-            search_text = self._extract_search_text(message.content)
-            item_num = self._extract_target_index(search_text)
-
-            if search_text:
-                bulk_title = self._extract_bulk_title(search_text)
-                if bulk_title:
-                    result = await self.calendar.delete_items_by_title(guild_id, bulk_title)
-                    await self.send_response(
-                        message,
-                        self._format_delete_result(
-                            result,
-                            missing=f"❌ Fant ingen \"{bulk_title}\" i kalenderen.",
-                        ),
-                    )
-                    return
-
-                if item_num is None:
-                    matches = self._matching_upcoming_items(guild_id, search_text)
-                    if len(matches) > 1:
-                        await self.send_response(
-                            message,
-                            self._format_match_prompt(search_text, matches, action="slett"),
-                        )
-                        return
-                    if len(matches) == 1:
-                        match_index, _ = matches[0]
-                        result = await self.calendar.delete_item(guild_id, match_index)
-                        await self.send_response(
-                            message,
-                            self._format_delete_result(
-                                result,
-                                missing=f"❌ Fant ikke \"{search_text}\" i kalenderen.",
-                            ),
-                        )
-                        return
-
-            if item_num:
-                result = await self.calendar.delete_item(guild_id, item_num)
-                response_text = self._format_delete_result(
-                    result,
-                    missing=(
-                        f"❌ Fant ikke noe med nummer {item_num}. "
-                        "Bruk `@inebotten kalender` for å se listen."
-                    ),
-                )
-            elif search_text:
-                response_text = (
-                    f"❌ Fant ikke \"{search_text}\" i kalenderen. "
-                    "Sjekk stavemåten eller bruk `@inebotten kalender`."
-                )
-            else:
-                # No number provided, show calendar
-                calendar_text = self.calendar.format_list(guild_id)
-                if calendar_text:
-                    response_text = (
-                        f"📋 Hvilken vil du slette? (nummer eller skriv tittelen)\n\n"
-                        f"{calendar_text}\n\n"
-                        f"Bruk: `@inebotten slett [nummer]` eller `@inebotten slett [tittel]`"
-                    )
-                else:
-                    response_text = "📭 Kalenderen er tom."
-
-            await self.send_response(message, response_text)
-
-        except PermissionError:
-            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
-        except StorageMutationError:
-            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
-        except Exception as e:
-            self.log(f"Error deleting item: {e}")
+            await self._request_preview(message, 'delete', self._extract_search_text(message.content))
+        except (ValueError, PermissionError, StorageMutationError) as error:
+            await self.send_response(message, f'❌ {error}')
 
     async def handle_complete(self, message) -> None:
-        """Handle marking calendar items as complete."""
         try:
-            guild_id = self.get_guild_id(message)
-            search_text = self._extract_search_text(message.content)
-            item_num = self._extract_target_index(search_text)
-
-            # Try title-based matching first if search text found
-            if search_text and not item_num:
-                # Check for bulk complete: "alle <title>" or "all <title>"
-                lower_text = search_text.lower()
-                bulk_match = re.match(r"^(alle?|all|every|both)\s+(.+)", lower_text)
-                if bulk_match:
-                    bulk_title = bulk_match.group(2).strip()
-                    count, completed, has_recurring = await self.calendar.complete_items_by_title(
-                        guild_id, bulk_title
-                    )
-                    if count > 0:
-                        titles = ", ".join(completed) if count <= 3 else f"{count} stk"
-                        response_text = f"✅ **Fullført {count}!**\n{titles}"
-                        if has_recurring:
-                            response_text += "\n🔄 Gjentakende oppføringer er flyttet til neste dato."
-                        response_text += "\n\nBra jobba! 🎉"
-                    else:
-                        response_text = f"❌ Fant ingen \"{bulk_title}\" i kalenderen."
-                    await self.send_response(message, response_text)
-                    return
-                else:
-                    matches = self._matching_upcoming_items(guild_id, search_text)
-                    if len(matches) > 1:
-                        await self.send_response(
-                            message,
-                            self._format_match_prompt(search_text, matches, action="ferdig"),
-                        )
-                        return
-                    if len(matches) == 1:
-                        match_index, _ = matches[0]
-                        success, title, next_date = await self.calendar.complete_item(
-                            guild_id, match_index
-                        )
-                        response_text = self._format_complete_response(success, title, next_date)
-                        await self.send_response(message, response_text)
-                        return
-                    # Fall through
-
-            if item_num:
-                success, title, next_date = await self.calendar.complete_item(
-                    guild_id, item_num
-                )
-
-                response_text = self._format_complete_response(success, title, next_date)
-                if not success:
-                    response_text = (
-                        f"❌ Fant ikke noe med nummer {item_num}. "
-                        "Bruk `@inebotten kalender` for å se listen."
-                    )
-            elif search_text:
-                response_text = (
-                    f"❌ Fant ikke \"{search_text}\" i kalenderen. "
-                    "Sjekk stavemåten eller bruk `@inebotten kalender`."
-                )
-            else:
-                calendar_text = self.calendar.format_list(guild_id, days=90)
-                if calendar_text:
-                    response_text = (
-                        f"📝 Hvilket vil du markere som fullført? "
-                        f"(nummer eller skriv tittelen)\n\n{calendar_text}\n\n"
-                        f"Bruk: `@inebotten ferdig [nummer]` eller `@inebotten ferdig [tittel]`"
-                    )
-                else:
-                    response_text = "📭 Kalenderen er tom."
-
-            await self.send_response(message, response_text)
-
-        except PermissionError:
-            await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
-        except StorageMutationError:
-            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
-        except Exception as e:
-            self.log(f"Error completing item: {e}")
+            await self._request_preview(message, 'complete', self._extract_search_text(message.content))
+        except (ValueError, PermissionError, StorageMutationError) as error:
+            await self.send_response(message, f'❌ {error}')
 
     _EDIT_FIELD_MAP = {
         "tittel": "title",
@@ -693,58 +611,14 @@ class CalendarHandler(BaseHandler):
             changes = {kwarg_field: value}
             if explicit_fold is not None:
                 changes['fold'] = explicit_fold
-            if index is None and search_text:
-                matches = self.calendar.search_items(search_text)
-                if not matches:
-                    await self.send_response(
-                        message, self.loc.t("calendar_edit_not_found", num=search_text)
-                    )
-                    return
-                upcoming_matches = self._matching_upcoming_items(guild_id, search_text)
-                if len(upcoming_matches) > 1:
-                    await self.send_response(
-                        message,
-                        self._format_match_prompt(search_text, upcoming_matches, action="rediger"),
-                    )
-                    return
-
-                if not upcoming_matches:
-                    await self.send_response(
-                        message,
-                        (
-                            f"❌ Fant ikke \"{search_text}\" i den synlige kalenderlisten. "
-                            "Bruk `@inebotten kalender` for å se hva som kan redigeres."
-                        ),
-                    )
-                    return
-
-                target_item = upcoming_matches[0][1]
-                updated_item = await self.calendar.edit_item_by_id(
-                    target_item.get("id"), **changes
-                )
-                await self.send_response(
-                    message,
-                    self.loc.t("calendar_edit_success", title=updated_item["title"]),
-                )
+            query = str(index) if index is not None else search_text
+            if not query:
+                await self.send_response(message, self.loc.t('calendar_edit_invalid'))
                 return
-            elif index is None:
-                await self.send_response(
-                    message, self.loc.t("calendar_edit_invalid")
-                )
-                return
-
             try:
-                updated_item = await self.calendar.edit_item(
-                    index, **changes
-                )
-                await self.send_response(
-                    message,
-                    self.loc.t("calendar_edit_success", title=updated_item["title"]),
-                )
-            except ValueError:
-                await self.send_response(
-                    message, self.loc.t("calendar_edit_not_found", num=index)
-                )
+                await self._request_preview(message, 'edit', query, changes=changes)
+            except ValueError as error:
+                await self.send_response(message, f'❌ {error}')
 
         except PermissionError:
             await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')

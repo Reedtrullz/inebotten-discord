@@ -138,6 +138,7 @@ class DocumentOwner:
         self.revision = 0
         self._working = {}
         self._mutex = threading.RLock()
+        self._publication_lock = threading.RLock()
         self._async_lock = asyncio.Lock()
         self._async_active = False
         self._draft = ContextVar('store_draft', default=None)
@@ -157,9 +158,10 @@ class DocumentOwner:
             self.state = load_document(self.path, self.schema_version)
             if self.state.status == 'valid' and not self.validator(self.state.document):
                 self.state = StorageLoad('corrupt', error_code='invalid_shape')
-            self.snapshot = copy.deepcopy(self.state.document or {}) if self.state.status == 'valid' else {}
-            self._working = copy.deepcopy(self.snapshot)
-            self.revision = self.state.revision
+            with self._publication_lock:
+                self.snapshot = copy.deepcopy(self.state.document or {}) if self.state.status == 'valid' else {}
+                self._working = copy.deepcopy(self.snapshot)
+                self.revision = self.state.revision
             self._fingerprint = self._file_fingerprint()
             return copy.deepcopy(self.snapshot)
 
@@ -254,14 +256,20 @@ class DocumentOwner:
         result = commit_document(self.path, candidate, self.schema_version,
                                  writer=writer, revision=self.revision + 1)
         if result.ok:
-            self.snapshot = candidate
-            self.revision += 1
-            self.state = StorageLoad('valid', copy.deepcopy(candidate), revision=self.revision)
-            self._fingerprint = self._file_fingerprint()
+            fingerprint = self._file_fingerprint()
+            with self._publication_lock:
+                self.snapshot = candidate
+                self.revision += 1
+                self.state = StorageLoad('valid', copy.deepcopy(candidate), revision=self.revision)
+                self._fingerprint = fingerprint
         return result
 
     def rollback(self) -> dict:
-        return copy.deepcopy(self.snapshot)
+        return self.published_snapshot()[1]
+
+    def published_snapshot(self) -> tuple[int, dict]:
+        with self._publication_lock:
+            return self.revision, copy.deepcopy(self.snapshot)
 
     def close(self):
         self._ownership.close()
@@ -274,7 +282,7 @@ class VersionedJsonStore:
         self.owner = DocumentOwner(path, validator, schema_version)
 
     def snapshot(self) -> tuple[int, dict]:
-        return self.owner.revision, self.owner.rollback()
+        return self.owner.published_snapshot()
 
     async def mutate(self, expected_revision: int | None, change: Callable[[dict], dict]) -> tuple[int, dict]:
         async with self.owner.async_transaction():

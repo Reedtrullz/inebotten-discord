@@ -375,7 +375,7 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
     task_count = 0
 
     for item in items:
-        if item.get("completed") or item.get("delete_pending"):
+        if item.get("completed") or item.get("delete_pending") or item.get('_mutation_deleted'):
             continue
 
         title = str(item.get('title', '')).strip()

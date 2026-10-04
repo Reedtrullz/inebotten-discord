@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import re
 
 from cal_system.calendar_manager import CalendarManager
 from features.calendar_handler import CalendarHandler
@@ -152,6 +153,19 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
             time_str=time,
         )
 
+    async def _confirm_preview(self):
+        response = self.handler.send_response.await_args.args[1]
+        match = re.search(r'bekreft kalender ([A-Za-z0-9_-]+)', response)
+        self.assertIsNotNone(match, response)
+        self.message.content = f"@inebotten bekreft kalender {match.group(1)}"
+        self.handler.send_response.reset_mock()
+        await self.handler.handle_clear(self.message)
+
+    async def _show_list(self):
+        self.message.content = '@inebotten kalender'
+        await self.handler.handle_list(self.message)
+        self.handler.send_response.reset_mock()
+
     async def test_handle_clear_requires_explicit_confirmation(self):
         self._add_item("Møte", _date(1))
         self.message.content = "@inebotten tøm kalender"
@@ -160,19 +174,19 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
         self.handler.send_response.assert_awaited_once()
         response = self.handler.send_response.await_args.args[1]
-        self.assertIn("bekreft 1", response)
+        self.assertIn("bekreft kalender", response)
         self.assertEqual(len(self.manager.items[self.manager.SHARED_KEY]), 1)
 
     async def test_handle_clear_confirmed_deletes_calendar(self):
         self._add_item("Møte", _date(1))
-        self.message.content = "@inebotten tøm kalender bekreft 1"
-
+        self.message.content = "@inebotten tøm kalender"
         await self.handler.handle_clear(self.message)
-
+        self.assertEqual(len(self.manager.get_upcoming('shared')), 1)
+        await self._confirm_preview()
         self.handler.send_response.assert_awaited_once()
         response = self.handler.send_response.await_args.args[1]
         self.assertIn("Slettet 1", response)
-        self.assertEqual(self.manager.items[self.manager.SHARED_KEY], [])
+        self.assertEqual(self.manager.get_upcoming(self.manager.SHARED_KEY), [])
 
     async def test_handle_clear_rejects_stale_confirmation_count(self):
         self._add_item("Møte", _date(1))
@@ -183,7 +197,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
         self.handler.send_response.assert_awaited_once()
         response = self.handler.send_response.await_args.args[1]
-        self.assertIn("bekreft 2", response)
+        self.assertIn("2 oppføringer", response)
         self.assertEqual(len(self.manager.items[self.manager.SHARED_KEY]), 2)
 
     async def test_clear_calendar_keeps_failed_gcal_deletes_pending(self):
@@ -307,18 +321,19 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
 
         rendered = self.manager.format_search_results("meldekort")
 
-        self.assertIn("**2.** Send inn meldekort", rendered)
-        self.assertIn("Numrene matcher", rendered)
+        self.assertIn("Send inn meldekort", rendered)
+        self.assertIn("`#", rendered)
+        self.assertIn("Bruk ID-en", rendered)
 
     async def test_handle_edit_integration_parse_and_execute_edit(self):
         self._add_item("Møte", _date(1), time="09:00")
+        await self._show_list()
         self.message.content = "@inebotten endre 1 tittel: Ny tittel"
 
         await self.handler.handle_edit(self.message)
+        await self._confirm_preview()
 
-        self.handler.send_response.assert_awaited_once_with(
-            self.message, "Oppdatert: Ny tittel"
-        )
+        self.assertIn("Oppdatert 1", self.handler.send_response.await_args.args[1])
         self.assertEqual(self.manager.get_upcoming("123")[0]["title"], "Ny tittel")
 
     async def test_handle_edit_invalid_format_returns_error_message(self):
@@ -336,10 +351,9 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.message.content = f"@inebotten rediger møte med ola dato: {target_date}"
 
         await self.handler.handle_edit(self.message)
+        await self._confirm_preview()
 
-        self.handler.send_response.assert_awaited_once_with(
-            self.message, "Oppdatert: Møte med Ola"
-        )
+        self.assertIn("Oppdatert 1", self.handler.send_response.await_args.args[1])
         self.assertEqual(self.manager.get_upcoming("123")[0]["date"], target_date)
 
     async def test_handle_search_returns_calendar_matches(self):
@@ -356,11 +370,12 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.message.content = "@inebotten kalender fjern meldekort"
 
         await self.handler.handle_delete(self.message)
+        await self._confirm_preview()
 
         self.handler.send_response.assert_awaited_once()
         response = self.handler.send_response.await_args.args[1]
         self.assertIn("Slettet", response)
-        self.assertIn("Send inn meldekort", response)
+        self.assertIn("Slettet 1", response)
         self.assertEqual(self.manager.get_upcoming("123"), [])
 
     async def test_handle_delete_bulk_title_with_calendar_suffix(self):
@@ -370,6 +385,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.message.content = '@inebotten Slett alle "Send inn meldekort" i kalenderen'
 
         await self.handler.handle_delete(self.message)
+        await self._confirm_preview()
 
         self.handler.send_response.assert_awaited_once()
         response = self.handler.send_response.await_args.args[1]
@@ -411,6 +427,7 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
         self.message.content = "@inebotten ferdig meldekort uke 25"
 
         await self.handler.handle_complete(self.message)
+        await self._confirm_preview()
 
         response = self.handler.send_response.await_args.args[1]
         self.assertIn("Fullført", response)
@@ -419,12 +436,14 @@ class CalendarHandlerEditTests(unittest.IsolatedAsyncioTestCase):
     async def test_handle_complete_accepts_scoped_number_phrase(self):
         self._add_item("Første", _date(1), time="12:00")
         self._add_item("Andre", _date(2), time="12:00")
+        await self._show_list()
         self.message.content = "@inebotten ferdig nummer 2"
 
         await self.handler.handle_complete(self.message)
+        await self._confirm_preview()
 
         response = self.handler.send_response.await_args.args[1]
-        self.assertIn("Andre", response)
+        self.assertIn("Fullført 1", response)
         self.assertEqual([item["title"] for item in self.manager.get_upcoming("123")], ["Første"])
 
     async def test_handle_edit_ambiguous_title_prompts_without_mutating(self):

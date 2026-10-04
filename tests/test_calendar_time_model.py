@@ -203,8 +203,13 @@ async def test_handler_date_edit_accepts_explicit_fold_in_one_change(tmp_path):
     item=manager.add_item('g','u','User','DST meeting','01.01.2027',time_str='02:30',duration_minutes=90)
     handler=CalendarHandler(SimpleNamespace(calendar=manager,nlp_parser=None,rate_limiter=None,loc=Localization(),client=None))
     handler.send_response=AsyncMock()
-    message=SimpleNamespace(content='@inebotten endre 1 dato: 31.10.2027 fold 1',guild=SimpleNamespace(id='g'),channel=SimpleNamespace(id='c'),author=SimpleNamespace(id='u',name='User'))
+    message=SimpleNamespace(content=f"@inebotten endre #{item['id'][:8]} dato: 31.10.2027 fold 1",guild=SimpleNamespace(id='g'),channel=SimpleNamespace(id='c'),author=SimpleNamespace(id='u',name='User'))
     await handler.handle_edit(message)
+    import re
+    proposal_text = handler.send_response.await_args.args[1]
+    token = re.search(r'bekreft kalender ([A-Za-z0-9_-]+)', proposal_text).group(1)
+    message.content = f'@inebotten bekreft kalender {token}'
+    await handler.handle_clear(message)
     updated=manager.items['shared'][0]
     assert updated['id']==item['id'] and updated['date']=='31.10.2027' and updated['fold']==1
 

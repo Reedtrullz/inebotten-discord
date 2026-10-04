@@ -306,11 +306,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify cal_system/calendar_manager.py, features/calendar_handler.py; create cal_system/mutation_preview.py and tests/test_calendar_mutation_preview.py; extend tests/test_calendar_edit.py.
 **Interfaces:** preview_mutation(actor: RequestContext, scope_id: str, item_ids: list[str], operation: str, expected_revision: int) -> MutationPreview(token: str, revision: int, expires_at: aware datetime, effects: list[dict]); apply_preview(actor, token) reauthorizes current policy and revision. Undo records hold inverse local changes and explicit remote limitations.
 
-- [ ] Add equal-count replacement, duplicate titles, displayed-index reorder, token expiry, actor replay, permission-revoked-after-preview and local/remote undo tests.
-- [ ] Reproduce the wrong-set clear confirmation with synthetic equal-count calendars.
-- [ ] Display short stable IDs, bind numeric commands to a displayed-list revision, require exact previews for destructive operations and journal supported inverses without promising remote ID preservation.
-- [ ] Run tests/test_calendar_mutation_preview.py, tests/test_calendar_edit.py, tests/test_calendar_access_policy.py and routing regressions.
-- [ ] Review and commit; undo storage is bounded by configured retention and respects user deletion policy.
+- [x] Add equal-count replacement, duplicate titles, displayed-index reorder, token expiry, actor replay, permission-revoked-after-preview and local/remote undo tests.
+- [x] Reproduce the wrong-set clear confirmation with synthetic equal-count calendars.
+- [x] Display short stable IDs, bind numeric commands to a displayed-list revision, require exact previews for destructive operations and journal supported inverses without promising remote ID preservation.
+- [x] Run tests/test_calendar_mutation_preview.py, tests/test_calendar_edit.py, tests/test_calendar_access_policy.py and routing regressions.
+- [x] Review and commit; undo storage is bounded by configured retention and respects user deletion policy.
 
 ### Task 21: I11 — Durable Google intent, retries, and conflicts
 

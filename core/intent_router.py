@@ -142,6 +142,9 @@ class IntentRouter:
             code = code_match.group(1) if code_match else None
             return IntentResult(BotIntent.CALENDAR_AUTH, 0.99, {"auth_code": code}, "calendar_auth_keyword")
 
+        confirmation_command = re.sub(r'<@!?\d+>', '', content_lower).replace('@inebotten', '').strip()
+        if re.fullmatch(r'(?:bekreft|confirm|angre|undo) kalender [a-z0-9_-]{20,}', confirmation_command):
+            return IntentResult(BotIntent.CALENDAR_CLEAR, 0.99, {}, 'calendar_mutation_confirmation')
         calendar_command = self._route_calendar_command(content_lower, guild_id)
         if calendar_command:
             return calendar_command

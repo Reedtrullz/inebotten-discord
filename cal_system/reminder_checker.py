@@ -347,6 +347,8 @@ class ReminderChecker:
         from core.request_context import current_request
         policy = getattr(self.calendar, 'access_policy', None)
         buckets = self.calendar.items
+        buckets = {key: [item for item in values if not item.get('_mutation_deleted')
+                        and not item.get('delete_pending')] for key, values in buckets.items()}
         if policy is None:
             return buckets
         return {key: values for key, values in buckets.items()
@@ -527,6 +529,9 @@ class ReminderChecker:
         print("[REMIND] Reminder checker started")
         while self.running:
             try:
+                prune = getattr(self.calendar, 'prune_mutation_history', None)
+                if callable(prune):
+                    await prune()
                 await self.check_upcoming_30min()
                 await self.check_event_now()
                 await self.check_event_passed()
