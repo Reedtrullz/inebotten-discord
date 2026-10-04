@@ -24,3 +24,6 @@ For offline checks, use the isolated runner with a Python 3.12 environment:
 ```bash
 python scripts/run_offline_tests.py --python .venv312/bin/python -- tests/test_config_roundtrip.py -q
 ```
+
+
+Verdier i `.env` behandles som bokstavelig tekst, også `${…}` i en nøkkel; oppsettet utfører ingen variabelinterpolering. Endring av ett felt bevarer andre felter, kommentarer og linjeskift. En valgt OpenRouter-provider beholdes selv når API-nøkkelen mangler; oppsett/status skal vise det manglende feltet, uten å bytte provider i skjul. URL-felt avviser ugyldige URL-er og innbakte brukernavn/passord uten å vise den innsendte verdien. Source-launcherne finner prosjektmodulene også når de startes fra en annen katalog. Faktisk Tk-visning, signerte bundles og macOS/Windows-prosesslivsløp krever egne I31/I22-prøver.

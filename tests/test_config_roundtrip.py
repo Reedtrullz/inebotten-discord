@@ -200,3 +200,55 @@ def test_failed_update_leaves_existing_settings_intact(tmp_path: Path, monkeypat
 
     assert path.read_text(encoding="utf-8") == "DISCORD_USER_TOKEN=preserved-synthetic-token\n"
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_config_keeps_literal_credentials_without_env_interpolation(tmp_path, monkeypatch):
+    from core.config_schema import update_settings
+    from core.config import Config
+    hermes = tmp_path/'hermes'
+    path = hermes/'discord/.env'
+    token = 'synthetic-${EXPANSION_PROBE}-token'
+    update_settings(path, {'DISCORD_USER_TOKEN': token})
+    monkeypatch.setenv('EXPANSION_PROBE', 'must-not-replace-token')
+    monkeypatch.setenv('HERMES_HOME', str(hermes))
+    monkeypatch.delenv('DISCORD_USER_TOKEN', raising=False)
+    config = Config.__new__(Config)
+    config.load_env()
+    assert os.environ['DISCORD_USER_TOKEN'] == token
+
+
+@pytest.mark.parametrize('settings, field', [
+    ({'HERMES_API_URL': 'not-a-url'}, 'HERMES_API_URL'),
+    ({'HERMES_API_URL': 'https://synthetic-user:synthetic-password@example.test/chat'}, 'HERMES_API_URL'),
+    ({'OPENROUTER_MODEL': ''}, 'OPENROUTER_MODEL'),
+])
+def test_provider_fields_reject_invalid_values_without_echo(settings, field):
+    _, validate_settings = _schema()
+    errors = validate_settings(settings)
+    assert any(error['field'] == field for error in errors)
+    assert all(value not in repr(errors) for value in settings.values() if value)
+
+
+def test_missing_openrouter_key_never_switches_provider(capsys):
+    from core.config import Config
+    config = Config.__new__(Config)
+    config.DISCORD_TOKEN = 'synthetic-token'
+    config.DISCORD_EMAIL = config.DISCORD_PASSWORD = None
+    config.AI_PROVIDER = 'openrouter'
+    config.OPENROUTER_API_KEY = None
+    config.OPENROUTER_MODEL = 'synthetic/model'
+    config.env_file_loaded = None
+    config.CONSOLE_API_KEY_AUTO_GENERATED = False
+    config.CONSOLE_AUTH_MODE = 'api_key'
+    config.validate()
+    assert config.AI_PROVIDER == 'openrouter'
+    assert 'OPENROUTER_API_KEY' in capsys.readouterr().out
+
+
+def test_settings_update_preserves_untouched_crlf_bytes(tmp_path):
+    from core.config_schema import update_settings
+    path = tmp_path/'.env'
+    original = b'# keep CRLF\r\nUNKNOWN_SETTING=literal-value\r\nAI_PROVIDER=lm_studio\r\n'
+    path.write_bytes(original)
+    update_settings(path, {'AI_PROVIDER': 'openrouter'})
+    assert path.read_bytes().startswith(b'# keep CRLF\r\nUNKNOWN_SETTING=literal-value\r\n')

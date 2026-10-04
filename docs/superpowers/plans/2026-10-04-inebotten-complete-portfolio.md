@@ -158,11 +158,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create core/config_schema.py and tests/test_config_roundtrip.py; modify core/config.py, core/auth_handler.py, utils/setup.py, utils/setup.py, mac_app/launcher.py, windows_app/launcher.py, web_console/server.py and setup documentation.
 **Interfaces:** validate_settings(values: dict[str, str]) -> list[dict[str, str]] returns field/reason errors without values; update_settings(path: Path, changes: dict[str, str]) -> None privately and atomically preserves untouched keys. Use the same validation in every setup adapter.
 
-- [ ] Add test_unknown_keys_survive_setup, test_credentials_are_never_echoed, test_file_is_private_before_content, test_email_password_rejected_at_setup, and test_explicit_hermes_has_no_project_fallback.
-- [ ] Reproduce template replacement/visible-input behavior using fake credentials and temporary directories.
-- [ ] Implement preserving env edits and hidden input, reject unsupported auth/provider settings early, replace stale discord.py installer guidance with a clean venv flow, and migrate adapters without changing account identity.
-- [ ] Run tests/test_config_roundtrip.py, tests/test_setup_security.py, tests/test_desktop_launcher_paths.py and console setup/auth checks.
-- [ ] Review and commit each adapter slice; document authoritative paths and recovery from interrupted writes.
+- [x] Add test_unknown_keys_survive_setup, test_credentials_are_never_echoed, test_file_is_private_before_content, test_email_password_rejected_at_setup, and test_explicit_hermes_has_no_project_fallback.
+- [x] Reproduce template replacement/visible-input behavior using fake credentials and temporary directories.
+- [x] Implement preserving env edits and hidden input, reject unsupported auth/provider settings early, replace stale discord.py installer guidance with a clean venv flow, and migrate adapters without changing account identity.
+- [x] Run tests/test_config_roundtrip.py, tests/test_setup_security.py, tests/test_desktop_launcher_paths.py and console setup/auth checks.
+- [x] Review and commit each adapter slice; document authoritative paths and recovery from interrupted writes.
 
 ### Task 9: I39 — Decide retention and harden the local-only exporter
 

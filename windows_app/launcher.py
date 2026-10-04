@@ -12,6 +12,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
+# Source entry points can be launched from outside the project directory.
+if not getattr(sys, 'frozen', False):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from core.config_schema import hermes_settings_path, update_settings, validate_settings
 
 
@@ -229,7 +233,7 @@ class InebottenLauncher:
         try:
             from dotenv import dotenv_values
 
-            config = dotenv_values(hermes_settings_path())
+            config = dotenv_values(hermes_settings_path(), interpolate=False)
             provider = config.get("AI_PROVIDER")
             model = config.get("OPENROUTER_MODEL")
             if provider:

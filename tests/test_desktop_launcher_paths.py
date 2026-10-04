@@ -173,3 +173,18 @@ def test_desktop_launchers_load_only_nonsecret_settings_from_authoritative_file(
         assert launcher.provider_var.value == "openrouter"
         assert launcher.model_var.value == "synthetic/model"
         assert all("never-log-this-synthetic-token" not in message for message in logs)
+
+
+def test_desktop_source_import_does_not_require_parent_pythonpath(tmp_path):
+    import subprocess
+    script = '''import runpy, sys, types
+stub = types.ModuleType('tkinter')
+for name in ('ttk', 'messagebox', 'scrolledtext'):
+    setattr(stub, name, types.ModuleType('tkinter.'+name))
+sys.modules['tkinter'] = stub
+runpy.run_path(sys.argv[1], run_name='import_probe')
+'''
+    for platform in ('mac', 'windows'):
+        result = subprocess.run([sys.executable, '-I', '-c', script, str(ROOT/f'{platform}_app/launcher.py')],
+                                cwd=tmp_path, capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr

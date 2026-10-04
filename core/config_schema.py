@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 _SUPPORTED_SETTINGS = {
@@ -43,6 +44,17 @@ def validate_settings(values: dict[str, str]) -> list[dict[str, str]]:
             errors.append({"field": field, "reason": "must not be empty"})
         elif field == "AI_PROVIDER" and value not in {"lm_studio", "openrouter"}:
             errors.append({"field": field, "reason": "unsupported value"})
+        elif field == 'OPENROUTER_MODEL' and not value.strip():
+            errors.append({'field': field, 'reason': 'must not be empty'})
+        elif field == 'HERMES_API_URL':
+            try:
+                parsed = urlsplit(value)
+                valid = parsed.scheme in ('http', 'https') and bool(parsed.hostname) and not parsed.username and not parsed.password
+                _ = parsed.port  # Reject malformed/out-of-range ports without echoing the URL.
+            except ValueError:
+                valid = False
+            if not valid:
+                errors.append({'field': field, 'reason': 'must be an HTTP(S) URL without embedded credentials'})
         elif field == "GCAL_ENABLED" and value.strip().lower() not in {"true", "false"}:
             errors.append({"field": field, "reason": "must be true or false"})
     return errors
@@ -82,7 +94,8 @@ def update_settings(path: Path, changes: dict[str, str]) -> None:
         if not target.is_file():
             raise ValueError("settings path must be a regular file")
         os.chmod(target, 0o600)
-        existing = target.read_text(encoding="utf-8")
+        with target.open('r', encoding='utf-8', newline='') as handle:
+            existing = handle.read()
     else:
         existing = ""
 
@@ -132,7 +145,7 @@ def _split_inline_comment(value: str) -> tuple[str, str]:
     for index, character in enumerate(value):
         if escaped:
             escaped = False
-        elif character == "\\" and quote != "'":
+        elif character == "\\":
             escaped = True
         elif quote and character == quote:
             quote = None

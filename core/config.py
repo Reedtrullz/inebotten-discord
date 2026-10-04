@@ -122,7 +122,7 @@ class Config:
                         print(f"[CONFIG] Warning: ignoring env file with unsafe permissions {env_path}")
                         continue
                     # override=True ensures .env wins over pre-set environment variables
-                    load_dotenv(env_path, override=True)
+                    load_dotenv(env_path, override=True, interpolate=False)
                     self.env_file_loaded = str(env_path)
                     break
                 except Exception as e:
@@ -150,8 +150,7 @@ class Config:
         if self.AI_PROVIDER == 'openrouter':
             if not self.OPENROUTER_API_KEY:
                 print("[CONFIG] WARNING: AI_PROVIDER is 'openrouter' but OPENROUTER_API_KEY is not set!")
-                print("  Falling back to LM Studio...")
-                object.__setattr__(self, 'AI_PROVIDER', 'lm_studio')
+                print("  Configure the selected provider before starting AI requests.")
             else:
                 if self.env_file_loaded:
                     print(f"[CONFIG] Settings loaded from {self.env_file_loaded}")
