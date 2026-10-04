@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version as installed_version
 import json
 import os
 from pathlib import Path
 import plistlib
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -296,6 +298,44 @@ def _isolated_smoke_environment(scratch: Path, receipt_path: Path) -> tuple[dict
     return env, paths
 
 
+def _isolated_build_environment(scratch: Path) -> dict[str, str]:
+    env = {key: os.environ[key] for key in ('PATH', 'SYSTEMROOT', 'WINDIR', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR') if key in os.environ}
+    for key, name in (('HOME', 'home'), ('USERPROFILE', 'profile'), ('HERMES_HOME', 'hermes'),
+                      ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('APPDATA', 'appdata'),
+                      ('LOCALAPPDATA', 'localappdata'), ('TMPDIR', 'temp'), ('TEMP', 'temp'), ('TMP', 'temp'),
+                      ('PYINSTALLER_CONFIG_DIR', 'pyinstaller-config')):
+        path = scratch / ('build-' + name)
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        env[key] = str(path)
+    env['INEBOTTEN_OFFLINE'] = '1'
+    return env
+
+
+def _ensure_desktop_profile(repository_root: Path, *, version_lookup=None) -> None:
+    # Imports remain local: standalone workflow contract tests need only stdlib.
+    from packaging.requirements import Requirement
+    lookup = version_lookup or installed_version
+    requirements = []
+    for raw in (repository_root / release_contract.DESKTOP_LOCK).read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith(('#', '--hash=')):
+            continue
+        if not re.match(r'^[A-Za-z0-9_.-]+==', line):
+            raise RuntimeError('desktop profile contains an unsupported requirement')
+        requirements.append(Requirement(line.removesuffix('\\').strip()))
+    if not requirements:
+        raise RuntimeError('desktop profile is empty')
+    for requirement in requirements:
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        try:
+            version = lookup(requirement.name)
+        except PackageNotFoundError as error:
+            raise RuntimeError(f'desktop profile dependency is missing: {requirement.name}') from error
+        if version not in requirement.specifier:
+            raise RuntimeError(f'desktop profile dependency version differs: {requirement.name}')
+
+
 def _run_frozen_smoke(executable: Path, scratch: Path, receipt_path: Path) -> dict:
     env, private_paths = _isolated_smoke_environment(scratch, receipt_path)
     try:
@@ -369,6 +409,7 @@ def build_desktop(
     lock_digest = release_contract.desktop_lock_digest(root)
     _ensure_tk_available()
     _ensure_pyinstaller_available()
+    _ensure_desktop_profile(root)
 
     destination = Path(output_dir).resolve()
     if destination.exists() and any(destination.iterdir()):
@@ -400,9 +441,7 @@ def build_desktop(
             windows_version_file=version_file,
             data_root=data_root,
         )
-        build_env = os.environ.copy()
-        build_env["PYINSTALLER_CONFIG_DIR"] = str(scratch / "pyinstaller-config")
-        Path(build_env["PYINSTALLER_CONFIG_DIR"]).mkdir()
+        build_env = _isolated_build_environment(scratch)
         try:
             subprocess.run(
                 command,

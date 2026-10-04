@@ -317,7 +317,7 @@ class ReleaseContractTests(unittest.TestCase):
         spec.loader.exec_module(builder)
 
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / "core").mkdir()
             (root / "utils").mkdir()
             (root / "core/resource_shutdown.py").write_text("pass\n", encoding="utf-8")

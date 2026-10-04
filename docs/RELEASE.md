@@ -29,7 +29,7 @@ python3 -m venv .superpowers/desktop-env
   --require-hashes --index-url https://pypi.org/simple \
   -r requirements/desktop.lock
 .superpowers/desktop-env/bin/python scripts/build_desktop.py macos \
-  --ref refs/heads/main \
+  --ref refs/heads/master \
   --output-dir .superpowers/receipts/release
 ```
 
@@ -38,11 +38,19 @@ Byggeren nekter å merke en checkout med en annen refs commit og avviser lokale 
 De eldre plattformkommandoene videresender til den samme byggeren:
 
 ```bash
-mac_app/build.sh --ref refs/heads/main
-python windows_app/build.py --ref refs/heads/main
+mac_app/build.sh --ref refs/heads/master
+python windows_app/build.py --ref refs/heads/master
 ```
 
 Begge krever at den låste desktop-profilen allerede er installert i det aktive Python-miljøet. Kommandoene installerer eller oppgraderer ikke pakker.
+
+Byggeren kontrollerer installerte pakkeversjoner mot alle aktive krav i
+desktop-låsen, inkludert plattformmarkører. Manglende eller avvikende pakker
+avvises. Dette erstatter ikke pip sin hashverifiserte installasjon; CI utfører
+begge kontrollene. PyInstaller og modulinnsamling får bare et tillatt sett
+miljøvariabler og egne midlertidige hjemme-/konfigurasjonsmapper, uten arvede
+Discord-/provider-nøkler eller Python-importoverstyringer. Den avgrensede
+røyketestens Python-nettverksvakt er ikke en OS-sandbox.
 
 ## Bevis og akseptgrenser
 

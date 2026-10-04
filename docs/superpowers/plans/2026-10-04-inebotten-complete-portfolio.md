@@ -380,9 +380,9 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify .github/workflows/release.yml, .github/workflows/build-desktop-apps.yml, mac_app/build.py, build.sh, windows_app/build.py, scripts/write_version.py and docs/RELEASE.md; create tests/test_release_contract.py and scripts/smoke_release_artifact.py.
 **Interfaces:** release manifest contains full_commit_sha, tag, version, target/platform, lock digest, artifact checksum and smoke receipt. One publisher depends on all required build/CI jobs and resolves the selected tag/ref before build.
 
-- [ ] Add workflow ownership/ref tests, manual-version mismatch refusal, required-asset manifest checks and frozen-entrypoint no-network smoke assertions.
-- [ ] Demonstrate publisher overlap and divergent asset manifests from source; do not claim a binary failure until built.
-- [ ] Consolidate publisher, align scripts/web-console asset packaging and derive version/OS metadata from one release definition; create checksums/manifests.
+- [x] Add workflow ownership/ref tests, manual-version mismatch refusal, required-asset manifest checks and frozen-entrypoint no-network smoke assertions.
+- [x] Demonstrate publisher overlap and divergent asset manifests from source; do not claim a binary failure until built.
+- [x] Consolidate publisher, align scripts/web-console asset packaging and derive version/OS metadata from one release definition; create checksums/manifests.
 - [ ] Run tests/test_release_contract.py, tests/test_desktop_launcher_paths.py, tests/test_write_version.py; build/test artifacts on actual supported macOS/Windows targets in nonpublishing CI.
 - [ ] Review artifacts and commit; signing/notarization is a separate credential/distribution decision and never implied by ad hoc signing.
 
