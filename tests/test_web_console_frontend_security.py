@@ -21,6 +21,13 @@ def test_modal_details_are_built_as_plain_text_not_html_strings():
     assert "content.textContent" in app_js
 
 
+def test_calendar_workspace_uses_text_nodes_and_never_injects_agenda_markup():
+    app_js = (ROOT / "web_console" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "heading.textContent = item.title" in app_js
+    assert "description.textContent = item.description" in app_js
+    assert "innerHTML" not in app_js[app_js.index("renderCalendarAgenda()"):app_js.index("renderCalendarConflicts()")]
+
+
 def test_dynamic_console_renderers_use_dom_text_instead_of_html_sinks():
     app_js = (ROOT / "web_console" / "static" / "app.js").read_text(encoding="utf-8")
     assert "renderSection(sectionName, sectionState)" in app_js

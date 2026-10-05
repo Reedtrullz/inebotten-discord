@@ -12,6 +12,7 @@ class ConsoleApp {
     this._lastFocusedElement = null;
     this.openSection = null;
     this.isDemo = document.body.classList.contains("demo-mode");
+    this.calendarWorkspace = { state: null, selected: null, pending: null, csrf: null };
     this.pollingConfig = {
       "/api/status": { interval: 5000, lastFetch: 0 },
       "/api/bridge": { interval: 5000, lastFetch: 0 },
@@ -42,6 +43,7 @@ class ConsoleApp {
     this.bindShell();
     this.bindModalButtons();
     this.initData();
+    this.bindCalendarWorkspace();
     this.updateShellStatus();
     if (!this.isDemo) {
       this.startPolling();
@@ -119,6 +121,236 @@ class ConsoleApp {
         this.showSectionModal(button.getAttribute("data-section-modal"));
       });
     });
+  }
+
+  bindCalendarWorkspace() {
+    const root = document.querySelector("[data-calendar-workspace]");
+    if (!root) return;
+    const form = root.querySelector("[data-calendar-form]");
+    root.querySelector("[data-calendar-refresh]")?.addEventListener("click", () => this.loadCalendarWorkspace());
+    root.querySelector("[data-calendar-new]")?.addEventListener("click", () => this.resetCalendarForm(true));
+    root.querySelector("[data-calendar-filter]")?.addEventListener("input", () => this.renderCalendarAgenda());
+    form?.addEventListener("submit", (event) => { event.preventDefault(); this.previewCalendarForm(); });
+    root.querySelector("[data-calendar-agenda]")?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-calendar-action]");
+      if (!button) return;
+      const item = this.calendarWorkspace.state?.items?.find((entry) => entry.id === button.dataset.itemId);
+      if (!item) return;
+      if (button.dataset.calendarAction === "edit") this.editCalendarItem(item);
+      else this.previewCalendarAction(button.dataset.calendarAction, item);
+    });
+    root.querySelector("[data-calendar-conflicts]")?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-conflict-id]");
+      if (button) this.previewCalendarConflict(button.dataset.conflictId, button.dataset.choice);
+    });
+    root.querySelector("[data-calendar-apply]")?.addEventListener("click", () => this.applyCalendarPreview());
+    root.querySelector("[data-calendar-cancel]")?.addEventListener("click", () => this.cancelCalendarPreview());
+    this.loadCalendarWorkspace();
+  }
+
+  calendarStatus(message, isError = false) {
+    const status = document.querySelector("[data-calendar-status]");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("is-error", isError);
+  }
+
+  async calendarRequest(path, payload = null) {
+    const headers = { Accept: "application/json" };
+    const options = { method: payload ? "POST" : "GET", credentials: "same-origin", headers };
+    if (payload) {
+      headers["Content-Type"] = "application/json";
+      if (this.calendarWorkspace.csrf) headers["X-CSRF-Token"] = this.calendarWorkspace.csrf;
+      options.body = JSON.stringify(payload);
+    }
+    const response = await fetch(path, options);
+    let body;
+    try { body = await response.json(); } catch (_) { body = {}; }
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  }
+
+  async loadCalendarWorkspace() {
+    if (this.isDemo) {
+      this.calendarStatus("Demo viser eksempeldata. Kalenderendringer er deaktivert.");
+      return;
+    }
+    this.calendarStatus("Henter kalender …");
+    try {
+      const state = await this.calendarRequest("/api/calendar/items");
+      this.calendarWorkspace.state = state;
+      this.calendarWorkspace.csrf = state.csrf_token || null;
+      this.renderCalendarAgenda();
+      const writeReady = state.enabled && state.write_available === true;
+      document.querySelectorAll("[data-calendar-form] input, [data-calendar-form] select, [data-calendar-form] textarea, [data-calendar-form] button").forEach((el) => { el.disabled = !writeReady; });
+      this.calendarStatus(state.enabled ? `${state.items.length} oppføringer · område ${state.scope_id}${writeReady ? " · endringer klare" : " · skriveadgang ikke konfigurert"}` : (state.message || "Kalenderarbeidsområdet er deaktivert."), !state.enabled);
+    } catch (error) {
+      this.calendarStatus(error.status === 401 ? "Økta er utløpt. Logg inn på nytt." : "Kalenderen kunne ikke lastes. Prøv igjen.", true);
+    }
+  }
+
+  renderCalendarAgenda() {
+    const root = document.querySelector("[data-calendar-agenda]");
+    if (!root) return;
+    const state = this.calendarWorkspace.state;
+    root.replaceChildren();
+    if (!state?.enabled) {
+      const empty = document.createElement("p"); empty.className = "empty-state";
+      empty.textContent = state?.message || "Kalenderarbeidsområdet er deaktivert."; root.append(empty); return;
+    }
+    this.renderCalendarConflicts();
+    const filter = (document.querySelector("[data-calendar-filter]")?.value || "").trim().toLocaleLowerCase("no");
+    const rows = state.items.filter((item) => !filter || `${item.title} ${item.date} ${item.description || ""}`.toLocaleLowerCase("no").includes(filter));
+    const weekGroups = new Map();
+    rows.forEach((item) => {
+      const date = this.calendarDateInput(item.date);
+      const parsed = new Date(`${date}T12:00:00`);
+      if (Number.isNaN(parsed.getTime())) return;
+      const monday = new Date(parsed); monday.setDate(parsed.getDate() - ((parsed.getDay() + 6) % 7));
+      const key = monday.toLocaleDateString("no-NO", { day: "numeric", month: "short" });
+      weekGroups.set(key, (weekGroups.get(key) || 0) + 1);
+    });
+    const summary = document.querySelector("[data-calendar-week-summary]");
+    if (summary) summary.textContent = rows.length ? `Ukesoversikt: ${[...weekGroups].map(([week, count]) => `uken fra ${week}: ${count}`).join(" · ")}` : "Ingen oppføringer i denne agenda-visningen.";
+    if (!rows.length) {
+      const empty = document.createElement("p"); empty.className = "empty-state";
+      empty.textContent = state.items.length ? "Ingen treff på filteret." : "Kalenderen er tom. Legg til den første oppføringen."; root.append(empty); return;
+    }
+    rows.forEach((item) => {
+      const article = document.createElement("article"); article.className = "calendar-agenda-item";
+      const heading = document.createElement("h5"); heading.textContent = item.title || "Uten tittel";
+      const details = document.createElement("p"); details.textContent = `${item.date || "Ukjent dato"}${item.time ? ` · ${item.time}` : " · Hele dagen"} · ${item.kind === "task" ? "Oppgave" : "Hendelse"}${item.completed ? " · fullført" : ""}`;
+      const sync = document.createElement("p"); sync.className = `calendar-sync sync-${item.sync_state || "synced"}`;
+      sync.textContent = item.sync_blocked ? `Synkronisering blokkert: ${item.sync_blocked}` : ({ pending: "Synkronisering venter", unknown: "Synkronisering uavklart", conflict: "Synkroniseringskonflikt", failed: "Synkronisering feilet" }[item.sync_state] || "Synkronisert lokalt");
+      const actions = document.createElement("div"); actions.className = "calendar-item-actions";
+      [["edit", "Rediger"], [item.completed ? "complete" : "complete", item.completed ? "Fullført" : "Fullfør"], ["delete", "Slett"]].forEach(([action, label]) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "btn btn-secondary";
+        button.dataset.calendarAction = action; button.dataset.itemId = item.id; button.textContent = label;
+        button.disabled = !state.enabled || state.read_only || (action === "complete" && item.completed); actions.append(button);
+      });
+      const disclosure = document.createElement("details");
+      const summary = document.createElement("summary"); summary.textContent = "Detaljer";
+      const description = document.createElement("p"); description.textContent = item.description || "Ingen beskrivelse.";
+      const extra = document.createElement("p");
+      extra.textContent = [item.timezone, item.duration_minutes ? `${item.duration_minutes} min` : "", item.recurrence ? `Gjentakelse: ${item.recurrence}` : ""].filter(Boolean).join(" · ") || "Ingen ekstra tidsdetaljer.";
+      disclosure.append(summary, description, extra);
+      article.append(heading, details, disclosure, sync, actions); root.append(article);
+    });
+  }
+
+  renderCalendarConflicts() {
+    const root = document.querySelector("[data-calendar-conflicts]");
+    if (!root) return;
+    root.replaceChildren();
+    const conflicts = (this.calendarWorkspace.state?.items || []).flatMap((item) => (item.conflicts || []).map((conflict) => ({ ...conflict, title: item.title })));
+    if (!conflicts.length) return;
+    const heading = document.createElement("h5"); heading.textContent = "Synkroniseringskonflikter"; root.append(heading);
+    conflicts.forEach((conflict) => {
+      const row = document.createElement("div"); row.className = "calendar-conflict-row";
+      const label = document.createElement("p"); label.textContent = `${conflict.title}: ${conflict.reason_code || "Konflikt"}`; row.append(label);
+      [["use_local", "Behold lokal"], ["use_remote", "Bruk Google"]].forEach(([choice, text]) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "btn btn-secondary";
+        button.textContent = text; button.dataset.conflictId = conflict.operation_id; button.dataset.choice = choice;
+        button.disabled = this.calendarWorkspace.state.read_only; row.append(button);
+      });
+      root.append(row);
+    });
+  }
+
+  resetCalendarForm(focus = false) {
+    const form = document.querySelector("[data-calendar-form]");
+    if (!form) return;
+    form.reset(); form.elements.item_id.value = ""; this.calendarWorkspace.selected = null;
+    document.querySelector("[data-calendar-form-title]").textContent = "Ny oppføring";
+    if (focus) form.elements.title.focus();
+  }
+
+  editCalendarItem(item) {
+    const form = document.querySelector("[data-calendar-form]");
+    form.elements.item_id.value = item.id; form.elements.title.value = item.title || "";
+    form.elements.date.value = this.calendarDateInput(item.date); form.elements.time.value = item.time || "";
+    form.elements.kind.value = item.kind || "event"; form.elements.duration_minutes.value = item.duration_minutes || "";
+    form.elements.description.value = item.description || "";
+    this.calendarWorkspace.selected = item.id;
+    document.querySelector("[data-calendar-form-title]").textContent = "Rediger oppføring";
+    form.elements.title.focus();
+  }
+
+  calendarDateInput(value) {
+    if (!value) return "";
+    const norwegian = String(value).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    return norwegian ? `${norwegian[3]}-${norwegian[2]}-${norwegian[1]}` : String(value).slice(0, 10);
+  }
+
+  calendarDateDomain(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return match ? `${match[3]}.${match[2]}.${match[1]}` : value;
+  }
+
+  async previewCalendarForm() {
+    const form = document.querySelector("[data-calendar-form]");
+    const values = new FormData(form); const id = values.get("item_id");
+    const changes = { title: values.get("title").trim(), date: this.calendarDateDomain(values.get("date")),
+      time: values.get("time") || null, kind: values.get("kind"), description: values.get("description"),
+      timezone: "Europe/Oslo", all_day: !values.get("time") };
+    if (values.get("duration_minutes")) changes.duration_minutes = Number(values.get("duration_minutes"));
+    const payload = { operation: id ? "edit" : "create", revision: this.calendarWorkspace.state.revision, ...(id ? { item_id: id } : {}), changes };
+    await this.requestCalendarPreview(payload);
+  }
+
+  async previewCalendarAction(action, item) {
+    if (action === "edit") return this.editCalendarItem(item);
+    if (action === "complete" && item.completed) return;
+    await this.requestCalendarPreview({ operation: action, item_id: item.id, revision: this.calendarWorkspace.state.revision });
+  }
+
+  async previewCalendarConflict(operationId, choice) {
+    await this.requestCalendarPreview({ operation: "conflict", operation_id: operationId, choice, revision: this.calendarWorkspace.state.revision });
+  }
+
+  async requestCalendarPreview(payload) {
+    try {
+      const preview = await this.calendarRequest("/api/calendar/preview", payload);
+      this.calendarWorkspace.pending = preview;
+      const panel = document.querySelector("[data-calendar-preview]"); const content = panel.querySelector("[data-calendar-preview-content]");
+      content.replaceChildren();
+      (preview.effects || []).forEach((effect) => {
+        const line = document.createElement("p");
+        line.textContent = preview.operation === "create" ? `Opprett: ${effect.after.title} · ${effect.after.date}` :
+          `${preview.operation}: ${(effect.before?.title || effect.title || "Oppføring")} → ${(effect.after?.title || "fjernes/oppdateres")}`;
+        content.append(line);
+      });
+      panel.hidden = false; panel.querySelector("[data-calendar-apply]").focus();
+      this.calendarStatus("Forhåndsvisningen er klar. Bekreft for å lagre.");
+    } catch (error) {
+      this.calendarStatus(error.message === "revision_changed" ? "Kalenderen ble endret. Oppdater og prøv på nytt." : "Endringen kunne ikke forhåndsvises. Kontroller feltene og tilgangen.", true);
+    }
+  }
+
+  async applyCalendarPreview() {
+    const pending = this.calendarWorkspace.pending;
+    if (!pending) return;
+    try {
+      const result = await this.calendarRequest("/api/calendar/apply", { token: pending.token });
+      this.calendarWorkspace.pending = null; document.querySelector("[data-calendar-preview]").hidden = true;
+      this.calendarStatus(result.remote_pending ? "Lagret lokalt. Synkronisering venter." : "Endringen er lagret.");
+      await this.loadCalendarWorkspace();
+      document.querySelector("[data-calendar-refresh]")?.focus();
+    } catch (error) {
+      this.calendarStatus(error.message === "revision_changed" ? "Kalenderen ble endret. Forhåndsvis på nytt." : "Endringen ble avvist. Oppdater kalenderen og kontroller tilgang eller konflikt.", true);
+      this.calendarWorkspace.pending = null; document.querySelector("[data-calendar-preview]").hidden = true;
+      await this.loadCalendarWorkspace();
+    }
+  }
+
+  cancelCalendarPreview() {
+    this.calendarWorkspace.pending = null; document.querySelector("[data-calendar-preview]").hidden = true;
+    document.querySelector("[data-calendar-form] [type=submit]")?.focus();
+    this.calendarStatus("Forhåndsvisningen ble avbrutt.");
   }
 
   toggleTheme() {

@@ -8,6 +8,7 @@ import math
 import os
 import pathlib
 import re
+import secrets
 import time
 from typing import cast
 from urllib.parse import parse_qs, urlparse
@@ -29,6 +30,8 @@ from web_console.state_collector import (
     collect_rate_limits,
     generate_mock_data,
 )
+from core.request_context import RequestContext, request_scope
+from cal_system.event_schema import EventTime
 
 from utils.deployment_contract import built_revision
 
@@ -77,10 +80,17 @@ class ConsoleServer:
         cloudflare_access_verifier: object | None = None,
         request_read_timeout: float | None = None,
         max_active_connections: int | None = None,
+        console_actor_user_id: str | None = None,
+        console_actor_channel_id: str | None = None,
+        trusted_origin: str | None = None,
     ):
         self.host = host
         self.port = port
         self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
+        self.console_actor_user_id = (console_actor_user_id if console_actor_user_id is not None else os.getenv("CONSOLE_ACTOR_USER_ID", "")).strip()
+        self.console_actor_channel_id = (console_actor_channel_id if console_actor_channel_id is not None else os.getenv("CONSOLE_ACTOR_CHANNEL_ID", "console")).strip()
+        self.trusted_origin = (trusted_origin if trusted_origin is not None else os.getenv("CONSOLE_TRUSTED_ORIGIN", "")).strip().rstrip("/")
+        self._calendar_create_previews: dict[str, dict] = {}
         self.monitor = monitor
         self.built_revision = built_revision()
         instance = os.getenv('INEBOTTEN_LAUNCHER_INSTANCE','')
@@ -333,6 +343,204 @@ class ConsoleServer:
             return None
         return hashlib.sha256(self.api_key.encode("utf-8")).hexdigest()
 
+    def _console_actor(self) -> RequestContext | None:
+        if not self.console_actor_user_id or not self.console_actor_channel_id:
+            return None
+        return RequestContext("console", self.console_actor_user_id, self.console_actor_channel_id,
+                              None, "no", channel_kind="console")
+
+    def _csrf_token(self, session_token: str) -> str:
+        key = hashlib.sha256((self.api_key or "").encode("utf-8")).digest()
+        return hmac.new(key, ("calendar-write:" + session_token).encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _calendar_credential(self, headers: dict[str, str]) -> str | None:
+        if self._valid_api_key(headers.get("x-api-key")):
+            return "api_key"
+        cookies = self._parse_cookies(headers.get("cookie"))
+        if self.store.validate_session(cookies.get("console_session"), self._session_binding_hash()):
+            return "session"
+        if self.auth_mode == "cloudflare_access":
+            return "cloudflare"
+        return None
+
+    def _calendar_write_allowed(self, headers: dict[str, str]) -> tuple[bool, str | None]:
+        credential = self._calendar_credential(headers)
+        if credential is None:
+            return False, "unauthorized"
+        if credential == "api_key":
+            return True, None
+        if credential != "session":
+            return False, "browser_writes_require_console_session"
+        if not self.trusted_origin or headers.get("origin", "") != self.trusted_origin:
+            return False, "trusted_origin_required"
+        session = self._parse_cookies(headers.get("cookie")).get("console_session", "")
+        supplied = headers.get("x-csrf-token", "")
+        if not session or not hmac.compare_digest(supplied, self._csrf_token(session)):
+            return False, "csrf_failed"
+        return True, None
+
+    @staticmethod
+    def _strict_json_object(body: bytes) -> dict:
+        def reject_constant(_value):
+            raise ValueError("invalid_json_constant")
+        def unique_pairs(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate_json_key")
+                result[key] = value
+            return result
+        value = json.loads(body.decode("utf-8"), parse_constant=reject_constant, object_pairs_hook=unique_pairs)
+        if not isinstance(value, dict):
+            raise ValueError("json_object_required")
+        return value
+
+    def _calendar_context(self):
+        actor = self._console_actor()
+        manager = getattr(self.monitor, "calendar", None)
+        policy = getattr(manager, "access_policy", None)
+        scope = getattr(policy, "default_scope", None)
+        if actor is None or manager is None or policy is None or not scope:
+            return None, None, None, "calendar_workspace_not_configured"
+        return manager, policy, scope, None
+
+    def _calendar_items_response(self, credential: str | None = None, headers: dict[str, str] | None = None) -> dict:
+        actor = self._console_actor()
+        manager, policy, scope, reason = self._calendar_context()
+        enabled = not reason and policy.authorize(actor, scope, "read").allowed
+        if not enabled:
+            return {"enabled": False, "reason_code": reason or "calendar_scope_forbidden",
+                    "message": "Arbeidsområdet er deaktivert. Konfigurer CONSOLE_ACTOR_USER_ID og gi den identiteten tilgang til kalenderområdet.",
+                    "items": [], "revision": None}
+        items = []
+        with manager._storage.transaction(write=False):
+            revision = manager._storage.revision
+            for item in manager.items.get(scope, []):
+                if item.get("_mutation_deleted") or item.get("delete_pending"):
+                    continue
+                sync = item.get("sync_operations", [])
+                items.append({key: item.get(key) for key in (
+                    "id", "title", "description", "date", "time", "kind", "all_day", "timezone",
+                    "duration_minutes", "completed", "recurrence", "sync_blocked")}
+                    | {"pending_sync": bool(item.get("_local_sync_pending")),
+                       "sync_state": next((op.get("state") for op in reversed(sync) if op.get("state") != "synced"), "synced"),
+                       "conflicts": [{"operation_id": op.get("operation_id"), "reason_code": op.get("reason_code")}
+                                     for op in sync if op.get("state") == "conflict"]})
+        items.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or ""), str(item.get("title") or "").casefold()))
+        write_authorized = policy.authorize(actor, scope, "write").allowed
+        write_available = write_authorized and (credential == "api_key" or credential == "session" and bool(self.trusted_origin))
+        result = {"enabled": True, "scope_id": scope, "revision": revision,
+                  "items": items, "read_only": not write_available, "write_available": write_available,
+                  "trusted_origin_configured": bool(self.trusted_origin)}
+        if credential == "session" and headers:
+            session = self._parse_cookies(headers.get("cookie" )).get("console_session", "")
+            result["csrf_token"] = self._csrf_token(session)
+        return result
+
+    def _calendar_preview(self, actor: RequestContext, payload: dict) -> dict:
+        allowed = {"operation", "item_id", "revision", "changes", "choice", "operation_id"}
+        if set(payload) - allowed or type(payload.get("revision")) is not int:
+            raise ValueError("invalid_payload")
+        manager, policy, scope, reason = self._calendar_context()
+        if reason:
+            raise PermissionError(reason)
+        if not policy.authorize(actor, scope, "write").allowed:
+            raise PermissionError("scope_membership_required")
+        operation = payload.get("operation")
+        if operation == "create":
+            if set(payload) != {"operation", "revision", "changes"}:
+                raise ValueError("invalid_payload")
+            changes = payload.get("changes")
+            fields = {"title", "description", "date", "time", "kind", "timezone", "all_day", "duration_minutes"}
+            if not isinstance(changes, dict) or set(changes) - fields or not {"title", "date"} <= set(changes):
+                raise ValueError("invalid_create")
+            if not isinstance(changes["title"], str) or not changes["title"].strip() or len(changes["title"]) > 200:
+                raise ValueError("invalid_title")
+            if "all_day" in changes and type(changes["all_day"]) is not bool:
+                raise ValueError("invalid_all_day")
+            if "duration_minutes" in changes and (type(changes["duration_minutes"]) is not int or not 1 <= changes["duration_minutes"] <= 10080):
+                raise ValueError("invalid_duration")
+            if "time" in changes and changes["time"] is not None and not isinstance(changes["time"], str):
+                raise ValueError("invalid_time")
+            if "timezone" in changes and (not isinstance(changes["timezone"], str) or len(changes["timezone"]) > 80):
+                raise ValueError("invalid_timezone")
+            if "description" in changes and (not isinstance(changes["description"], str) or len(changes["description"]) > 4000):
+                raise ValueError("invalid_description")
+            time_input = {"date": changes["date"], "time": changes.get("time"),
+                "kind": changes.get("kind", "event"), "timezone": changes.get("timezone", "Europe/Oslo")}
+            for key in ("all_day", "duration_minutes"):
+                if key in changes:
+                    time_input[key] = changes[key]
+            value = EventTime.from_item(time_input).validate_local()
+            now = time.monotonic()
+            self._calendar_create_previews = {key: entry for key, entry in self._calendar_create_previews.items()
+                                              if entry["expires"] > now}
+            token = secrets.token_urlsafe(24)
+            self._calendar_create_previews[token] = {"actor": [actor.user_id, actor.channel_id, actor.guild_id, actor.channel_kind],
+                "scope": scope, "revision": payload["revision"], "changes": dict(changes), "expires": time.monotonic() + 300}
+            while len(self._calendar_create_previews) > 32:
+                self._calendar_create_previews.pop(next(iter(self._calendar_create_previews)))
+            return {"token": token, "revision": payload["revision"], "operation": "create",
+                    "effects": [{"after": {**dict(changes), **value.fields()}}]}
+        if operation == "conflict":
+            if set(payload) != {"operation", "revision", "operation_id", "choice"}:
+                raise ValueError("invalid_payload")
+            if payload["revision"] != manager._storage.revision:
+                raise ValueError("revision_changed")
+            preview = manager.preview_sync_conflict(actor, payload["operation_id"], payload["choice"])
+        else:
+            if set(payload) != {"operation", "revision", "item_id"} | ({"changes"} if operation == "edit" else set()):
+                raise ValueError("invalid_payload")
+            item_id = payload["item_id"]
+            if not isinstance(item_id, str) or len(item_id) > 64:
+                raise ValueError("invalid_item_id")
+            if operation == "edit":
+                changes = payload["changes"]
+                allowed_changes = {"title", "description", "date", "time", "kind", "timezone", "all_day", "duration_minutes"}
+                if not isinstance(changes, dict) or not changes or set(changes) - allowed_changes:
+                    raise ValueError("invalid_changes")
+            if payload["revision"] != manager._storage.revision:
+                raise ValueError("revision_changed")
+            preview = manager.preview_mutation(actor, scope, [item_id], operation, payload["revision"], changes=payload.get("changes"))
+        return {"token": preview.token, "revision": preview.revision, "expires_at": preview.expires_at.isoformat(),
+                "operation": operation, "effects": preview.effects}
+
+    async def _calendar_apply(self, actor: RequestContext, payload: dict) -> dict:
+        if set(payload) != {"token"} or not isinstance(payload.get("token"), str) or len(payload["token"]) > 128:
+            raise ValueError("invalid_payload")
+        manager, policy, scope, reason = self._calendar_context()
+        if reason:
+            raise PermissionError(reason)
+        if not policy.authorize(actor, scope, "write").allowed:
+            raise PermissionError("scope_membership_required")
+        token = payload["token"]
+        create = self._calendar_create_previews.get(token)
+        if create is not None:
+            identity = [actor.user_id, actor.channel_id, actor.guild_id, actor.channel_kind]
+            if create["actor"] != identity or create["scope"] != scope:
+                raise PermissionError("preview_actor_mismatch")
+            if time.monotonic() >= create["expires"]:
+                self._calendar_create_previews.pop(token, None)
+                raise ValueError("preview_expired")
+            self._calendar_create_previews.pop(token, None)
+            values = create["changes"]
+            with manager._storage.transaction(write=True):
+                if manager._storage.revision != create["revision"]:
+                    raise ValueError("revision_changed")
+                with request_scope(actor):
+                    item = manager.add_item(None, actor.user_id, "Console", values["title"].strip(), values["date"],
+                        values.get("time"), kind=values.get("kind", "event"), timezone=values.get("timezone", "Europe/Oslo"),
+                        all_day=values.get("all_day"), duration_minutes=values.get("duration_minutes"), channel_id=actor.channel_id)
+            return {"ok": True, "operation": "create", "revision": manager._storage.revision, "item": dict(item)}
+        if token in manager._sync_conflicts:
+            result = await manager.apply_sync_conflict(actor, token, deadline=time.monotonic() + 10)
+            return {"ok": True, "operation": "conflict", "revision": manager._storage.revision,
+                    "sync_state": result.state, "reason_code": result.reason_code}
+        result = await manager.apply_preview(actor, token)
+        return {"ok": True, "operation": result["operation"], "revision": manager._storage.revision,
+                "applied_count": result["applied_count"], "remote_pending": result["remote_pending"],
+                "remote_blocked": result["remote_blocked"]}
+
     def _peer_key(self, writer: asyncio.StreamWriter) -> str:
         peername = writer.get_extra_info("peername")
         if isinstance(peername, tuple) and peername:
@@ -573,6 +781,43 @@ class ConsoleServer:
                 await self._send_response(writer, 401, {"error": "Unauthorized"})
                 return
 
+            if path in ("/api/calendar/items", "/api/calendar/preview", "/api/calendar/apply"):
+                credential = self._calendar_credential(headers)
+                if path == "/api/calendar/items" and method == "GET":
+                    await self._send_response(writer, 200, self._calendar_items_response(credential, headers))
+                    return
+                if method != "POST":
+                    await self._send_response(writer, 405, {"error": "Method not allowed"})
+                    return
+                allowed, denial = self._calendar_write_allowed(headers)
+                if not allowed:
+                    await self._send_response(writer, 401 if denial == "unauthorized" else 403, {"error": denial})
+                    return
+                if "application/json" not in headers.get("content-type", "").lower():
+                    await self._send_response(writer, 415, {"error": "application_json_required"})
+                    return
+                try:
+                    payload = self._strict_json_object(body_bytes)
+                    actor = self._console_actor()
+                    if actor is None:
+                        raise PermissionError("calendar_workspace_not_configured")
+                    if path.endswith("/preview"):
+                        result = self._calendar_preview(actor, payload)
+                    else:
+                        result = await self._calendar_apply(actor, payload)
+                    await self._send_response(writer, 200, result)
+                except PermissionError as error:
+                    await self._send_response(writer, 403, {"error": str(error)})
+                except (ValueError, TypeError, KeyError) as error:
+                    code = str(error) or "invalid_calendar_request"
+                    conflicts = {"revision_changed", "selection_changed", "conflict_changed", "remote_revision_changed"}
+                    status = 409 if code in conflicts else 400
+                    await self._send_response(writer, status, {"error": code})
+                except Exception as error:
+                    logger.info("Calendar workspace action failed: %s", type(error).__name__)
+                    await self._send_response(writer, 409, {"error": "calendar_action_rejected"})
+                return
+
             if method == "POST" and path == "/api/login":
                 if self.auth_mode == "cloudflare_access":
                     await self._send_response(writer, 403, {"error": "API-key browser login is disabled in Cloudflare Access mode"})
@@ -758,6 +1003,8 @@ class ConsoleServer:
                 await self._send_response(writer, 200, bridge)
             elif path == "/api/calendar":
                 await self._send_response(writer, 200, collect_calendar_data(self.monitor))
+            elif path == "/api/calendar/items":
+                await self._send_response(writer, 200, self._calendar_items_response(self._calendar_credential(headers), headers))
             elif path == "/api/polls":
                 await self._send_response(writer, 200, collect_poll_data(self.monitor))
             elif path == "/api/rate-limits":

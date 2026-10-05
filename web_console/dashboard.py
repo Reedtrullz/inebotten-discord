@@ -493,6 +493,34 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
   <div class="card-body">
     <div class="metric-grid">{metrics}</div>
     {upcoming_html}
+    <section class="calendar-workspace" aria-labelledby="calendar-workspace-title" data-calendar-workspace>
+      <div class="workspace-heading"><div><h4 id="calendar-workspace-title">Agenda</h4><p class="muted">Se detaljer og gjør endringer med forhåndsvisning.</p></div>
+        <button class="btn btn-secondary" type="button" data-calendar-refresh>Oppdater</button></div>
+      <p class="calendar-workspace-status" role="status" aria-live="polite" data-calendar-status>Henter kalender …</p>
+      <p class="calendar-week-summary" data-calendar-week-summary aria-live="polite"></p>
+      <div class="calendar-workspace-grid">
+        <div><label class="sr-only" for="calendar-filter">Filtrer agenda</label><input id="calendar-filter" type="search" placeholder="Filtrer agenda" data-calendar-filter>
+          <div class="calendar-agenda" data-calendar-agenda tabindex="0" aria-label="Kalenderagenda"></div></div>
+        <form class="calendar-editor" data-calendar-form>
+          <h5 data-calendar-form-title>Ny oppføring</h5>
+          <input type="hidden" name="item_id">
+          <label>Tittel<input name="title" maxlength="200" required></label>
+          <label>Dato<input name="date" type="date" required></label>
+          <label>Tid<input name="time" type="time"></label>
+          <label>Type<select name="kind"><option value="event">Hendelse</option><option value="task">Oppgave</option></select></label>
+          <label>Varighet i minutter<input name="duration_minutes" type="number" min="1" max="10080"></label>
+          <label>Beskrivelse<textarea name="description" maxlength="4000" rows="3"></textarea></label>
+          <div class="calendar-editor-actions"><button class="btn btn-primary" type="submit">Forhåndsvis</button>
+            <button class="btn btn-secondary" type="button" data-calendar-new>Ny</button></div>
+        </form>
+      </div>
+      <section class="calendar-preview" data-calendar-preview hidden aria-labelledby="calendar-preview-title">
+        <h5 id="calendar-preview-title">Forhåndsvis endring</h5><div data-calendar-preview-content></div>
+        <div class="calendar-editor-actions"><button class="btn btn-primary" type="button" data-calendar-apply>Bruk endring</button>
+          <button class="btn btn-secondary" type="button" data-calendar-cancel>Avbryt</button></div>
+      </section>
+      <section class="calendar-conflicts" data-calendar-conflicts aria-label="Synkroniseringskonflikter"></section>
+    </section>
   </div>
   <div class="card-footer">
     <a href="/gcal-auth" class="btn btn-secondary">Google-oppsett</a>

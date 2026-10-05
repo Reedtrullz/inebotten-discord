@@ -65,6 +65,11 @@ class Config:
         self.CONSOLE_CF_ACCESS_TEAM_DOMAIN = os.getenv('CONSOLE_CF_ACCESS_TEAM_DOMAIN', '').strip()
         self.CONSOLE_CF_ACCESS_AUD = self._split_csv(os.getenv('CONSOLE_CF_ACCESS_AUD', ''))
         self.CONSOLE_CF_ACCESS_ALLOWED_EMAILS = self._split_csv(os.getenv('CONSOLE_CF_ACCESS_ALLOWED_EMAILS', ''))
+        # Calendar workspace identity is mapped from trusted server config; it
+        # is never derived from request payloads, API key text, or CF email.
+        self.CONSOLE_ACTOR_USER_ID = os.getenv('CONSOLE_ACTOR_USER_ID', '').strip()
+        self.CONSOLE_ACTOR_CHANNEL_ID = os.getenv('CONSOLE_ACTOR_CHANNEL_ID', 'console').strip()
+        self.CONSOLE_TRUSTED_ORIGIN = os.getenv('CONSOLE_TRUSTED_ORIGIN', '').strip().rstrip('/')
         console_api_key = os.getenv('CONSOLE_API_KEY')
         self.CONSOLE_API_KEY_FILE = hermes_discord_data_path('console/api_key.txt')
         self.CONSOLE_API_KEY_AUTO_GENERATED = not bool(console_api_key)
