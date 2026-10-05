@@ -201,6 +201,8 @@ class MessageMonitor:
         self.poll = PollManager()
         self._owned_resources.add('poll-store', self.poll._storage.aclose)
         self.watchlist = WatchlistManager()
+        from features.planning_manager import PlanningManager
+        self.planning = PlanningManager(self.calendar,self.poll,watchlist=self.watchlist)
         self.wod = WordOfTheDay()
         self.quote = QuoteManager()
         self.crypto = CryptoManager()
@@ -1118,6 +1120,7 @@ class MessageMonitor:
         from features.quote_handler import QuoteHandler
         from features.reminder_handler import ReminderHandler
         from features.memory_handler import MemoryHandler
+        from features.planning_handler import PlanningHandler
 
         self.handlers = {
             "fun": FunHandler(self),
@@ -1135,6 +1138,7 @@ class MessageMonitor:
             "birthdays": BirthdayHandler(self),
             "quotes": QuoteHandler(self),
             "memory": MemoryHandler(self),
+            "planning": PlanningHandler(self),
         }
 
 

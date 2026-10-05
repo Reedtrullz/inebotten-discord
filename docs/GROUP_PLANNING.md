@@ -1,0 +1,15 @@
+# Arrangørbekreftet gruppeplanlegging
+
+Én plan gjelder én aktivitet og ett valgt tidspunkt. Opprett med `planlegg Film | 04.01.2027 18:00 / 05.01.2027 18:00 | 120`. Tidene må være eksplisitte og gyldige i Europe/Oslo, med varighet 1–1440 minutter. `planlegg film #2 | … | 120` tar et uforanderlig øyeblikksbilde av den valgte filmlisteoppføringen. Ingen film merkes sett.
+
+Planen krever et lesbart, skrivbart felles kalenderområde og lagrer akkurat opprettelseskanalen som publikum. Private kalendere er avvist. Bruk `plan stem ID 1`, `plan vis ID`, og `plan rsvp ID ja synlighet arrangør`. RSVP-synlighet er `meg` (bare deltakeren), `arrangør` (deltakeren og arrangøren, standard), eller `gruppe` (det godkjente publikummet). RSVP sender ingen kalenderinvitasjon og gir ingen tilgang til private kalendere.
+
+Bare arrangøren kan bruke `plan vurder ID` og `plan bekreft ID TOKEN`. Null stemmer eller delt ledelse krever et eksplisitt valg: `plan velg ID 1`. Forhåndsvisningen viser valgt dato, klokkeslett, tidssone, varighet og varselsamtykke, varer fem minutter og bindes til aktør, område, kalenderrevisjon og stemmer. Nye stemmer eller endret tilgang avviser bekreftelsen. En avstemning oppretter aldri et kalenderpunkt automatisk. `plan avbryt ID` virker før bekreftelse er startet.
+
+Varsler er av som standard. `plan velg ID 1 varsle her` godkjenner den aktuelle kanalen som mulig varselmål. Vanlige varselprofiler, områdeautorisasjon, senderkvoter og leveringskontroller gjelder fortsatt; denne godkjenningen oppretter ingen abonnementer eller nye mottakere. Ingen Google-skriving, bestilling eller invitasjoner skjer ved bekreftelse.
+
+Planmetadata ligger i den eksisterende pollfilen. Pollschema 3 leser eksplisitt oppgraderbare schema-1-filer, bevarer originalen privat ved første skriving og avviser andre generasjoner. Kalender/reminder bruker fortsatt schema 2; minne/leveringslogg bruker schema 1. Eldre kode som bare leser gjennom dataskjema 2 må holdes stoppet etter at en schema-3-poll er skrevet. Ingen faktisk privat fil migreres av kodearbeidet.
+
+Arrangørens bekreftelsesintensjon lagres før kalenderendringen og fryser avstemningen. Det deterministiske kalender-ID-et, kildeplanen og valgt tid lagres i samme kalendercommit. Pollkvitteringen lagres etterpå. Ved feil mellom committene gjenfinner neste bekreftelse kalenderpunktet; den oppretter ingen kopi. En mislykket kalendercommit kan bekreftes igjen fra en ny forhåndsvisning etter omstart. Et slettet eller manglende tidligere bekreftet punkt gir et avvik som krever gjennomgang. Vanlig pollsletting er sperret for planer for å beholde koblingen. Etter bekreftelse endrer nye pollforsøk aldri tidspunktet.
+
+Syntetiske tester dekker kommando → kandidater → stemme → inert forhåndsvisning → bekreftelse, null/delte stemmer, utløp, arrangør/kanal/område, privat RSVP, falske aktørfelt, revisjon, omstart, begge commitfeilene og samtykkefilter for varsler/digest. Ekte gruppeaksept og varsellevering er ikke prøvd.

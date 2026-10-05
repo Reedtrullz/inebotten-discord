@@ -20,7 +20,7 @@ class DailyDigestManager:
         from features.forecast_service import ForecastService
         self.forecasts = forecast_service or ForecastService()
 
-    async def generate_digest(self, guild_id, lang='no', user_id=None, *, card_ids=None):
+    async def generate_digest(self, guild_id, lang='no', user_id=None, *, card_ids=None, proactive=False):
         selected = tuple(CARD_IDS if card_ids is None else card_ids)
         if any(card not in CARD_IDS for card in selected):
             raise ValueError('invalid_digest_cards')
@@ -29,19 +29,19 @@ class DailyDigestManager:
         for card in dict.fromkeys(selected):
             try:
                 async with asyncio.timeout_at(deadline):
-                    text = await self._card(card, guild_id, lang, user_id)
+                    text = await self._card(card, guild_id, lang, user_id, proactive=proactive)
             except Exception:
                 text = f'{card}: utilgjengelig; øvrige kort er bevart.' if lang == 'no' else f'{card}: unavailable; other cards retained.'
             if text:
                 lines.append(text[:1200])
         return '\n\n'.join(lines)[:1800]
 
-    async def _card(self, card, scope, lang, user_id):
+    async def _card(self, card, scope, lang, user_id, *, proactive=False):
         now = self.clock.now()
         if card == 'date':
             return f'📅 {now:%d.%m.%Y} ({now.tzinfo})'
         if card == 'calendar':
-            items = self._get_today_events(scope)
+            items = self._get_today_events(scope,proactive=proactive)
             body = '\n'.join(f"• {i['title']}" + (f" kl. {i['time']}" if i.get('time') else ' (heldag/dato)') for i in items[:8])
             return f'📋 Lokal kalender · {now:%d.%m.%Y}\n' + (body or 'Ingen planer i dag.')
         if card == 'weather':
@@ -65,11 +65,12 @@ class DailyDigestManager:
             return '📦 Lokal vaktliste\n' + '\n'.join(f"• {i['title']}" for i in items[:4]) if items else ''
         return ''
 
-    def _get_today_events(self, scope):
+    def _get_today_events(self, scope, *, proactive=False):
         if not self.event_manager:
             return []
         today = self.clock.now().strftime('%d.%m.%Y')
-        return [i for i in self.event_manager.get_upcoming(scope, days=1) if i.get('date') == today]
+        return [i for i in self.event_manager.get_upcoming(scope, days=1) if i.get('date') == today
+            and (not proactive or not i.get('_planning_source') or i.get('planning_notifications_approved'))]
 
 
 async def generate_daily_digest(guild_id, event_manager=None, birthday_manager=None,

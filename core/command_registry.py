@@ -94,6 +94,33 @@ def _validator(intent, argument):
             raise ValueError('invalid_target')
         if 'history' in payload and type(payload['history']) is not bool:
             raise ValueError('invalid_history')
+        if argument == 'planning':
+            fields=payload['planning'];action=fields.get('action')
+            keys={'create':{'action','title','candidates','duration','watchlist_index'},'view':{'action','session_id'},
+                'cancel':{'action','session_id'},'vote':{'action','session_id','selection'},
+                'preview':{'action','session_id','selection','notify'},'apply':{'action','session_id','token'},
+                'rsvp':{'action','session_id','response','visibility'},'help':{'action'}}
+            if action not in keys or set(fields)!=keys[action]:raise ValueError('invalid_planning_action')
+            if 'session_id' in fields and (not isinstance(fields['session_id'],str) or not re.fullmatch('[a-f0-9]{32}',fields['session_id'])):
+                raise ValueError('invalid_planning_session')
+            if action=='create':
+                from datetime import datetime
+                if (not _nonblank(fields['title']) or len(fields['title'])>200
+                    or type(fields['duration']) is not int or not 1<=fields['duration']<=1440
+                    or fields['watchlist_index'] is not None and (type(fields['watchlist_index']) is not int or not 1<=fields['watchlist_index']<=99)
+                    or not isinstance(fields['candidates'],list) or not 1<=len(fields['candidates'])<=10):
+                    raise ValueError('invalid_planning_candidates')
+                for value in fields['candidates']:
+                    if not isinstance(value,str) or not re.fullmatch(r'\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}',value):raise ValueError('invalid_planning_time')
+                    datetime.strptime(value,'%d.%m.%Y %H:%M')
+            if action in ('vote','preview') and (fields['selection'] is None and action=='vote'
+                or fields['selection'] is not None and (type(fields['selection']) is not int or not 1<=fields['selection']<=10)):
+                raise ValueError('invalid_planning_selection')
+            if action=='preview' and type(fields['notify']) is not bool:raise ValueError('invalid_planning_notification')
+            if action=='apply' and (not isinstance(fields['token'],str) or not re.fullmatch('[A-Za-z0-9_-]{24}',fields['token'])):
+                raise ValueError('invalid_planning_token')
+            if action=='rsvp' and (fields['response'] not in ('yes','no','maybe') or fields['visibility'] not in ('self','organizer','group')):
+                raise ValueError('invalid_rsvp')
         if argument == 'exchange':
             fields = payload['exchange']
             action = fields.get('action')
@@ -168,6 +195,11 @@ COMMANDS = (
     _spec('calendar_exchange','Eksporter ICS eller forhåndsvis en vedlagt import',
         ('kalender eksporter ics alle','kalender importer ics','bekreft ics <token>'),
         'calendar.handle_exchange','exchange','mixed','calendar'),
+    _spec('planning','Planlegg én gruppeaktivitet med arrangørbekreftelse',
+        ('planlegg Film | 04.01.2027 18:00 / 05.01.2027 18:00 | 120','plan stem <ID> 1',
+         'plan vurder <ID>','plan velg <ID> 1 varsle her','plan bekreft <ID> <token>',
+         'plan rsvp <ID> ja synlighet arrangør','plan vis <ID>','plan avbryt <ID>'),
+        'planning.handle_planning','planning','mixed','calendar'),
     _spec('calendar_auth', 'Start eller fullfør Google-innlogging', 'kalender auth', 'calendar.handle_auth', '*', 'write', 'controller'),
     _spec('reminder_edit', 'Endre påminnelse', 'endre påminnelse 1 tekst: Ny tekst', 'reminders.handle_reminder_edit', '*', 'write', 'calendar'),
     _spec('reminder_delete', 'Slett påminnelse', 'slett påminnelse 1', 'reminders.handle_reminder_delete', '*', 'write', 'calendar'),

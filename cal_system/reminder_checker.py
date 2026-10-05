@@ -444,6 +444,8 @@ class ReminderChecker:
         return 'shared' if policy is None or 'shared' in policy.scopes else None
 
     def _legacy_allowed(self, item):
+        if item.get('_planning_source') and not item.get('planning_notifications_approved'):
+            return False
         return self.user_memory is None or self.user_memory.notification_profile(item.get('user_id', ''), self._profile_scope(item)) is None
 
     def _event_end(self, item):
@@ -566,7 +568,7 @@ class ReminderChecker:
                             continue
                         try:
                             async with asyncio.timeout_at(deadline):
-                                text = await self.daily_digest.generate_digest(profile.scope_id, user_id=user_id, card_ids=profile.card_ids)
+                                text = await self.daily_digest.generate_digest(profile.scope_id, user_id=user_id, card_ids=profile.card_ids, proactive=True)
                         except TimeoutError:
                             return
                         result = await self._deliver(profile.destination_id, text, key, can_dispatch=can_dispatch, deadline=deadline)
@@ -578,7 +580,9 @@ class ReminderChecker:
         policy = getattr(self.calendar, 'access_policy', None)
         buckets = self.calendar.items
         buckets = {key: [item for item in values if not item.get('_mutation_deleted')
-                        and not item.get('delete_pending')] for key, values in buckets.items()}
+                        and not item.get('delete_pending')
+                        and (not item.get('_planning_source') or item.get('planning_notifications_approved'))]
+                   for key, values in buckets.items()}
         if policy is None:
             return buckets
         return {key: values for key, values in buckets.items()

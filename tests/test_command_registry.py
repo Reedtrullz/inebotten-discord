@@ -24,7 +24,7 @@ def test_every_intent_has_one_typed_binding_and_copy_safe_metadata():
     doc = command_reference()
     for spec in COMMANDS:
         assert spec.intent.value in doc
-        assert all(example in doc for example in spec.examples)
+        assert all(example.replace('|', r'\|') in doc for example in spec.examples)
 
 
 @pytest.mark.parametrize('intent,payload', [

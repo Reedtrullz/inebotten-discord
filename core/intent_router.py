@@ -52,6 +52,7 @@ class BotIntent(Enum):
     CALENDAR_CLEAR = "calendar_clear"
     CALENDAR_ITEM = "calendar_item"
     CALENDAR_EXCHANGE = "calendar_exchange"
+    PLANNING = "planning"
     POLL_CREATE = "poll_create"
     POLL_VOTE = "poll_vote"
     POLL_EDIT = "poll_edit"
@@ -107,6 +108,10 @@ class IntentRouter:
 
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
         content_lower = content.lower().strip()
+
+        planning=self._route_planning(content.strip())
+        if planning is not None:
+            return IntentResult(BotIntent.PLANNING,1.0,{'planning':planning},'explicit_group_planning')
 
         # Preserve opaque token case. Exchange syntax is explicit and anchored;
         # ordinary prose about files never becomes a calendar mutation.
@@ -299,6 +304,32 @@ class IntentRouter:
         """Return an inert diagnostic through this same router and catalogue."""
         from core.command_registry import preview_route
         return preview_route(self, text, actor)
+
+    @staticmethod
+    def _route_planning(content):
+        match=re.fullmatch(r'planlegg ([^|\r\n]{1,200})\s*\|\s*([^|\r\n]{1,500})\s*\|\s*([0-9]{1,4})',content,re.I)
+        if match:
+            title=match.group(1).strip(); candidates=[value.strip() for value in match.group(2).split('/')]
+            watchlist=re.fullmatch(r'film #([1-9][0-9]?)',title,re.I)
+            return {'action':'create','title':title,'candidates':candidates,'duration':int(match.group(3)),
+                'watchlist_index':int(watchlist.group(1)) if watchlist else None}
+        match=re.fullmatch(r'plan (vis|avbryt) ([a-f0-9]{32})',content,re.I)
+        if match:return {'action':'view' if match.group(1).lower()=='vis' else 'cancel','session_id':match.group(2).lower()}
+        match=re.fullmatch(r'plan stem ([a-f0-9]{32}) ([1-9]|10)',content,re.I)
+        if match:return {'action':'vote','session_id':match.group(1).lower(),'selection':int(match.group(2))}
+        match=re.fullmatch(r'plan (vurder|velg) ([a-f0-9]{32})(?: ([1-9]|10))?( varsle her)?',content,re.I)
+        if match and (match.group(1).lower()=='vurder' and match.group(3) is None or match.group(1).lower()=='velg' and match.group(3)):
+            return {'action':'preview','session_id':match.group(2).lower(),
+                'selection':int(match.group(3)) if match.group(3) else None,'notify':bool(match.group(4))}
+        match=re.fullmatch(r'plan bekreft ([a-f0-9]{32}) ([A-Za-z0-9_-]{24})',content,re.I)
+        if match:return {'action':'apply','session_id':match.group(1).lower(),'token':match.group(2)}
+        match=re.fullmatch(r'plan rsvp ([a-f0-9]{32}) (ja|nei|kanskje)(?: synlighet (meg|arrangør|gruppe))?',content,re.I)
+        if match:return {'action':'rsvp','session_id':match.group(1).lower(),
+            'response':{'ja':'yes','nei':'no','kanskje':'maybe'}[match.group(2).lower()],
+            'visibility':{'meg':'self','arrangør':'organizer','gruppe':'group'}[(match.group(3) or 'arrangør').lower()]}
+        if re.match(r'^planlegg\b|^plan (?:hjelp|vis|stem|velg|vurder|bekreft|rsvp|avbryt)\b',content,re.I):
+            return {'action':'help'}
+        return None
 
     def _route_calendar_command(self, content_lower: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
         if re.fullmatch(r'(?:synk konflikt (?:påminnelse )?[a-f0-9]{32} (?:lokal|google)|bekreft synk (?:påminnelse )?[a-f0-9]{32})', content_lower.strip()):

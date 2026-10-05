@@ -55,10 +55,11 @@ class PollManager:
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self._storage = DocumentOwner(self.storage_path, validate_poll_document)
+        self._storage = DocumentOwner(self.storage_path, validate_poll_document, schema_version=3, upgrade_from=(1,))
         self.polls = self._storage.rollback()
         self.emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         self._edit_previews = {}
+        self.planning_authorizer = None
         self._upgrade_legacy_records()
 
     @property
@@ -126,21 +127,8 @@ class PollManager:
             return False
         return True
 
-    @writable_store
-    def create_poll(self, guild_id, question, options, created_by, created_by_id=None):
-        """
-        Create a new poll
-
-        Args:
-            guild_id: Discord guild/channel ID
-            question: The poll question
-            options: List of option strings
-            created_by: Username who created it
-            created_by_id: User ID who created it (optional, for ownership)
-
-        Returns:
-            poll_id
-        """
+    def _new_poll_record(self, guild_id, question, options, created_by, created_by_id=None):
+        """Build a record so composed domain metadata can share one commit."""
         poll_id = f"poll_{guild_id}_{uuid.uuid4().hex}"
 
         poll = {
@@ -164,6 +152,26 @@ class PollManager:
             "revision": 0,
         }
 
+        return poll
+
+    @writable_store
+    def create_poll(self, guild_id, question, options, created_by, created_by_id=None):
+        """
+        Create a new poll
+
+        Args:
+            guild_id: Discord guild/channel ID
+            question: The poll question
+            options: List of option strings
+            created_by: Username who created it
+            created_by_id: User ID who created it (optional, for ownership)
+
+        Returns:
+            poll_id
+        """
+        poll = self._new_poll_record(guild_id, question, options, created_by, created_by_id)
+        poll_id = poll['id']
+
         guild_key = str(guild_id)
         created_guild_bucket = guild_key not in self.polls
         if created_guild_bucket:
@@ -185,8 +193,18 @@ class PollManager:
         guild_key = str(guild_id)
         records = self.polls
         if guild_key in records and poll_id in records[guild_key]:
-            return records[guild_key][poll_id]
+            poll = records[guild_key][poll_id]
+            return poll if self._planning_allowed(poll) else None
         return None
+
+    def _planning_allowed(self, poll):
+        metadata = poll.get('_planning')
+        if metadata is None:
+            return True
+        from core.request_context import current_request
+        actor = current_request()
+        return bool(actor and actor.channel_id == metadata['channel_id']
+            and self.planning_authorizer and self.planning_authorizer(actor, metadata['scope_id']))
 
     def is_poll_owner(self, poll, user_id, username=None):
         """
@@ -195,6 +213,11 @@ class PollManager:
         For polls created after this update, checks created_by_id.
         For legacy polls without created_by_id, falls back to created_by name.
         """
+        if poll.get('_planning'):
+            from core.request_context import current_request
+            actor = current_request()
+            if not actor or actor.user_id != str(user_id) or not self._planning_allowed(poll):
+                return False
         if "created_by_id" in poll and poll["created_by_id"] is not None:
             return str(poll["created_by_id"]) == str(user_id)
         if username is not None:
@@ -394,6 +417,9 @@ class PollManager:
         if not self.is_poll_owner(poll, user_id, username):
             return False, "You are not the owner of this poll"
 
+        if poll.get('_planning'):
+            return False, "Use plan cancellation; linked planning receipts are retained"
+
         previous = copy.deepcopy(poll)
         del self.polls[guild_key][poll_id]
         try:
@@ -423,9 +449,19 @@ class PollManager:
         if self._is_expired(poll):
             return False, "Poll has expired"
 
+        if type(option_num) is not int:
+            return False, "Invalid option"
+        if poll.get('_planning'):
+            from core.request_context import current_request
+            actor = current_request()
+            if not actor or actor.user_id != str(user_id):
+                return False, "Poll actor is unavailable"
         option_idx = option_num - 1
         if option_idx < 0 or option_idx >= len(poll["options"]):
             return False, "Invalid option"
+
+        if not self._planning_allowed(poll):
+            return False, "Poll scope is unavailable"
 
         previous = copy.deepcopy(poll)
         # Remove previous vote from this user
@@ -451,7 +487,7 @@ class PollManager:
         active = []
 
         for poll_id, poll in self.polls[guild_key].items():
-            if poll["status"] == "active":
+            if poll["status"] == "active" and self._planning_allowed(poll):
                 if not self._is_expired(poll):
                     active.append(poll)
 
@@ -463,7 +499,7 @@ class PollManager:
         return sorted(
             (
                 poll for poll in polls.values()
-                if poll.get("status") == "closed"
+                if poll.get("status") == "closed" and self._planning_allowed(poll)
             ),
             key=lambda poll: poll.get("created_at", ""), reverse=True,
         )
@@ -517,7 +553,7 @@ class PollManager:
         if not poll:
             return False, "Poll not found"
 
-        if user_id is not None and not self.is_poll_owner(poll, user_id, username):
+        if (user_id is not None or poll.get('_planning')) and not self.is_poll_owner(poll, user_id, username):
             return False, "You are not the owner of this poll"
 
         if poll["status"] == "closed":
