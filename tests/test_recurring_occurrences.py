@@ -583,6 +583,62 @@ def test_failed_reminder_completion_commit_restores_series_state(tmp_path, monke
     reminders._storage.close()
 
 
+def test_scoped_reminder_writes_require_current_actor_and_stay_in_authorized_bucket(tmp_path):
+    from core.access_policy import AccessPolicy, ScopeRecord
+
+    policy = AccessPolicy([
+        ScopeRecord('shared', 'legacy_shared'),
+        ScopeRecord('group:approved', 'approved_group', owner_id='7',
+            collaborator_ids=frozenset({'8'}), channel_ids=frozenset({'9'}),
+            write_policy='owner'),
+    ], default_scope='group:approved')
+    reminders = ReminderManager(storage_path=tmp_path / 'reminders.json', access_policy=policy,
+        clock=fixed_clock())
+    legacy_item = {
+        'id': 'legacy-guild-reminder', 'user_id': '7', 'username': 'Owner',
+        'text': 'Legacy guild item', 'due_date': '04.01.2027', 'recurrence': None,
+        'created_at': '2026-01-01T00:00:00', 'completed': False,
+        'completed_at': None, 'completed_by': None,
+    }
+    reminders.reminders = {'100': [legacy_item], 'group:approved': []}
+    reminders._save_reminders()
+
+    with pytest.raises(PermissionError):
+        reminders.add_reminder('100', '7', 'Owner', 'Missing actor')
+    with pytest.raises(PermissionError):
+        reminders.get_active_reminders('100')
+
+    collaborator = RequestContext('collaborator', '8', '9', '100', 'no', 'guild')
+    with request_scope(collaborator):
+        with pytest.raises(PermissionError):
+            reminders.add_reminder('100', '8', 'Collaborator', 'Denied create')
+        with pytest.raises(PermissionError):
+            reminders.complete_reminder('100', reminder_id='legacy-guild-reminder')
+        with pytest.raises(PermissionError):
+            reminders.edit_reminder('100', 1, title='Denied edit')
+        with pytest.raises(PermissionError):
+            reminders.delete_reminder_by_id('100', 1)
+        with pytest.raises(PermissionError):
+            reminders.delete_old_completed('100')
+
+    owner = RequestContext('owner', '7', '9', '100', 'no', 'guild')
+    with request_scope(owner):
+        assert reminders.get_active_reminders('100') == []
+        assert reminders.complete_reminder('100', reminder_id='legacy-guild-reminder') == (False, None, None)
+        reminder_id = reminders.add_reminder('100', '7', 'Owner', 'Scoped item')
+        active = reminders.get_active_reminders('100')
+        assert [item['id'] for item in active] == [reminder_id]
+        assert 'scope_id' not in active[0]
+        assert reminders.edit_reminder('100', 1, title='Edited in scope')['text'] == 'Edited in scope'
+        deleted_id = reminders.add_reminder('100', '7', 'Owner', 'Scoped delete')
+        assert reminders.delete_reminder_by_id('100', 2)['id'] == deleted_id
+        assert reminders.complete_reminder('100', reminder_id=reminder_id)[0]
+
+    assert reminders.reminders['100'][0]['completed'] is False
+    assert [item['id'] for item in reminders.reminders['group:approved']] == [reminder_id]
+    reminders._storage.close()
+
+
 def test_recurring_preview_requires_scope_and_this_edit_preserves_anchor(tmp_path):
     from cal_system.recurrence import Series
 

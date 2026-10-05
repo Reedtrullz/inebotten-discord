@@ -25,6 +25,45 @@ from utils.storage_contract import DocumentOwner, StorageMutationError, store_wo
 from core.outbound_sender import OutboundSender, DeliveryResult
 
 
+def project_current_occurrence(item):
+    """Return the scheduler's current occurrence, or None when it is unsafe."""
+    if item.get('_recurrence_readonly'):
+        return None
+    recurring = bool(item.get('series') or item.get('recurrence'))
+    try:
+        result = copy.deepcopy(item)
+        if recurring:
+            from cal_system.recurrence import Occurrence, Series, occurrence_at, series_from_item
+            series = Series.from_document(item['series']) if item.get('series') else series_from_item(item)
+            occurrence = occurrence_at(series, item.get('series_next_index', 0))
+            if occurrence is None:
+                return None
+            saved = item.get('occurrences', {}).get(occurrence.occurrence_id)
+            if saved:
+                occurrence = Occurrence.from_document(saved)
+            if occurrence.state != 'planned':
+                return None
+            result['occurrence_id'] = occurrence.occurrence_id
+            result['series_id'] = occurrence.series_id
+            result['original_start'] = occurrence.original_start.isoformat()
+            if occurrence.override:
+                for key in ('date', 'time', 'timezone', 'duration_minutes', 'fold', 'all_day',
+                    'kind', 'title', 'description'):
+                    if key in occurrence.override:
+                        result[key] = occurrence.override[key]
+
+        if 'date' in result:
+            EventTime.from_item(result).validate_local()
+        elif result.get('due_date'):
+            try:
+                datetime.strptime(result['due_date'], '%d.%m.%Y')
+            except ValueError:
+                datetime.strptime(result['due_date'], '%d.%m')
+        return result
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError):
+        return None
+
+
 class ReminderChecker:
     """
     Proactive calendar reminder checker that pings users in Discord
@@ -123,6 +162,12 @@ class ReminderChecker:
             return DeliveryResult('unknown', reason_code='persisted_unresolved_acceptance')
         if receipt and receipt.get('status') == 'delivered' and (delivery_key.startswith(('profile:', 'snooze:')) or time.time() - receipt.get('updated_at', 0) < 3600):
             return DeliveryResult('delivered', message_id=receipt.get('message_id'), reason_code='persisted_receipt')
+        cutoff = int(time.time()) - 172800
+        deliveries = self.sent_log.get('deliveries', {})
+        if any(isinstance(saved, dict) and saved.get('status') not in ('pending', 'unknown')
+                and isinstance(saved.get('updated_at'), (int, float)) and saved['updated_at'] <= cutoff
+                for saved in deliveries.values()):
+            await self._save_sent_log()
         if len(self.sent_log.get('deliveries', {})) >= 4096:
             return DeliveryResult('dropped', reason_code='receipt_capacity')
         self.sent_log.setdefault('deliveries', {})[delivery_key] = {
@@ -211,12 +256,17 @@ class ReminderChecker:
         # Check reminders from ReminderManager
         if self.reminders:
             for guild_id, reminders_list in self.reminders.reminders.items():
+                bucket_scope = self._reminder_scope_for_bucket(guild_id)
+                if bucket_scope is None:
+                    continue
                 for reminder in reminders_list:
                     if reminder.get("completed"):
                         continue
                     reminder = self._current_occurrence_item(reminder)
                     if reminder is None:
                         continue
+                    if reminder.get('scope_id') is None:
+                        reminder['scope_id'] = bucket_scope
                     due = reminder.get("due_date")
                     if not due:
                         continue
@@ -263,12 +313,17 @@ class ReminderChecker:
         # Check reminders
         if self.reminders:
             for guild_id, reminders_list in self.reminders.reminders.items():
+                bucket_scope = self._reminder_scope_for_bucket(guild_id)
+                if bucket_scope is None:
+                    continue
                 for reminder in reminders_list:
                     if reminder.get("completed"):
                         continue
                     reminder = self._current_occurrence_item(reminder)
                     if reminder is None:
                         continue
+                    if reminder.get('scope_id') is None:
+                        reminder['scope_id'] = bucket_scope
                     due = reminder.get("due_date")
                     if not due:
                         continue
@@ -314,12 +369,17 @@ class ReminderChecker:
         # Check reminders
         if self.reminders:
             for guild_id, reminders_list in self.reminders.reminders.items():
+                bucket_scope = self._reminder_scope_for_bucket(guild_id)
+                if bucket_scope is None:
+                    continue
                 for reminder in reminders_list:
                     if reminder.get("completed"):
                         continue
                     reminder = self._current_occurrence_item(reminder)
                     if reminder is None:
                         continue
+                    if reminder.get('scope_id') is None:
+                        reminder['scope_id'] = bucket_scope
                     due = reminder.get("due_date")
                     if not due:
                         continue
@@ -375,6 +435,14 @@ class ReminderChecker:
         # Unscoped legacy records stay shared even when the current default is private.
         return item.get('scope_id') or 'shared'
 
+    def _reminder_scope_for_bucket(self, bucket):
+        policy = getattr(self.reminders, 'access_policy', None)
+        if policy and bucket in policy.scopes:
+            return bucket
+        if str(bucket).startswith(('private:', 'group:')):
+            return None
+        return 'shared' if policy is None or 'shared' in policy.scopes else None
+
     def _legacy_allowed(self, item):
         return self.user_memory is None or self.user_memory.notification_profile(item.get('user_id', ''), self._profile_scope(item)) is None
 
@@ -396,32 +464,7 @@ class ReminderChecker:
 
     def _current_occurrence_item(self, item):
         """Project the exact stored next occurrence into existing delivery paths."""
-        if item.get('_recurrence_readonly'):
-            return None
-        if not item.get('series') and not item.get('recurrence'):
-            return item
-        try:
-            from cal_system.recurrence import Occurrence, Series, occurrence_at, series_from_item
-            series = Series.from_document(item['series']) if item.get('series') else series_from_item(item)
-            occurrence = occurrence_at(series, item.get('series_next_index', 0))
-            if occurrence is None:
-                return None
-            saved = item.get('occurrences', {}).get(occurrence.occurrence_id)
-            if saved:
-                occurrence = Occurrence.from_document(saved)
-            if occurrence.state != 'planned':
-                return None
-            result = copy.deepcopy(item)
-            result['occurrence_id'] = occurrence.occurrence_id
-            result['series_id'] = occurrence.series_id
-            result['original_start'] = occurrence.original_start.isoformat()
-            if occurrence.override:
-                for key in ('date', 'time', 'timezone', 'duration_minutes', 'fold', 'all_day', 'kind', 'title', 'description'):
-                    if key in occurrence.override:
-                        result[key] = occurrence.override[key]
-            return result
-        except (KeyError, TypeError, ValueError):
-            return item
+        return project_current_occurrence(item)
 
     async def check_notification_profiles(self):
         """Only explicitly configured actors/destinations; no discovery or fan-out."""
@@ -474,13 +517,19 @@ class ReminderChecker:
                         if current is not None:
                             items.append(current)
                 if self.reminders:
-                    for values in self.reminders.reminders.values():
+                    for bucket, values in self.reminders.reminders.items():
+                        bucket_scope = self._reminder_scope_for_bucket(bucket)
+                        if bucket_scope != profile.scope_id:
+                            continue
                         for item in values:
-                            if (self._profile_scope(item) != profile.scope_id or str(item.get('user_id')) != user_id
+                            if (item.get('scope_id') not in (None, bucket_scope)
+                                or str(item.get('user_id')) != user_id
                                 or item.get('completed') or item.get('_mutation_deleted') or item.get('delete_pending')):
                                 continue
                             current = self._current_occurrence_item(item)
                             if current is not None:
+                                if current.get('scope_id') is None:
+                                    current['scope_id'] = bucket_scope
                                 items.append(dict(current, _reminder=True))
                 for item in items:
                     start = self._parse_due_date(item['due_date']) if item.get('_reminder') and item.get('due_date') else self._parse_item_datetime(item)

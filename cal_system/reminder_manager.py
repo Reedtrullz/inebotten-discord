@@ -17,7 +17,7 @@ from cal_system.event_schema import Clock, EventTime
 from cal_system.recurrence import Series, Occurrence, occurrence_at
 from cal_system.sync_outbox import SyncOwnerMixin, SyncOutbox, enqueue, SyncOperation, remote_completion
 from core.access_policy import AccessPolicy
-from cal_system.mutation_preview import actor_key
+from core.request_context import current_request
 
 
 class ReminderManager(SyncOwnerMixin):
@@ -86,10 +86,38 @@ class ReminderManager(SyncOwnerMixin):
             self.access_policy = access_policy
 
     def _authorize_mutation(self, actor, scope):
-        actor_key(actor)
-        key = scope if scope in self.access_policy.scopes or scope.startswith(('private:', 'group:')) else 'shared'
-        if not self.access_policy.authorize(actor, key, 'write').allowed:
-            raise PermissionError('scope_membership_required')
+        decision = self.access_policy.authorize(actor, scope, 'write')
+        if not decision.allowed:
+            raise PermissionError(decision.reason_code)
+
+    def _scope_bucket(self, guild_id, operation):
+        """Authorize this request and resolve only its selected storage bucket."""
+        guild_key = str(guild_id)
+        scope = guild_key if guild_key in self.access_policy.scopes else self.access_policy.default_scope
+        actor = current_request()
+        if operation == 'write':
+            self._authorize_mutation(actor, scope)
+        else:
+            decision = self.access_policy.authorize(actor, scope, operation)
+            if not decision.allowed:
+                raise PermissionError(decision.reason_code)
+
+        bucket = scope
+        scope_record = self.access_policy.scopes[scope]
+        if (scope_record.kind == 'legacy_shared' and guild_key not in self.access_policy.scopes
+                and not guild_key.startswith(('private:', 'group:'))):
+            # Legacy stores used the Discord guild/channel ID as their bucket.
+            bucket = guild_key
+        return bucket, scope
+
+    def _record_in_scope(self, item, scope):
+        stored_scope = item.get('scope_id')
+        # The selected bucket is the durable scope marker for new records.
+        # Accept unscoped legacy rows there, but reject an explicit other scope.
+        return stored_scope in (None, scope)
+
+    def _records_in_scope(self, bucket, scope):
+        return [item for item in self.reminders.get(bucket, []) if self._record_in_scope(item, scope)]
 
     def sync_payload(self, item):
         # Legacy linked reminders patch only their text/completion. A deadline
@@ -172,7 +200,7 @@ class ReminderManager(SyncOwnerMixin):
         Returns:
             reminder_id
         """
-        guild_key = str(guild_id)
+        guild_key, _ = self._scope_bucket(guild_id, 'write')
         reminder_id = f"rem_{guild_id}_{uuid.uuid4().hex}"
 
         if guild_key not in self.reminders:
@@ -227,12 +255,13 @@ class ReminderManager(SyncOwnerMixin):
         Returns:
             (success, reminder_text, next_date) - next_date is set for recurring reminders
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             return False, None, None
 
-        incomplete = self.get_active_reminders(guild_id)
+        incomplete = [r for r in self._records_in_scope(guild_key, scope) if not r['completed']]
+        incomplete.sort(key=lambda x: x['created_at'])
 
         target_reminder = None
 
@@ -244,7 +273,7 @@ class ReminderManager(SyncOwnerMixin):
 
         elif reminder_id:
             # Find by ID
-            for reminder in self.reminders[guild_key]:
+            for reminder in incomplete:
                 if reminder["id"] == reminder_id and not reminder["completed"]:
                     target_reminder = reminder
                     break
@@ -385,13 +414,10 @@ class ReminderManager(SyncOwnerMixin):
         Returns:
             List of reminder dicts
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            return []
+        guild_key, scope = self._scope_bucket(guild_id, 'read')
 
         # Filter incomplete reminders
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active = [r for r in self._records_in_scope(guild_key, scope) if not r["completed"]]
 
         # Sort by creation date
         active.sort(key=lambda x: x["created_at"])
@@ -403,15 +429,12 @@ class ReminderManager(SyncOwnerMixin):
         """
         Get recently completed reminders
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            return []
+        guild_key, scope = self._scope_bucket(guild_id, 'read')
 
         cutoff = datetime.now() - timedelta(days=days)
 
         completed = []
-        for r in self.reminders[guild_key]:
+        for r in self._records_in_scope(guild_key, scope):
             if r["completed"] and r.get("completed_at") and not r.get('_mutation_deleted'):
                 completed_at = datetime.fromisoformat(r["completed_at"])
                 if completed_at >= cutoff:
@@ -468,22 +491,22 @@ class ReminderManager(SyncOwnerMixin):
     @writable_store
     def delete_old_completed(self, guild_id, days=7):
         """Delete reminders completed more than N days ago"""
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             return
 
         cutoff = datetime.now() - timedelta(days=days)
 
-        self.reminders[guild_key] = [
-            r
-            for r in self.reminders[guild_key]
-            if not r["completed"]
-            or (
-                r.get("completed_at")
-                and datetime.fromisoformat(r["completed_at"]) >= cutoff
-            )
-        ]
+        kept = []
+        for reminder in self.reminders[guild_key]:
+            if not self._record_in_scope(reminder, scope):
+                kept.append(reminder)
+                continue
+            if (not reminder['completed'] or reminder.get('completed_at')
+                    and datetime.fromisoformat(reminder['completed_at']) >= cutoff):
+                kept.append(reminder)
+        self.reminders[guild_key] = kept
 
         self._save_reminders()
 
@@ -506,12 +529,12 @@ class ReminderManager(SyncOwnerMixin):
         Raises:
             ValueError: If index is invalid
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
 
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active = [r for r in self._records_in_scope(guild_key, scope) if not r["completed"]]
         active.sort(key=lambda x: x["created_at"])
 
         idx = index - 1
@@ -548,12 +571,12 @@ class ReminderManager(SyncOwnerMixin):
         Raises:
             ValueError: If index is invalid
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
 
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active = [r for r in self._records_in_scope(guild_key, scope) if not r["completed"]]
         active.sort(key=lambda x: x["created_at"])
 
         idx = index - 1
@@ -583,15 +606,12 @@ class ReminderManager(SyncOwnerMixin):
         Returns:
             List of matching reminder dicts
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'read')
         query_lower = query.lower()
-
-        if guild_key not in self.reminders:
-            return []
 
         matches = [
             r
-            for r in self.reminders[guild_key]
+            for r in self._records_in_scope(guild_key, scope)
             if query_lower in r.get("text", "").lower()
         ]
         return matches

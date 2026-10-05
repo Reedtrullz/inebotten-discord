@@ -37,6 +37,7 @@ class ReminderHandler(BaseHandler):
 
     async def handle_snooze(self, message, payload):
         from cal_system.notification_preferences import occurrence_identity
+        from cal_system.reminder_checker import project_current_occurrence
         from core.request_context import current_request
         actor = current_request()
         calendar = self.monitor.calendar
@@ -47,10 +48,15 @@ class ReminderHandler(BaseHandler):
         if type(minutes) is not int or not 1 <= minutes <= 1440:
             raise ValueError('invalid_snooze_minutes')
         items = [i for bucket in calendar._scope_buckets() for i in calendar.items.get(bucket, [])]
-        items += [i for values in self.reminders.reminders.values() for i in values
-                  if i.get('scope_id', 'shared') == scope]
-        matches = [i for i in items if i['id'] == payload['item_id'] and str(i.get('user_id')) == actor.user_id
-                   and not i.get('completed') and not i.get('_mutation_deleted') and not i.get('delete_pending')]
+        items += self.reminders.get_active_reminders(self.get_guild_id(message), include_events=False)
+        matches = []
+        for item in items:
+            if (item['id'] != payload['item_id'] or str(item.get('user_id')) != actor.user_id
+                    or item.get('completed') or item.get('_mutation_deleted') or item.get('delete_pending')):
+                continue
+            projected = project_current_occurrence(item)
+            if projected is not None:
+                matches.append(projected)
         if len(matches) != 1:
             raise PermissionError('snooze_own_active_item_required')
         due = calendar.clock.now('UTC') + timedelta(minutes=minutes)

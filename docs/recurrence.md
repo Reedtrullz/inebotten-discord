@@ -32,6 +32,20 @@ writing version 2. Calendar setup migrates legacy recurrence records; reminders
 migrate when changed. Older schema 1 readers refuse version 2 rather than
 misinterpreting occurrence history. Deployment rollback checks this boundary.
 
+Reminder create, complete, edit, delete, and cleanup operations resolve records
+inside the bucket selected by the current request and its `AccessPolicy`. A
+missing actor cannot write to a configured private or approved-group scope.
+Legacy shared reminder files keep their existing guild/channel buckets and
+unscoped records remain readable through the legacy shared policy; no automatic
+move into a newly configured private or group scope is inferred.
+
+Snoozes for recurring reminders store the same deterministic occurrence ID used
+by the scheduler. The scheduler reprojects that current occurrence after
+restart; completed, exhausted, read-only, or malformed series cannot fall back
+to snoozing the raw series record. Delivery receipts older than 48 hours are
+pruned only after their outcome is resolved. `pending` and `unknown` receipts
+remain durable across restart, including when they keep the receipt cap full.
+
 Recurring edits require a scope in the command: `bare denne` edits the current
 occurrence; `denne og fremtidige` or `herfra og ut` starts the revised schedule
 at the current occurrence while preserving earlier occurrence records; `hele

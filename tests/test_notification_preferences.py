@@ -92,17 +92,19 @@ async def test_authorization_rechecked_after_shared_quota_wait():
 async def test_actual_snooze_handler_refuses_other_users_and_persists_own_identity(tmp_path):
     from cal_system.calendar_manager import CalendarManager
     from cal_system.notification_preferences import NotificationProfile, occurrence_identity
+    from cal_system.reminder_manager import ReminderManager
     from core.request_context import RequestContext, request_scope
     from features.reminder_handler import ReminderHandler
     memory = UserMemory(tmp_path / 'memory.json')
     await memory.set_notification_profile('7', NotificationProfile(True, 'shared', '70', []))
     calendar = CalendarManager(storage_path=tmp_path / 'calendar.json', clock=clock('2027-01-01T08:00:00+00:00'))
+    reminders = ReminderManager(storage_path=tmp_path / 'reminders.json')
     own = calendar.add_item('shared', '7', 'Synthetic', 'Own', '01.01.2027', time_str='09:00')
     other = calendar.add_item('shared', '9', 'Synthetic', 'Other', '01.01.2027', time_str='09:00')
     handler = ReminderHandler(SimpleNamespace(calendar=calendar, user_memory=memory,
-        reminders=SimpleNamespace(reminders={}), rate_limiter=None, loc=None, client=None))
+        reminders=reminders, rate_limiter=None, loc=None, client=None))
     handler.send_response = AsyncMock()
-    message = SimpleNamespace(author=SimpleNamespace(id=7))
+    message = SimpleNamespace(author=SimpleNamespace(id=7), channel=SimpleNamespace(id=70), guild=None)
     with request_scope(RequestContext('snooze', '7', '70', None, 'no', 'dm')):
         with pytest.raises(PermissionError):
             await handler.handle_snooze(message, {'item_id': other['id'], 'minutes': 10})
@@ -111,7 +113,138 @@ async def test_actual_snooze_handler_refuses_other_users_and_persists_own_identi
     assert snooze['occurrence_id'] == occurrence_identity(own)
     assert snooze['due_at'] == '2027-01-01T08:10:00+00:00'
     assert len(memory.notification_snoozes('7', 'shared')) == 1
-    calendar._storage.close(); memory._storage.close()
+    reminders._storage.close(); calendar._storage.close(); memory._storage.close()
+
+
+@pytest.mark.asyncio
+async def test_recurring_snooze_uses_scheduler_occurrence_and_is_delivered(tmp_path):
+    from cal_system.calendar_manager import CalendarManager
+    from cal_system.notification_preferences import NotificationProfile
+    from cal_system.reminder_checker import ReminderChecker
+    from core.outbound_sender import DeliveryResult
+    from core.request_context import RequestContext, request_scope
+    from features.reminder_handler import ReminderHandler
+
+    now = {'value': datetime.fromisoformat('2027-01-01T08:00:00+00:00')}
+    fake_clock = Clock(wall=lambda: now['value'], monotonic=lambda: 1)
+    memory = UserMemory(tmp_path / 'memory.json')
+    await memory.set_notification_profile('7', NotificationProfile(True, 'shared', '70', []))
+    calendar = CalendarManager(storage_path=tmp_path / 'calendar.json', clock=fake_clock)
+    item = calendar.add_item('shared', '7', 'Synthetic', 'Recurring', '01.01.2027', '09:00',
+        recurrence='weekly', duration_minutes=30)
+    from cal_system.reminder_manager import ReminderManager
+    reminders = ReminderManager(storage_path=tmp_path / 'reminders.json', clock=fake_clock)
+    handler = ReminderHandler(SimpleNamespace(calendar=calendar, reminders=reminders,
+        user_memory=memory, rate_limiter=None, loc=None, client=None))
+    handler.send_response = AsyncMock()
+    message = SimpleNamespace(author=SimpleNamespace(id=7), channel=SimpleNamespace(id=70), guild=None)
+    actor = RequestContext('snooze', '7', '70', None, 'no', 'dm')
+    with request_scope(actor):
+        reminder_id = reminders.add_reminder('70', '7', 'Synthetic', 'Recurring deadline',
+            '01.01.2027', recurrence='weekly')
+        await handler.handle_snooze(message, {'item_id': item['id'], 'minutes': 10})
+        await handler.handle_snooze(message, {'item_id': reminder_id, 'minutes': 10})
+
+    now['value'] = datetime.fromisoformat('2027-01-01T08:10:00+00:00')
+    sender = SimpleNamespace(send=AsyncMock(return_value=DeliveryResult('delivered', message_id='receipt')))
+    checker = ReminderChecker(calendar_manager=calendar, reminder_manager=reminders,
+        user_memory=memory, get_channel_func=lambda _channel_id: SimpleNamespace(),
+        outbound_sender=sender, storage_path=tmp_path / 'sent.json', clock=fake_clock)
+    await checker.setup()
+    await checker.check_notification_profiles()
+
+    assert sender.send.await_count == 2
+    assert memory.notification_snoozes('7', 'shared') == []
+    checker.close_storage(); reminders._storage.close(); calendar._storage.close(); memory._storage.close()
+
+
+@pytest.mark.asyncio
+async def test_recurring_snooze_refuses_unsupported_series(tmp_path):
+    from cal_system.calendar_manager import CalendarManager
+    from cal_system.notification_preferences import NotificationProfile
+    from cal_system.recurrence import Occurrence, Series, occurrence_at
+    from cal_system.reminder_manager import ReminderManager
+    from core.request_context import RequestContext, request_scope
+    from features.reminder_handler import ReminderHandler
+
+    memory = UserMemory(tmp_path / 'memory.json')
+    await memory.set_notification_profile('7', NotificationProfile(True, 'shared', '70', []))
+    calendar = CalendarManager(storage_path=tmp_path / 'calendar.json')
+    item = calendar.add_item('shared', '7', 'Synthetic', 'Unsupported', '01.01.2027', '09:00',
+        recurrence='weekly', duration_minutes=30)
+    completed = calendar.add_item('shared', '7', 'Synthetic', 'Completed occurrence', '02.01.2027', '09:00',
+        recurrence='weekly', duration_minutes=30)
+    changed = calendar.items
+    changed['shared'][0]['_recurrence_readonly'] = True
+    series = Series.from_document(completed['series'])
+    occurrence = occurrence_at(series, 0)
+    changed['shared'][1]['occurrences'] = {occurrence.occurrence_id: Occurrence(
+        occurrence.occurrence_id, occurrence.series_id, occurrence.original_start, 'completed').to_document()}
+    calendar.items = changed
+    reminders = ReminderManager(storage_path=tmp_path / 'reminders.json')
+    handler = ReminderHandler(SimpleNamespace(calendar=calendar, reminders=reminders,
+        user_memory=memory, rate_limiter=None, loc=None, client=None))
+    handler.send_response = AsyncMock()
+    message = SimpleNamespace(author=SimpleNamespace(id=7), channel=SimpleNamespace(id=9), guild=None)
+
+    with request_scope(RequestContext('snooze', '7', '9', None, 'no', 'dm')):
+        for candidate in (item, completed):
+            with pytest.raises(PermissionError):
+                await handler.handle_snooze(message, {'item_id': candidate['id'], 'minutes': 10})
+
+    assert memory.notification_snoozes('7', 'shared') == []
+    reminders._storage.close(); calendar._storage.close(); memory._storage.close()
+
+
+def test_invalid_recurring_projection_is_not_sent_as_raw_item(tmp_path):
+    from cal_system.reminder_checker import ReminderChecker
+
+    checker = ReminderChecker(storage_path=tmp_path / 'sent.json')
+    malformed = {
+        'id': 'broken-series', 'recurrence': 'weekly', 'due_date': 'not-a-date',
+        'series': {'invalid': True}, 'series_next_index': 0, 'completed': False,
+    }
+
+    assert checker._current_occurrence_item(malformed) is None
+    checker.close_storage()
+
+
+@pytest.mark.asyncio
+async def test_delivery_prunes_expired_resolved_receipts_before_capacity(tmp_path):
+    import time as system_time
+    from cal_system.reminder_checker import ReminderChecker
+    from core.outbound_sender import DeliveryResult
+
+    stale_time = int(system_time.time()) - 172801
+    deliveries = {
+        f'expired-{index}': {'status': 'delivered', 'updated_at': stale_time,
+            'message_id': f'receipt-{index}', 'reason_code': None}
+        for index in range(4094)
+    }
+    deliveries['unresolved'] = {'status': 'unknown', 'updated_at': stale_time,
+        'message_id': None, 'reason_code': 'send_timeout'}
+    deliveries['pending'] = {'status': 'pending', 'updated_at': stale_time,
+        'message_id': None, 'reason_code': 'send_not_resolved'}
+    sender = SimpleNamespace(send=AsyncMock(return_value=DeliveryResult('delivered', message_id='new-receipt')))
+    path = tmp_path / 'sent.json'
+    checker = ReminderChecker(outbound_sender=sender, storage_path=path)
+    checker.sent_log = {'reminders_sent': {}, 'digest_log': {}, 'deliveries': deliveries}
+
+    result = await checker._deliver('70', 'Synthetic', 'new-delivery')
+
+    assert result.status == 'delivered'
+    assert sender.send.await_count == 1
+    assert set(checker.sent_log['deliveries']) == {'unresolved', 'pending', 'new-delivery'}
+    assert checker.sent_log['deliveries']['unresolved']['status'] == 'unknown'
+    assert checker.sent_log['deliveries']['pending']['status'] == 'pending'
+    assert checker.sent_log['deliveries']['new-delivery']['message_id'] == 'new-receipt'
+    checker.close_storage()
+    restarted = ReminderChecker(outbound_sender=sender, storage_path=path)
+    await restarted.setup()
+    assert set(restarted.sent_log['deliveries']) == {'unresolved', 'pending', 'new-delivery'}
+    assert restarted.sent_log['deliveries']['unresolved']['status'] == 'unknown'
+    assert restarted.sent_log['deliveries']['pending']['status'] == 'pending'
+    restarted.close_storage()
 
 
 @pytest.mark.asyncio
@@ -183,6 +316,42 @@ async def test_enabled_profile_sends_only_actor_items_and_selected_lead(tmp_path
     assert sender.send.call_args.args[0] == '70'
     assert 'User 7' in sender.send.call_args.args[1] and 'User 9' not in sender.send.call_args.args[1]
     checker.close_storage(); memory._storage.close()
+
+
+@pytest.mark.asyncio
+async def test_group_scoped_reminder_notification_uses_its_bucket_scope(tmp_path):
+    from cal_system.calendar_manager import CalendarManager
+    from cal_system.notification_preferences import NotificationProfile
+    from cal_system.reminder_manager import ReminderManager
+    from cal_system.reminder_checker import ReminderChecker
+    from core.access_policy import AccessPolicy, ScopeRecord
+    from core.outbound_sender import DeliveryResult
+    from core.request_context import RequestContext, request_scope
+
+    policy = AccessPolicy([
+        ScopeRecord('shared', 'legacy_shared'),
+        ScopeRecord('group:approved', 'approved_group', owner_id='7', channel_ids=frozenset({'9'})),
+    ], default_scope='group:approved')
+    memory = UserMemory(tmp_path / 'memory.json')
+    await memory.set_notification_profile('7', NotificationProfile(True, 'group:approved', '9', [0]))
+    calendar = CalendarManager(storage_path=tmp_path / 'calendar.json', access_policy=policy,
+        clock=clock('2027-01-01T08:00:00+00:00'))
+    reminders = ReminderManager(storage_path=tmp_path / 'reminders.json', access_policy=policy,
+        clock=clock('2027-01-01T08:00:00+00:00'))
+    actor = RequestContext('create', '7', '9', '100', 'no', 'guild')
+    with request_scope(actor):
+        reminder_id = reminders.add_reminder('100', '7', 'Owner', 'Scoped reminder', '01.01.2027')
+    assert 'scope_id' not in reminders.reminders['group:approved'][0]
+
+    sender = SimpleNamespace(send=AsyncMock(return_value=DeliveryResult('delivered', message_id='receipt')))
+    checker = ReminderChecker(calendar_manager=calendar, reminder_manager=reminders, user_memory=memory,
+        get_channel_func=lambda _channel_id: SimpleNamespace(), outbound_sender=sender,
+        storage_path=tmp_path / 'sent.json', clock=clock('2027-01-01T08:00:00+00:00'))
+    await checker.setup(); await checker.check_notification_profiles()
+    assert sender.send.await_count == 1
+    assert 'Scoped reminder' in sender.send.call_args.args[1]
+    assert reminders.reminders['group:approved'][0]['id'] == reminder_id
+    checker.close_storage(); reminders._storage.close(); calendar._storage.close(); memory._storage.close()
 
 
 @pytest.mark.asyncio
