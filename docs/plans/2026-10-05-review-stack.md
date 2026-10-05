@@ -1,6 +1,6 @@
 # Portfolio review stack — 5 October 2026
 
-Forty-four nonempty draft PR units preserve the actual ancestry of the 39 proposals and their corrections. I26 has two follow-up corrections, I03/I36 has shared outbound-mention suppression, and I18/I31 have corrections from remote CI. Each PR targets the preceding draft branch; review and merge order follows this table. Existing dependency PRs remain separate until their explicit reconciliation receipt. No automatic merge or deployment is requested.
+Forty-five nonempty draft PR units preserve the actual ancestry of the 39 proposals and their corrections. I26 has two follow-up corrections, I03/I36 has shared outbound-mention suppression, and I18/I31 have corrections from remote CI. Each PR targets the preceding draft branch; review and merge order follows this table. Existing dependency PRs remain separate until their explicit reconciliation receipt. No automatic merge or deployment is requested.
 
 Only the root targets master. Current CI and desktop workflow pull-request filters target master/main; final-stack remote workflows therefore need explicit dispatch at the final full head. Intermediate historical task checks and final integrated receipts are not exact-head CI proof for each draft.
 
@@ -50,6 +50,7 @@ Only the root targets master. Current CI and desktop workflow pull-request filte
 | 42 | I03/I36 | [#65](https://github.com/Reedtrullz/inebotten-discord/pull/65) | `codex/portfolio-42-outbound-mentions` | `17907fdb2f86d780bdc6341c41e1869ea56c3c29` |
 | 43 | I18 | [#66](https://github.com/Reedtrullz/inebotten-discord/pull/66) | `codex/portfolio-43-log-cursor-generations` | `28f72397ca3382cfaef6529377e984a32d7577f6` |
 | 44 | I31 | [#67](https://github.com/Reedtrullz/inebotten-discord/pull/67) | `codex/portfolio-44-native-layout-admission` | `63528dd5f38c8e78ed02f0d6c4fc054a5129c4d6` |
+| 45 | I31 | [#68](https://github.com/Reedtrullz/inebotten-discord/pull/68) | `codex/portfolio-45-windows-owned-admission` | `a15658f00a001d95a039f46ba5ba6b3fd8c55ce6` |
 
 The final draft also includes current execution/dependency/review documentation. Its published full head and workflow runs are recorded after creation. The corrected source checkpoint is `17907fdb2f86d780bdc6341c41e1869ea56c3c29`; local receipt logs remain in the ignored worktree evidence directory.
 
@@ -66,3 +67,5 @@ The first integrated [CI run](https://github.com/Reedtrullz/inebotten-discord/ac
 Drafts #66/#67 were created, attached and read back with matching heads, bases, titles, bodies and draft flags. The log fix uses bounded process-local segment generations so inode reuse cannot revive an expired cursor. The display fix waits for mapping within measured screen dimensions and records requested/actual layout. The native macOS source rehearsal passed with confirmed owned-group closure and unrelated-process preservation.
 
 [CI run 37261124978](https://github.com/Reedtrullz/inebotten-discord/actions/runs/37261124978) passed at full source `63528dd5f38c8e78ed02f0d6c4fc054a5129c4d6`: 1,360 offline tests and 23 subtests; 3 explicit skips and 1 separately executed browser case. All 46 browser tests, 130 bot-profile checks, 25 Windows ownership checks and all three clean platform profile jobs passed. Native desktop revalidation and the Windows process-ownership correction remain separate work.
+
+The Windows candidate is now integrated as `a15658f` and published in draft #68. It creates the process suspended, assigns the exact process handle to the owned Job before resuming, and restricts inherited handles to standard streams. Startup failure waits at most one second; unconfirmed cleanup retains exact handles and closed admission. Parent integration checks passed 61 tests / 4 subtests, including the current log/layout fixes. The PR body and immutable Actions run heads are the receipt location for subsequent exact-head CI and native build results; this document records the pre-dispatch checkpoint without inferring their outcome.
