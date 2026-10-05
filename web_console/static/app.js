@@ -211,7 +211,7 @@ class ConsoleApp {
       const parsed = new Date(`${date}T12:00:00`);
       if (Number.isNaN(parsed.getTime())) return;
       const monday = new Date(parsed); monday.setDate(parsed.getDate() - ((parsed.getDay() + 6) % 7));
-      const key = monday.toLocaleDateString("no-NO", { day: "numeric", month: "short" });
+      const key = monday.toLocaleDateString("no-NO", { day: "numeric", month: "short", year: "numeric" });
       weekGroups.set(key, (weekGroups.get(key) || 0) + 1);
     });
     const summary = document.querySelector("[data-calendar-week-summary]");

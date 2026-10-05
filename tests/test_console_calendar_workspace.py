@@ -272,3 +272,15 @@ def test_calendar_workspace_browser_create_preview_apply_and_empty_filter(page, 
             asyncio.run(close())
         thread = threading.Thread(target=close_manager)
         thread.start(); thread.join(timeout=5)
+
+
+async def test_agenda_orders_across_month_and_year_boundaries(workspace):
+    server,manager,_=workspace
+    actor=RequestContext('seed',ACTOR,'console',None,'no','console')
+    with request_scope(actor):
+        manager.add_item(None,ACTOR,'Console','November end','30.11.2026')
+        manager.add_item(None,ACTOR,'Console','December start','01.12.2026')
+        manager.add_item(None,ACTOR,'Console','Next year','01.01.2027')
+    status,response=await http_request(server,'/api/calendar/items',api_key=API_KEY)
+    assert status==200
+    assert [item['title'] for item in response['items']]==['Seed event','November end','December start','Next year']

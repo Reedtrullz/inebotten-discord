@@ -10,6 +10,7 @@ import pathlib
 import re
 import secrets
 import time
+from datetime import date
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
@@ -426,7 +427,13 @@ class ConsoleServer:
                        "sync_state": next((op.get("state") for op in reversed(sync) if op.get("state") != "synced"), "synced"),
                        "conflicts": [{"operation_id": op.get("operation_id"), "reason_code": op.get("reason_code")}
                                      for op in sync if op.get("state") == "conflict"]})
-        items.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or ""), str(item.get("title") or "").casefold()))
+        def agenda_key(item):
+            try:
+                day=EventTime.from_item(item).local_date
+            except (ValueError,TypeError):
+                day=date.max
+            return day,str(item.get("time") or ""),str(item.get("title") or "").casefold()
+        items.sort(key=agenda_key)
         write_authorized = policy.authorize(actor, scope, "write").allowed
         write_available = write_authorized and (credential == "api_key" or credential == "session" and bool(self.trusted_origin))
         result = {"enabled": True, "scope_id": scope, "revision": revision,
