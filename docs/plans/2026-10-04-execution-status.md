@@ -67,3 +67,13 @@ The dirty primary worktree, its ignored original exporter files and existing dat
 ## Draft publication
 
 [The 42 focused review units](2026-10-05-review-stack.md) are published as [#24](https://github.com/Reedtrullz/inebotten-discord/pull/24) through [#65](https://github.com/Reedtrullz/inebotten-discord/pull/65), covering every proposal plus the three named corrections. Exact full heads, base branches, titles, bodies and draft flags were read back and matched the local package; every PR is attached to the chat. Shared master and the primary dirty checkout remain untouched. Final-stack remote CI/desktop results are pending; none of these drafts is merged or deployed.
+
+## Remote verification and CI corrections
+
+The earlier pending workflows above completed with real failures at `6c153b12e3a8060edb09c885224ece36a201ac4f`: one log cursor survived inode reuse during rotation, macOS native layout used a fixed geometry assertion, and Windows native owned-group shutdown remained unconfirmed. Both native builds stopped before packaging. Their logs are retained; none is treated as native acceptance.
+
+The cursor and layout fixes are published as drafts [#66](https://github.com/Reedtrullz/inebotten-discord/pull/66) and [#67](https://github.com/Reedtrullz/inebotten-discord/pull/67). Deterministic regressions failed before the fixes; 78 log/console and 27 desktop/rehearsal checks passed afterward. Actual local macOS source rehearsal recorded 4,953 main-thread widget calls, requested/actual geometry, confirmed owned-group closure and preservation of the unrelated fixture.
+
+Full-stack [CI 37261124978](https://github.com/Reedtrullz/inebotten-discord/actions/runs/37261124978) passed at full source `63528dd5f38c8e78ed02f0d6c4fc054a5129c4d6`: 1,360 offline tests / 23 subtests, 3 explicit skips / 1 separate browser deselection; 46 browser, 130 isolated bot-profile and 25 Windows store-ownership checks. All three platform clean-profile jobs passed. This supplies actual Linux/macOS/Windows install proof for I21; existing dependency-PR reconciliation remains open. The Windows launcher ownership correction and new native desktop build proof remain pending.
+
+The synthetic manual acceptance package is at `/Users/reidar/.codex/worktrees/inebotten-portfolio/inebotten/.superpowers/sdd/2026-10-04-inebotten-complete-portfolio/manual-acceptance/`. It contains CSV/raw JSON, expected cells, a five-entry ICS with expected values, hashes and trial instructions. It was generated through current domain APIs under the offline runner (one generation check passed); no reader, calendar client or account import has been performed. I39 reader and I36 two-client acceptance remain pending the user-selected clients.

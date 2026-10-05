@@ -33,10 +33,19 @@ closure. After the final signal attempt the controller seals further group
 signals, reaps only its own leader, and requires an absent group. A remaining
 or uninspectable group keeps ownership pending.
 
-Windows uses an unnamed Job with kill-on-close, assigned using the owned
-`Popen` process HANDLE before the child receives its stdin startup permit.
+Windows creates the child with `CREATE_SUSPENDED` and retains the exact
+CreateProcess process and primary-thread handles. It assigns the process to an
+unnamed kill-on-close Job before resuming the primary thread, then grants the
+private stdin startup permit. This also contains a Python virtual-environment
+redirector before it can start the actual interpreter. Only the child's standard
+stream handles are inherited. The spawn adapter follows the tested CPython 3.12
+desktop runtime; native execution remains a separate check.
+
 Cooperative stop uses the private stdin pipe; forced termination uses the Job
-after the deadline. No process-tree or process-name termination fallback exists.
+after the deadline. Startup failure cleanup waits at most one second. If exit or
+handle closure remains unconfirmed, the controller retains the exact owned
+process for recovery and keeps new-start admission closed. No process-tree or
+process-name termination fallback exists.
 See Microsoft's [Job objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 and [assignment rules](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject).
 Native Windows execution is required to verify these APIs.
