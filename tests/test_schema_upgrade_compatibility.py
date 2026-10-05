@@ -44,3 +44,30 @@ def test_new_schema_is_not_implicitly_accepted_by_upgrade_reader(tmp_path):
     owner=DocumentOwner(path,bucket_records('title'),schema_version=2,upgrade_from=(1,))
     try:assert owner.state.status=='unsupported'
     finally:owner.close()
+
+
+async def test_backup_upgrade_is_a_copy_and_old_bundle_remains_readable(tmp_path,monkeypatch):
+    from utils import backup_bundle as backup
+    root=tmp_path/'source';root.mkdir()
+    path=root/'calendar.json'
+    original=b'{"schema_version":1,"revision":4,"document":{"shared":[{"id":"fixture","title":"Behold"}]}}'
+    path.write_bytes(original)
+    old_owner=DocumentOwner(path,bucket_records('title'),schema_version=1)
+    try:
+        old_archive=tmp_path/'old.zip'
+        await backup.create_bundle(backup.StoreRegistry(root,{'calendar.json':old_owner}),old_archive)
+    finally:old_owner.close()
+    monkeypatch.setitem(backup.STORE_SCHEMAS,'calendar.json',2)
+    new_owner=DocumentOwner(path,bucket_records('title'),schema_version=2,upgrade_from=(1,))
+    try:
+        archive=tmp_path/'new.zip'
+        manifest=await backup.create_bundle(backup.StoreRegistry(root,{'calendar.json':new_owner}),archive)
+        assert path.read_bytes()==original
+        assert manifest['stores'][0]['schema_version']==2
+        new_preview=backup.validate_bundle(archive,tmp_path/'new-stage',tmp_path/'new-destination')
+        old_preview=backup.validate_bundle(old_archive,tmp_path/'old-stage',tmp_path/'old-destination')
+        assert new_preview.schema_versions==(('calendar.json',2),)
+        assert old_preview.schema_versions==(('calendar.json',1),)
+        backup.restore(old_preview,tmp_path/'old-destination',services_stopped=True)
+        assert (tmp_path/'old-destination'/'calendar.json').read_bytes()==original
+    finally:new_owner.close()

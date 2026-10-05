@@ -26,6 +26,11 @@ from utils.store_ownership import ProcessOwnership, StoreOwnedError
 STORE_SCHEMAS = {name: 1 for name in (
     'calendar.json', 'reminders.json', 'user_memory.json', 'polls.json', 'reminder_log.json',
 )}
+STORE_UPGRADES = {'calendar.json': (1,), 'reminders.json': (1,)}
+
+
+def store_upgrade_versions(name):
+    return tuple(version for version in STORE_UPGRADES.get(name, ()) if version < STORE_SCHEMAS[name])
 MAX_STORE_BYTES = 8 * 1024 * 1024
 MAX_BUNDLE_BYTES = 48 * 1024 * 1024
 MAX_MANIFEST_BYTES = 32 * 1024
@@ -127,7 +132,8 @@ def registry_for_directory(root):
         for name, validator in _validators().items():
             if (root / name).exists() or (root / name).is_symlink():
                 _read_regular(root / name, MAX_STORE_BYTES)
-                owners[name] = DocumentOwner(root / name, validator)
+                owners[name] = DocumentOwner(root / name, validator, schema_version=STORE_SCHEMAS[name],
+                                            upgrade_from=store_upgrade_versions(name))
         return StoreRegistry(root, owners)
     except BaseException:
         for owner in owners.values():
@@ -159,6 +165,11 @@ async def create_bundle(store_registry, destination):
                 # Preserve legacy source bytes; normalize only the bundle copy.
                 raw = _json({'schema_version': owner.schema_version,
                              'revision': revision, 'document': value})
+            elif value['schema_version'] in owner.upgrade_from:
+                # Export a validated upgraded snapshot without mutating the
+                # source envelope or consuming its preserving migration backup.
+                raw = _json({'schema_version': owner.schema_version,
+                             'revision': revision, 'document': document})
             if len(raw) > MAX_STORE_BYTES:
                 raise BackupError('store_too_large')
             files['stores/' + name] = raw
@@ -207,7 +218,7 @@ def _manifest(data):
             if (not isinstance(row, dict) or row.get('name') not in STORE_SCHEMAS
                     or row['name'] in names
                     or type(row.get('schema_version')) is not int
-                    or row['schema_version'] != STORE_SCHEMAS[row['name']]
+                    or row['schema_version'] not in (STORE_SCHEMAS[row['name']], *store_upgrade_versions(row['name']))
                     or type(row.get('revision')) is not int or row['revision'] < 0
                     or type(row.get('bytes')) is not int or not 1 <= row['bytes'] <= MAX_STORE_BYTES
                     or not isinstance(row.get('sha256'), str)
@@ -248,7 +259,7 @@ def _inventory(destination):
         if path.name not in STORE_SCHEMAS:
             raise BackupError('unlisted_destination')
         raw = _read_regular(path, MAX_STORE_BYTES)
-        loaded = load_document(path, STORE_SCHEMAS[path.name])
+        loaded = load_document(path, STORE_SCHEMAS[path.name], upgrade_from=store_upgrade_versions(path.name))
         if loaded.status != 'valid':
             raise BackupError('read_only_destination')
         metadata = path.stat()
