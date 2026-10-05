@@ -191,7 +191,11 @@ class OutboundSender:
                 elif self.send_channel_message:
                     if attachments:
                         return DeliveryResult('dropped', reason_code='attachments_unsupported')
-                    dispatch = lambda content: self.send_channel_message(int(channel_id), content)
+                    # Legacy text-only adapters cannot carry Discord keyword policy.
+                    # Escape embedded mentions rather than allowing a fallback to ping.
+                    import discord
+                    dispatch = lambda content, **kwargs: self.send_channel_message(
+                        int(channel_id), discord.utils.escape_mentions(content))
                 else:
                     self._quota.record_dropped()
                     return DeliveryResult('dropped', reason_code='destination_unavailable')
@@ -226,7 +230,11 @@ class OutboundSender:
                             files.append(discord.File(buffer, filename=item.filename))
                     started = True
                     attempt_state['started'] = True
-                    message = await dispatch(text, files=files) if files else await dispatch(text)
+                    import discord
+                    kwargs = {'allowed_mentions': discord.AllowedMentions.none()}
+                    if files:
+                        kwargs['files'] = files
+                    message = await dispatch(text, **kwargs)
                 message_id = getattr(message, 'id', None)
                 if type(message_id) not in (str, int) or not str(message_id):
                     self._quota.finish(token, unknown=True)

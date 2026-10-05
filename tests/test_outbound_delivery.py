@@ -26,7 +26,7 @@ async def test_concurrent_reservations_keep_existing_limits():
     from core.outbound_sender import OutboundSender
     accepted = []
     release = asyncio.Event()
-    async def send(text):
+    async def send(text, **kwargs):
         accepted.append(text)
         await release.wait()
         return SimpleNamespace(id=f'message-{text}')
@@ -47,7 +47,7 @@ async def test_concurrent_reservations_keep_existing_limits():
 async def test_timeout_after_acceptance_is_unknown():
     from core.outbound_sender import OutboundSender
     accepted = []
-    async def send(text):
+    async def send(text, **kwargs):
         accepted.append(text)
         await asyncio.Event().wait()
     limiter = RateLimiter()
@@ -66,7 +66,7 @@ async def test_timeout_after_acceptance_is_unknown():
 async def test_shutdown_preserves_pending_delivery_state(tmp_path):
     from core.outbound_sender import OutboundSender
     entered = asyncio.Event()
-    async def send(text):
+    async def send(text, **kwargs):
         entered.set()
         await asyncio.Event().wait()
     sender = OutboundSender(lambda _: SimpleNamespace(send=send), RateLimiter())
@@ -129,7 +129,7 @@ async def test_429_honors_retry_after_and_deadline():
         status = 429
         retry_after = .03
     attempted = []
-    async def send(text):
+    async def send(text, **kwargs):
         attempted.append(time.monotonic())
         if len(attempted) == 1:
             raise Throttled()
@@ -222,3 +222,40 @@ def test_safe_interval_longer_than_burst_window_is_preserved(monkeypatch):
     assert limiter.can_send()[0] is False
     clock['now'] = 102.0
     assert limiter.can_send()[0] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [False, True])
+@pytest.mark.parametrize("with_attachment", [False, True])
+async def test_untrusted_content_cannot_parse_discord_mentions(reply, with_attachment):
+    from core.outbound_sender import Attachment, OutboundSender
+    text = "ICS title @everyone @here <@123456789012345678> <@&123456789012345678>"
+    remote = AsyncMock(return_value=SimpleNamespace(id="receipt"))
+    channel = SimpleNamespace(id=123, send=remote)
+    sender = OutboundSender(lambda _: channel, RateLimiter(safe_interval=0))
+    files = (Attachment("review.json", "application/json", b"{}"),) if with_attachment else ()
+    if reply:
+        message = SimpleNamespace(id=456, channel=channel, reply=remote)
+        result = await sender.reply(message, text, attachments=files)
+    else:
+        result = await sender.send("123", text, deadline=time.monotonic()+1, attachments=files)
+    assert result.status == "delivered"
+    assert remote.await_args.args[0] == text
+    allowed = remote.await_args.kwargs.get("allowed_mentions")
+    assert allowed is not None
+    assert allowed.to_dict().get("parse") == []
+    assert not allowed.replied_user
+
+
+@pytest.mark.asyncio
+async def test_legacy_text_transport_escapes_mentions_without_keyword_support():
+    from core.outbound_sender import OutboundSender
+    sent = []
+    async def legacy(channel, text):
+        sent.append((channel, text))
+        return SimpleNamespace(id="receipt")
+    sender = OutboundSender(lambda _: None, RateLimiter(safe_interval=0), send_channel_message=legacy)
+    result = await sender.send("123", "@everyone <@&123456789012345678>", deadline=time.monotonic()+1)
+    assert result.status == "delivered"
+    assert sent[0][0] == 123
+    assert "@everyone" not in sent[0][1] and "<@&123456789012345678>" not in sent[0][1]

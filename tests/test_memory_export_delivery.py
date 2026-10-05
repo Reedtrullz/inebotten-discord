@@ -139,7 +139,7 @@ def test_attachment_retry_rewinds_and_closes_every_buffer(monkeypatch):
         status = 429
         retry_after = 0
     streams = []
-    async def send(content, *, files):
+    async def send(content, *, files, **kwargs):
         streams.append(files[0].fp)
         assert files[0].fp.read() == b'{"complete":true}'
         if len(streams) == 1:

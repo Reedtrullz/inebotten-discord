@@ -147,3 +147,30 @@ async def test_large_import_delivers_complete_review_or_invalidates_token(tmp_pa
         await service.handle_exchange(message('kalender importer ics',[attached]),{'action':'import'})
         assert not service._exchange.previews.entries
     finally:calendar._storage.close()
+
+
+@pytest.mark.parametrize("count", [1, 11])
+async def test_real_ics_preview_keeps_titles_inert_in_reply_and_attachment_path(tmp_path, count):
+    from features.base_handler import BaseHandler
+    calendar = CalendarManager(storage_path=tmp_path/'calendar.json')
+    try:
+        title = "@everyone @here <@&123456789012345678>"
+        parts = [data(f'UID:mention{i}\r\nSUMMARY:{title}\r\nDTSTART;VALUE=DATE:20270104\r\nDTEND;VALUE=DATE:20270105') for i in range(count)]
+        body = b''.join(part[part.index(b'BEGIN:VEVENT'):part.index(b'END:VCALENDAR')] for part in parts)
+        raw = b'BEGIN:VCALENDAR\r\nVERSION:2.0\r\n'+body+b'END:VCALENDAR\r\n'
+        service = handler(calendar)
+        service.send_response = BaseHandler.send_response.__get__(service)
+        service._read_ics_attachment = AsyncMock(return_value=raw)
+        incoming = message('kalender importer ics', [SimpleNamespace(filename='fixture.ics', size=len(raw))])
+        incoming.guild = SimpleNamespace(id=1)
+        remote = AsyncMock(return_value=SimpleNamespace(id='preview-receipt'))
+        incoming.reply = remote
+        incoming.channel.send = remote
+        await service.handle_exchange(incoming, {'action':'import'})
+        remote.assert_awaited_once()
+        assert title in remote.await_args.args[0]
+        assert remote.await_args.kwargs['allowed_mentions'].to_dict()['parse'] == []
+        assert not calendar.items
+        assert len(service._exchange.previews.entries) == 1
+    finally:
+        calendar._storage.close()
