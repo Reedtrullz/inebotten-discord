@@ -537,7 +537,8 @@ class ConsoleServer:
                 with request_scope(actor):
                     item = manager.add_item(None, actor.user_id, "Console", values["title"].strip(), values["date"],
                         values.get("time"), kind=values.get("kind", "event"), timezone=values.get("timezone", "Europe/Oslo"),
-                        all_day=values.get("all_day"), duration_minutes=values.get("duration_minutes"), channel_id=actor.channel_id)
+                        all_day=values.get("all_day"), duration_minutes=values.get("duration_minutes"), channel_id=actor.channel_id,
+                        description=values.get("description", ""))
             return {"ok": True, "operation": "create", "revision": manager._storage.revision, "item": dict(item)}
         if token in manager._sync_conflicts:
             result = await manager.apply_sync_conflict(actor, token, deadline=time.monotonic() + 10)

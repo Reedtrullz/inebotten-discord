@@ -254,12 +254,16 @@ def test_calendar_workspace_browser_create_preview_apply_and_empty_filter(page, 
         assert page.locator("[data-calendar-agenda] details[open]").count() == 1
         page.locator('[data-calendar-form] input[name="title"]').fill("Browser appointment")
         page.locator('[data-calendar-form] input[name="date"]').fill("2026-10-13")
+        page.locator('[data-calendar-form] textarea[name="description"]').fill("Behold denne beskrivelsen æøå")
         page.locator('[data-calendar-form] button[type="submit"]').click()
         page.locator("[data-calendar-preview]:not([hidden])").wait_for()
         assert "Browser appointment" in page.locator("[data-calendar-preview]").inner_text()
         page.locator("[data-calendar-apply]").click()
         page.locator("[data-calendar-agenda]").get_by_text("Browser appointment").wait_for()
         assert page.locator("[data-calendar-refresh]").evaluate("el => document.activeElement === el")
+        appointment = page.locator("[data-calendar-agenda] article").filter(has=page.get_by_role("heading", name="Browser appointment", exact=True))
+        appointment.locator("summary").click()
+        assert appointment.get_by_text("Behold denne beskrivelsen æøå", exact=True).is_visible()
         page.locator("[data-calendar-filter]").fill("does not exist")
         assert page.locator("[data-calendar-agenda]").get_by_text("Ingen treff på filteret.").is_visible()
     finally:
@@ -284,3 +288,17 @@ async def test_agenda_orders_across_month_and_year_boundaries(workspace):
     status,response=await http_request(server,'/api/calendar/items',api_key=API_KEY)
     assert status==200
     assert [item['title'] for item in response['items']]==['Seed event','November end','December start','Next year']
+
+
+async def test_create_keeps_reviewed_description_in_committed_store(workspace):
+    server, manager, _ = workspace
+    description = "Ta med noter æøå\nAndre linje,; <inert>"
+    payload = {"operation": "create", "revision": manager._storage.revision,
+               "changes": {"title": "Described appointment", "date": "13.10.2026", "description": description}}
+    status, preview = await http_request(server, "/api/calendar/preview", method="POST", body=payload, api_key=API_KEY)
+    assert status == 200 and preview["effects"][0]["after"]["description"] == description
+    status, result = await http_request(server, "/api/calendar/apply", method="POST", body={"token": preview["token"]}, api_key=API_KEY)
+    assert status == 200
+    assert result["item"].get("description") == description
+    persisted = json.loads(manager.storage_path.read_text())["document"][SCOPE]
+    assert next(item for item in persisted if item["id"] == result["item"]["id"])["description"] == description

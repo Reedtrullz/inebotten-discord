@@ -620,7 +620,7 @@ class CalendarManager(SyncOwnerMixin):
         gcal_link=None,
         channel_id=None,
         kind=None, timezone="Europe/Oslo", all_day=None, duration_minutes=None, fold=None,
-        end_count=None, end_date=None, rrule_day=None,
+        end_count=None, end_date=None, rrule_day=None, description="",
     ):
         """Add a new item to the calendar"""
         date_str = self._normalize_date_format(date_str)
@@ -642,6 +642,7 @@ class CalendarManager(SyncOwnerMixin):
             "user_id": user_id,
             "username": username,
             "title": title,
+            "description": description,
             "date": date_str,
             "time": time_str,
             "recurrence": recurrence,
