@@ -180,7 +180,7 @@ manager.edit_reminder('g', 1, title='Committed')
     result = subprocess.run([os.sys.executable, '-c', script, str(path), str(after_replace)], capture_output=True, timeout=10)
     assert result.returncode == 73
     from utils.storage_contract import load_document
-    loaded = load_document(path, 1)
+    loaded = load_document(path, 2, upgrade_from=(1,))
     assert loaded.status == 'valid'
     assert loaded.document['g'][0]['text'] == ('Committed' if after_replace else 'Original')
     restarted = ReminderManager(path)

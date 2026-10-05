@@ -9,6 +9,7 @@ import uuid
 import asyncio
 import copy
 from collections import OrderedDict
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
@@ -227,7 +228,10 @@ class CalendarManager(SyncOwnerMixin):
             allowed = {'title', 'date', 'time', 'description', 'duration_minutes', 'kind', 'timezone', 'fold'}
             if set(changes) - allowed:
                 raise ValueError('unsupported_this_occurrence_edit')
-            override = dict(occurrence.override or {})
+            saved = self._occurrence_records(item).get(occurrence.occurrence_id)
+            if saved and saved.original_start != occurrence.original_start:
+                raise ValueError('occurrence_exception_identity_mismatch')
+            override = dict((saved.override if saved else occurrence.override) or {})
             for key, value in changes.items():
                 if key == 'date':
                     value = self._normalize_date_format(value)
@@ -238,6 +242,12 @@ class CalendarManager(SyncOwnerMixin):
                 item['sync_blocked'] = 'google_occurrence_scope_requires_remote_review'
         else:
             scheduling_change = any(key in changes for key in ('date', 'time', 'recurrence', 'timezone', 'kind', 'duration_minutes', 'fold'))
+            if scheduling_change or 'end_count' in changes or 'end_date' in changes:
+                # A new schedule cannot silently redefine an already reviewed
+                # pending exception. Keep its original identity and bytes.
+                if any(saved.original_start >= occurrence.original_start
+                       for saved in self._occurrence_records(item).values()):
+                    raise ValueError('pending_occurrence_exceptions_require_review')
             if edit_scope == 'future' and item.get('gcal_event_id'):
                 item['sync_blocked'] = 'google_this_and_following_requires_two_remote_operations'
             elif item.get('gcal_event_id'):
@@ -246,7 +256,8 @@ class CalendarManager(SyncOwnerMixin):
             self._apply_item_updates(item, **{key: value for key, value in changes.items()
                 if key in {'title', 'date', 'time', 'recurrence', 'description', 'duration_minutes', 'kind', 'timezone', 'fold'}})
             if scheduling_change or edit_scope == 'future':
-                anchor = EventTime.from_item(item).validate_local()
+                anchor = (EventTime.from_item(item).validate_local() if scheduling_change
+                          else replace(series.anchor_time, local_date=occurrence.original_start.date()))
                 rule = {'frequency': item.get('recurrence') or series.rule['frequency'],
                     **({'weekday': item.get('rrule_day') or item.get('recurrence_day')}
                        if item.get('rrule_day') or item.get('recurrence_day') else {})}
@@ -266,7 +277,10 @@ class CalendarManager(SyncOwnerMixin):
                 series = Series(series.series_id, anchor, rule, end_count, end_date, index)
                 item['series'] = series.to_document()
                 item['series_next_index'] = index
-                self._apply_occurrence_pointer(item, occurrence_at(series, index))
+                current = self._next_occurrence(item, series, index)
+                if current is None:
+                    raise ValueError('recurrence_has_no_pending_occurrence')
+                self._apply_occurrence_pointer(item, current[1])
             elif 'end_count' in changes or 'end_date' in changes:
                 if changes.get('end_count') is not None and changes['end_count'] <= index:
                     raise ValueError('recurrence_end_before_current')
@@ -1097,8 +1111,13 @@ class CalendarManager(SyncOwnerMixin):
         return {key: Occurrence.from_document(value) for key, value in records.items()}
 
     def _save_occurrence(self, item, occurrence, *, state=None, override=None):
+        prior = self._occurrence_records(item).get(occurrence.occurrence_id)
+        if prior and prior.original_start != occurrence.original_start:
+            raise ValueError('occurrence_exception_identity_mismatch')
+        if override is None:
+            override = occurrence.override if occurrence.override is not None else prior.override if prior else None
         updated = Occurrence(occurrence.occurrence_id, occurrence.series_id, occurrence.original_start,
-            state or occurrence.state, occurrence.override if override is None else override)
+            state or occurrence.state, override)
         records = item.setdefault('occurrences', {})
         if updated.occurrence_id not in records and len(records) >= 10000:
             raise ValueError('recurrence_exception_limit')

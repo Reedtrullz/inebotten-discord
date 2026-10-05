@@ -54,6 +54,13 @@ occurrence before confirmation. `hopp over` skips the selected occurrence; the
 usual completion command completes it. Ordinary one-off item edits keep their
 existing behavior.
 
+Repeated edits to the same occurrence merge their explicit overrides. Completing
+it retains its moved date/time in history. A future title change preserves an
+existing occurrence move and the original schedule. A date/rule/end change with
+pending exceptions is refused with `pending_occurrence_exceptions_require_review`;
+review those exceptions before changing the schedule. No exception is discarded
+or silently assigned a new original start.
+
 Google Calendar imports request expanded events and deleted exceptions, then
 fetch the master event for each recurring series. The master RRULE and each
 instance's `originalStartTime` are used to reconstruct supported series and
