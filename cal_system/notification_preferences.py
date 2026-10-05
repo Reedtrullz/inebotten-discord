@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from cal_system.event_schema import EventTime, TimeResolutionError
 
-CARD_IDS = ('date', 'calendar', 'weather', 'birthdays', 'market', 'aurora', 'watchlist')
+CARD_IDS = ('date', 'calendar', 'weather', 'birthdays', 'market', 'aurora', 'watchlist', 'workflow')
 
 
 def occurrence_identity(item):

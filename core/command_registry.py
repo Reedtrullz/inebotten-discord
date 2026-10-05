@@ -15,6 +15,10 @@ from core.intent_thresholds import CONFIDENCE_THRESHOLDS
 from core.request_context import RequestContext, request_scope
 
 
+WORKFLOW_TEMPLATES=MappingProxyType({'prep_task':('event_confirmed','task_draft'),
+    'due_digest':('task_due','digest_card')})
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     intent: BotIntent
@@ -94,6 +98,16 @@ def _validator(intent, argument):
             raise ValueError('invalid_target')
         if 'history' in payload and type(payload['history']) is not bool:
             raise ValueError('invalid_history')
+        if argument == 'workflow':
+            fields=payload['workflow'];action=fields.get('action')
+            keys={'create':{'action','template_id','budget'},'list':{'action'},'enabled':{'action','recipe_id','enabled'},
+                'history':{'action','recipe_id'},'preview':{'action','recipe_id','item_id'},'apply':{'action','token'},'help':{'action'}}
+            if action not in keys or set(fields)!=keys[action]:raise ValueError('invalid_workflow_action')
+            if action=='create' and (fields['template_id'] not in ('prep_task','due_digest') or type(fields['budget']) is not int or not 1<=fields['budget']<=128):raise ValueError('invalid_recipe_template')
+            for key in ('recipe_id','item_id'):
+                if key in fields and (not isinstance(fields[key],str) or not re.fullmatch('[a-f0-9]{32}' if key=='recipe_id' else r'(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})',fields[key])):raise ValueError('invalid_recipe_id')
+            if action=='enabled' and type(fields['enabled']) is not bool:raise ValueError('invalid_recipe_enabled')
+            if action=='apply' and (not isinstance(fields['token'],str) or not re.fullmatch('[A-Za-z0-9_-]{24}',fields['token'])):raise ValueError('invalid_recipe_token')
         if argument == 'planning':
             fields=payload['planning'];action=fields.get('action')
             keys={'create':{'action','title','candidates','duration','watchlist_index'},'view':{'action','session_id'},
@@ -195,6 +209,10 @@ COMMANDS = (
     _spec('calendar_exchange','Eksporter ICS eller forhåndsvis en vedlagt import',
         ('kalender eksporter ics alle','kalender importer ics','bekreft ics <token>'),
         'calendar.handle_exchange','exchange','mixed','calendar'),
+    _spec('workflow','Tillatte oppskrifter med gjennomgang og eksplisitt bekreftelse',
+        ('oppskrift ny forbered budsjett 10','oppskrift på <ID>','oppskrift pause <ID>',
+         'oppskrift vurder <ID> <KALENDER-ID>','oppskrift bekreft <token>','oppskrift historikk <ID>','oppskrift vis'),
+        'workflow.handle_workflow','workflow','mixed','calendar'),
     _spec('planning','Planlegg én gruppeaktivitet med arrangørbekreftelse',
         ('planlegg Film | 04.01.2027 18:00 / 05.01.2027 18:00 | 120','plan stem <ID> 1',
          'plan vurder <ID>','plan velg <ID> 1 varsle her','plan bekreft <ID> <token>',

@@ -18,6 +18,7 @@ Område og rettigheter kontrolleres ved faktisk kjøring; forhåndsvisning kjør
 | calendar_clear | `slett alt i kalender`<br>`bekreft kalender <token>`<br>`angre kalender <token>` | write | calendar | Forhåndsvis flere slettinger eller lokal angre |
 | calendar_item | `møte i morgen kl 14` | write | calendar | Tolk og opprett kalenderpunkt |
 | calendar_exchange | `kalender eksporter ics alle`<br>`kalender importer ics`<br>`bekreft ics <token>` | mixed | calendar | Eksporter ICS eller forhåndsvis en vedlagt import |
+| workflow | `oppskrift ny forbered budsjett 10`<br>`oppskrift på <ID>`<br>`oppskrift pause <ID>`<br>`oppskrift vurder <ID> <KALENDER-ID>`<br>`oppskrift bekreft <token>`<br>`oppskrift historikk <ID>`<br>`oppskrift vis` | mixed | calendar | Tillatte oppskrifter med gjennomgang og eksplisitt bekreftelse |
 | planning | `planlegg Film \| 04.01.2027 18:00 / 05.01.2027 18:00 \| 120`<br>`plan stem <ID> 1`<br>`plan vurder <ID>`<br>`plan velg <ID> 1 varsle her`<br>`plan bekreft <ID> <token>`<br>`plan rsvp <ID> ja synlighet arrangør`<br>`plan vis <ID>`<br>`plan avbryt <ID>` | mixed | calendar | Planlegg én gruppeaktivitet med arrangørbekreftelse |
 | calendar_auth | `kalender auth` | write | controller | Start eller fullfør Google-innlogging |
 | reminder_edit | `endre påminnelse 1 tekst: Ny tekst` | write | calendar | Endre påminnelse |

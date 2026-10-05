@@ -9,7 +9,8 @@ from core.request_context import current_request
 class DailyDigestManager:
     def __init__(self, event_manager=None, birthday_manager=None, crypto_manager=None,
                  aurora_manager=None, watchlist_manager=None, forecast_service=None,
-                 user_memory=None, clock=None):
+                 user_memory=None, clock=None, workflows=None):
+        self.workflows = workflows
         self.event_manager = event_manager
         self.birthday_manager = birthday_manager
         self.crypto_manager = crypto_manager
@@ -21,7 +22,7 @@ class DailyDigestManager:
         self.forecasts = forecast_service or ForecastService()
 
     async def generate_digest(self, guild_id, lang='no', user_id=None, *, card_ids=None, proactive=False):
-        selected = tuple(CARD_IDS if card_ids is None else card_ids)
+        selected = tuple((card for card in CARD_IDS if card!='workflow') if card_ids is None else card_ids)
         if any(card not in CARD_IDS for card in selected):
             raise ValueError('invalid_digest_cards')
         lines = ['✨ **Dagens oversikt**' if lang == 'no' else '✨ **Daily briefing**']
@@ -38,6 +39,8 @@ class DailyDigestManager:
 
     async def _card(self, card, scope, lang, user_id, *, proactive=False):
         now = self.clock.now()
+        if card == 'workflow' and self.workflows:
+            return self.workflows.digest_card(current_request(),scope)
         if card == 'date':
             return f'📅 {now:%d.%m.%Y} ({now.tzinfo})'
         if card == 'calendar':

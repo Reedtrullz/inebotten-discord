@@ -224,6 +224,9 @@ class MessageMonitor:
         from features.birthday_manager import BirthdayManager
         self.birthdays = BirthdayManager()
 
+        from features.workflow_manager import WorkflowManager
+        self.workflows = WorkflowManager(self.calendar,self.user_memory)
+
         self.daily_digest = DailyDigestManager(
             event_manager=self.calendar,
             birthday_manager=self.birthdays,
@@ -232,6 +235,7 @@ class MessageMonitor:
             watchlist_manager=self.watchlist,
             forecast_service=self.forecasts,
             user_memory=self.user_memory,
+            workflows=self.workflows,
         )
 
         self.parse_poll_command = parse_poll_command
@@ -1120,6 +1124,7 @@ class MessageMonitor:
         from features.quote_handler import QuoteHandler
         from features.reminder_handler import ReminderHandler
         from features.memory_handler import MemoryHandler
+        from features.workflow_handler import WorkflowHandler
         from features.planning_handler import PlanningHandler
 
         self.handlers = {
@@ -1139,6 +1144,7 @@ class MessageMonitor:
             "quotes": QuoteHandler(self),
             "memory": MemoryHandler(self),
             "planning": PlanningHandler(self),
+            "workflow": WorkflowHandler(self),
         }
 
 

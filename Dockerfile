@@ -44,7 +44,7 @@ RUN python scripts/write_version.py --require-full
 LABEL org.opencontainers.image.revision=$SOURCE_COMMIT \
       io.inebotten.config-schema="1" \
       io.inebotten.data-schema-min="0" \
-      io.inebotten.data-schema-max="3"
+      io.inebotten.data-schema-max="4"
 
 # The bot stores data in ~/.hermes, now under the non-root user's home
 RUN mkdir -p /home/inebotten/.hermes \

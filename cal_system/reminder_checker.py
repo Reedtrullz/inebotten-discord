@@ -505,8 +505,12 @@ class ReminderChecker:
             with request_scope(actor):
                 # Revocation/destination changes during provider or quota awaits
                 # invalidate this captured profile before the actual transport call.
-                can_dispatch = lambda user=user_id, selected=profile, audience=actor: (
+                workflow_revision=self.user_memory._storage.revision
+                calendar_revision=self.calendar._storage.revision if self.calendar and 'workflow' in profile.card_ids else None
+                can_dispatch = lambda user=user_id, selected=profile, audience=actor, wr=workflow_revision, cr=calendar_revision: (
                     self.user_memory.notification_profile(user, selected.scope_id) == selected
+                    and ('workflow' not in selected.card_ids or (self.user_memory._storage.revision==wr
+                        and (not self.calendar or self.calendar._storage.revision==cr)))
                     and (not policy or self.calendar.access_policy.authorize(audience, selected.scope_id, 'read').allowed))
                 buckets = self._calendar_buckets() if self.calendar else {}
                 items = []

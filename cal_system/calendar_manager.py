@@ -293,6 +293,10 @@ class CalendarManager(SyncOwnerMixin):
                 item['series'] = series.to_document()
             item['completed'] = False
 
+    def workflow_receipt(self, actor, scope_id, item_id, trigger_kind):
+        from cal_system.workflow_receipts import publish
+        return publish(self, actor, scope_id, item_id, trigger_kind)
+
     def _authorize_mutation(self, actor, scope_id):
         actor_key(actor)
         if not self.access_policy.authorize(actor, scope_id, 'write').allowed:

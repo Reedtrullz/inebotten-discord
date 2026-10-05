@@ -41,8 +41,11 @@ def validate_memory(document):
     if not user_records(document):
         return False
     try:
-        for user in document.values():
+        for owner_id,user in document.items():
             from cal_system.notification_preferences import NotificationProfile
+            from features.workflow_manager import validate_workflows
+            if not validate_workflows(user.get('workflow_recipes',{}),owner_id):
+                return False
             profiles = user.get('notification_profiles', {})
             if not isinstance(profiles, dict) or len(profiles) > 16:
                 return False
@@ -82,7 +85,7 @@ class UserMemory:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.wall = wall or (lambda: datetime.now(timezone.utc))
         self.conversation = conversation
-        self._storage = DocumentOwner(self.storage_path, validate_memory)
+        self._storage = DocumentOwner(self.storage_path, validate_memory,schema_version=4,upgrade_from=(1,))
         self.memory = self._storage.rollback()
 
     async def setup(self):

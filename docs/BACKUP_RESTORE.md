@@ -24,8 +24,8 @@ the freeze until its actual file worker terminates. Output occurs after release.
 
 Each source must be regular, single-link and unchanged from its owner's committed
 fingerprint. Legacy documents are normalized only in the bundle; live bytes stay
-unchanged. Calendar and reminder snapshots use schema 2, polls use schema 3, and memory
-and delivery-log stores use schema 1. Version 1 polls remain readable. Version 1 calendar/reminder bundles remain readable and restore
+unchanged. Calendar and reminder snapshots use schema 2, polls use schema 3, memory uses schema 4,
+and delivery-log stores use schema 1. Version 1 polls and memory remain readable. Version 1 calendar/reminder bundles remain readable and restore
 their original bytes. Exporting a readable older store upgrades only its bundle
 copy, without changing live files or consuming migration backups. Domain validators,
 per-file revision, byte count and SHA-256

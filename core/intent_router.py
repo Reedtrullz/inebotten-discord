@@ -53,6 +53,7 @@ class BotIntent(Enum):
     CALENDAR_ITEM = "calendar_item"
     CALENDAR_EXCHANGE = "calendar_exchange"
     PLANNING = "planning"
+    WORKFLOW = "workflow"
     POLL_CREATE = "poll_create"
     POLL_VOTE = "poll_vote"
     POLL_EDIT = "poll_edit"
@@ -108,6 +109,10 @@ class IntentRouter:
 
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
         content_lower = content.lower().strip()
+
+        workflow=self._route_workflow(content.strip())
+        if workflow is not None:
+            return IntentResult(BotIntent.WORKFLOW,1.0,{'workflow':workflow},'explicit_workflow')
 
         planning=self._route_planning(content.strip())
         if planning is not None:
@@ -304,6 +309,22 @@ class IntentRouter:
         """Return an inert diagnostic through this same router and catalogue."""
         from core.command_registry import preview_route
         return preview_route(self, text, actor)
+
+    @staticmethod
+    def _route_workflow(content):
+        match=re.fullmatch(r'oppskrift ny (forbered|forfalt) budsjett ([1-9][0-9]{0,2})',content,re.I)
+        if match:return {'action':'create','template_id':{'forbered':'prep_task','forfalt':'due_digest'}[match.group(1).lower()],'budget':int(match.group(2))}
+        if content.lower()=='oppskrift vis':return {'action':'list'}
+        match=re.fullmatch(r'oppskrift (på|pause|historikk) ([a-f0-9]{32})',content,re.I)
+        if match:
+            if match.group(1).lower()=='historikk':return {'action':'history','recipe_id':match.group(2).lower()}
+            return {'action':'enabled','recipe_id':match.group(2).lower(),'enabled':match.group(1).lower()=='på'}
+        match=re.fullmatch(r'oppskrift vurder ([a-f0-9]{32}) ((?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}))',content,re.I)
+        if match:return {'action':'preview','recipe_id':match.group(1).lower(),'item_id':match.group(2).lower()}
+        match=re.fullmatch(r'oppskrift bekreft ([A-Za-z0-9_-]{24})',content,re.I)
+        if match:return {'action':'apply','token':match.group(1)}
+        if re.match(r'^oppskrift (?:hjelp|ny|vis|på|pause|historikk|vurder|bekreft)\b',content,re.I):return {'action':'help'}
+        return None
 
     @staticmethod
     def _route_planning(content):
@@ -520,10 +541,10 @@ class IntentRouter:
         morning = re.fullmatch(r'varsler morgen ([0-9]{2}:[0-9]{2}|av)', lower)
         if morning:
             notification = {'morning_time': None if morning[1] == 'av' else morning[1]}
-        cards = re.fullmatch(r'varsler kort ([a-zæøå]+(?:,[a-zæøå]+){0,6})', lower)
+        cards = re.fullmatch(r'varsler kort ([a-zæøå]+(?:,[a-zæøå]+){0,7})', lower)
         if cards:
             aliases = {'dato': 'date', 'kalender': 'calendar', 'vær': 'weather', 'bursdager': 'birthdays',
-                       'marked': 'market', 'nordlys': 'aurora', 'vaktliste': 'watchlist'}
+                       'marked': 'market', 'nordlys': 'aurora', 'vaktliste': 'watchlist', 'oppskrifter':'workflow'}
             notification = {'card_ids': [aliases.get(v, v) for v in cards[1].split(',')]}
         if notification is not None:
             return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'notification', 'changes': notification}}, 'explicit_notification_control')
