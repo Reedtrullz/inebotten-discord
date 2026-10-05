@@ -179,7 +179,9 @@ def test_google_rule_subset_parses_end_count_and_keeps_unsupported_rule_readable
     recurrence = recurrence_module()
     parser = getattr(recurrence, "parse_google_recurrence", None)
     assert callable(parser), "Google recurrence imports need an explicit supported-subset parser"
-    anchor = EventTime("event", date(2027, 1, 31), time(9), "Europe/Oslo", False, 60)
+    # A day <=28 shares the local and RFC monthly date semantics. Month-end
+    # anchors are covered separately as opaque imports, never as clamped RRULEs.
+    anchor = EventTime("event", date(2027, 1, 28), time(9), "Europe/Oslo", False, 60)
 
     supported = parser(["RRULE:FREQ=MONTHLY;COUNT=5"], anchor)
     unsupported = parser(["RRULE:FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1"], anchor)

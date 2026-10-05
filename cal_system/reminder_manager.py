@@ -35,7 +35,7 @@ class ReminderManager(SyncOwnerMixin):
         self.access_policy = access_policy or AccessPolicy()
         self.gcal = gcal_manager
         self.gcal_enabled = gcal_manager is not None
-        self._storage = DocumentOwner(self.storage_path, self._validate_document)
+        self._storage = DocumentOwner(self.storage_path, self._validate_document, schema_version=2, upgrade_from=(1,))
         self.reminders = self._storage.rollback()
         self._outbox = SyncOutbox(self)
         self._sync_conflicts = OrderedDict()

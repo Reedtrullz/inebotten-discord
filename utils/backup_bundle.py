@@ -26,6 +26,7 @@ from utils.store_ownership import ProcessOwnership, StoreOwnedError
 STORE_SCHEMAS = {name: 1 for name in (
     'calendar.json', 'reminders.json', 'user_memory.json', 'polls.json', 'reminder_log.json',
 )}
+STORE_SCHEMAS.update({'calendar.json':2,'reminders.json':2})
 STORE_UPGRADES = {'calendar.json': (1,), 'reminders.json': (1,)}
 
 

@@ -1,5 +1,6 @@
 """A new reader may migrate an old envelope; old code must refuse the result."""
 import json
+import pytest
 
 from utils.storage_contract import DocumentOwner, bucket_records, load_document
 
@@ -55,7 +56,9 @@ async def test_backup_upgrade_is_a_copy_and_old_bundle_remains_readable(tmp_path
     old_owner=DocumentOwner(path,bucket_records('title'),schema_version=1)
     try:
         old_archive=tmp_path/'old.zip'
-        await backup.create_bundle(backup.StoreRegistry(root,{'calendar.json':old_owner}),old_archive)
+        with monkeypatch.context() as legacy:
+            legacy.setitem(backup.STORE_SCHEMAS,'calendar.json',1)
+            await backup.create_bundle(backup.StoreRegistry(root,{'calendar.json':old_owner}),old_archive)
     finally:old_owner.close()
     monkeypatch.setitem(backup.STORE_SCHEMAS,'calendar.json',2)
     new_owner=DocumentOwner(path,bucket_records('title'),schema_version=2,upgrade_from=(1,))
@@ -71,3 +74,32 @@ async def test_backup_upgrade_is_a_copy_and_old_bundle_remains_readable(tmp_path
         backup.restore(old_preview,tmp_path/'old-destination',services_stopped=True)
         assert (tmp_path/'old-destination'/'calendar.json').read_bytes()==original
     finally:new_owner.close()
+
+
+@pytest.mark.parametrize('kind',['calendar','reminders'])
+def test_recurring_owner_migrates_v1_to_v2_and_preserves_original(kind,tmp_path):
+    import asyncio
+    from cal_system.calendar_manager import CalendarManager
+    from cal_system.reminder_manager import ReminderManager
+    from utils.deployment_contract import DeploymentManifest,DeploymentError,store_schemas
+    path=tmp_path/(kind+'.json')
+    original=json.dumps({'schema_version':1,'revision':4,'document':{'shared':[{
+        'id':'old','title':'Fixture','text':'Fixture','date':'04.01.2027','due_date':'04.01.2027',
+        'recurrence':'weekly','completed':False,'created_at':'2027-01-01T00:00:00'}]}}).encode()+b'\n'
+    path.write_bytes(original)
+    manager=(CalendarManager if kind=='calendar' else ReminderManager)(storage_path=path)
+    try:
+        assert manager._storage.schema_version==2
+        assert path.read_bytes()==original  # initialization only reads
+        if kind == 'calendar':
+            asyncio.run(manager.setup())
+        else:
+            assert manager.complete_reminder('shared', reminder_id='old')[0]
+        assert json.loads(path.read_bytes())['schema_version']==2
+        assert path.with_name(path.name+'.schema-v1.bak').read_bytes()==original
+        assert load_document(path,1).status=='unsupported'
+        schemas=store_schemas(tmp_path)
+        old=DeploymentManifest('a'*40,'sha256:'+'1'*64,1,0,1)
+        with pytest.raises(DeploymentError,match='incompatible_data'):old.require_compatible(schemas)
+        DeploymentManifest('b'*40,'sha256:'+'2'*64,1,0,2).require_compatible(schemas)
+    finally:manager._storage.close()

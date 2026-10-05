@@ -173,7 +173,7 @@ async def test_valid_legacy_owner_migration_has_byte_preserving_receipt(tmp_path
     await manager.setup()
     assert manager.items['shared'][0]['id'] == 'legacy'
     assert path.with_name('calendar.json.legacy-v0.bak').read_bytes() == original
-    assert json.loads(path.read_text())['schema_version'] == 1
+    assert json.loads(path.read_text())['schema_version'] == 2
     restored = CalendarManager(storage_path=path)
     await restored.setup()
     assert restored.items == manager.items

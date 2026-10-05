@@ -24,7 +24,11 @@ the freeze until its actual file worker terminates. Output occurs after release.
 
 Each source must be regular, single-link and unchanged from its owner's committed
 fingerprint. Legacy documents are normalized only in the bundle; live bytes stay
-unchanged. Schema 1, domain validators, per-file revision, byte count and SHA-256
+unchanged. Calendar and reminder snapshots use schema 2; the other owned stores
+use schema 1. Version 1 calendar/reminder bundles remain readable and restore
+their original bytes. Exporting a readable older store upgrades only its bundle
+copy, without changing live files or consuming migration backups. Domain validators,
+per-file revision, byte count and SHA-256
 are recorded. Each store is limited to 8 MiB, the manifest to 32 KiB and the archive
 to 48 MiB. ZIP members are stored without compression; encrypted members,
 duplicate names, links, directories, unlisted paths, unsupported schemas and

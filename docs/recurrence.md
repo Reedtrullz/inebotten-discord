@@ -25,7 +25,12 @@ their earlier schedule. Migration anchors the new series at the stored date and
 records `recurrence_migration.status=legacy_collapsed`,
 `anchor_source=stored_current_date`, and `recovered_before_anchor=false`. It does
 not invent missed occurrences. The normal storage migration keeps the original
-file in its verified `.legacy-v0.bak` backup.
+file in its verified `.legacy-v0.bak` backup. Calendar and reminder envelopes
+now use data schema 2. A version 1 envelope is read without changing its bytes;
+the first successful write saves its original bytes in `.schema-v1.bak` before
+writing version 2. Calendar setup migrates legacy recurrence records; reminders
+migrate when changed. Older schema 1 readers refuse version 2 rather than
+misinterpreting occurrence history. Deployment rollback checks this boundary.
 
 Recurring edits require a scope in the command: `bare denne` edits the current
 occurrence; `denne og fremtidige` or `herfra og ut` starts the revised schedule
@@ -40,13 +45,20 @@ fetch the master event for each recurring series. The master RRULE and each
 instance's `originalStartTime` are used to reconstruct supported series and
 persist moved or canceled exceptions. The supported Google RRULE subset is
 DAILY, WEEKLY (one weekday matching the DTSTART weekday), every-other-week
-WEEKLY, MONTHLY, and YEARLY, with a positive COUNT or UNTIL. UTC UNTIL values
+WEEKLY, MONTHLY anchored on days 1–28, and YEARLY except February 29, with a
+positive COUNT or UNTIL. Google follows RFC 5545 and skips invalid dates;
+the local monthly/yearly rules clamp them. Rules whose results differ therefore
+remain raw and read-only. Timed DTSTART requires a UTC date-time UNTIL;
+all-day DTSTART requires a DATE UNTIL. UTC UNTIL values
 are compared with the local scheduled start before choosing the inclusive end
 date. Parts such as BYSETPOS, multiple weekdays, RDATE, EXDATE, EXRULE, and
 multiple rules remain as their raw Google rule and a readable diagnostic;
 they are never converted into a guessed local schedule. If Google supplies
 expanded instances but its master cannot be read, the instances are retained
-as opaque evidence and that series is read-only locally.
+as opaque evidence and that series is read-only locally. Subsequent pulls retain
+opaque instance evidence and pending local edits. A changed Google schedule
+with existing local occurrence history is held for review with the incoming
+schedule recorded separately; it does not silently remap or erase exceptions.
 
 Google's API defines `originalStartTime` as the identity of an instance even
 when its actual start moves. “This and following” edits require separate remote

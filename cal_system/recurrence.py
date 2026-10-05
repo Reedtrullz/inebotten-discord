@@ -322,6 +322,12 @@ def parse_google_recurrence(lines, anchor_time: EventTime):
     frequency = {"DAILY": "daily", "WEEKLY": "weekly", "MONTHLY": "monthly", "YEARLY": "yearly"}.get(frequency_name)
     if frequency is None:
         return result
+    # Local series deliberately clamp short months. RFC5545/Google omit invalid
+    # dates instead, so these masters cannot share the local occurrence engine.
+    if (frequency == 'monthly' and anchor_time.local_date.day > 28
+        or frequency == 'yearly' and (anchor_time.local_date.month,anchor_time.local_date.day) == (2,29)):
+        result['reason_code'] = 'google_invalid_date_semantics_unsupported'
+        return result
     try:
         interval = int(fields.get("INTERVAL", "1"))
         if frequency == "weekly" and interval == 2:
@@ -341,8 +347,10 @@ def parse_google_recurrence(lines, anchor_time: EventTime):
         if "UNTIL" in fields:
             until = fields["UNTIL"]
             if re.fullmatch(r"\d{8}", until):
+                if not anchor_time.all_day:return result
                 end_date = datetime.strptime(until, "%Y%m%d").date()
             elif re.fullmatch(r"\d{8}T\d{6}Z", until):
+                if anchor_time.all_day:return result
                 utc_until = datetime.strptime(until, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
                 local_until = utc_until.astimezone(ZoneInfo(anchor_time.timezone))
                 end_date = local_until.date()

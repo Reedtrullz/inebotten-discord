@@ -26,10 +26,13 @@ virtuelle miljøer og lokale eksportfiler følger ikke med. Python 3.12 eller ny
 Docker og Compose **2.24.4 eller nyere** (`!override`) kreves. Se [Docker sin merge-kontrakt](https://docs.docker.com/reference/compose-file/merge/) og [HEALTHCHECK](https://docs.docker.com/reference/dockerfile/#healthcheck).
 
 Bildeetikettene og `.deployment/deployment.json` binder full 40-tegns revisjon,
-Docker **image ID** (`sha256:`), konfigurasjonsskjema 1 og lesbart dataskjema 0–1.
+Docker **image ID** (`sha256:`), konfigurasjonsskjema 1 og lesbart dataskjema 0–2.
 Image ID er en lokal innholdsdigest, ikke en registry distribution digest.
 Skjema 0 betyr eldre dokumenter som fortsatt kan leses; ingen automatisert
-migrering eller flytting av gamle delte/private scopes utføres.
+migrering eller flytting av gamle delte/private scopes utføres av deploy-verktøyet.
+Kalender og påminnelser skriver skjema 2 når nye forekomstdata lagres. Et tidligere
+bilde som bare støtter skjema 1 kan da ikke startes som kode-tilbakerulling;
+tjenesten beholdes stoppet og krever gjennomgått gjenoppretting.
 
 Preflight avviser skitten kilde, mindre enn 30 GiB fri plass, opptatt port uten
 verifisert eksisterende tjeneste, feil revisjon, utrygge filer/montasjer,

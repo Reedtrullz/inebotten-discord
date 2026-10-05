@@ -14,7 +14,7 @@ from utils.backup_bundle import STORE_SCHEMAS, MAX_STORE_BYTES, _directory, _rea
 
 CONFIG_SCHEMA = 1
 DATA_SCHEMA_MIN = 0  # readable legacy documents
-DATA_SCHEMA_MAX = 1
+DATA_SCHEMA_MAX = 2
 MIN_FREE_BYTES = 30 * 1024**3
 
 

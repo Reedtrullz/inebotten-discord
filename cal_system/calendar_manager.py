@@ -102,7 +102,7 @@ class CalendarManager(SyncOwnerMixin):
         self.undo_retention_seconds = undo_retention_seconds
         self._previews = PreviewCache(self.clock)
         self.access_policy = access_policy or AccessPolicy()
-        self._storage = DocumentOwner(self.storage_path, validate_calendar_document)
+        self._storage = DocumentOwner(self.storage_path, validate_calendar_document, schema_version=2, upgrade_from=(1,))
         self.items = self._storage.rollback()  # Will be transitioned to {self.SHARED_KEY: [...]}
         self._outbox = SyncOutbox(self)
         self._sync_conflicts = OrderedDict()
@@ -135,12 +135,29 @@ class CalendarManager(SyncOwnerMixin):
         return payload_for_item(item)
 
     def apply_remote_sync_fields(self, item, remote):
+        if str(item.get('sync_blocked') or '').startswith('google_'):
+            self.last_gcal_sync_error = 'Lokal gjentakelsesendring venter på avklart Google-synkronisering; innkommende data er ikke brukt.'
+            return
         value = EventTime.from_google(remote)
+        rules = remote.get('recurrence', [])
+        parsed = parse_google_recurrence(rules, value)
+        if parsed['supported'] and item.get('series'):
+            incoming = Series(item['id'],value,parsed['rule'],parsed['end_count'],parsed['end_date']).to_document()
+            if incoming != item['series'] and (item.get('occurrences') or item.get('series_next_index',0) or item.get('series_history')):
+                # Index-based identities cannot be remapped onto a different
+                # provider schedule without losing the meaning of exceptions.
+                item['_remote_series_change_pending'] = {
+                    'id': remote.get('id'), 'recurrence': list(rules),
+                    'start': copy.deepcopy(remote.get('start')), 'end': copy.deepcopy(remote.get('end')),
+                    'etag': remote.get('etag'),
+                }
+                item['sync_blocked'] = 'google_series_changed_requires_review'
+                item['_recurrence_readonly'] = True
+                item['recurrence_diagnostic'] = 'google_series_changed_requires_review'
+                return
         item.update(value.fields())
         item['title'], item['completed'] = remote_completion(remote)
         item['description'] = remote.get('description', '')
-        rules = remote.get('recurrence', [])
-        parsed = parse_google_recurrence(rules, value)
         item['_remote_recurrence_raw'] = list(rules)
         item['recurrence_readable'] = parsed['readable']
         if parsed['supported']:
@@ -1256,18 +1273,24 @@ class CalendarManager(SyncOwnerMixin):
         return {key: copy.deepcopy(event[key]) for key in keys if key in event}
 
     def _preserve_google_instance(self, item, event):
-        if not item.get('series'):
+        if item.get('_local_sync_pending') or str(item.get('sync_blocked') or '').startswith('google_'):
+            self.last_gcal_sync_error = 'Lokal gjentakelsesendring er bevart; Google-forekomsten krever avklaring.'
+            return False
+        if not item.get('series') or item.get('_recurrence_readonly'):
             instances = item.setdefault('google_instances', [])
             evidence = self._remote_instance_evidence(event)
+            changed = False
             if evidence.get('id') and all(row.get('id') != evidence['id'] for row in instances):
                 if len(instances) < 512:
                     instances.append(evidence)
                 else:
                     item['google_instances_truncated'] = item.get('google_instances_truncated', 0) + 1
+                changed = True
             item['_recurrence_readonly'] = True
             item['recurrence_readable'] = item.get('recurrence_readable') or 'Utvidede Google-forekomster; hovedregelen ble ikke hentet.'
-            item['recurrence_diagnostic'] = 'google_master_unavailable'
-            return False
+            if not item.get('recurrence_diagnostic'):
+                item['recurrence_diagnostic'] = 'google_master_unavailable'
+            return changed
         series = Series.from_document(item['series'])
         try:
             original_start = self._google_original_start(event, series)
@@ -1473,7 +1496,8 @@ class CalendarManager(SyncOwnerMixin):
             if matched_gcal_key:
                 # Existing item, check for updates
                 guild_id, item = gcal_map[matched_gcal_key]
-                if item.get('_local_sync_pending') or item.get('_mutation_deleted'):
+                if (item.get('_local_sync_pending') or item.get('_mutation_deleted')
+                    or str(item.get('sync_blocked') or '').startswith('google_')):
                     self.last_gcal_sync_error = 'Lokal endring venter på avklart Google-synkronisering; innkommende data er bevart uten overskriving.'
                     continue
                 if event.get('etag') and item.get('_remote_etag') != event['etag']:
@@ -1484,6 +1508,15 @@ class CalendarManager(SyncOwnerMixin):
                     self.last_gcal_sync_error = 'En koblet oppgave krever eksplisitt valg før remote arrangement endrer den.'
                     continue
                 changed = False
+                if event.get('recurrence'):
+                    before_remote = copy.deepcopy(item)
+                    self.apply_remote_sync_fields(item,event)
+                    changed = item != before_remote
+                    if str(item.get('sync_blocked') or '').startswith('google_'):
+                        if changed:
+                            updated_count += 1
+                            updated_master_ids.add(canonical_gcal_id)
+                        continue
                 if item.get("gcal_event_id") != canonical_gcal_id:
                     item["gcal_event_id"] = canonical_gcal_id
                     changed = True

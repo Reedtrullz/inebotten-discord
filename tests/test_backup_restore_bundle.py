@@ -9,7 +9,7 @@ import zipfile
 import pytest
 
 from utils.backup_bundle import (
-    BackupError, StoreRegistry, create_bundle, validate_bundle, restore,
+    BackupError, StoreRegistry, STORE_SCHEMAS, create_bundle, validate_bundle, restore,
 )
 from utils.storage_contract import DocumentOwner
 
@@ -30,7 +30,7 @@ def registry(tmp_path):
     root.mkdir()
     owners = {}
     for name in ('calendar.json', 'user_memory.json'):
-        owner = DocumentOwner(root / name, lambda d: isinstance(d, dict))
+        owner = DocumentOwner(root / name, lambda d: isinstance(d, dict),schema_version=STORE_SCHEMAS[name])
         with owner.transaction():
             assert owner.commit(record(name, 1)).ok
         owners[name] = owner
@@ -438,7 +438,9 @@ def test_cli_fixture_rehearsal_requires_exact_preview_and_explicit_paths(tmp_pat
                  '--review-token', view['review_token'], '--services-stopped')
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['verified']
-    assert (dest / 'calendar.json').read_bytes() == (data / 'calendar.json').read_bytes()
+    assert json.loads((dest / 'calendar.json').read_bytes())['document'] == json.loads((data / 'calendar.json').read_bytes())['document']
+    assert json.loads((dest / 'calendar.json').read_bytes())['schema_version']==STORE_SCHEMAS['calendar.json']
+    assert json.loads((data / 'calendar.json').read_bytes())['schema_version']==1  # export never upgrades the source
     # Revalidate the preserved staged data for an explicit data rollback rehearsal.
     rollback_stage, rollback = tmp_path / 'rollback-stage', tmp_path / 'rollback'
     result = cli('preview', '--archive', archive, '--staging', rollback_stage, '--destination', rollback)
@@ -447,4 +449,4 @@ def test_cli_fixture_rehearsal_requires_exact_preview_and_explicit_paths(tmp_pat
     result = cli('restore', '--staging', rollback_stage, '--destination', rollback,
                  '--generation', view['generation'], '--review-token', view['review_token'], '--services-stopped')
     assert result.returncode == 0, result.stderr
-    assert (rollback / 'calendar.json').read_bytes() == (data / 'calendar.json').read_bytes()
+    assert (rollback / 'calendar.json').read_bytes() == (dest / 'calendar.json').read_bytes()
