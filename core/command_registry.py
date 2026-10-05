@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import json
 import math
+import re
 from types import MappingProxyType
 from typing import Callable, Literal
 
@@ -93,6 +94,21 @@ def _validator(intent, argument):
             raise ValueError('invalid_target')
         if 'history' in payload and type(payload['history']) is not bool:
             raise ValueError('invalid_history')
+        if argument == 'exchange':
+            fields = payload['exchange']
+            action = fields.get('action')
+            exchange_fields = {'export': {'action','item_ids'}, 'import': {'action'}, 'apply': {'action','token'}}
+            if action not in exchange_fields or set(fields) != exchange_fields[action]:
+                raise ValueError('invalid_exchange_action')
+            if action == 'export':
+                ids = fields['item_ids']
+                if ids is not None and (not isinstance(ids,list) or not 1<=len(ids)<=256
+                    or any(not isinstance(x,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',x) for x in ids)
+                    or len(set(ids))!=len(ids)):
+                    raise ValueError('invalid_exchange_selection')
+            if action == 'apply' and (not isinstance(fields['token'],str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]{24}',fields['token'])):
+                raise ValueError('invalid_exchange_token')
         if argument == 'memory':
             fields = payload['memory']
             if set(fields) - {'action', 'confirmed', 'changes', 'value', 'private', 'item_id', 'minutes'}:
@@ -149,6 +165,9 @@ COMMANDS = (
     _spec('calendar_search', 'Søk i tillatt kalenderområde', 'søk kalender møte', 'calendar.handle_search', '*', scope='calendar'),
     _spec('calendar_clear', 'Forhåndsvis flere slettinger eller lokal angre', ('slett alt i kalender', 'bekreft kalender <token>', 'angre kalender <token>'), 'calendar.handle_clear', mutation='write', scope='calendar'),
     _spec('calendar_item', 'Tolk og opprett kalenderpunkt', 'møte i morgen kl 14', 'calendar.handle_calendar_item', 'calendar_item', 'write', 'calendar'),
+    _spec('calendar_exchange','Eksporter ICS eller forhåndsvis en vedlagt import',
+        ('kalender eksporter ics alle','kalender importer ics','bekreft ics <token>'),
+        'calendar.handle_exchange','exchange','mixed','calendar'),
     _spec('calendar_auth', 'Start eller fullfør Google-innlogging', 'kalender auth', 'calendar.handle_auth', '*', 'write', 'controller'),
     _spec('reminder_edit', 'Endre påminnelse', 'endre påminnelse 1 tekst: Ny tekst', 'reminders.handle_reminder_edit', '*', 'write', 'calendar'),
     _spec('reminder_delete', 'Slett påminnelse', 'slett påminnelse 1', 'reminders.handle_reminder_delete', '*', 'write', 'calendar'),

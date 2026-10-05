@@ -17,6 +17,7 @@ Område og rettigheter kontrolleres ved faktisk kjøring; forhåndsvisning kjør
 | calendar_search | `søk kalender møte` | read | calendar | Søk i tillatt kalenderområde |
 | calendar_clear | `slett alt i kalender`<br>`bekreft kalender <token>`<br>`angre kalender <token>` | write | calendar | Forhåndsvis flere slettinger eller lokal angre |
 | calendar_item | `møte i morgen kl 14` | write | calendar | Tolk og opprett kalenderpunkt |
+| calendar_exchange | `kalender eksporter ics alle`<br>`kalender importer ics`<br>`bekreft ics <token>` | mixed | calendar | Eksporter ICS eller forhåndsvis en vedlagt import |
 | calendar_auth | `kalender auth` | write | controller | Start eller fullfør Google-innlogging |
 | reminder_edit | `endre påminnelse 1 tekst: Ny tekst` | write | calendar | Endre påminnelse |
 | reminder_delete | `slett påminnelse 1` | write | calendar | Slett påminnelse |

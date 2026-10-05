@@ -51,6 +51,7 @@ class BotIntent(Enum):
     CALENDAR_SEARCH = "calendar_search"
     CALENDAR_CLEAR = "calendar_clear"
     CALENDAR_ITEM = "calendar_item"
+    CALENDAR_EXCHANGE = "calendar_exchange"
     POLL_CREATE = "poll_create"
     POLL_VOTE = "poll_vote"
     POLL_EDIT = "poll_edit"
@@ -106,6 +107,21 @@ class IntentRouter:
 
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
         content_lower = content.lower().strip()
+
+        # Preserve opaque token case. Exchange syntax is explicit and anchored;
+        # ordinary prose about files never becomes a calendar mutation.
+        match = re.fullmatch(r'(?:kalender )?bekreft ics ([A-Za-z0-9_-]{24})', content.strip(), re.I)
+        if match:
+            return IntentResult(BotIntent.CALENDAR_EXCHANGE,1.0,
+                {'exchange':{'action':'apply','token':match.group(1)}},'reviewed_ics_confirmation')
+        match = re.fullmatch(r'kalender eksporter ics (alle|[A-Za-z0-9_-]{1,128}(?:,[A-Za-z0-9_-]{1,128})*)',content.strip(),re.I)
+        if match:
+            ids = None if match.group(1).lower()=='alle' else match.group(1).split(',')
+            return IntentResult(BotIntent.CALENDAR_EXCHANGE,1.0,
+                {'exchange':{'action':'export','item_ids':ids}},'explicit_ics_export')
+        if re.fullmatch(r'kalender importer ics',content.strip(),re.I):
+            return IntentResult(BotIntent.CALENDAR_EXCHANGE,1.0,
+                {'exchange':{'action':'import'}},'explicit_ics_import')
 
         # Explicit operational/help/calendar commands first.
         if self._has_calendar_context(content_lower) and has_any_keyword(content_lower, ["hjelp", "help", "guide"]):

@@ -490,11 +490,12 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create cal_system/calendar_exchange.py and tests/test_ics_exchange.py; modify features/calendar_handler.py, core/command_registry.py and documented exchange commands.
 **Interfaces:** export_ics(actor: RequestContext, scope_id: str, item_ids: list[str]) -> bytes; preview_ics(actor, scope_id, data: bytes) -> dict lists new/changed/duplicate/unsupported items; apply uses I08-style revision/actor-bound confirmation. Stable UID/source mapping makes re-import idempotent.
 
-- [ ] Add timezone/all-day/duration/Unicode/supported recurrence round trips, duplicate import, unsupported RRULE, bounded malformed input, stale preview and unauthorized scope fixtures.
-- [ ] Select a maintained parser only after current official/library API and dependency review; record the supported subset before coding.
-- [ ] Implement bounded export/import preview, preserve UIDs and source mapping, reject or visibly skip unsupported entries, and keep task/reminder kinds distinct.
+- [x] Add timezone/all-day/duration/Unicode/supported recurrence round trips, duplicate import, unsupported RRULE, bounded malformed input, stale preview and unauthorized scope fixtures.
+- [x] Select a maintained parser only after current official/library API and dependency review; record the supported subset before coding.
+- [x] Implement bounded export/import preview, preserve UIDs and source mapping, reject or visibly skip unsupported entries, and keep task/reminder kinds distinct.
 - [ ] Run tests/test_ics_exchange.py, calendar access/time/recurrence and mutation-preview tests; import/export fixtures through two selected calendar clients and record versions/results.
 - [ ] Review and commit; no URL subscriptions or automatic imports.
+
 
 ## Wave 5 — Deliberate product expansion
 

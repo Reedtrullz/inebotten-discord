@@ -11,9 +11,11 @@ Commands:
 """
 
 import re
+import asyncio
 import json
 import time
 from typing import Optional, Dict, Any
+from aiohttp import ClientError
 
 from collections import OrderedDict
 from core.request_context import RequestContext
@@ -34,6 +36,98 @@ class CalendarHandler(BaseHandler):
         self.calendar = monitor.calendar
         self.nlp_parser = monitor.nlp_parser
         self._displayed_lists = OrderedDict()
+        self._exchange = None
+
+    async def handle_exchange(self, message, payload):
+        from cal_system.calendar_exchange import CalendarExchange, MAX_BYTES
+        from core.outbound_sender import Attachment, monitor_sender
+        from core.request_context import request_scope
+        try:
+            actor = self._actor(message)
+            with request_scope(actor):
+                scope = self.calendar.scope_key(operation='read' if payload['action']=='export' else 'write')
+            if self._exchange is None:
+                self._exchange = CalendarExchange(self.calendar)
+            if payload['action']=='apply':
+                result = await self._exchange.apply(actor,payload['token'])
+                await self.send_response(message,f"✅ Importerte {result['applied_count']} oppføringer lokalt. Ingen invitasjoner eller Google-endringer er sendt.")
+            elif payload['action']=='export':
+                ids = payload['item_ids']
+                if ids is None:
+                    ids = [item['id'] for item in self.calendar.items.get(scope,[])
+                        if not item.get('_mutation_deleted') and not item.get('delete_pending')]
+                raw = self._exchange.export_ics(actor,scope,ids)
+                result = await monitor_sender(self.monitor).send(str(message.channel.id),
+                    f'Kalenderområdet {scope}: {len(ids)} valgte oppføringer som ICS.',
+                    deadline=time.monotonic()+10,delivery_key=f'ics-export:{actor.user_id}:{message.id}',
+                    attachments=(Attachment('inebotten-kalender.ics','text/calendar',raw),),
+                    _dispatch=message.channel.send,
+                    _can_dispatch=lambda:self.calendar.access_policy.authorize(actor,scope,'read').allowed)
+                if result.status!='delivered':
+                    await self.send_response(message,'❌ Eksportleveringen er ikke bekreftet. Kontroller samtalen før du prøver igjen.')
+                elif result.reason_code=='remote_message' and hasattr(self.monitor,'response_count'):
+                    self.monitor.response_count+=1
+            else:
+                attachments = list(getattr(message,'attachments',[]))
+                if len(attachments)!=1 or not attachments[0].filename.lower().endswith('.ics'):
+                    raise ValueError('Legg ved én ICS-fil i denne meldingen.')
+                if type(attachments[0].size) is not int or not 0<attachments[0].size<=MAX_BYTES:
+                    raise ValueError('ICS-filen må være høyst 1 MiB.')
+                raw = await self._read_ics_attachment(message,attachments[0],MAX_BYTES)
+                proposal = self._exchange.preview_ics(actor,scope,raw)
+                lines = [f"ICS i {scope}: {proposal['new']} nye, {proposal['changed']} endrede, {proposal['duplicate']} identiske."]
+                for effect in proposal['effects'][:10]:
+                    title = re.sub(r'[`\r\n]',' ',effect['title'])[:100]
+                    fields = effect['after']
+                    lines.append(f"• {title}: {fields['date']} {fields.get('time') or 'dato'} ({fields['kind']})")
+                if len(proposal['effects'])>10: lines.append(f"… og {len(proposal['effects'])-10} andre oppføringer.")
+                if proposal['unsupported']:
+                    lines.append(f"{len(proposal['unsupported'])} oppføringer støttes ikke og blir utelatt: "+', '.join(sorted({x['reason'] for x in proposal['unsupported']}))[:250])
+                if proposal['warnings']: lines.append('Tidssoner leses fra installerte IANA-data; filens definisjoner erstatter dem ikke.')
+                lines.append(f"Bekreft lokal import med `bekreft ics {proposal['token']}` innen fem minutter.")
+                if len(proposal['effects'])>10:
+                    # Every selected change must be reviewable before approval,
+                    # including entries beyond the compact message preview.
+                    review=json.dumps({'scope':scope,'changes':proposal['effects'],
+                        'unsupported':proposal['unsupported'],'warnings':proposal['warnings']},
+                        ensure_ascii=False,indent=2).encode()
+                    if len(review)>MAX_BYTES: raise ValueError('review_too_large')
+                    lines.insert(-1,'Gjennomgå alle endringene i vedlegget før du bekrefter.')
+                    result=await monitor_sender(self.monitor).send(str(message.channel.id),'\n'.join(lines),
+                        deadline=time.monotonic()+10,delivery_key=f'ics-preview:{actor.user_id}:{message.id}',
+                        attachments=(Attachment('inebotten-ics-forhandsvisning.json','application/json',review),),
+                        _dispatch=message.channel.send,
+                        _can_dispatch=lambda:all(self.calendar.access_policy.authorize(actor,scope,op).allowed for op in ('read','write')))
+                    if result.status!='delivered':
+                        self._exchange.previews.entries.pop(proposal['token'],None)
+                        await self.send_response(message,'❌ Forhåndsvisningen er ikke bekreftet levert. Importen er ikke aktivert.')
+                else:
+                    await self.send_response(message,'\n'.join(lines))
+        except (ValueError,PermissionError,StorageMutationError,TimeoutError,ClientError):
+            await self.send_response(message,'❌ ICS-utvekslingen ble ikke utført. Kontroller tilgang, filgrensen og støttede felt; lag en ny forhåndsvisning ved endret kalender.')
+
+    async def _read_ics_attachment(self, message, attachment, limit):
+        import aiohttp
+        from urllib.parse import urlsplit
+        url = urlsplit(attachment.url)
+        if (url.scheme!='https' or url.hostname not in ('cdn.discordapp.com','media.discordapp.net')
+            or url.username or url.password or url.fragment or url.port not in (None,443)
+            or not url.path.startswith(f'/attachments/{message.channel.id}/{attachment.id}/')):
+            raise ValueError('invalid_discord_attachment')
+        async with asyncio.timeout(5):
+            async with aiohttp.ClientSession(trust_env=False,auto_decompress=False,
+                headers={'Accept-Encoding':'identity'}) as session:
+                async with session.get(attachment.url,allow_redirects=False) as response:
+                    if response.status!=200 or response.headers.get('Content-Encoding','identity')!='identity':
+                        raise ValueError('attachment_download_refused')
+                    if response.content_length is not None and response.content_length>limit:
+                        raise ValueError('attachment_too_large')
+                    chunks=[]; total=0
+                    async for chunk in response.content.iter_chunked(16384):
+                        total+=len(chunk)
+                        if total>limit: raise ValueError('attachment_too_large')
+                        chunks.append(chunk)
+                    return b''.join(chunks)
 
     def _extract_search_text(self, content: str) -> Optional[str]:
         """Extract the item title/query from calendar mutation commands."""
