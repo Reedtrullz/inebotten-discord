@@ -1,0 +1,3 @@
+# Optional bot-only runtime. Install only in a dedicated environment because
+# discord.py-self and discord.py both provide the top-level `discord` package.
+discord.py==2.7.1
