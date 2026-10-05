@@ -1,10 +1,14 @@
 """Tests for scripts/export_members.py (no live Discord connection)."""
 
 import csv
+import os
+import pytest
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+pytestmark=pytest.mark.skipif(os.name!='posix',reason='manual export private-file contract requires POSIX')
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = BASE_DIR / "scripts"

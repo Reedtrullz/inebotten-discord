@@ -73,8 +73,8 @@ jobs:
 
       - name: Run tests
         run: |
-          python scripts/run_offline_tests.py --python python -- -q --ignore=tests/test_console_frontend.py --ignore=tests/test_web_console_frontend_security.py
-          python scripts/run_offline_tests.py --python python -- -q tests/test_console_frontend.py tests/test_web_console_frontend_security.py
+          python scripts/run_offline_tests.py --python python -- -q --ignore=tests/test_console_frontend.py --ignore=tests/test_web_console_frontend_security.py --deselect=tests/test_console_calendar_workspace.py::test_calendar_workspace_browser_create_preview_apply_and_empty_filter
+          python scripts/run_offline_tests.py --python python -- -q tests/test_console_frontend.py tests/test_web_console_frontend_security.py tests/test_console_calendar_workspace.py::test_calendar_workspace_browser_create_preview_apply_and_empty_filter
 
       - name: Check for committed secrets
         run: |
@@ -159,3 +159,22 @@ jobs:
               check=True,
           )
           PY
+
+  bot-profile:
+    name: Isolated supported bot adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install bot lock separately from discord.py-self
+        run: |
+          python -m pip install --require-hashes -r requirements/bot.lock
+          python -m pip check
+      - name: Verify adapter lifecycle and shared domains without login
+        run: |
+          python scripts/run_offline_tests.py --python python -- -q tests/test_transport_contract.py tests/test_calendar_access_policy.py tests/test_calendar_mutation_preview.py tests/test_calendar_time_model.py tests/test_reminder_crud.py tests/test_poll_lifecycle.py tests/test_outbound_delivery.py

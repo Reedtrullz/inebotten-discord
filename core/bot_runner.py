@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from importlib import metadata
+import os
+from pathlib import Path
 
 from core.transport import (
     BotTransportConfig,
@@ -24,6 +26,7 @@ class BotRunner:
         self.config = config
         self.client = client
         self.transport = transport
+        self._monitor_ready = False
         self._monitor_started = False
         self._monitor_closed = False
         self._client_closed = False
@@ -38,6 +41,18 @@ class BotRunner:
     ) -> "BotRunner":
         config = BotTransportConfig.from_environment(environ)
         validate_bot_application_config(application_config)
+        selected=getattr(application_config,'BOT_DATA_HOME',None)
+        if (not isinstance(selected,str) or not Path(selected).is_absolute()
+            or os.environ.get('HERMES_HOME')!=selected
+            or Path(selected).resolve()==(Path.home()/'.hermes').resolve()):
+            raise ValueError('explicit_isolated_data_profile_required')
+        directory=Path(selected)
+        if any(part.is_symlink() for part in (directory,*directory.parents)):
+            raise ValueError('symlink_data_profile_refused')
+        directory.mkdir(mode=0o700,parents=True,exist_ok=True)
+        if not directory.is_dir() or os.name=='posix' and directory.stat().st_mode&0o077:
+            raise ValueError('private_data_profile_required')
+
         try:
             installed_version = metadata.version("discord.py")
         except metadata.PackageNotFoundError as error:
@@ -82,19 +97,29 @@ class BotRunner:
         return cls(config, client, transport)
 
     async def run(self) -> None:
+        if self._client_closed or self._monitor_closed:
+            raise RuntimeError('bot_runner_closed')
         try:
             await self._setup_monitor()
             # discord.py 2.x accepts bot credentials through Client.start(token).
             await self.client.start(self.config.token)
-        finally:
+        except BaseException as error:
+            try:
+                await self.close()
+            except BaseException as cleanup_error:
+                error.add_note(f'bot cleanup also failed: {type(cleanup_error).__name__}')
+            raise
+        else:
             await self.close()
 
     async def _setup_monitor(self) -> None:
         if self._monitor_started:
+            if not self._monitor_ready:raise RuntimeError('bot_monitor_setup_failed')
             return
         self._monitor_started = True
         try:
             await self.transport.monitor.setup()
+            self._monitor_ready = True
         except BaseException as setup_error:
             # setup() can fail after it has started monitor-owned workers.
             try:
@@ -108,13 +133,16 @@ class BotRunner:
     async def _close_monitor(self) -> None:
         if self._monitor_closed:
             return
-        self._monitor_closed = True
         await self.transport.monitor.close()
+        receipt=getattr(self.transport.monitor,'shutdown_receipt',None)
+        if receipt is not None and receipt.get('status')!='closed':
+            raise RuntimeError('bot_monitor_closure_incomplete')
+        self._monitor_closed = True
 
     async def close(self) -> None:
         try:
             await self._close_monitor()
         finally:
             if not self._client_closed:
-                self._client_closed = True
                 await self.client.close()
+                self._client_closed = True

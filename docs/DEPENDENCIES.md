@@ -9,6 +9,7 @@ The source-of-truth inputs use reviewable lower bounds; generated `.lock` files 
 | Production | `requirements.txt` | Core runtime only; no Google, web-search, or Browserbase packages | `python -m pip install --require-hashes -r requirements/prod.lock` |
 | Development and offline tests | `requirements-dev.txt` | Production, test/lint/audit tools, and Google libraries used by existing collection-time tests | `python -m pip install --require-hashes -r requirements/dev.lock` |
 | Desktop build | `requirements/desktop.in` | Production, all optional profiles, and PyInstaller; `pywin32` is conditional on Windows | `python -m pip install --require-hashes -r requirements/desktop.lock` |
+| Optional bot adapter | `requirements-bot.txt` | Separate discord.py environment and synthetic contract tools; never combine with selfbot profiles | `python -m pip install --require-hashes -r requirements/bot.lock` |
 | Optional Google Calendar | `requirements/optional-google.in` | Google API and OAuth client libraries | `python -m pip install --require-hashes -r requirements/prod.lock -r requirements/optional-google.lock` |
 | Optional search | `requirements/optional-search.in` | Tavily, Google search, and `ddgs` providers | `python -m pip install --require-hashes -r requirements/prod.lock -r requirements/optional-search.lock` |
 | Optional browser | `requirements/optional-browser.in` | Browserbase SDK | `python -m pip install --require-hashes -r requirements/prod.lock -r requirements/optional-browser.lock` |

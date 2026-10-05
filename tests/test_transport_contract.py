@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from importlib import metadata
 
 import pytest
-from bot_transport_fixtures import SyntheticMessage, bot_domain_handlers
+from tests.bot_transport_fixtures import SyntheticMessage, bot_domain_handlers
 
 from core.request_context import current_request
 from core.transport import (
@@ -12,6 +13,12 @@ from core.transport import (
     UnsupportedTransportOperation,
     validate_bot_application_config,
 )
+
+def _bot_profile_available():
+    try:return metadata.version('discord.py')=='2.7.1'
+    except metadata.PackageNotFoundError:return False
+
+bot_profile=pytest.mark.skipif(not _bot_profile_available(),reason='requires separate hash-locked discord.py bot profile')
 
 
 class FakeMonitor:
@@ -251,11 +258,12 @@ async def test_runner_cleans_monitor_when_setup_fails_before_client_close():
                        DiscordBotTransport(monitor))
     with pytest.raises(RuntimeError, match="synthetic setup failure") as error:
         await runner.run()
-    assert events == ["monitor_setup", "monitor_close", "client_close"]
+    assert events == ["monitor_setup", "monitor_close", "monitor_close", "client_close"]
     assert "monitor cleanup also failed" in error.value.__notes__[0]
 
 
-def test_runner_create_uses_locked_discord_py_client_without_login():
+@bot_profile
+def test_runner_create_uses_locked_discord_py_client_without_login(tmp_path,monkeypatch):
     from importlib import metadata
     from core.bot_runner import BotRunner
 
@@ -263,6 +271,9 @@ def test_runner_create_uses_locked_discord_py_client_without_login():
     application_config = SimpleNamespace(
         INVOCATION_MODE="allowlist", ALLOWED_USERS=["42"], ALLOWED_CHANNELS=["70"],
     )
+    selected=str(tmp_path/'bot-profile')
+    application_config.BOT_DATA_HOME=selected
+    monkeypatch.setenv('HERMES_HOME',selected)
     def monitor_factory(client):
         monitor = FakeMonitor()
         monitor.client = client
@@ -303,6 +314,7 @@ async def test_real_calendar_reminder_and_poll_handlers_run_in_bot_profile(bot_d
 
 
 @pytest.mark.asyncio
+@bot_profile
 async def test_actual_message_monitor_lifecycle_in_synthetic_home(tmp_path, monkeypatch):
     from core.bot_runner import BotRunner
     from core.message_monitor import MessageMonitor
@@ -314,6 +326,9 @@ async def test_actual_message_monitor_lifecycle_in_synthetic_home(tmp_path, monk
         CALENDAR_MODE="legacy_shared", DISCORD_TOKEN=None,
     )
 
+    selected=str(tmp_path/'bot-profile')
+    application_config.BOT_DATA_HOME=selected
+    monkeypatch.setenv('HERMES_HOME',selected)
     def monitor_factory(client):
         return MessageMonitor(client, None, RateLimiter(), object())
 
@@ -327,3 +342,28 @@ async def test_actual_message_monitor_lifecycle_in_synthetic_home(tmp_path, monk
     finally:
         await runner.close()
     assert runner.transport.monitor.shutdown_receipt["status"] == "closed"
+
+
+async def test_failed_close_is_retryable_and_incomplete_receipt_is_not_success():
+    from core.bot_runner import BotRunner
+    monitor=FakeMonitor();calls=[]
+    async def close_monitor():
+        calls.append(True)
+        monitor.shutdown_receipt={'status':'incomplete' if len(calls)==1 else 'closed'}
+    monitor.close=close_monitor
+    client=SimpleNamespace(close=__import__('unittest.mock',fromlist=['AsyncMock']).AsyncMock())
+    runner=BotRunner(BotTransportConfig('fixture'),client,DiscordBotTransport(monitor))
+    with pytest.raises(RuntimeError,match='closure'):await runner.close()
+    assert not runner._monitor_closed
+    await runner.close()
+    assert runner._monitor_closed and len(calls)==2
+
+
+def test_bot_runner_refuses_unselected_data_profile_before_factory(monkeypatch):
+    from core.bot_runner import BotRunner
+    calls=[]
+    monkeypatch.delenv('HERMES_HOME',raising=False)
+    cfg=SimpleNamespace(INVOCATION_MODE='allowlist',ALLOWED_USERS=['42'],ALLOWED_CHANNELS=['70'])
+    with pytest.raises(ValueError,match='data_profile'):
+        BotRunner.create(lambda client:calls.append(client),application_config=cfg,environ={'BOT_DISCORD_TOKEN':'fixture'})
+    assert not calls
