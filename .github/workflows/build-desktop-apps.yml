@@ -124,3 +124,48 @@ jobs:
           path: .superpowers/receipts/release/*
           if-no-files-found: error
           retention-days: 30
+
+  verify-artifacts:
+    name: Verify both artifacts with the publisher contract
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Download macOS proof
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macos
+          path: artifacts/macos
+
+      - name: Download Windows proof
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows
+          path: artifacts/windows
+
+      - name: Verify ref, commit, assets, lock, and checksums without publication
+        env:
+          RELEASE_REF: ${{ inputs.ref || github.ref }}
+        run: >-
+          python scripts/release_contract.py verify-artifacts
+          --ref "$RELEASE_REF"
+          --commit "$(git rev-parse HEAD)"
+          --macos-dir artifacts/macos
+          --windows-dir artifacts/windows
+          --output-dir artifacts
+
+      - name: Preserve the small verified contract receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-contract-proof
+          path: |
+            artifacts/macos/*.json
+            artifacts/windows/*.json
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30

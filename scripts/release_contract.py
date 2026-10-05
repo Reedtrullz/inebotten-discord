@@ -371,7 +371,10 @@ def write_windows_version_file(path: Path, version: str) -> None:
 
 
 def desktop_lock_digest(repository_root: Path) -> str:
-    return sha256_file(Path(repository_root) / DESKTOP_LOCK)
+    # Git's Windows checkout may convert text to CRLF. The publisher and both
+    # builders bind the same lock content, independent of checkout line endings.
+    raw = (Path(repository_root) / DESKTOP_LOCK).read_bytes()
+    return hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _cli(argv: list[str] | None = None) -> int:

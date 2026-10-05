@@ -29,6 +29,21 @@ def _load_release_contract():
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_same_lock_survives_platform_checkout_endings_but_changed_pin_does_not(self):
+        contract = _load_release_contract()
+        raw = (ROOT / contract.DESKTOP_LOCK).read_bytes().replace(b'\r\n', b'\n')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lf = root / 'publisher'
+            crlf = root / 'windows'
+            for checkout, content in ((lf, raw), (crlf, raw.replace(b'\n', b'\r\n'))):
+                path = checkout / contract.DESKTOP_LOCK
+                path.parent.mkdir(parents=True)
+                path.write_bytes(content)
+            self.assertEqual(contract.desktop_lock_digest(lf), contract.desktop_lock_digest(crlf))
+            path.write_bytes(raw + b'changed-package==1.0\n')
+            self.assertNotEqual(contract.desktop_lock_digest(lf), contract.desktop_lock_digest(crlf))
+
     def test_selected_tag_determines_release_version(self):
         contract = _load_release_contract()
 

@@ -268,13 +268,13 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify requirements.txt, requirements-dev.txt, Dockerfile, .github/workflows/ci.yml and build installers; create requirements/prod.lock, requirements/dev.lock, requirements/desktop.lock and requirements/optional-google.lock, requirements/optional-search.lock, requirements/optional-browser.lock, plus docs/DEPENDENCIES.md and tests/test_dependency_profiles.py.
 **Interfaces:** a generated hash-locked Python 3.12 graph per supported target/profile; dependency input files remain reviewable. Provider/store/sender Protocol definitions live beside their owning contracts; adapters satisfy them without importing optional libraries until enabled.
 
-- [ ] Add manifest/profile parity and missing-optional-package capability tests; capture resolved graphs in clean target-platform environments.
+- [x] Add manifest/profile parity and missing-optional-package capability tests; capture resolved graphs in clean target-platform environments.
 - [x] Review all ten existing PRs through the dependency queue below before generating the candidate locks; consult current official compatibility/release documentation during execution.
 - [x] Generate reviewed locks with hashes, update CI/container/desktop consumers, isolate optional integrations and add incremental typing/lint gates on touched boundaries.
-- [ ] Verify clean installs and offline tests for supported profiles/platforms; check advisories on actual resolved graphs and record reviewed exceptions. Do not describe packages as vulnerable without evidence.
-- [ ] Review and commit the graph; reconcile each existing PR as merged, updated, or superseded with its exact verification receipt once that GitHub action is authorized.
+- [x] Verify clean installs and offline tests for supported profiles/platforms; check advisories on actual resolved graphs and record reviewed exceptions. Do not describe packages as vulnerable without evidence.
+- [x] Review and commit the graph; reconcile each existing PR as merged, updated, or superseded with its exact verification receipt once that GitHub action is authorized.
 
-**Local checkpoint:** Integrated candidate `391165e`, six clean macOS arm64 Python 3.12 profile/advisory receipts reviewed; parent fresh hash-locked dev install, 979 offline tests / 1 live skip / 19 subtests, 39 separate browser tests, mypy and fatal lint passed. Unchecked target-platform and exact-head PR reconciliation requirements remain open; local graph review does not close them.
+**Local checkpoint:** Integrated candidate `391165e`, six clean macOS arm64 Python 3.12 profile/advisory receipts reviewed; parent fresh hash-locked dev install, 979 offline tests / 1 live skip / 19 subtests, 39 separate browser tests, mypy and fatal lint passed. Subsequent full-stack CI37262695739 at654f8ac passed all three clean platform jobs and the integrated offline/browser/bot suites. All ten dependency PRs were closed as superseded with exact preserved heads, replacement links and matching public readback; no merge or deployment.
 
 ### Task 18: I29 — Maintained school-year data with coverage
 

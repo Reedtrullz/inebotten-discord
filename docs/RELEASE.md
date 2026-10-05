@@ -15,6 +15,8 @@ Release-workflowen sender den fullstendige taggreferansen til både den gjenbruk
 
 Utgivelsen inneholder per plattform en ZIP-fil, en JSON-manifestfil og en røyketestkvittering, samt `SHA256SUMS`. Manifestet binder sammen full commit-SHA, valgt ref, tagg, versjon, OS/arkitektur, hash av `requirements/desktop.lock`, artefakthash og røyketestkvittering. Publiseringsjobben kontrollerer disse verdiene mot checkouten før den oppretter utgivelsen.
 
+Låsfilens SHA-256 beregnes med LF-linjeskift. Git kan bruke CRLF på Windows; denne forskjellen skal ikke endre identiteten til den samme låste avhengighetsgrafen. Alle andre byte inngår fortsatt i hashen. Den vanlige byggeworkflowen kontrollerer nå begge plattformenes artefakter med publiseringskontrakten på Linux, også når ingen utgivelse skal publiseres. Dermed oppdages forskjeller mellom byggeren og publiseringsjobben før en tagget utgivelse.
+
 ## Manuell, ikke-publiserende bygging
 
 Velg **Build Desktop Apps → Run workflow** i GitHub Actions. Fyll eventuelt inn `ref` med grenen, taggen eller committen som skal bygges. Hvis feltet er tomt, brukes workflowens valgte ref. `version` er valgfritt; for en versjonstagg må verdien stemme med taggen, og for en gren eller commit er standardversjonen `2.0.0`. Uoverensstemmelse avvises. Denne kjøringen laster opp tidsbegrensede CI-bevis og oppretter ingen GitHub-utgivelse.

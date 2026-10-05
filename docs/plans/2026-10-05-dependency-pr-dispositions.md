@@ -1,8 +1,8 @@
 # Dependency PR disposition receipts — 5 October 2026
 
-Read-only GitHub refresh: all ten existing dependency PRs remain open and BEHIND master, with the same exact heads as the earlier review. Their Test and Validate checks passed on 4 July; CodeQL was NEUTRAL. Those old checks do not validate this portfolio. No existing PR is merged or closed by this disposition record.
+The initial read-only refresh found all ten dependency PRs open and BEHIND master with the reviewed heads below. Their Test and Validate checks passed on 4 July; CodeQL was NEUTRAL. Those old checks do not validate this portfolio. After the integrated graph passed full-stack CI on 5 October, all ten were closed as superseded; their original heads and branches remain preserved, and none was merged.
 
-The candidate incorporates nine update intentions through explicit Python 3.12 hash locks; #14 uses the maintained successor instead. After the integrated graph has exact-head platform CI, the nine superseded update candidates and the successor replacement can be reconciled with a link to that accepted graph. Public closure remains a separate action.
+The candidate incorporates nine update intentions through explicit Python 3.12 hash locks; #14 uses the maintained successor instead. Each older PR body now retains its original text plus the exact reviewed head, resolved replacement, draft #44/#68 links and immutable CI receipts. Closed state, unchanged full head, absence of merge and complete body parity were read back for every PR. The replacement stack remains in draft; supersession does not claim a production dependency update.
 
 | Existing PR | Reviewed full head | Candidate graph | Disposition and evidence |
 | --- | --- | --- | --- |
@@ -40,3 +40,11 @@ Pylint 4.1.2 uses an explicitly recorded `--errors-only --output-format=json` di
 Machine-readable exact-head check responses, scanner JSON and lock install/test/build logs are in the ignored worktree evidence bundle `.superpowers/sdd/2026-10-04-inebotten-complete-portfolio/`; no member data, prompts, tokens or live configuration are included.
 
 After final review corrections at `17907fdb2f86d780bdc6341c41e1869ea56c3c29`, the whole offline suite passed 1,357 tests and 23 subtests (three explicit skips and one separate browser case); the clean bot profile passed 130 combined checks. All 46 browser cases have passing evidence, including the description flow after a corrected test locator. The source was rebuilt for macOS arm64 with actual frozen smoke. The dependency graph is unchanged by these source corrections.
+
+## Integrated platform and supersession receipt
+
+[CI 37262695739](https://github.com/Reedtrullz/inebotten-discord/actions/runs/37262695739) passed at full `654f8ac1e826bf456c42f4b85de16a370d0f20cc`: 1,370 offline tests / 23 subtests, 3 explicit skips / 1 separate browser deselection; 46 browser, 130 isolated bot-profile and 25 Windows ownership checks. All three clean target-platform profile jobs passed. Existing PRs #12–#21 were then closed as superseded, with all ten verified receipts retained in the ignored evidence bundle. The replacement implementation is still unmerged.
+
+Bandit repeated on this fixed source reports 138 findings, no scan errors and no high findings: B404 is now 12 and B101 is 16; other counts match the earlier fixed-source table. The extra explicit subprocess import and the replaced geometry assertion explain those two differences. Exit 1 remains a diagnostic result, not a security-pass claim.
+
+The native build at the same head passed both platforms, but actual artifact review found Windows' CRLF lock hash differed from the Linux publisher's LF hash. That release-only metadata incompatibility is addressed separately in I22; it is not a package graph compatibility failure, and the old artifact is not claimed publisher-ready. The fix binds lock content with canonical LF endings and adds a nonpublishing cross-platform publisher-contract job before release acceptance.
