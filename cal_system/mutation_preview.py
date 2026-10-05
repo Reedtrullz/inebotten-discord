@@ -27,10 +27,41 @@ def before_image(item):
 
 def validate_calendar_document(document):
     from utils.storage_contract import bucket_records
+    from cal_system.recurrence import Occurrence, Series
     if not bucket_records('title', require_ids=True)(document):
         return False
     for items in document.values():
         for item in items:
+            if 'series' in item:
+                try:
+                    series = Series.from_document(item['series'])
+                    index = item.get('series_next_index', 0)
+                    occurrences = item.get('occurrences', {})
+                    history = item.get('series_history', [])
+                    if (series.series_id != item['id'] or type(index) is not int or index < 0
+                        or not isinstance(occurrences, dict) or len(occurrences) > 10000
+                        or not isinstance(history, list) or len(history) > 64):
+                        return False
+                    for key, raw in occurrences.items():
+                        occurrence = Occurrence.from_document(raw)
+                        if key != occurrence.occurrence_id or occurrence.series_id != series.series_id:
+                            return False
+                    for record in history:
+                        if (not isinstance(record, dict) or type(record.get('through_index')) is not int
+                            or record['through_index'] < -1
+                            or Series.from_document(record.get('series')).series_id != series.series_id):
+                            return False
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    return False
+            elif any(key in item for key in ('series_next_index', 'occurrences', 'series_history')):
+                return False
+            remote_instances = item.get('google_instances')
+            if remote_instances is not None and (not isinstance(remote_instances, list) or len(remote_instances) > 512
+                or any(not isinstance(entry, dict) for entry in remote_instances)):
+                return False
+            truncated = item.get('google_instances_truncated', 0)
+            if type(truncated) is not int or truncated < 0:
+                return False
             operations = item.get('sync_operations', [])
             if not isinstance(operations, list) or len(operations) > 8:
                 return False

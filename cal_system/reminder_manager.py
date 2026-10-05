@@ -8,12 +8,13 @@ import re
 import uuid
 import copy
 from collections import OrderedDict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store, store_worker
 from cal_system.event_schema import Clock, EventTime
+from cal_system.recurrence import Series, Occurrence, occurrence_at
 from cal_system.sync_outbox import SyncOwnerMixin, SyncOutbox, enqueue, SyncOperation, remote_completion
 from core.access_policy import AccessPolicy
 from cal_system.mutation_preview import actor_key
@@ -52,6 +53,19 @@ class ReminderManager(SyncOwnerMixin):
                     for raw in operations:
                         if SyncOperation.from_document(raw).item_id != item['id']:
                             return False
+                    series = item.get('series')
+                    if series is not None:
+                        parsed = Series.from_document(series)
+                        if (parsed.series_id != item['id'] or type(item.get('series_next_index')) is not int
+                            or item['series_next_index'] < 0):
+                            return False
+                        occurrences = item.get('occurrences', {})
+                        if not isinstance(occurrences, dict) or len(occurrences) > 10000:
+                            return False
+                        for key, saved in occurrences.items():
+                            occurrence = Occurrence.from_document(saved)
+                            if key != occurrence.occurrence_id or occurrence.series_id != parsed.series_id:
+                                return False
         except (TypeError, ValueError, AttributeError, KeyError):
             return False
         return True
@@ -136,6 +150,8 @@ class ReminderManager(SyncOwnerMixin):
         gcal_event_id=None,
         gcal_link=None,
         channel_id=None,
+        end_count=None,
+        end_date=None,
     ):
         """
         Add a new reminder
@@ -181,6 +197,16 @@ class ReminderManager(SyncOwnerMixin):
             "completed_at": None,
             "completed_by": None,
         }
+        if recurrence and due_date:
+            anchor_date = self._recurrence_date(due_date)
+            anchor = EventTime('task', anchor_date, None, 'Europe/Oslo', True)
+            rule = {'frequency': recurrence}
+            if rrule_day or recurrence_day:
+                rule['weekday'] = rrule_day or recurrence_day
+            reminder['series'] = Series(reminder_id, anchor, rule, end_count,
+                self._coerce_recurrence_end_date(end_date)).to_document()
+            reminder['series_next_index'] = 0
+            reminder['occurrences'] = {}
 
         self.reminders[guild_key].append(reminder)
         self._save_reminders()
@@ -228,18 +254,26 @@ class ReminderManager(SyncOwnerMixin):
 
         # Check if it's a recurring reminder
         if target_reminder.get("recurrence") and target_reminder.get("due_date"):
-            # Calculate next occurrence
-            next_date = self._calculate_next_date(
-                target_reminder["due_date"],
-                target_reminder["recurrence"],
-                target_reminder.get("recurrence_day"),
-            )
-
-            if next_date:
-                target_reminder["due_date"] = next_date
-                target_reminder["completed_count"] = (
-                    target_reminder.get("completed_count", 0) + 1
-                )
+            series = self._ensure_series(target_reminder)
+            index = target_reminder.get('series_next_index', 0)
+            current = occurrence_at(series, index)
+            if current is not None:
+                occurrence_records = target_reminder.setdefault('occurrences', {})
+                if current.occurrence_id not in occurrence_records and len(occurrence_records) >= 10000:
+                    raise ValueError('recurrence_exception_limit')
+                occurrence_records[current.occurrence_id] = Occurrence(
+                    current.occurrence_id, current.series_id, current.original_start, 'completed',
+                ).to_document()
+                target_reminder['completed_count'] = target_reminder.get('completed_count', 0) + 1
+                next_occurrence = self._next_occurrence(target_reminder, series, index + 1)
+                target_reminder['series_next_index'] = next_occurrence[0] if next_occurrence else index + 1
+                next_date = None
+                if next_occurrence:
+                    next_date = next_occurrence[1].original_start.strftime('%d.%m.%Y')
+                    target_reminder['due_date'] = next_date
+                else:
+                    target_reminder['completed'] = True
+                    target_reminder['completed_at'] = self.clock.now().isoformat()
                 # Legacy reminders have no explicit event duration; advancing a
                 # local deadline must not invent a remote timed event.
                 if target_reminder.get('gcal_event_id'):
@@ -255,6 +289,58 @@ class ReminderManager(SyncOwnerMixin):
         self._queue_sync(target_reminder, 'update', guild_key)
         self._save_reminders()
         return True, target_reminder["text"], None
+
+    @staticmethod
+    def _coerce_recurrence_end_date(value):
+        if value is None or value == '':
+            return None
+        if type(value) is date:
+            return value
+        if not isinstance(value, str):
+            raise ValueError('invalid_recurrence_end_date')
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return datetime.strptime(value, '%d.%m.%Y').date()
+
+    def _recurrence_date(self, value):
+        try:
+            return datetime.strptime(value, '%d.%m.%Y').date()
+        except ValueError:
+            return datetime.strptime(value, '%d.%m').replace(year=self.clock.now().year).date()
+
+    def _ensure_series(self, item):
+        if item.get('series'):
+            return Series.from_document(item['series'])
+        anchor = EventTime('task', self._recurrence_date(item['due_date']), None, 'Europe/Oslo', True)
+        rule = {'frequency': item['recurrence']}
+        if item.get('rrule_day') or item.get('recurrence_day'):
+            rule['weekday'] = item.get('rrule_day') or item.get('recurrence_day')
+        series = Series(item['id'], anchor, rule,
+            item.get('recurrence_end_count'), self._coerce_recurrence_end_date(item.get('recurrence_end_date')))
+        item['series'] = series.to_document()
+        item.setdefault('series_next_index', 0)
+        item.setdefault('occurrences', {})
+        item['recurrence_migration'] = {
+            'status': 'legacy_collapsed', 'anchor_source': 'stored_current_date',
+            'recovered_before_anchor': False, 'legacy_advanced_count': item.get('completed_count'),
+        }
+        return series
+
+    @staticmethod
+    def _next_occurrence(item, series, index):
+        exceptions = item.get('occurrences', {})
+        while True:
+            occurrence = occurrence_at(series, index)
+            if occurrence is None:
+                return None
+            saved = exceptions.get(occurrence.occurrence_id)
+            if saved is None:
+                return index, occurrence
+            value = Occurrence.from_document(saved)
+            if value.state == 'planned':
+                return index, value
+            index += 1
 
     def _calculate_next_date(self, current_date_str, recurrence, recurrence_day=None):
         """

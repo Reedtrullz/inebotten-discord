@@ -193,6 +193,9 @@ class ReminderChecker:
                 for item in items_list:
                     if item.get("completed"):
                         continue
+                    item = self._current_occurrence_item(item)
+                    if item is None:
+                        continue
                     try:
                         item_date = self._parse_item_datetime(item)
                     except (ValueError, TypeError):
@@ -201,7 +204,7 @@ class ReminderChecker:
                         continue
                     # Already happened or exactly in the 30-min window
                     if now <= item_date <= thirty_min:
-                        if self._has_been_sent(item["id"], "30min"):
+                        if self._has_been_sent(self._delivery_identity(item), "30min"):
                             continue
                         await self._send_item_reminder(item, "30min", "30 minutter")
 
@@ -210,6 +213,9 @@ class ReminderChecker:
             for guild_id, reminders_list in self.reminders.reminders.items():
                 for reminder in reminders_list:
                     if reminder.get("completed"):
+                        continue
+                    reminder = self._current_occurrence_item(reminder)
+                    if reminder is None:
                         continue
                     due = reminder.get("due_date")
                     if not due:
@@ -221,7 +227,7 @@ class ReminderChecker:
                     if reminder_dt is None:
                         continue
                     if now <= reminder_dt <= thirty_min:
-                        if self._has_been_sent(reminder["id"], "30min"):
+                        if self._has_been_sent(self._delivery_identity(reminder), "30min"):
                             continue
                         await self._send_reminder_remind(reminder, "30min", "30 minutter")
 
@@ -239,6 +245,9 @@ class ReminderChecker:
                 for item in items_list:
                     if item.get("completed"):
                         continue
+                    item = self._current_occurrence_item(item)
+                    if item is None:
+                        continue
                     try:
                         item_date = self._parse_item_datetime(item)
                     except (ValueError, TypeError):
@@ -247,7 +256,7 @@ class ReminderChecker:
                         continue
                     # Check if event is happening NOW (within 1 minute window)
                     if one_minute_ago <= item_date <= one_minute_ahead:
-                        if self._has_been_sent(item["id"], "now"):
+                        if self._has_been_sent(self._delivery_identity(item), "now"):
                             continue
                         await self._send_item_reminder(item, "now", "nå")
 
@@ -256,6 +265,9 @@ class ReminderChecker:
             for guild_id, reminders_list in self.reminders.reminders.items():
                 for reminder in reminders_list:
                     if reminder.get("completed"):
+                        continue
+                    reminder = self._current_occurrence_item(reminder)
+                    if reminder is None:
                         continue
                     due = reminder.get("due_date")
                     if not due:
@@ -267,7 +279,7 @@ class ReminderChecker:
                     if reminder_dt is None:
                         continue
                     if one_minute_ago <= reminder_dt <= one_minute_ahead:
-                        if self._has_been_sent(reminder["id"], "now"):
+                        if self._has_been_sent(self._delivery_identity(reminder), "now"):
                             continue
                         await self._send_reminder_remind(reminder, "now", "nå")
 
@@ -284,6 +296,9 @@ class ReminderChecker:
                 for item in items_list:
                     if item.get("completed"):
                         continue
+                    item = self._current_occurrence_item(item)
+                    if item is None:
+                        continue
                     try:
                         item_date = self._event_end(item) or self._parse_item_datetime(item)
                     except (ValueError, TypeError):
@@ -292,7 +307,7 @@ class ReminderChecker:
                         continue
                     # Check if event just happened (within last 5 minutes)
                     if five_minutes_ago <= item_date <= now:
-                        if self._has_been_sent(item["id"], "passed"):
+                        if self._has_been_sent(self._delivery_identity(item), "passed"):
                             continue
                         await self._send_item_reminder(item, "passed", "akkurat nå")
 
@@ -301,6 +316,9 @@ class ReminderChecker:
             for guild_id, reminders_list in self.reminders.reminders.items():
                 for reminder in reminders_list:
                     if reminder.get("completed"):
+                        continue
+                    reminder = self._current_occurrence_item(reminder)
+                    if reminder is None:
                         continue
                     due = reminder.get("due_date")
                     if not due:
@@ -312,7 +330,7 @@ class ReminderChecker:
                     if reminder_dt is None:
                         continue
                     if five_minutes_ago <= reminder_dt <= now:
-                        if self._has_been_sent(reminder["id"], "passed"):
+                        if self._has_been_sent(self._delivery_identity(reminder), "passed"):
                             continue
                         await self._send_reminder_remind(reminder, "passed", "akkurat nå")
 
@@ -369,6 +387,42 @@ class ReminderChecker:
             pass
         return None
 
+    @staticmethod
+    def _delivery_identity(item):
+        from cal_system.notification_preferences import occurrence_identity
+        if not item.get('occurrence_id') and not item.get('series') and not item.get('recurrence'):
+            return str(item['id'])
+        return occurrence_identity(item)
+
+    def _current_occurrence_item(self, item):
+        """Project the exact stored next occurrence into existing delivery paths."""
+        if item.get('_recurrence_readonly'):
+            return None
+        if not item.get('series') and not item.get('recurrence'):
+            return item
+        try:
+            from cal_system.recurrence import Occurrence, Series, occurrence_at, series_from_item
+            series = Series.from_document(item['series']) if item.get('series') else series_from_item(item)
+            occurrence = occurrence_at(series, item.get('series_next_index', 0))
+            if occurrence is None:
+                return None
+            saved = item.get('occurrences', {}).get(occurrence.occurrence_id)
+            if saved:
+                occurrence = Occurrence.from_document(saved)
+            if occurrence.state != 'planned':
+                return None
+            result = copy.deepcopy(item)
+            result['occurrence_id'] = occurrence.occurrence_id
+            result['series_id'] = occurrence.series_id
+            result['original_start'] = occurrence.original_start.isoformat()
+            if occurrence.override:
+                for key in ('date', 'time', 'timezone', 'duration_minutes', 'fold', 'all_day', 'kind', 'title', 'description'):
+                    if key in occurrence.override:
+                        result[key] = occurrence.override[key]
+            return result
+        except (KeyError, TypeError, ValueError):
+            return item
+
     async def check_notification_profiles(self):
         """Only explicitly configured actors/destinations; no discovery or fan-out."""
         if self.user_memory is None:
@@ -410,12 +464,24 @@ class ReminderChecker:
                     self.user_memory.notification_profile(user, selected.scope_id) == selected
                     and (not policy or self.calendar.access_policy.authorize(audience, selected.scope_id, 'read').allowed))
                 buckets = self._calendar_buckets() if self.calendar else {}
-                items = [i for bucket, values in buckets.items() for i in values
-                         if self._profile_scope(i) == profile.scope_id and str(i.get('user_id')) == user_id and not i.get('completed')]
+                items = []
+                for bucket, values in buckets.items():
+                    for item in values:
+                        if (self._profile_scope(item) != profile.scope_id or str(item.get('user_id')) != user_id
+                            or item.get('completed')):
+                            continue
+                        current = self._current_occurrence_item(item)
+                        if current is not None:
+                            items.append(current)
                 if self.reminders:
-                    items += [dict(i, _reminder=True) for values in self.reminders.reminders.values() for i in values
-                              if self._profile_scope(i) == profile.scope_id and str(i.get('user_id')) == user_id
-                              and not i.get('completed') and not i.get('_mutation_deleted') and not i.get('delete_pending')]
+                    for values in self.reminders.reminders.values():
+                        for item in values:
+                            if (self._profile_scope(item) != profile.scope_id or str(item.get('user_id')) != user_id
+                                or item.get('completed') or item.get('_mutation_deleted') or item.get('delete_pending')):
+                                continue
+                            current = self._current_occurrence_item(item)
+                            if current is not None:
+                                items.append(dict(current, _reminder=True))
                 for item in items:
                     start = self._parse_due_date(item['due_date']) if item.get('_reminder') and item.get('due_date') else self._parse_item_datetime(item)
                     if start is None:
@@ -564,13 +630,14 @@ class ReminderChecker:
         else:
             message = f"⏰ **{item['title']}** - {label}{time_str}"
 
-        if self._has_been_sent(item['id'], remind_type):
+        identity = self._delivery_identity(item)
+        if self._has_been_sent(identity, remind_type):
             return
-        result = await self._send_mentions_item(channel_id, item, message, delivery_key=f"{item['id']}:{remind_type}")
+        result = await self._send_mentions_item(channel_id, item, message, delivery_key=f"{identity}:{remind_type}")
         if result.status != 'delivered':
             self.stats['errors'] += 1
             return
-        await self._mark_sent(item["id"], remind_type)
+        await self._mark_sent(identity, remind_type)
         
         # Update statistics
         if remind_type == "30min":
@@ -606,13 +673,14 @@ class ReminderChecker:
         else:
             message = f"⏰ **{reminder['text']}** - {label}"
 
-        if self._has_been_sent(reminder['id'], remind_type):
+        identity = self._delivery_identity(reminder)
+        if self._has_been_sent(identity, remind_type):
             return
-        result = await self._deliver(channel_id, message, f"{reminder['id']}:{remind_type}")
+        result = await self._deliver(channel_id, message, f"{identity}:{remind_type}")
         if result.status != 'delivered':
             self.stats['errors'] += 1
             return
-        await self._mark_sent(reminder['id'], remind_type)
+        await self._mark_sent(identity, remind_type)
 
         # Update statistics
         if remind_type == "30min":

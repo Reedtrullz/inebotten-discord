@@ -9,11 +9,13 @@ import uuid
 import asyncio
 import copy
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Optional, Any
+from zoneinfo import ZoneInfo
 
 from cal_system.event_schema import EventTime, Clock
+from cal_system.recurrence import Series, Occurrence, occurrence_at, series_from_item, parse_google_recurrence
 from core.access_policy import AccessPolicy
 from core.request_context import current_request
 from cal_system.mutation_preview import PreviewCache, actor_key, before_image, validate_calendar_document
@@ -138,11 +140,127 @@ class CalendarManager(SyncOwnerMixin):
         item['title'], item['completed'] = remote_completion(remote)
         item['description'] = remote.get('description', '')
         rules = remote.get('recurrence', [])
-        mapping = {'RRULE:FREQ=DAILY': 'daily', 'RRULE:FREQ=WEEKLY': 'weekly',
-            'RRULE:FREQ=WEEKLY;INTERVAL=2': 'biweekly', 'RRULE:FREQ=MONTHLY': 'monthly', 'RRULE:FREQ=YEARLY': 'yearly'}
-        item['recurrence'] = mapping.get(rules[0]) if len(rules) == 1 else None
-        item['_remote_recurrence_raw'] = rules
-        item['_recurrence_readonly'] = bool(rules and item['recurrence'] is None)
+        parsed = parse_google_recurrence(rules, value)
+        item['_remote_recurrence_raw'] = list(rules)
+        item['recurrence_readable'] = parsed['readable']
+        if parsed['supported']:
+            old_index = item.get('series_next_index', 0)
+            prior_series = item.get('series')
+            series = Series(item['id'], value,
+                parsed['rule'], parsed['end_count'], parsed['end_date']).to_document()
+            item['recurrence'] = parsed['rule']['frequency']
+            item['recurrence_day'] = parsed['rule'].get('weekdays', [None])[0]
+            item['series'] = series
+            item['series_next_index'] = old_index
+            item.setdefault('occurrences', {})
+            item.pop('_recurrence_readonly', None)
+            item.pop('recurrence_diagnostic', None)
+            current = self._next_occurrence(item, Series.from_document(series), old_index)
+            if current:
+                item['series_next_index'] = current[0]
+                self._apply_occurrence_pointer(item, current[1])
+            elif old_index == 0:
+                self._apply_occurrence_pointer(item, occurrence_at(Series.from_document(series), 0))
+            if prior_series and Series.from_document(prior_series).series_id != item['id']:
+                item['series_migration'] = {'status': 'series_identity_repaired', 'recovered_before_anchor': False}
+        else:
+            item['recurrence'] = None
+            item['_recurrence_readonly'] = bool(rules)
+            item['recurrence_diagnostic'] = parsed['reason_code'] if rules else None
+            if rules and item.get('series'):
+                item['unsupported_series_snapshot'] = copy.deepcopy(item['series'])
+            else:
+                item.pop('series', None)
+                item.pop('series_next_index', None)
+                item.pop('occurrences', None)
+                item.pop('series_history', None)
+
+    def _advance_occurrence(self, item, state):
+        series = self._ensure_series(item)
+        index = item.get('series_next_index', 0)
+        occurrence = occurrence_at(series, index)
+        if occurrence is None:
+            item['completed'] = True
+            return None
+        self._save_occurrence(item, occurrence, state=state)
+        next_occurrence = self._next_occurrence(item, series, index + 1)
+        item['series_next_index'] = next_occurrence[0] if next_occurrence else index + 1
+        if next_occurrence:
+            self._apply_occurrence_pointer(item, next_occurrence[1])
+            item['completed'] = False
+        else:
+            item['completed'] = True
+        if item.get('gcal_event_id') or item.get('sync_operations'):
+            item['sync_blocked'] = 'google_occurrence_scope_requires_remote_review'
+        return next_occurrence
+
+    def _recurring_edit(self, item, changes, effect_ids, effect_scopes):
+        changes = {key: value for key, value in dict(changes or {}).items() if value is not None}
+        edit_scope = changes.pop('edit_scope', None)
+        if edit_scope not in ('this', 'future', 'series'):
+            raise ValueError('recurrence_edit_scope_required')
+        series = self._ensure_series(item)
+        index = item.get('series_next_index', 0)
+        occurrence = occurrence_at(series, index)
+        if occurrence is None:
+            raise ValueError('recurrence_has_no_pending_occurrence')
+        effect_ids[item['id']] = occurrence.occurrence_id
+        effect_scopes[item['id']] = edit_scope
+        if edit_scope == 'this':
+            allowed = {'title', 'date', 'time', 'description', 'duration_minutes', 'kind', 'timezone', 'fold'}
+            if set(changes) - allowed:
+                raise ValueError('unsupported_this_occurrence_edit')
+            override = dict(occurrence.override or {})
+            for key, value in changes.items():
+                if key == 'date':
+                    value = self._normalize_date_format(value)
+                override[key] = value
+            updated = self._save_occurrence(item, occurrence, state='planned', override=override)
+            self._apply_occurrence_pointer(item, updated)
+            if item.get('gcal_event_id') or item.get('sync_operations'):
+                item['sync_blocked'] = 'google_occurrence_scope_requires_remote_review'
+        else:
+            scheduling_change = any(key in changes for key in ('date', 'time', 'recurrence', 'timezone', 'kind', 'duration_minutes', 'fold'))
+            if edit_scope == 'future' and item.get('gcal_event_id'):
+                item['sync_blocked'] = 'google_this_and_following_requires_two_remote_operations'
+            elif item.get('gcal_event_id'):
+                item['sync_blocked'] = 'google_recurrence_scope_requires_remote_review'
+            previous = series.to_document()
+            self._apply_item_updates(item, **{key: value for key, value in changes.items()
+                if key in {'title', 'date', 'time', 'recurrence', 'description', 'duration_minutes', 'kind', 'timezone', 'fold'}})
+            if scheduling_change or edit_scope == 'future':
+                anchor = EventTime.from_item(item).validate_local()
+                rule = {'frequency': item.get('recurrence') or series.rule['frequency'],
+                    **({'weekday': item.get('rrule_day') or item.get('recurrence_day')}
+                       if item.get('rrule_day') or item.get('recurrence_day') else {})}
+                end_count = changes.get('end_count', series.end_count)
+                if end_count is not None and 'end_count' in changes:
+                    if type(end_count) is not int or end_count < 1:
+                        raise ValueError('invalid_recurrence_end_count')
+                    if edit_scope == 'future':
+                        end_count += index
+                    elif end_count <= index:
+                        raise ValueError('recurrence_end_before_current')
+                end_date = self._coerce_recurrence_end_date(changes.get('end_date', series.end_date))
+                if len(item.get('series_history', [])) >= 64:
+                    raise ValueError('recurrence_history_limit')
+                item.setdefault('series_history', []).append({'series': previous,
+                    'through_index': index - 1, 'scope': edit_scope})
+                series = Series(series.series_id, anchor, rule, end_count, end_date, index)
+                item['series'] = series.to_document()
+                item['series_next_index'] = index
+                self._apply_occurrence_pointer(item, occurrence_at(series, index))
+            elif 'end_count' in changes or 'end_date' in changes:
+                if changes.get('end_count') is not None and changes['end_count'] <= index:
+                    raise ValueError('recurrence_end_before_current')
+                end_date = self._coerce_recurrence_end_date(changes.get('end_date', series.end_date))
+                if end_date is not None and end_date < occurrence.original_start.date():
+                    raise ValueError('recurrence_end_precedes_current')
+                series = Series(series.series_id, series.anchor_time, series.rule,
+                    changes.get('end_count', series.end_count),
+                    end_date, series.index_offset)
+                item['series'] = series.to_document()
+            item['completed'] = False
 
     def _authorize_mutation(self, actor, scope_id):
         actor_key(actor)
@@ -151,7 +269,7 @@ class CalendarManager(SyncOwnerMixin):
 
     def preview_mutation(self, actor, scope_id, item_ids, operation, expected_revision, *, changes=None):
         self._authorize_mutation(actor, scope_id)
-        if operation not in ('delete', 'clear', 'edit', 'complete'):
+        if operation not in ('delete', 'clear', 'edit', 'complete', 'skip'):
             raise ValueError('unsupported_mutation')
         if len(set(item_ids)) != len(item_ids):
             raise ValueError('duplicate_selection')
@@ -170,24 +288,46 @@ class CalendarManager(SyncOwnerMixin):
                 raise ValueError('selection_changed')
             before = [before_image(records[item_id]) for item_id in item_ids]
             after = copy.deepcopy(before)
+            effect_ids = {}
+            effect_scopes = {}
             for item in after:
+                if item.get('_recurrence_readonly') and operation in ('edit', 'complete', 'skip'):
+                    raise ValueError('unsupported_google_recurrence_readonly')
                 if operation in ('delete', 'clear'):
                     item['_mutation_deleted'] = True
                     item['completed'] = True
                     if item.get('gcal_event_id'):
                         item['delete_pending'] = True
                 elif operation == 'edit':
-                    self._apply_item_updates(item, **(changes or {}))
-                elif item.get('recurrence'):
-                    item['date'] = self._calculate_next_date(item['date'], item['recurrence'])
-                    item['fold'] = None
-                    item.update(EventTime.from_item(item).validate_local().fields())
+                    if item.get('recurrence') or item.get('series'):
+                        self._recurring_edit(item, changes, effect_ids, effect_scopes)
+                    else:
+                        self._apply_item_updates(item, **(changes or {}))
+                elif operation in ('complete', 'skip') and (item.get('recurrence') or item.get('series')):
+                    series = self._ensure_series(item)
+                    current = occurrence_at(series, item.get('series_next_index', 0))
+                    effect_ids[item['id']] = current.occurrence_id if current else None
+                    self._advance_occurrence(item, 'completed' if operation == 'complete' else 'skipped')
                 else:
+                    if operation == 'skip':
+                        raise ValueError('skip_requires_recurring_item')
                     item['completed'] = True
-                if self.gcal_enabled or item.get('gcal_event_id') or item.get('sync_operations'):
+                recurrence_remote_block = (item.get('recurrence') or item.get('series')) and operation in ('edit', 'complete', 'skip')
+                if (self.gcal_enabled or item.get('gcal_event_id') or item.get('sync_operations')) and not recurrence_remote_block:
                     item['_local_sync_pending'] = 'delete' if operation in ('delete', 'clear') else 'update'
             self._previews.clock = self.clock
-            return self._previews.create(actor, scope_id, expected_revision, operation, before, after)
+            proposal = self._previews.create(actor, scope_id, expected_revision, operation, before, after)
+            after_by_id = {item['id']: item for item in after}
+            for effect in proposal.effects:
+                result = after_by_id[effect['item_id']]
+                effect['remote_pending'] = bool(result.get('_local_sync_pending'))
+                if result.get('sync_blocked'):
+                    effect['remote_blocked'] = result['sync_blocked']
+                if effect['item_id'] in effect_ids and effect_ids[effect['item_id']]:
+                    effect['occurrence_id'] = effect_ids[effect['item_id']]
+                if effect['item_id'] in effect_scopes:
+                    effect['edit_scope'] = effect_scopes[effect['item_id']]
+            return proposal
 
     @writable_store
     async def apply_preview(self, actor, token):
@@ -224,6 +364,7 @@ class CalendarManager(SyncOwnerMixin):
         return {'applied_count': len(replacements), 'operation': entry['operation'],
                 'undo_token': undo_token, 'undo_expires_at': expires,
                 'remote_pending': any(item.get('_local_sync_pending') for item in replacements.values()),
+                'remote_blocked': sorted({item.get('sync_blocked') for item in replacements.values() if item.get('sync_blocked')}),
                 'items': [before_image(item) for item in replacements.values()]}
 
     @writable_store
@@ -295,7 +436,8 @@ class CalendarManager(SyncOwnerMixin):
         today = self.clock.now().date()
         cutoff = today + timedelta(days=days)
         items = []
-        for item in document.get(scope_id, []):
+        for stored_item in document.get(scope_id, []):
+            item = self._project_occurrence_for_display(stored_item)
             if item.get('completed') or item.get('delete_pending') or item.get('_mutation_deleted'):
                 continue
             try:
@@ -305,6 +447,29 @@ class CalendarManager(SyncOwnerMixin):
             except (KeyError, ValueError, TypeError):
                 continue
         return revision, sorted(items, key=lambda item: datetime.strptime(item['date'], '%d.%m.%Y'))[:10]
+
+    def _project_occurrence_for_display(self, item):
+        if not item.get('series') or item.get('_recurrence_readonly'):
+            return copy.deepcopy(item)
+        try:
+            series = Series.from_document(item['series'])
+            pending = self._next_occurrence(item, series, item.get('series_next_index', 0))
+            if not pending:
+                return copy.deepcopy(item)
+            occurrence = pending[1]
+            projected = copy.deepcopy(item)
+            projected['occurrence_id'] = occurrence.occurrence_id
+            projected['series_id'] = occurrence.series_id
+            projected['original_start'] = occurrence.original_start.isoformat()
+            projected['date'] = occurrence.original_start.strftime('%d.%m.%Y')
+            if occurrence.override:
+                for key in ('date', 'time', 'timezone', 'duration_minutes', 'fold', 'all_day',
+                    'title', 'description', 'kind'):
+                    if key in occurrence.override:
+                        projected[key] = occurrence.override[key]
+            return projected
+        except (KeyError, TypeError, ValueError):
+            return copy.deepcopy(item)
 
     def scope_key(self, guild_id=None, operation='read'):
         key = str(guild_id) if guild_id is not None and str(guild_id) in self.access_policy.scopes else self.access_policy.default_scope
@@ -354,6 +519,8 @@ class CalendarManager(SyncOwnerMixin):
     async def setup(self):
         """Async initialization and migration to shared calendar"""
         self.items = await self._load_data()
+        if self._migrate_legacy_recurrences():
+            await self._save_data()
         await self.prune_mutation_history()
         
         # Migration to shared calendar if multiple buckets exist or if only old guild-specific buckets exist
@@ -418,6 +585,7 @@ class CalendarManager(SyncOwnerMixin):
         gcal_link=None,
         channel_id=None,
         kind=None, timezone="Europe/Oslo", all_day=None, duration_minutes=None, fold=None,
+        end_count=None, end_date=None, rrule_day=None,
     ):
         """Add a new item to the calendar"""
         date_str = self._normalize_date_format(date_str)
@@ -443,6 +611,7 @@ class CalendarManager(SyncOwnerMixin):
             "time": time_str,
             "recurrence": recurrence,
             "recurrence_day": recurrence_day,
+            "rrule_day": rrule_day,
             "created_at": datetime.now().isoformat(),
             "completed": False,
             "gcal_event_id": gcal_event_id,
@@ -452,7 +621,17 @@ class CalendarManager(SyncOwnerMixin):
 
         item.update(event_time.fields())
         item["time_interpretation"] = event_time.preview()
-        if self.gcal_enabled and not gcal_event_id:
+        if recurrence:
+            parsed_end_date = self._coerce_recurrence_end_date(end_date)
+            series = Series(item["id"], event_time,
+                {"frequency": recurrence, **({"weekday": rrule_day or recurrence_day} if (rrule_day or recurrence_day) else {})},
+                end_count, parsed_end_date)
+            item["series"] = series.to_document()
+            item["series_next_index"] = 0
+            item["occurrences"] = {}
+        if self.gcal_enabled and not gcal_event_id and recurrence:
+            item['sync_blocked'] = 'google_recurrence_create_requires_remote_review'
+        elif self.gcal_enabled and not gcal_event_id:
             self._queue_sync(item, 'create', guild_key)
         self.items[guild_key].append(item)
         self._save_data_sync()
@@ -706,7 +885,7 @@ class CalendarManager(SyncOwnerMixin):
         return count, completed_titles, has_recurring
 
     @writable_store
-    def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None):
+    def edit_item(self, index, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None, edit_scope=None):
         """Edit a calendar item by its list number (1-based, matching delete/complete patterns)"""
         guild_key = self.scope_key(operation='write')
         items = self.get_upcoming(guild_key, days=365)
@@ -715,20 +894,37 @@ class CalendarManager(SyncOwnerMixin):
             raise ValueError(f"Ugyldig indeks: {index}")
 
         item = items[index - 1]
-
-        self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
-        self._queue_sync(item, 'update')
+        if item.get('_recurrence_readonly'):
+            raise ValueError('unsupported_google_recurrence_readonly')
+        if item.get('recurrence') or item.get('series'):
+            effect_ids, effect_scopes = {}, {}
+            self._recurring_edit(item, {'title': title, 'date': date, 'time': time,
+                'recurrence': recurrence, 'description': description, 'duration_minutes': duration_minutes,
+                'kind': kind, 'timezone': timezone, 'fold': fold, 'edit_scope': edit_scope}, effect_ids, effect_scopes)
+        else:
+            self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
+        if not (item.get('recurrence') or item.get('series')):
+            self._queue_sync(item, 'update')
         self._save_data_sync()
         return AwaitableDict(item)
 
     @writable_store
-    def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None):
+    def edit_item_by_id(self, item_id, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None, edit_scope=None):
         """Edit a calendar item by stable ID, including past/non-upcoming entries."""
         guild_key = self.scope_key(operation='write')
         for item in self.items.get(guild_key, []):
             if item.get("id") == item_id:
-                self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
-                self._queue_sync(item, 'update')
+                if item.get('_recurrence_readonly'):
+                    raise ValueError('unsupported_google_recurrence_readonly')
+                if item.get('recurrence') or item.get('series'):
+                    effect_ids, effect_scopes = {}, {}
+                    self._recurring_edit(item, {'title': title, 'date': date, 'time': time,
+                        'recurrence': recurrence, 'description': description, 'duration_minutes': duration_minutes,
+                        'kind': kind, 'timezone': timezone, 'fold': fold, 'edit_scope': edit_scope}, effect_ids, effect_scopes)
+                else:
+                    self._apply_item_updates(item, title, date, time, recurrence, description, duration_minutes, kind, timezone, fold)
+                if not (item.get('recurrence') or item.get('series')):
+                    self._queue_sync(item, 'update')
                 self._save_data_sync()
                 return AwaitableDict(item)
         raise ValueError(f"Fant ikke kalenderoppføring med ID: {item_id}")
@@ -812,17 +1008,119 @@ class CalendarManager(SyncOwnerMixin):
         return self._process_completion_sync(guild_key, item)
 
     def _process_completion_sync(self, guild_key, item):
+        if item.get('_recurrence_readonly'):
+            raise ValueError('unsupported_google_recurrence_readonly')
         title = item['title']
         next_date = None
         if item.get('recurrence'):
-            next_date = self._calculate_next_date(item['date'], item['recurrence'])
-            item['date'], item['fold'] = next_date, None
-            item.update(EventTime.from_item(item).validate_local().fields())
+            next_occurrence = self._advance_occurrence(item, 'completed')
+            if next_occurrence:
+                next_date = next_occurrence[1].original_start.strftime('%d.%m.%Y')
         else:
             item['completed'] = True
-        self._queue_sync(item, 'update', guild_key)
+        if not (item.get('recurrence') and (item.get('gcal_event_id') or item.get('sync_operations'))):
+            self._queue_sync(item, 'update', guild_key)
         self._save_data_sync()
         return True, title, next_date
+
+    @staticmethod
+    def _coerce_recurrence_end_date(value):
+        if value is None or value == '':
+            return None
+        if type(value) is date:
+            return value
+        if not isinstance(value, str):
+            raise ValueError('invalid_recurrence_end_date')
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return datetime.strptime(value, '%d.%m.%Y').date()
+
+    def _ensure_series(self, item, *, legacy=True):
+        if item.get('series'):
+            return Series.from_document(item['series'])
+        series = series_from_item(item, legacy=legacy)
+        item['series'] = series.to_document()
+        item.setdefault('series_next_index', 0)
+        item.setdefault('occurrences', {})
+        if legacy:
+            item['recurrence_migration'] = {
+                'status': 'legacy_collapsed',
+                'anchor_source': 'stored_current_date',
+                'recovered_before_anchor': False,
+                'legacy_advanced_count': item.get('completed_count'),
+            }
+        return series
+
+    def _migrate_legacy_recurrences(self):
+        changed = False
+        document = self.items
+        for bucket in document.values():
+            for item in bucket:
+                if item.get('recurrence') and not item.get('series'):
+                    try:
+                        self._ensure_series(item, legacy=True)
+                    except (KeyError, TypeError, ValueError):
+                        item['recurrence_migration'] = {
+                            'status': 'unsupported_legacy_rule',
+                            'recovered_before_anchor': False,
+                            'raw_rule': item.get('_remote_recurrence_raw', item.get('recurrence')),
+                        }
+                        item['_recurrence_readonly'] = True
+                    changed = True
+        if changed:
+            self.items = document
+        return changed
+
+    @staticmethod
+    def _occurrence_records(item):
+        records = item.get('occurrences', {})
+        if not isinstance(records, dict):
+            return {}
+        return {key: Occurrence.from_document(value) for key, value in records.items()}
+
+    def _save_occurrence(self, item, occurrence, *, state=None, override=None):
+        updated = Occurrence(occurrence.occurrence_id, occurrence.series_id, occurrence.original_start,
+            state or occurrence.state, occurrence.override if override is None else override)
+        records = item.setdefault('occurrences', {})
+        if updated.occurrence_id not in records and len(records) >= 10000:
+            raise ValueError('recurrence_exception_limit')
+        records[updated.occurrence_id] = updated.to_document()
+        return updated
+
+    def _next_occurrence(self, item, series, index):
+        exceptions = self._occurrence_records(item)
+        while True:
+            occurrence = occurrence_at(series, index)
+            if occurrence is None:
+                return None
+            saved = exceptions.get(occurrence.occurrence_id)
+            if saved is None or saved.state == 'planned':
+                return index, saved or occurrence
+            index += 1
+
+    @staticmethod
+    def _apply_occurrence_pointer(item, occurrence):
+        local = occurrence.original_start
+        value = occurrence.override or {}
+        date_value = value.get('date')
+        time_value = value.get('time')
+        if date_value:
+            item['date'] = date_value
+        elif occurrence.original_start.tzinfo:
+            item['date'] = local.strftime('%d.%m.%Y')
+        if 'time' in value:
+            item['time'] = time_value or None
+        else:
+            item['time'] = item.get('series', {}).get('anchor_time', {}).get('time')
+        item['fold'] = value.get('fold')
+        if 'timezone' in value:
+            item['timezone'] = value['timezone']
+        if 'duration_minutes' in value:
+            item['duration_minutes'] = value['duration_minutes']
+        if 'time' in value:
+            item['all_day'] = not bool(value['time'])
+        item.update(EventTime.from_item(item).validate_local().fields())
 
     def _calculate_next_date(self, current_date_str, recurrence):
         """Calculate next occurrence date with month-end safety"""
@@ -913,6 +1211,155 @@ class CalendarManager(SyncOwnerMixin):
             return 0
         return await self._apply_google_pull(events, lookups, revision, default_guild_id, default_channel_id)
 
+    @staticmethod
+    def _google_original_start(event, series):
+        from zoneinfo import ZoneInfo
+        raw = event.get('originalStartTime')
+        if not isinstance(raw, dict):
+            raise ValueError('missing_google_original_start')
+        if raw.get('date'):
+            day = date.fromisoformat(raw['date'])
+            return datetime.combine(day, datetime.min.time(), tzinfo=ZoneInfo(series.anchor_time.timezone))
+        instant = datetime.fromisoformat(raw['dateTime'].replace('Z', '+00:00'))
+        if instant.tzinfo is None:
+            raise ValueError('google_original_start_requires_offset')
+        return instant.astimezone(ZoneInfo(series.anchor_time.timezone))
+
+    @staticmethod
+    def _google_occurrence_index(series, original_start):
+        anchor = series.anchor_time.local_date
+        target = original_start.date()
+        frequency, interval = series.rule['frequency'], series.rule['interval']
+        if target < anchor:
+            return None
+        if frequency == 'daily':
+            relative = (target - anchor).days // interval
+        elif frequency in ('weekly', 'biweekly'):
+            relative = (target - anchor).days // (7 * interval)
+        elif frequency == 'monthly':
+            months = (target.year - anchor.year) * 12 + target.month - anchor.month
+            relative = months // interval
+        else:
+            relative = (target.year - anchor.year) // interval
+        center = series.index_offset + relative
+        for index in range(max(series.index_offset, center - 2), center + 3):
+            occurrence = occurrence_at(series, index)
+            if occurrence is None:
+                break
+            if occurrence.original_start == original_start:
+                return occurrence
+        return None
+
+    @staticmethod
+    def _remote_instance_evidence(event):
+        keys = ('id', 'recurringEventId', 'originalStartTime', 'status', 'summary', 'start', 'end', 'etag')
+        return {key: copy.deepcopy(event[key]) for key in keys if key in event}
+
+    def _preserve_google_instance(self, item, event):
+        if not item.get('series'):
+            instances = item.setdefault('google_instances', [])
+            evidence = self._remote_instance_evidence(event)
+            if evidence.get('id') and all(row.get('id') != evidence['id'] for row in instances):
+                if len(instances) < 512:
+                    instances.append(evidence)
+                else:
+                    item['google_instances_truncated'] = item.get('google_instances_truncated', 0) + 1
+            item['_recurrence_readonly'] = True
+            item['recurrence_readable'] = item.get('recurrence_readable') or 'Utvidede Google-forekomster; hovedregelen ble ikke hentet.'
+            item['recurrence_diagnostic'] = 'google_master_unavailable'
+            return False
+        series = Series.from_document(item['series'])
+        try:
+            original_start = self._google_original_start(event, series)
+            occurrence = self._google_occurrence_index(series, original_start)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            occurrence = None
+            original_start = None
+        if occurrence is None:
+            instances = item.setdefault('google_instances', [])
+            evidence = self._remote_instance_evidence(event)
+            if evidence.get('id') and len(instances) < 512 and all(row.get('id') != evidence['id'] for row in instances):
+                instances.append(evidence)
+            elif evidence.get('id') and all(row.get('id') != evidence['id'] for row in instances):
+                item['google_instances_truncated'] = item.get('google_instances_truncated', 0) + 1
+            item['_recurrence_readonly'] = True
+            item['recurrence_diagnostic'] = 'google_instance_outside_supported_series'
+            return True
+        exceptions = self._occurrence_records(item)
+        if event.get('status') == 'cancelled':
+            saved = Occurrence(occurrence.occurrence_id, series.series_id, occurrence.original_start,
+                'skipped', {'gcal_instance_id': event.get('id')})
+            self._save_occurrence(item, saved)
+            self._refresh_imported_current_occurrence(item, series, occurrence)
+            return True
+        try:
+            remote_time = EventTime.from_google(event).validate_local()
+        except (ValueError, KeyError, TypeError):
+            return False
+        override = {'gcal_instance_id': event.get('id')}
+        if remote_time.local_date != occurrence.original_start.date():
+            override['date'] = remote_time.local_date.strftime('%d.%m.%Y')
+        if remote_time.local_time != occurrence.original_start.astimezone(
+            ZoneInfo(series.anchor_time.timezone)).time().replace(tzinfo=None):
+            override['time'] = remote_time.fields()['time']
+        if remote_time.timezone != series.anchor_time.timezone:
+            override['timezone'] = remote_time.timezone
+        if remote_time.duration_minutes != series.anchor_time.duration_minutes:
+            override['duration_minutes'] = remote_time.duration_minutes
+        title = event.get('summary')
+        if title and title != item.get('title'):
+            override['title'] = title
+        if event.get('description') is not None and event.get('description') != item.get('description', ''):
+            override['description'] = event.get('description')
+        if len(override) > 1:
+            saved = Occurrence(occurrence.occurrence_id, series.series_id, occurrence.original_start,
+                'planned', override)
+            self._save_occurrence(item, saved)
+            self._refresh_imported_current_occurrence(item, series, occurrence)
+            return True
+        exceptions.pop(occurrence.occurrence_id, None)
+        item['occurrences'] = {key: value.to_document() for key, value in exceptions.items()}
+        return False
+
+    def _refresh_imported_current_occurrence(self, item, series, imported):
+        index = item.get('series_next_index', 0)
+        current = occurrence_at(series, index)
+        if current is None or current.occurrence_id != imported.occurrence_id:
+            return
+        pending = self._next_occurrence(item, series, index)
+        if pending:
+            item['series_next_index'] = pending[0]
+            item['completed'] = False
+            self._apply_occurrence_pointer(item, pending[1])
+        else:
+            item['completed'] = True
+
+    def _prepare_google_pull_events(self, events):
+        groups = OrderedDict()
+        masters = {event.get('id') for event in events if isinstance(event, dict)
+            and event.get('id') and not event.get('recurringEventId') and event.get('recurrence')}
+        for event in events:
+            if isinstance(event, dict) and event.get('recurringEventId'):
+                groups.setdefault(event['recurringEventId'], []).append(event)
+        opaque = {}
+        for master_id, instances in groups.items():
+            if master_id in masters:
+                continue
+            source = next((row for row in instances if isinstance(row.get('start'), dict)), instances[0])
+            synthetic = copy.deepcopy(source)
+            synthetic['id'] = master_id
+            synthetic.pop('recurringEventId', None)
+            synthetic['recurrence'] = []
+            if not synthetic.get('start') and isinstance(synthetic.get('originalStartTime'), dict):
+                synthetic['start'] = copy.deepcopy(synthetic['originalStartTime'])
+            synthetic['_expanded_without_master'] = True
+            opaque[master_id] = instances
+            masters.add(master_id)
+            events.append(synthetic)
+        prepared = [event for event in events if not (isinstance(event, dict)
+            and event.get('recurringEventId') and event.get('recurringEventId') in opaque)]
+        return sorted(prepared, key=lambda event: bool(event.get('recurringEventId'))), opaque
+
     @writable_store
     async def _apply_google_pull(self, gcal_events, lookups, expected_revision, default_guild_id=None, default_channel_id=None):
         """
@@ -947,9 +1394,11 @@ class CalendarManager(SyncOwnerMixin):
                 for operation in item.get('sync_operations', []):
                     if operation['kind'] == 'create' and operation.get('remote_id'):
                         gcal_map[operation['remote_id']] = (guild_id, item)
+        existing_master_ids = set(gcal_map)
         self._gcal_baseline_changed = False
-        processed_recurring_ids = set()
+        gcal_events, opaque_instances = self._prepare_google_pull_events(list(gcal_events))
         seen_gcal_ids = set()
+        updated_master_ids = set()
         for event in gcal_events:
             if not isinstance(event, dict):
                 continue
@@ -964,10 +1413,14 @@ class CalendarManager(SyncOwnerMixin):
             seen_gcal_ids.add(gcal_id)
             seen_gcal_ids.add(canonical_gcal_id)
             is_recurring_instance = bool(event.get("recurringEventId"))
-            if is_recurring_instance and canonical_gcal_id in processed_recurring_ids:
-                continue
             if is_recurring_instance:
-                processed_recurring_ids.add(canonical_gcal_id)
+                matched = gcal_map.get(canonical_gcal_id)
+                if matched:
+                    _, root_item = matched
+                    changed = self._preserve_google_instance(root_item, event)
+                    if changed:
+                        updated_count += 1
+                    continue
 
             summary = event.get("summary", "Uten tittel")
             
@@ -1067,9 +1520,6 @@ class CalendarManager(SyncOwnerMixin):
                 if gcal_completed and not item.get("completed"):
                     item["completed"] = True
                     changed = True
-                
-                if changed:
-                    updated_count += 1
             else:
                 # New item from GCal
                 guild_id = self.scope_key(operation='write')
@@ -1094,8 +1544,51 @@ class CalendarManager(SyncOwnerMixin):
                 # If it was completed, mark it so (add_item defaults to False)
                 if gcal_completed:
                     self.items[str(guild_id)][-1]["completed"] = True
-                
+                item = self.items[str(guild_id)][-1]
+                gcal_map[canonical_gcal_id] = (guild_id, item)
                 added_count += 1
+
+            if event.get('recurrence'):
+                before_series = copy.deepcopy(item.get('series'))
+                before_recurrence = item.get('recurrence')
+                before_raw = copy.deepcopy(item.get('_remote_recurrence_raw'))
+                self.apply_remote_sync_fields(item, event)
+                if matched_gcal_key and (before_series != item.get('series')
+                    or before_recurrence != item.get('recurrence')
+                    or before_raw != item.get('_remote_recurrence_raw')):
+                    changed = True
+            if event.get('_expanded_without_master'):
+                item['recurrence'] = None
+                item['_recurrence_readonly'] = True
+                item['recurrence_readable'] = 'Google sendte utvidede forekomster, men hovedregelen var utilgjengelig.'
+                item['recurrence_diagnostic'] = 'google_master_unavailable'
+                item['google_instances'] = []
+            if matched_gcal_key and changed:
+                updated_count += 1
+                updated_master_ids.add(canonical_gcal_id)
+
+        for master_id, instances in opaque_instances.items():
+            matched = gcal_map.get(master_id)
+            if not matched:
+                continue
+            _, item = matched
+            evidence = [self._remote_instance_evidence(event) for event in instances]
+            known = {row.get('id') for row in item.get('google_instances', [])}
+            additions = [row for row in evidence if row.get('id') not in known]
+            if additions:
+                available = max(0, 512 - len(item.get('google_instances', [])))
+                item['google_instances'] = item.get('google_instances', []) + additions[:available]
+                if len(additions) > available:
+                    item['google_instances_truncated'] = item.get('google_instances_truncated', 0) + len(additions) - available
+                    item['recurrence_diagnostic'] = 'google_instance_limit_reached'
+                if not item.get('series'):
+                    item['_recurrence_readonly'] = True
+                    item['recurrence_readable'] = 'Google sendte utvidede forekomster, men hovedregelen var utilgjengelig.'
+                    item['recurrence_diagnostic'] = 'google_master_unavailable'
+                seen_gcal_ids.update(row.get('id') for row in evidence if row.get('id'))
+                if master_id in existing_master_ids and master_id not in updated_master_ids:
+                    updated_count += 1
+                    updated_master_ids.add(master_id)
 
         removed_count = self._remove_missing_gcal_items(seen_gcal_ids, days=90)
 
@@ -1237,6 +1730,18 @@ class CalendarManager(SyncOwnerMixin):
                     recurrence_str = f" 🔄 {item['recurrence_day'][:3].lower()} {labels.get(item['recurrence'], '')}"
                 else:
                     recurrence_str = f" 🔄 {labels.get(item['recurrence'], '')}"
+                if item.get('occurrence_id'):
+                    recurrence_str += f" · forekomst {item['occurrence_id'][:8]}"
+                series = item.get('series') or {}
+                end_count = series.get('end_count')
+                end_date = series.get('end_date')
+                if end_count:
+                    recurrence_str += f" · {end_count} forekomster"
+                elif end_date:
+                    recurrence_str += f" · til {end_date}"
+            elif item.get('_recurrence_readonly'):
+                readable = str(item.get('recurrence_readable', 'regelen kan ikke tolkes')).replace('\n', ' ')[:180]
+                recurrence_str = f" 🔒 Google-gjentakelse beholdt: {readable}"
 
             title_display = (
                 f"~~{item['title']}~~" if item.get("completed") else item["title"]
@@ -1277,6 +1782,9 @@ class CalendarManager(SyncOwnerMixin):
         elif not meaning.all_day and meaning.kind == 'event':
             lines.append('Varighet er ikke valgt; oppføringen synkes ikke som et Google-arrangement før varigheten er avklart.')
 
+        if str(item.get('sync_blocked') or '').startswith('google_'):
+            lines.append('Google-endringen er ikke sendt; gjentakelsen må avklares eksternt.')
+
         if item.get("recurrence"):
             labels = {
                 "weekly": "hver uke",
@@ -1292,6 +1800,14 @@ class CalendarManager(SyncOwnerMixin):
                 lines.append(
                     f"🔄 Gjentas {labels.get(item['recurrence'], item['recurrence'])}"
                 )
+            series = item.get('series') or {}
+            if series.get('end_count'):
+                lines.append(f"Forekomstgrense: {series['end_count']}")
+            elif series.get('end_date'):
+                lines.append(f"Gjentar til og med: {series['end_date']}")
+        elif item.get('_recurrence_readonly'):
+            readable = str(item.get('recurrence_readable', '')).replace('\n', ' ')[:180]
+            lines.append(f"🔒 Google-gjentakelse beholdt uten lokal omforming: {readable}")
 
         if item.get("gcal_link"):
             lines.append("")

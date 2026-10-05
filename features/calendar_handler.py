@@ -26,7 +26,7 @@ class CalendarHandler(BaseHandler):
 
     CLEAR_CONFIRM_KEYWORDS = ("bekreft", "confirm")
     DELETE_COMMANDS = r"(?:slett|slette|delete|fjern|fjerne)"
-    COMPLETE_COMMANDS = r"(?:ferdig|done|complete|fullfør|fullføre|fullført)"
+    COMPLETE_COMMANDS = r"(?:ferdig|done|complete|fullfør|fullføre|fullført|hopp over|skipp)"
     MUTATION_PREFIX = r"(?:(?:kan du|kunne du|vennligst|please)\s+)?"
 
     def __init__(self, monitor):
@@ -260,6 +260,9 @@ class CalendarHandler(BaseHandler):
                 time_str=item_data.get("time"),
                 recurrence=item_data.get("recurrence"),
                 recurrence_day=item_data.get("recurrence_day"),
+                end_count=item_data.get("end_count"),
+                end_date=item_data.get("end_date"),
+                rrule_day=item_data.get("rrule_day"),
                 gcal_event_id=None,
                 gcal_link=None,
                 channel_id=message.channel.id,
@@ -271,7 +274,9 @@ class CalendarHandler(BaseHandler):
 
             if item:
                 response_text = self.calendar.format_single_item(item)
-                if item.get('sync_blocked'):
+                if str(item.get('sync_blocked') or '').startswith('google_'):
+                    response_text += '\n📌 Gjentakelsen er lagret lokalt; Google-endringen må avklares før den kan sendes.'
+                elif item.get('sync_blocked'):
                     response_text += '\n📌 Bare lokalt: Google-synkronisering krever avklart arrangementstype, dato og varighet.'
                 elif item.get('_local_sync_pending'):
                     response_text += '\n⏳ Google-endring er lagret som ventende; ekstern gjennomføring er ikke bekreftet.'
@@ -283,7 +288,12 @@ class CalendarHandler(BaseHandler):
             await self.send_response(message, response_text)
 
         except ValueError as error:
-            await self.send_response(message, f"❌ Dato/tid må avklares før lagring: {getattr(error, 'reason_code', 'invalid_date_or_time')}. Velg gyldig dato, tidspunkt og eventuell DST-fold (0/1).")
+            code = getattr(error, 'reason_code', str(error))
+            if code in ('ambiguous_recurrence_end', 'invalid_recurrence_end_count',
+                'invalid_recurrence_end_date', 'recurrence_end_precedes_anchor'):
+                await self.send_response(message, '❌ Gjentakelsen må ha enten et positivt antall forekomster eller en sluttdato etter startdatoen.')
+            else:
+                await self.send_response(message, f"❌ Dato/tid må avklares før lagring: {getattr(error, 'reason_code', 'invalid_date_or_time')}. Velg gyldig dato, tidspunkt og eventuell DST-fold (0/1).")
         except PermissionError:
             await self.send_response(message, '🔒 Kalenderområdet er ikke tilgjengelig for deg i denne samtalen.')
         except StorageMutationError:
@@ -375,11 +385,12 @@ class CalendarHandler(BaseHandler):
                 return
         else:
             bulk_title = self._extract_bulk_title(query or '')
-            action = {'delete': 'slett', 'complete': 'ferdig', 'edit': 'rediger'}[operation]
+            action = {'delete': 'slett', 'complete': 'ferdig', 'skip': 'hopp over', 'edit': 'rediger'}[operation]
             actor, scope, ids, revision = self._select_items(message, bulk_title or query, bulk=bool(bulk_title), action=action)
         proposal = self.calendar.preview_mutation(actor, scope, ids, operation,
             revision, changes=changes)
-        labels = {'delete': 'sletting', 'clear': 'tømming', 'complete': 'fullføring', 'edit': 'redigering'}
+        labels = {'delete': 'sletting', 'clear': 'tømming', 'complete': 'fullføring',
+            'skip': 'hopping over', 'edit': 'redigering'}
         lines = [f"⚠️ Forhåndsvisning av {labels[operation]} — {len(ids)} oppføringer:"]
         for effect in proposal.effects:
             line = f"• `#{effect['item_id'][:8]}` {effect['title']}"
@@ -387,11 +398,17 @@ class CalendarHandler(BaseHandler):
                 after = effect['after']
                 line += f" → {after['title']} — {after.get('date', '')} {after.get('time') or ''}"
                 line += f" ({after.get('kind')}, {after.get('timezone')}; varighet {after.get('duration_minutes') or 'ukjent'})"
+                if effect.get('edit_scope'):
+                    line += f" · omfang: {effect['edit_scope']}"
             if operation == 'complete' and effect['before'].get('recurrence'):
                 line += f" → neste dato {effect['after']['date']}"
+            if effect.get('occurrence_id'):
+                line += f" · forekomst `{effect['occurrence_id'][:8]}`"
             lines.append(line)
         if any(effect['remote_pending'] for effect in proposal.effects):
             lines.append('Google-endringer lagres som ventende lokalt; ekstern gjennomføring er ikke bekreftet.')
+        if any(effect.get('remote_blocked') for effect in proposal.effects):
+            lines.append('Google-forekomstendringen er bare lagret lokalt; ekstern gjentakelse krever egen avklaring.')
         lines.append(f"Send `@inebotten bekreft kalender {proposal.token}` innen fem minutter.")
         await self.send_response(message, '\n'.join(lines))
 
@@ -408,11 +425,14 @@ class CalendarHandler(BaseHandler):
                         text += '\n' + result['remote_limitations'][0]
                 else:
                     result = await self.calendar.apply_preview(actor, token)
-                    label = {'clear': 'Slettet', 'delete': 'Slettet', 'complete': 'Fullført', 'edit': 'Oppdatert'}[result['operation']]
+                    label = {'clear': 'Slettet', 'delete': 'Slettet', 'complete': 'Fullført',
+                        'skip': 'Hoppet over', 'edit': 'Oppdatert'}[result['operation']]
                     text = f"✅ {label} {result['applied_count']} oppføringer lokalt."
                     text += f"\nAngre med `@inebotten angre kalender {result['undo_token']}` før {result['undo_expires_at']}."
                     if result['remote_pending']:
                         text += '\nGoogle-endring venter; lokal lagring bekrefter ikke ekstern gjennomføring.'
+                    if result.get('remote_blocked'):
+                        text += '\nGoogle-forekomstendringen er lagret lokalt, men ikke sendt til Google.'
                 await self.send_response(message, text)
             else:
                 await self._request_preview(message, 'clear', clear=True)
@@ -447,7 +467,9 @@ class CalendarHandler(BaseHandler):
 
     async def handle_complete(self, message) -> None:
         try:
-            await self._request_preview(message, 'complete', self._extract_search_text(message.content))
+            cleaned = re.sub(r"<@!?\d+>|@inebotten", "", message.content or "", flags=re.IGNORECASE)
+            operation = 'skip' if re.search(r'\b(?:hopp over|skipp)\b', cleaned, re.IGNORECASE) else 'complete'
+            await self._request_preview(message, operation, self._extract_search_text(message.content))
         except (ValueError, PermissionError, StorageMutationError) as error:
             await self.send_response(message, f'❌ {error}')
 
@@ -529,6 +551,21 @@ class CalendarHandler(BaseHandler):
 
         return index, search_text, field, value
 
+    def _parse_edit_scope(self, content: str):
+        cleaned = re.sub(r"<@!?\d+>|@inebotten", "", content or "", flags=re.IGNORECASE).casefold()
+        if re.search(r'\b(?:denne og fremtidige|denne og de fremtidige|herfra og ut|fremover)\b', cleaned):
+            return 'future'
+        if re.search(r'\b(?:hele serien|alle forekomster|hele rekken)\b', cleaned):
+            return 'series'
+        if re.search(r'\b(?:bare denne|kun denne|denne forekomsten|denne gangen)\b', cleaned):
+            return 'this'
+        return None
+
+    def _strip_edit_scope(self, content: str):
+        return re.sub(r'\b(?:denne og de fremtidige|denne og fremtidige|herfra og ut|fremover|'
+            r'hele serien|alle forekomster|hele rekken|bare denne|kun denne|denne forekomsten|denne gangen)\b',
+            '', content or '', flags=re.IGNORECASE).strip()
+
     def _parse_date_value(self, value: str) -> Optional[str]:
         value = value.strip()
 
@@ -553,8 +590,9 @@ class CalendarHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
+            edit_scope = self._parse_edit_scope(message.content)
             index, search_text, field, value = self._parse_edit_command(
-                message.content
+                self._strip_edit_scope(message.content)
             )
 
             if not field or not value:
@@ -588,6 +626,8 @@ class CalendarHandler(BaseHandler):
                     value = parsed
 
             changes = {kwarg_field: value}
+            if edit_scope:
+                changes['edit_scope'] = edit_scope
             if explicit_fold is not None:
                 changes['fold'] = explicit_fold
             query = str(index) if index is not None else search_text

@@ -290,6 +290,10 @@ class IntentRouter:
         if not self._has_calendar_context(content_lower):
             # Special case for "synk" / "sync" which can be used without "kalender"
             if not has_any_keyword(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
+                skip_target = self._extract_calendar_mutation_target(content_lower, ("hopp over", "skipp"))
+                if skip_target and self._target_looks_like_calendar_item(skip_target, guild_id):
+                    return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.94,
+                        {"target": skip_target, "operation": "skip"}, "calendar_occurrence_skip_title_match")
                 delete_target = self._extract_calendar_mutation_target(content_lower, DELETE_KEYWORDS)
                 if delete_target and self._target_looks_like_calendar_item(delete_target, guild_id):
                     return IntentResult(
@@ -317,6 +321,8 @@ class IntentRouter:
             return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
         if has_any_keyword(content_lower, DELETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_DELETE, 0.98, reason="calendar_delete_keyword")
+        if re.search(r'\b(?:hopp over|skipp)\b', content_lower):
+            return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_occurrence_skip")
         if has_any_keyword(content_lower, COMPLETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_complete_keyword")
         if has_any_keyword(content_lower, EDIT_KEYWORDS):
@@ -665,6 +671,16 @@ class IntentRouter:
 
         if parsed:
             parsed = self._resolve_calendar_followup(content, parsed, guild_id)
+            if parsed.get('recurrence'):
+                parsed = dict(parsed)
+                count = re.search(r'\b(?:for|i)\s+(\d+)\s+(?:ganger|forekomster)\b|\b(\d+)\s+forekomster\b',
+                    content, re.IGNORECASE)
+                if count:
+                    parsed['end_count'] = int(count.group(1) or count.group(2))
+                end_date = re.search(r'\b(?:fram til|frem til|til)\s+(\d{1,2}[./]\d{1,2}[./]\d{4}|\d{4}-\d{2}-\d{2})\b',
+                    content, re.IGNORECASE)
+                if end_date:
+                    parsed['end_date'] = end_date.group(1)
             
             # Boost confidence for strong matches
             confidence = 0.86

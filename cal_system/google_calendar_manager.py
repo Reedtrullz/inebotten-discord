@@ -428,6 +428,7 @@ class GoogleCalendarManager:
                     timeMax=end.isoformat(),
                     maxResults=2500,
                     singleEvents=True,
+                    showDeleted=True,
                     orderBy="startTime",
                     pageToken=page_token,
                 ).execute()
@@ -438,6 +439,20 @@ class GoogleCalendarManager:
                 page_token = events_result.get("nextPageToken")
                 if not page_token:
                     break
+            masters = []
+            master_ids = list(dict.fromkeys(event.get('recurringEventId') for event in items
+                if isinstance(event, dict) and isinstance(event.get('recurringEventId'), str)))
+            if len(master_ids) > 256:
+                raise ValueError("recurring_master_limit")
+            for master_id in master_ids:
+                try:
+                    master = service.events().get(calendarId=self.calendar_id, eventId=master_id).execute()
+                    if isinstance(master, dict) and master.get('id') == master_id:
+                        masters.append(master)
+                except Exception:
+                    # Keep expanded rows so the importer can preserve them as an opaque series.
+                    continue
+            items.extend(master for master in masters if not any(row.get('id') == master.get('id') for row in items))
             return items
 
         except Exception as e:

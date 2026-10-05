@@ -94,6 +94,9 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synced[0]["title"], "Ukentlig møte")
         self.assertEqual(synced[0]["date"], first.strftime("%d.%m.%Y"))
         self.assertEqual(synced[0]["gcal_event_id"], "master")
+        self.assertEqual(len(synced[0]["google_instances"]), 2)
+        self.assertEqual(synced[0]["recurrence_diagnostic"], "google_master_unavailable")
+        self.assertFalse(synced[0].get("series"))
         self.assertEqual(gcal.list_calls, [90])
 
     async def test_sync_imports_new_recurring_series_once_with_master_id(self):
@@ -117,6 +120,9 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synced[0]["title"], "Yoga")
         self.assertEqual(synced[0]["date"], first.strftime("%d.%m.%Y"))
         self.assertEqual(synced[0]["gcal_event_id"], "series-master")
+        self.assertEqual(len(synced[0]["google_instances"]), 2)
+        self.assertTrue(synced[0]["_recurrence_readonly"])
+        self.assertFalse(synced[0].get("series"))
 
     async def test_manual_sync_rechecks_gcal_configuration(self):
         class ConfiguredGCal(FakeGCal):
@@ -273,6 +279,46 @@ class GoogleCalendarPushTests(unittest.TestCase):
 
         self.assertEqual(events, [{"id": "one"}, {"id": "two"}])
         self.assertEqual(events_resource.page_tokens, [None, "page-2"])
+
+    def test_list_upcoming_events_fetches_masters_for_expanded_instances(self):
+        manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
+        manager.enabled = True
+        manager.calendar_id = "primary"
+        manager._save_credentials = lambda creds: None
+
+        class FakeCreds:
+            expired = False
+            refresh_token = None
+
+        class FakeRequest:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        child = {"id": "instance-1", "recurringEventId": "series-1", "originalStartTime": {"date": "2027-01-11"}}
+        master = {"id": "series-1", "recurrence": ["RRULE:FREQ=WEEKLY;COUNT=4"]}
+
+        class FakeEventsResource:
+            def __init__(self):
+                self.list_args = None
+            def list(self, **kwargs):
+                self.list_args = kwargs
+                return FakeRequest({"items": [child]})
+
+            def get(self, **kwargs):
+                return FakeRequest(master)
+
+        events_resource = FakeEventsResource()
+        service = SimpleNamespace(events=lambda: events_resource)
+
+        with patch("google.oauth2.credentials.Credentials.from_authorized_user_file", return_value=FakeCreds()):
+            with patch("googleapiclient.discovery.build", return_value=service):
+                events = GoogleCalendarManager.list_upcoming_events(manager, days=30)
+
+        self.assertEqual(events, [child, master])
+        self.assertTrue(events_resource.list_args['showDeleted'])
 
 
 if __name__ == "__main__":
