@@ -46,6 +46,8 @@ class BotTransportConfig:
         values = os.environ if environ is None else environ
         if values.get("DISCORD_USER_TOKEN"):
             raise ValueError("user-token mode is forbidden in the bot transport environment")
+        if values.get("DISCORD_TOKEN"):
+            raise ValueError("DISCORD_TOKEN is ambiguous in the bot transport environment")
         token = values.get("BOT_DISCORD_TOKEN", "").strip()
         if not token:
             raise ValueError("BOT_DISCORD_TOKEN is required")
@@ -132,6 +134,10 @@ class DiscordBotTransport:
             validate_bot_application_config(config)
         except ValueError:
             return {"status": "rejected", "reason_code": "bot_authorization_unconfigured"}
+        with request_scope(actor):
+            return await self._handle_in_request_scope(message, actor, config)
+
+    async def _handle_in_request_scope(self, message, actor, config) -> dict:
         decision = invocation_decision(
             actor,
             mode=config.INVOCATION_MODE,
@@ -169,8 +175,7 @@ class DiscordBotTransport:
                 deadline=monotonic_deadline(10),
             )
             return {"status": "rejected", "reason_code": str(error), "receipt": refusal}
-        with request_scope(actor):
-            await self.monitor.handle_message(message)
+        await self.monitor.handle_message(message)
         return {"status": "dispatched", "request_id": actor.request_id,
                 "operation": route.intent.value}
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from bot_transport_fixtures import SyntheticMessage, bot_domain_handlers
 
 from core.request_context import current_request
 from core.transport import (
@@ -25,8 +26,12 @@ class FakeMonitor:
         ))
         self.outbound = FakeSender()
         self.calls = []
+        self.observed_context = []
+        self.setup_calls = 0
+        self.close_calls = 0
 
     def authorize_message(self, message):
+        self.observed_context.append(("authorize", current_request()))
         if not self.is_mention(message):
             return None
         return SimpleNamespace(content="kalender")
@@ -38,12 +43,19 @@ class FakeMonitor:
     async def handle_message(self, message):
         self.calls.append((message.id, current_request()))
 
+    async def setup(self):
+        self.setup_calls += 1
+
+    async def close(self):
+        self.close_calls += 1
+
 
 class FakeSender:
     def __init__(self):
         self.calls = []
 
     async def send(self, channel_id, text, *, delivery_key, deadline, attachments):
+        self.context = current_request()
         self.calls.append((channel_id, text, delivery_key, deadline, attachments))
         return SimpleNamespace(status="delivered", message_id="9001", retry_after_s=None,
                                reason_code="remote_message")
@@ -67,8 +79,13 @@ def test_bot_environment_is_separate_and_refuses_user_token_mode():
             "BOT_DISCORD_TOKEN": "synthetic.bot.token",
             "DISCORD_USER_TOKEN": "synthetic.user.token",
         })
-    with pytest.raises(ValueError, match="BOT_DISCORD_TOKEN"):
+    with pytest.raises(ValueError, match="ambiguous"):
         BotTransportConfig.from_environment({"DISCORD_TOKEN": "ambiguous.token"})
+    with pytest.raises(ValueError, match="ambiguous"):
+        BotTransportConfig.from_environment({
+            "BOT_DISCORD_TOKEN": "synthetic.bot.token",
+            "DISCORD_TOKEN": "synthetic.ambiguous.token",
+        })
 
 
 def test_bot_application_requires_closed_user_and_channel_allowlists():
@@ -105,6 +122,7 @@ async def test_guild_mention_uses_existing_invocation_and_request_context():
     assert monitor.calls[0][0] == "8001"
     assert monitor.calls[0][1].user_id == "42"
     assert monitor.calls[0][1].channel_id == "70"
+    assert monitor.observed_context == [("authorize", monitor.calls[0][1])]
     assert current_request() is None
 
 
@@ -136,7 +154,22 @@ async def test_unsupported_operation_is_refused_through_the_receipt_sender():
     assert result["reason_code"] == "unsupported_bot_operation:profile"
     assert result["receipt"]["status"] == "delivered"
     assert result["receipt"]["message_id"] == "9001"
+    assert monitor.outbound.context.user_id == "42"
     assert monitor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_authorization_and_refusal_observe_request_context():
+    monitor = FakeMonitor(operation="profile")
+    transport = DiscordBotTransport(monitor)
+    result = await transport.handle_message(synthetic_message())
+    actor = monitor.observed_context[0][1]
+    assert actor.request_id == "8001"
+    assert actor.user_id == "42"
+    assert actor.channel_id == "70"
+    assert result["reason_code"] == "unsupported_bot_operation:profile"
+    assert monitor.outbound.context == actor
+    assert current_request() is None
 
 
 @pytest.mark.asyncio
@@ -155,3 +188,142 @@ def test_deadline_helper_rejects_nonpositive_or_nonfinite_values():
     with pytest.raises(ValueError):
         monotonic_deadline(0)
     assert monotonic_deadline(1) > 0
+
+
+@pytest.mark.asyncio
+async def test_runner_starts_monitor_once_and_closes_it_before_client():
+    from core.bot_runner import BotRunner
+
+    events = []
+    monitor = FakeMonitor()
+    async def setup():
+        events.append("monitor_setup")
+
+    async def close_monitor():
+        events.append("monitor_close")
+
+    monitor.setup = setup
+    monitor.close = close_monitor
+
+    class Client:
+        async def start(self, token):
+            events.append(("client_start", token))
+
+        async def close(self):
+            events.append("client_close")
+
+    runner = BotRunner(BotTransportConfig("synthetic.bot.token"), Client(),
+                       DiscordBotTransport(monitor))
+    await runner._setup_monitor()
+    await runner._setup_monitor()
+    await runner.run()
+    await runner.close()
+    assert events == ["monitor_setup", ("client_start", "synthetic.bot.token"),
+                      "monitor_close", "client_close"]
+
+
+@pytest.mark.asyncio
+async def test_runner_cleans_monitor_when_setup_fails_before_client_close():
+    from core.bot_runner import BotRunner
+
+    events = []
+    monitor = FakeMonitor()
+
+    async def setup():
+        events.append("monitor_setup")
+        raise RuntimeError("synthetic setup failure")
+
+    async def close_monitor():
+        events.append("monitor_close")
+        raise RuntimeError("synthetic cleanup failure")
+
+    monitor.setup = setup
+    monitor.close = close_monitor
+
+    class Client:
+        async def start(self, token):
+            events.append("client_start")
+
+        async def close(self):
+            events.append("client_close")
+
+    runner = BotRunner(BotTransportConfig("synthetic.bot.token"), Client(),
+                       DiscordBotTransport(monitor))
+    with pytest.raises(RuntimeError, match="synthetic setup failure") as error:
+        await runner.run()
+    assert events == ["monitor_setup", "monitor_close", "client_close"]
+    assert "monitor cleanup also failed" in error.value.__notes__[0]
+
+
+def test_runner_create_uses_locked_discord_py_client_without_login():
+    from importlib import metadata
+    from core.bot_runner import BotRunner
+
+    assert metadata.version("discord.py") == "2.7.1"
+    application_config = SimpleNamespace(
+        INVOCATION_MODE="allowlist", ALLOWED_USERS=["42"], ALLOWED_CHANNELS=["70"],
+    )
+    def monitor_factory(client):
+        monitor = FakeMonitor()
+        monitor.client = client
+        return monitor
+
+    runner = BotRunner.create(
+        monitor_factory,
+        application_config=application_config,
+        environ={"BOT_DISCORD_TOKEN": "synthetic.bot.token"},
+    )
+    assert runner.client.config is application_config
+    assert runner.client.intents.guilds
+    assert runner.client.intents.messages
+    assert not runner.client.intents.message_content
+
+
+@pytest.mark.asyncio
+async def test_real_calendar_reminder_and_poll_handlers_run_in_bot_profile(bot_domain_handlers):
+    from core.request_context import request_scope
+
+    fixture = bot_domain_handlers
+    message = SyntheticMessage()
+    with request_scope(fixture.actor):
+        await fixture.calendar.handle_list(message)
+        await fixture.reminders.handle_reminder_list(message)
+        await fixture.polls.handle_poll(message, {
+            "question": "synthetic question",
+            "options": ["yes", "no"],
+            "lang": "no",
+        })
+
+    assert len(message.responses) == 3
+    assert "Kalenderen er tom" in message.responses[0]
+    assert "Ingen aktive påminnelser" in message.responses[1]
+    polls = fixture.monitor.poll.get_active_polls("60")
+    assert len(polls) == 1
+    assert polls[0]["question"] == "synthetic question"
+
+
+@pytest.mark.asyncio
+async def test_actual_message_monitor_lifecycle_in_synthetic_home(tmp_path, monkeypatch):
+    from core.bot_runner import BotRunner
+    from core.message_monitor import MessageMonitor
+    from core.rate_limiter import RateLimiter
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    application_config = SimpleNamespace(
+        INVOCATION_MODE="allowlist", ALLOWED_USERS=["42"], ALLOWED_CHANNELS=["70"],
+        CALENDAR_MODE="legacy_shared", DISCORD_TOKEN=None,
+    )
+
+    def monitor_factory(client):
+        return MessageMonitor(client, None, RateLimiter(), object())
+
+    runner = BotRunner.create(
+        monitor_factory,
+        application_config=application_config,
+        environ={"BOT_DISCORD_TOKEN": "synthetic.bot.token"},
+    )
+    try:
+        await runner._setup_monitor()
+    finally:
+        await runner.close()
+    assert runner.transport.monitor.shutdown_receipt["status"] == "closed"

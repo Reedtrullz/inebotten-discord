@@ -24,6 +24,9 @@ class BotRunner:
         self.config = config
         self.client = client
         self.transport = transport
+        self._monitor_started = False
+        self._monitor_closed = False
+        self._client_closed = False
 
     @classmethod
     def create(
@@ -68,6 +71,8 @@ class BotRunner:
         monitor = monitor_factory(client)
         if getattr(monitor, "client", client) is not client:
             raise ValueError("monitor_factory must bind the monitor to the bot client")
+        if not callable(getattr(monitor, "setup", None)) or not callable(getattr(monitor, "close", None)):
+            raise TypeError("monitor_factory must return a monitor with async setup() and close() lifecycle")
         transport = DiscordBotTransport(monitor)
 
         @client.event
@@ -77,8 +82,39 @@ class BotRunner:
         return cls(config, client, transport)
 
     async def run(self) -> None:
-        # discord.py 2.x accepts bot credentials through Client.start(token).
-        await self.client.start(self.config.token)
+        try:
+            await self._setup_monitor()
+            # discord.py 2.x accepts bot credentials through Client.start(token).
+            await self.client.start(self.config.token)
+        finally:
+            await self.close()
+
+    async def _setup_monitor(self) -> None:
+        if self._monitor_started:
+            return
+        self._monitor_started = True
+        try:
+            await self.transport.monitor.setup()
+        except BaseException as setup_error:
+            # setup() can fail after it has started monitor-owned workers.
+            try:
+                await self._close_monitor()
+            except BaseException as cleanup_error:
+                setup_error.add_note(
+                    f"monitor cleanup also failed: {type(cleanup_error).__name__}"
+                )
+            raise
+
+    async def _close_monitor(self) -> None:
+        if self._monitor_closed:
+            return
+        self._monitor_closed = True
+        await self.transport.monitor.close()
 
     async def close(self) -> None:
-        await self.client.close()
+        try:
+            await self._close_monitor()
+        finally:
+            if not self._client_closed:
+                self._client_closed = True
+                await self.client.close()
