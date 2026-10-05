@@ -237,6 +237,33 @@ def _set_macos_metadata(app_bundle: Path, version: str) -> None:
         plistlib.dump(info, handle, sort_keys=True)
 
 
+def _verify_macos_bundle(app_bundle: Path) -> None:
+    subprocess.run(
+        ['/usr/bin/codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app_bundle)],
+        check=True, capture_output=True, text=True, timeout=120,
+    )
+
+
+def _finalize_macos_bundle(app_bundle: Path, version: str) -> None:
+    """Seal final metadata; retain PyInstaller's nested ad hoc signatures."""
+    _set_macos_metadata(app_bundle, version)
+    subprocess.run(
+        ['/usr/bin/codesign', '--force', '--sign', '-', str(app_bundle)],
+        check=True, capture_output=True, text=True, timeout=120,
+    )
+    _verify_macos_bundle(app_bundle)
+
+
+def _verify_macos_archive(archive_path: Path, extracted_dir: Path) -> None:
+    """Check the actual distributable after native extraction, before receipts."""
+    extracted_dir.mkdir()
+    subprocess.run(
+        ['/usr/bin/ditto', '-x', '-k', str(archive_path), str(extracted_dir)],
+        check=True, capture_output=True, text=True, timeout=120,
+    )
+    _verify_macos_bundle(extracted_dir / f'{release_contract.APP_NAME}.app')
+
+
 def _write_zip_entry_for_symlink(archive: zipfile.ZipFile, path: Path, relative: Path) -> None:
     info = zipfile.ZipInfo(relative.as_posix())
     info.create_system = 3
@@ -480,7 +507,7 @@ def build_desktop(
         if platform_name == "macos":
             bundle = dist_dir / f"{release_contract.APP_NAME}.app"
             executable = bundle / "Contents" / "MacOS" / release_contract.APP_NAME
-            _set_macos_metadata(bundle, version)
+            _finalize_macos_bundle(bundle, version)
         else:
             bundle = dist_dir / release_contract.APP_NAME
             executable = bundle / f"{release_contract.APP_NAME}.exe"
@@ -496,6 +523,8 @@ def build_desktop(
 
         artifact_path = destination / release_contract.ARTIFACT_NAMES[platform_name]
         _archive_bundle(bundle, artifact_path)
+        if platform_name == 'macos':
+            _verify_macos_archive(artifact_path, scratch / 'archive-check')
 
     manifest = release_contract.create_release_manifest(
         full_commit_sha=commit,

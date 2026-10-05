@@ -56,6 +56,8 @@ røyketestens Python-nettverksvakt er ikke en OS-sandbox.
 
 ## Bevis og akseptgrenser
 
+macOS-byggeren setter endelige Info.plist-verdier før den fornyer appens ad-hoc-signatur. Den kontrollerer hele signaturen med `codesign --verify --deep --strict`, pakker ZIP-filen og gjentar kontrollen etter native utpakking med `ditto`. Signaturfeil stopper byggingen før et utgivelsesmanifest kan opprettes. Denne lokale integritetskontrollen er ikke Developer ID-signering eller Apple-notarisering; en nedlastet ad-hoc-signert app kan fortsatt kreve uttrykkelig godkjenning i macOS.
+
 Kontrollerte artefakter viser hvilken commit og plattform som ble bygget, at de påkrevde kilde- og datafilene finnes i pakken, at den frosne entrypointen kan kjøre den avgrensede røyketesten uten nettverk, og at artefakt og kvittering samsvarer med SHA-256-manifestet. Dette verifiserer ikke Discord-innlogging, eksterne tjenester, brukeroppsett, tilgjengelighet, kodesignering, notarization eller installasjon på en annen maskin. Windows-bygg og signering må bekreftes på Windows og med en faktisk sertifikatbasert signeringsjobb. Workflowen hevder ikke sertifisert signering; selv ad-hoc-signering er ikke et sertifisert distribusjonsstempel.
 
 ## Tidligere publiserings- og pakkeavvik

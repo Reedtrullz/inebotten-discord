@@ -5,6 +5,8 @@ import importlib.util
 import hashlib
 import json
 import os
+import plistlib
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -29,6 +31,44 @@ def _load_release_contract():
 
 
 class ReleaseContractTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'darwin', 'requires native macOS codesign and ditto')
+    def test_final_metadata_and_extracted_archive_keep_a_valid_app_signature(self):
+        from scripts import build_desktop
+
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            bundle = scratch / 'Inebotten.app'
+            executable = bundle / 'Contents' / 'MacOS' / 'Inebotten'
+            executable.parent.mkdir(parents=True)
+            shutil.copyfile('/usr/bin/true', executable)
+            executable.chmod(0o755)
+            info = bundle / 'Contents' / 'Info.plist'
+            info.write_bytes(plistlib.dumps({
+                'CFBundleExecutable': 'Inebotten',
+                'CFBundleIdentifier': 'com.inebotten.fixture',
+                'CFBundlePackageType': 'APPL',
+                'CFBundleVersion': '1.0.0',
+            }))
+            subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(bundle)],
+                           check=True, capture_output=True, timeout=30)
+            # The old builder changes a signed resource after PyInstaller exits.
+            build_desktop._set_macos_metadata(bundle, '2.0.0')
+            broken = subprocess.run(
+                ['/usr/bin/codesign', '--verify', '--deep', '--strict', str(bundle)],
+                capture_output=True, timeout=30)
+            self.assertNotEqual(broken.returncode, 0, 'must reproduce the shipped failure')
+
+            build_desktop._finalize_macos_bundle(bundle, '2.0.0')
+            archive = scratch / 'Inebotten-macos.zip'
+            build_desktop._archive_bundle(bundle, archive)
+            build_desktop._verify_macos_archive(archive, scratch / 'round-trip')
+
+            # A valid ZIP checksum cannot replace signature verification.
+            with zipfile.ZipFile(archive, 'a') as handle:
+                handle.writestr('Inebotten.app/Contents/unsealed.txt', 'tampered')
+            with self.assertRaises(subprocess.CalledProcessError):
+                build_desktop._verify_macos_archive(archive, scratch / 'tampered')
+
     def test_same_lock_survives_platform_checkout_endings_but_changed_pin_does_not(self):
         contract = _load_release_contract()
         raw = (ROOT / contract.DESKTOP_LOCK).read_bytes().replace(b'\r\n', b'\n')
