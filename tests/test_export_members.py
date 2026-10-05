@@ -95,6 +95,18 @@ def test_member_row_handles_missing_joined_at():
     assert row["display_name"] == "carol"
 
 
+def test_csv_guards_discriminator_text_while_json_keeps_original_values(tmp_path):
+    values = ['0001', '0000', '0', '', None]
+    rows = [{'id': index + 1, 'username': 'fixture', 'discriminator': value}
+            for index, value in enumerate(values)]
+    csv_path, json_path = write_exports(
+        rows, FakeGuild(12345, 'Fixture'), tmp_path / 'members.csv', max_bytes=10000)
+    with csv_path.open(newline='', encoding='utf-8') as handle:
+        imported = list(csv.DictReader(handle))
+    assert [row['discriminator'] for row in imported] == ["'0001", "'0000", "'0", '', '']
+    assert [row['discriminator'] for row in json.loads(json_path.read_text())['members']] == values
+
+
 def test_rest_row_maps_raw_payload():
     guild = FakeGuild(12345, "THORChain Community")
     row = rest_row(

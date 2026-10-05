@@ -128,6 +128,7 @@ async def fetch_all_members(client,guild,*,max_rows,max_bytes,deadline,page_size
 
 def _csv_cell(key,value):
     if key=='id':return "'"+str(value)
+    if key=='discriminator' and value not in (None,''):return "'"+str(value)
     if isinstance(value,str) and (value.lstrip()[:1] in ('=','+','-','@') or value[:1] in ('\t','\r','\n')):
         return "'"+value
     return value
