@@ -170,11 +170,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** local-only scripts/export_members.py and tests/test_export_members.py; inspect applicable shared controls in scripts/inebotten_ctl.py before extracting only narrowly reusable helpers.
 **Interfaces:** export result includes source, scope, coverage complete|partial|unknown, rows, and truncation_reason. write_exports consumes distinct exclusive output paths; a .json argument cannot overwrite its CSV.
 
-- [ ] Record whether the local utility has an owner/use case; preserve its local commit regardless. If declined, document deprecation and leave source/data intact.
-- [ ] If retained, add tests for repeated cursors/deadline, identity failure, partial fallback, same-path extensions, existing-file preservation, private modes, and formula-like strings.
-- [ ] Reuse identity/ambiguity/deadline contracts, require explicit row/byte limits, emit truthful coverage, and create output files exclusively/private; no automatic joining or new scraping capability.
+- [x] Record whether the local utility has an owner/use case; preserve its local commit regardless. If declined, document deprecation and leave source/data intact.
+- [x] If retained, add tests for repeated cursors/deadline, identity failure, partial fallback, same-path extensions, existing-file preservation, private modes, and formula-like strings.
+- [x] Reuse identity/ambiguity/deadline contracts, require explicit row/byte limits, emit truthful coverage, and create output files exclusively/private; no automatic joining or new scraping capability.
 - [ ] Run tests/test_export_members.py and offline controller contract checks. Verify spreadsheet-text behavior with synthetic cells in supported readers before claiming it.
-- [ ] Review and commit only the intentionally retained utility; do not smuggle the local-only exporter into unrelated master PRs.
+- [x] Review and commit only the intentionally retained utility; do not smuggle the local-only exporter into unrelated master PRs.
 
 ## Wave 2 — Establish shared contracts
 
@@ -505,11 +505,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** modify web_console/server.py, web_console/state_collector.py, web_console/dashboard.py, web_console/static/app.js, web_console/static/main.css and web_console/templates/base.html; create tests/test_console_calendar_workspace.py; extend browser/security tests.
 **Interfaces:** authenticated GET /api/calendar/items lists authorized scope/revision; POST /api/calendar/preview validates typed changes and returns I08 MutationPreview; POST /api/calendar/apply reauthorizes actor/scope and validates token/revision/origin/CSRF. Browser-session-to-domain-actor mapping is explicit, never inferred from an arbitrary submitted user ID.
 
-- [ ] Add forged actor/scope, cross-origin/CSRF, revoked-after-preview, stale revision, duplicate submission, conflict resolution, final-item empty state and keyboard/narrow-screen browser fixtures.
-- [ ] Define console actor ownership/permissions and write methods before exposing any mutation endpoint; preserve demo as nonmutating.
-- [ ] Implement agenda/week summaries and safe detail/forms, reuse domain policy/preview/sync contracts, show pending/conflict state and explicit loading/error/success, and retain focus.
-- [ ] Run tests/test_console_calendar_workspace.py, tests/test_console_server.py, tests/test_web_console_frontend_security.py, tests/test_console_frontend.py and domain fixtures; manually verify keyboard and mobile-size scenarios.
-- [ ] Review and commit read then write slices; no cookie-authenticated write ships without origin/CSRF and policy tests.
+- [x] Add forged actor/scope, cross-origin/CSRF, revoked-after-preview, stale revision, duplicate submission, conflict resolution, final-item empty state and keyboard/narrow-screen browser fixtures.
+- [x] Define console actor ownership/permissions and write methods before exposing any mutation endpoint; preserve demo as nonmutating.
+- [x] Implement agenda/week summaries and safe detail/forms, reuse domain policy/preview/sync contracts, show pending/conflict state and explicit loading/error/success, and retain focus.
+- [x] Run tests/test_console_calendar_workspace.py, tests/test_console_server.py, tests/test_web_console_frontend_security.py, tests/test_console_frontend.py and domain fixtures; manually verify keyboard and mobile-size scenarios.
+- [x] Review and commit read then write slices; no cookie-authenticated write ships without origin/CSRF and policy tests.
 
 ### Task 37: I34 — Organizer-confirmed group planning and RSVP
 
@@ -517,11 +517,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create features/planning_manager.py, features/planning_handler.py and tests/test_group_planning.py; modify core/command_registry.py, core/intent_router.py and monitor handler composition.
 **Interfaces:** PlanningSession(session_id: str, scope_id: str, organizer_id: str, poll_id: str, state draft|voting|review|finalized|cancelled, event_id: str|None, revision: int); finalize(actor: RequestContext, session_id: str, preview_token: str) -> str returns one stable event ID. RSVPs are scoped records with explicit visibility.
 
-- [ ] Add tie/zero-vote/expired poll, unauthorized organizer, duplicate finalize/restart, post-finalize poll change and private RSVP visibility fixtures.
-- [ ] Build a scripted synthetic scenario from candidates through organizer review; no majority automatically schedules.
-- [ ] Compose existing poll/calendar/watchlist primitives, reuse mutation preview, store source/event identity atomically and require explicit notification recipient approval.
-- [ ] Run tests/test_group_planning.py plus access/preview/time/poll/delivery tests and positive/negative routing cases.
-- [ ] Review and commit; one activity/selected time only, no private-calendar access, unsolicited invitations, or booking.
+- [x] Add tie/zero-vote/expired poll, unauthorized organizer, duplicate finalize/restart, post-finalize poll change and private RSVP visibility fixtures.
+- [x] Build a scripted synthetic scenario from candidates through organizer review; no majority automatically schedules.
+- [x] Compose existing poll/calendar/watchlist primitives, reuse mutation preview, store source/event identity atomically and require explicit notification recipient approval.
+- [x] Run tests/test_group_planning.py plus access/preview/time/poll/delivery tests and positive/negative routing cases.
+- [x] Review and commit; one activity/selected time only, no private-calendar access, unsolicited invitations, or booking.
 
 ### Task 38: I37 — Supported bot transport feasibility and adapter
 
@@ -529,9 +529,9 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create docs/BOT_TRANSPORT_FEASIBILITY.md, core/transport.py, core/bot_runner.py, requirements-bot.txt, requirements/bot.lock and tests/test_transport_contract.py; modify handler input adaptation and configuration only after feasibility.
 **Interfaces:** Transport.capabilities() -> frozenset[str]; async send_message(channel_id: str, text: str, attachments: tuple, deadline: float) -> dict exposes receipt evidence consumed by I03. Normalize inbound transport events into RequestContext and supported domain payloads; adapters do not bypass authorization or the sender.
 
-- [ ] Inspect current official Discord policy/API and supported-library documentation; produce a capability/permission matrix for mentions, interactions, calendar, reminders, polls, controller endpoints and account-only features.
-- [ ] Resolve the shared discord import namespace between bot/self libraries through separate dependency environments/entrypoints; do not install competing clients into one runtime.
-- [ ] If feasible, add the bot-token adapter for the documented assistant subset and reject unsupported operations/token-mode confusion. If unsuitable, record the evidence and explicit deferred/declined disposition.
+- [x] Inspect current official Discord policy/API and supported-library documentation; produce a capability/permission matrix for mentions, interactions, calendar, reminders, polls, controller endpoints and account-only features.
+- [x] Resolve the shared discord import namespace between bot/self libraries through separate dependency environments/entrypoints; do not install competing clients into one runtime.
+- [x] If feasible, add the bot-token adapter for the documented assistant subset and reject unsupported operations/token-mode confusion. If unsuitable, record the evidence and explicit deferred/declined disposition.
 - [ ] Run tests/test_transport_contract.py and shared handler/domain fixtures in both profiles; use an explicitly approved test bot/guild for installation/permissions/commands before live acceptance.
 - [ ] Review and commit stages; no private-DM access, account migration, endpoint emulation or evasion. Existing user-account mode and local controller remain separate.
 
@@ -541,11 +541,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create features/workflow_manager.py, features/workflow_handler.py and tests/test_workflow_recipes.py; modify core/command_registry.py and domain receipt publication.
 **Interfaces:** WorkflowRecipe(recipe_id: str, owner_id: str, scope_id: str, trigger_kind: str, template_id: str, enabled: bool, action_budget: int); preview_recipe(actor, recipe_id, trigger_receipt) -> MutationPreview; execute_confirmed(preview_token) -> dict stores execution ID, effects and delivery outcomes. Triggers come from trusted domain receipts, not model/content instructions.
 
-- [ ] Add replay/restart, denied/paused/exhausted budget, stale preview, duplicate side effect, bounded retry and malicious retrieved-content fixtures.
-- [ ] Start with confirmed event → preparation-task draft and due tasks → opted-in digest card; declare exact allowed templates/effects in the registry.
-- [ ] Implement dry-run/enable/pause/history, durable idempotent execution identities, inherited domain policy and reviewed effects. AI output can propose a validated draft but cannot execute a recipe.
-- [ ] Run tests/test_workflow_recipes.py, access/preview/action-schema/notification/delivery fixtures and routing false positives.
-- [ ] Review and commit; no shell/Python plugins, arbitrary webhooks, broad message surveillance or expanded subscriptions.
+- [x] Add replay/restart, denied/paused/exhausted budget, stale preview, duplicate side effect, bounded retry and malicious retrieved-content fixtures.
+- [x] Start with confirmed event → preparation-task draft and due tasks → opted-in digest card; declare exact allowed templates/effects in the registry.
+- [x] Implement dry-run/enable/pause/history, durable idempotent execution identities, inherited domain policy and reviewed effects. AI output can propose a validated draft but cannot execute a recipe.
+- [x] Run tests/test_workflow_recipes.py, access/preview/action-schema/notification/delivery fixtures and routing false positives.
+- [x] Review and commit; no shell/Python plugins, arbitrary webhooks, broad message surveillance or expanded subscriptions.
 
 ## Existing dependency PRs — explicit disposition queue
 
@@ -573,7 +573,7 @@ For each PR, the future receipt records refreshed full head SHA, resolved packag
 | Decision | Planned default / evidence needed | Owner and timing |
 | --- | --- | --- |
 | Legacy calendar migration | Preserve current shared scope; preview explicit private/group migration and inverse before changing data. | Codex prepares fixtures/UI; user selects actual migration at I07/I09 acceptance. |
-| Member exporter | Preserve local-only commit; implement I39 only if deliberately retained, otherwise record deprecation without deletion. | User disposition before I39 publication. |
+| Member exporter | User retained the hardened manual-only utility on 5 October; original checkout/files/data remain preserved. | Local candidate ff7e936; real spreadsheet-reader acceptance pending before certification. |
 | School calendar data | Reviewed authoritative locality/year sources; unavailable means unavailable. | Codex researches/verifies at I29; no invented dates. |
 | FX/geocoder/extractor vendor | Use honest current/demo/unavailable behavior first; no new paid integration by default. | Codex presents a bounded adapter choice only if needed for I27/I28/I30 expansion. |
 | Notification/retention defaults | Preserve legacy behavior where documented; new recipes/subscriptions opt-in; no silent legacy memory erasure. | Codex proposes explicit settings; user confirms changes affecting personal state. |
@@ -588,7 +588,7 @@ I will prepare all code, fixture migrations, tests, docs and receipts necessary 
 
 **First concrete execution batch:** baseline refresh/worktree → I20 → I01 → I02. Then I04 storage outcome slices. I will use native parent execution by default and request independent review only where it improves migration/concurrency/security confidence under the user's approved routing policy.
 
-## Plan verification and current status
+## Historical planning verification (before execution)
 
 - All I01–I39 are mapped to a task, files, planned interfaces, tests, PR boundary, dependencies and review/commit gate.
 - The ten dependency PRs each have a specific compatibility/test/disposition path.
