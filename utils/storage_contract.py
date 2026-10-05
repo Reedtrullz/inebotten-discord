@@ -26,6 +26,7 @@ class StorageLoad:
     error_code: str | None = None
     legacy: bool = False
     revision: int = 0
+    source_schema: int = 0
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class StorageMutationError(RuntimeError):
     """A mutation was not committed; callers must not report success."""
 
 
-def load_document(path: Path, schema_version: int) -> StorageLoad:
+def load_document(path: Path, schema_version: int, *, upgrade_from=()) -> StorageLoad:
     try:
         raw = Path(path).read_bytes()
     except FileNotFoundError:
@@ -56,26 +57,27 @@ def load_document(path: Path, schema_version: int) -> StorageLoad:
     version = value.get('schema_version')
     if type(version) is not int or not isinstance(value.get('document'), dict):
         return StorageLoad('corrupt', error_code='invalid_envelope')
-    if version != schema_version:
+    if version != schema_version and not (version in upgrade_from and 0 < version < schema_version):
         return StorageLoad('unsupported', error_code='unsupported_schema')
     revision = value.get('revision', 0)
     if type(revision) is not int or revision < 0:
         return StorageLoad('corrupt', error_code='invalid_revision')
-    return StorageLoad('valid', value['document'], revision=revision)
+    return StorageLoad('valid', value['document'], revision=revision, source_schema=version)
 
 
-def commit_document(path: Path, document: dict, schema_version: int, *, writer=None, revision=0) -> StorageCommit:
+def commit_document(path: Path, document: dict, schema_version: int, *, writer=None, revision=0, upgrade_from=()) -> StorageCommit:
     """Back up a legacy document before first migration; refuse unsafe inputs."""
     path = Path(path)
-    current = load_document(path, schema_version)
+    current = load_document(path, schema_version, upgrade_from=upgrade_from)
     if current.status in ('corrupt', 'unsupported'):
         return StorageCommit(False, 'read_only_' + current.status)
     if not isinstance(document, dict):
         return StorageCommit(False, 'invalid_shape')
     try:
-        if current.legacy:
+        if current.legacy or current.status == 'valid' and current.source_schema != schema_version:
             original = path.read_bytes()
-            backup = path.with_name(path.name + '.legacy-v0.bak')
+            suffix = '.legacy-v0.bak' if current.legacy else f'.schema-v{current.source_schema}.bak'
+            backup = path.with_name(path.name + suffix)
             try:
                 descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
@@ -129,10 +131,13 @@ def _task_identity():
 
 class DocumentOwner:
     """One writer, serialized private drafts, copied committed snapshots."""
-    def __init__(self, path: Path, validator: Callable[[dict], bool], schema_version=1):
+    def __init__(self, path: Path, validator: Callable[[dict], bool], schema_version=1, *, upgrade_from=()):
         self.path = Path(path)
         self.validator = validator
         self.schema_version = schema_version
+        self.upgrade_from = tuple(upgrade_from)
+        if any(type(version) is not int or not 0 < version < schema_version for version in self.upgrade_from):
+            raise ValueError('invalid_schema_upgrade')
         self.state = StorageLoad('missing')
         self.snapshot = {}
         self.revision = 0
@@ -155,7 +160,7 @@ class DocumentOwner:
 
     def load(self) -> dict:
         with self._mutex:
-            self.state = load_document(self.path, self.schema_version)
+            self.state = load_document(self.path, self.schema_version, upgrade_from=self.upgrade_from)
             if self.state.status == 'valid' and not self.validator(self.state.document):
                 self.state = StorageLoad('corrupt', error_code='invalid_shape')
             with self._publication_lock:
@@ -254,13 +259,13 @@ class DocumentOwner:
         if not self.validator(candidate):
             return StorageCommit(False, 'invalid_shape')
         result = commit_document(self.path, candidate, self.schema_version,
-                                 writer=writer, revision=self.revision + 1)
+                                 writer=writer, revision=self.revision + 1, upgrade_from=self.upgrade_from)
         if result.ok:
             fingerprint = self._file_fingerprint()
             with self._publication_lock:
                 self.snapshot = candidate
                 self.revision += 1
-                self.state = StorageLoad('valid', copy.deepcopy(candidate), revision=self.revision)
+                self.state = StorageLoad('valid', copy.deepcopy(candidate), revision=self.revision, source_schema=self.schema_version)
                 self._fingerprint = fingerprint
         return result
 
