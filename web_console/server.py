@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import pathlib
+import re
 import time
 from typing import cast
 from urllib.parse import parse_qs, urlparse
@@ -82,6 +83,8 @@ class ConsoleServer:
         self.api_key = api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
         self.monitor = monitor
         self.built_revision = built_revision()
+        instance = os.getenv('INEBOTTEN_LAUNCHER_INSTANCE','')
+        self.launcher_instance = instance if re.fullmatch(r'[A-Za-z0-9_-]{32}',instance) else None
         self._server = None
         self.request_read_timeout = self._positive_float(
             request_read_timeout if request_read_timeout is not None else os.getenv(
@@ -713,15 +716,19 @@ class ConsoleServer:
                     public_status = "degraded"
                 else:
                     public_status = "healthy"
+                public_health = {
+                    "status": public_status,
+                    "revision": self.built_revision,
+                    "readiness": readiness.get("status", "starting"),
+                    "console": {"status": "running"},
+                }
+                probe = headers.get('x-launcher-probe','')
+                if self.launcher_instance and re.fullmatch(r'[A-Za-z0-9_-]{32}',probe) and hmac.compare_digest(probe,self.launcher_instance):
+                    public_health['launcher_instance'] = self.launcher_instance
                 await self._send_response(
                     writer,
                     200,
-                    {
-                        "status": public_status,
-                        "revision": self.built_revision,
-                        "readiness": readiness.get("status", "starting"),
-                        "console": {"status": "running"},
-                    },
+                    public_health,
                 )
             elif path == "/":
                 data = await StateCollector(self.monitor).collect_all()

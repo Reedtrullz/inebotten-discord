@@ -466,9 +466,9 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create utils/launcher_runtime.py and tests/test_desktop_lifecycle.py; modify mac_app/launcher.py, windows_app/launcher.py; extend tests/test_desktop_launcher_paths.py.
 **Interfaces:** LauncherController.start(command: list[str]) -> None enqueues startup of one owned child/process group; stop(deadline: float) -> None enqueues a worker shutdown request and returns without blocking Tk. The worker waits for owned exit and produces starting|connecting|ready|degraded|stopping|exited and log events through a bounded queue. Tk main-loop drain is the only widget writer.
 
-- [ ] Add rapid double-start, early exit, blocked output, ignored terminate, close during start, child descendants and log saturation fixtures; record thread IDs for every widget call.
-- [ ] Reproduce worker-thread writes and process-alive/ready conflation with fake Popen and readiness providers.
-- [ ] Use a bounded queue/main-thread updates, show health-derived connection state, await graceful shutdown then bounded owned-group escalation, and make settings/logs resize with usable keyboard focus.
+- [x] Add rapid double-start, early exit, blocked output, ignored terminate, close during start, child descendants and log saturation fixtures; record thread IDs for every widget call.
+- [x] Reproduce worker-thread writes and process-alive/ready conflation with fake Popen and readiness providers.
+- [x] Use a bounded queue/main-thread updates, show health-derived connection state, await graceful shutdown then bounded owned-group escalation, and make settings/logs resize with usable keyboard focus.
 - [ ] Run lifecycle/path tests, frozen artifact smokes and actual macOS/Windows keyboard/scaling/window-close scenarios in platform checks.
 - [ ] Review and commit; do not terminate an unrelated launchd/service process or mistake launcher exit for bot shutdown.
 

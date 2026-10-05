@@ -1076,16 +1076,25 @@ async def main():
 
     loop = asyncio.get_running_loop()
 
-    def shutdown():
-        logger.info("Shutting down...")
+    stopped = asyncio.Event()
+    installed = []
+    fallbacks = []
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stopped.set)
+                installed.append(sig)
+            except NotImplementedError:
+                previous = signal.getsignal(sig)
+                signal.signal(sig, lambda signum, frame: loop.call_soon_threadsafe(stopped.set))
+                fallbacks.append((sig, previous))
+        await stopped.wait()
+    finally:
+        for sig in installed:loop.remove_signal_handler(sig)
+        for sig, previous in fallbacks:signal.signal(sig, previous)
         srv.close()
-        asyncio.create_task(server.cleanup())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown)
-
-    async with srv:
-        await srv.serve_forever()
+        await srv.wait_closed()
+        await server.cleanup()
 
 
 if __name__ == "__main__":

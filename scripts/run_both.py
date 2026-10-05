@@ -97,7 +97,7 @@ class CombinedRunner:
         env["PYTHONPATH"] = str(BASE_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
         self.bridge_process = subprocess.Popen(
-            [sys.executable, "-u", str(bridge_script)],
+            [sys.executable, "--run-bridge"] if getattr(sys,"frozen",False) else [sys.executable, "-u", str(bridge_script)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

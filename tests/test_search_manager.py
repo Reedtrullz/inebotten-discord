@@ -141,3 +141,26 @@ def test_offline_harness_refuses_real_worker_before_subprocess(monkeypatch):
     monkeypatch.setattr('features.research_service.subprocess.run', forbidden)
     with pytest.raises(RuntimeError, match='offline_provider_disabled'):
         run_sdk_worker('google', 'synthetic', 3, 'no-no', .1, None)
+
+
+def test_frozen_sdk_worker_uses_explicit_mode_and_keeps_credentials_in_stdio(monkeypatch):
+    import json
+    import subprocess
+    import sys
+    from features.research_service import run_sdk_worker
+    monkeypatch.delenv('INEBOTTEN_OFFLINE_TESTS',raising=False)
+    monkeypatch.delenv('INEBOTTEN_OFFLINE',raising=False)
+    monkeypatch.setattr(sys,'frozen',True,raising=False)
+    monkeypatch.setenv('DISCORD_USER_TOKEN','fixture-private-token')
+    calls=[]
+    def fake_run(command,**kwargs):
+        calls.append((command,kwargs))
+        assert 'DISCORD_USER_TOKEN' not in kwargs['env']
+        assert 'key-in-stdio' not in str(command) and 'key-in-stdio' not in str(kwargs['env'])
+        assert json.loads(kwargs['input'])['key']=='key-in-stdio'
+        return subprocess.CompletedProcess(command,0,b'{"status":"ok","results":[]}',b'')
+    monkeypatch.setattr('features.research_service.subprocess.run',fake_run)
+    assert run_sdk_worker('tavily','fixture query',1,'no-no',.1,'key-in-stdio')==[]
+    assert calls[0][0]==[sys.executable,'--run-research-worker']
+    with pytest.raises(ValueError,match='frozen_worker_override_refused'):
+        run_sdk_worker('google','fixture',1,'no-no',.1,None,script='untrusted.py')

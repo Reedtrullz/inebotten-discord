@@ -361,6 +361,30 @@ def _run_frozen_smoke(executable: Path, scratch: Path, receipt_path: Path) -> di
     if not isinstance(receipt, dict) or receipt.get("frozen") is not True:
         raise RuntimeError("frozen artifact smoke receipt does not identify a frozen executable")
     release_contract._validate_smoke_receipt(receipt, require_frozen=True)
+    # Exercise the actual windowed executable's stdio and native Tk runtime.
+    # Private homes stay synthetic; no bot, bridge or real provider is started.
+    env['INEBOTTEN_OFFLINE'] = '1'
+    worker = subprocess.run([str(executable),'--run-research-worker'],input=b'{}',
+                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=scratch,env=env,timeout=15)
+    if worker.returncode or json.loads(worker.stdout) != {'status':'unavailable','reason':'RuntimeError','results':[]}:
+        raise RuntimeError('frozen research stdio smoke failed')
+    ui_path = scratch / 'desktop-ui-smoke.json'
+    env['INEBOTTEN_UI_SMOKE_RECEIPT'] = str(ui_path)
+    ui = subprocess.run([str(executable),'--smoke-ui'],stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=scratch,env=env,timeout=30)
+    if ui.returncode:
+        raise RuntimeError('frozen native UI smoke failed: '+ui.stderr.decode('utf-8','replace')[-1200:])
+    ui_receipt = json.loads(ui_path.read_text(encoding='utf-8'))
+    if not (ui_receipt.get('passed') is True and ui_receipt.get('frozen') is True
+            and ui_receipt.get('all_widget_calls_on_main_thread') is True
+            and ui_receipt.get('private_state_initialized') is False):
+        raise RuntimeError('frozen native UI receipt invalid')
+    if any(path.exists() for path in private_paths):
+        raise RuntimeError('frozen worker/UI smoke initialized private state')
+    runtime_receipt = {'schema_version':1,'passed':True,'research_stdio_offline_smoke':True,
+                       'native_ui_smoke':ui_receipt,'real_provider_started':False,
+                       'human_acceptance':False}
+    (scratch/'desktop-runtime-smoke.json').write_text(json.dumps(runtime_receipt,sort_keys=True,indent=2)+'\n',encoding='utf-8')
     return receipt
 
 
@@ -466,6 +490,9 @@ def build_desktop(
         smoke_source = scratch / release_contract.SMOKE_RECEIPT_NAMES[platform_name]
         receipt = _run_frozen_smoke(executable, scratch, smoke_source)
         shutil.copyfile(smoke_source, destination / release_contract.SMOKE_RECEIPT_NAMES[platform_name])
+        runtime_smoke = scratch/'desktop-runtime-smoke.json'
+        if runtime_smoke.exists():
+            shutil.copyfile(runtime_smoke,destination/f'Inebotten-runtime-smoke-{platform_name}.json')
 
         artifact_path = destination / release_contract.ARTIFACT_NAMES[platform_name]
         _archive_bundle(bundle, artifact_path)

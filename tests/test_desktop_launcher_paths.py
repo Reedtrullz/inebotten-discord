@@ -203,3 +203,33 @@ runpy.run_path(sys.argv[1], run_name='import_probe')
         result = subprocess.run([sys.executable, '-I', '-c', script, str(ROOT/f'{platform}_app/launcher.py')],
                                 cwd=tmp_path, capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
+
+
+def test_source_research_mode_dispatches_before_tk_or_application_initialization(tmp_path):
+    import json
+    import os
+    script = '''import sys,runpy,importlib.abc
+class Guard(importlib.abc.MetaPathFinder):
+    def find_spec(self,fullname,path=None,target=None):
+        if fullname=='tkinter' or fullname.startswith(('tkinter.','core.','web_console.')):
+            raise RuntimeError('UI_or_application_imported_in_worker')
+sys.meta_path.insert(0,Guard())
+entry=sys.argv[1];sys.argv=[entry,'--run-research-worker'];runpy.run_path(entry,run_name='__main__')
+'''
+    for platform in ('mac','windows'):
+        home=tmp_path/platform;home.mkdir()
+        env={'HOME':str(home),'HERMES_HOME':str(home),'USERPROFILE':str(home),
+             'INEBOTTEN_OFFLINE':'1','PATH':os.defpath}
+        if 'SYSTEMROOT' in os.environ:env['SYSTEMROOT']=os.environ['SYSTEMROOT']
+        result=subprocess.run([sys.executable,'-I','-c',script,str(ROOT/f'{platform}_app/launcher.py')],
+                              input=b'{}',capture_output=True,cwd=home,env=env,timeout=10)
+        assert result.returncode==0,result.stderr.decode()
+        assert json.loads(result.stdout)=={'status':'unavailable','reason':'RuntimeError','results':[]}
+        assert list(home.iterdir())==[]
+
+
+def test_source_bot_command_enters_trusted_gate_before_app_start(monkeypatch):
+    for platform in ('mac','windows'):
+        path=ROOT/f'{platform}_app/launcher.py'
+        module=_load_module(path,f'{platform}_trusted_command',monkeypatch)
+        assert module.get_bot_command()==[sys.executable,'-u',str(path),'--run-bot']

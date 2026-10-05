@@ -97,6 +97,18 @@ def json_body(response: bytes) -> dict:
     return json.loads(response.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
 
 
+async def test_launcher_health_nonce_is_echoed_only_to_matching_probe_and_never_authenticates(monkeypatch):
+    nonce='a'*32
+    monkeypatch.setenv('INEBOTTEN_LAUNCHER_INSTANCE',nonce)
+    server,task=await start_server()
+    try:
+        assert 'launcher_instance' not in json_body(await request('/health'))
+        assert 'launcher_instance' not in json_body(await request('/health',extra_headers=['X-Launcher-Probe: '+'b'*32]))
+        assert json_body(await request('/health',extra_headers=['X-Launcher-Probe: '+nonce]))['launcher_instance']==nonce
+        assert b'401' in await request('/api/status',extra_headers=['X-Launcher-Probe: '+nonce])
+    finally:await stop_server(server,task)
+
+
 async def test_auth_missing_key():
     server, task = await start_server()
     try:

@@ -35,11 +35,13 @@ def run_sdk_worker(provider, query, max_results, region, timeout, key, *, script
     offline = os.getenv('INEBOTTEN_OFFLINE_TESTS') == '1' or os.getenv('INEBOTTEN_OFFLINE') == '1'
     if script is None and offline:
         raise RuntimeError('offline_provider_disabled')
-    if getattr(sys, 'frozen', False):
-        raise RuntimeError('frozen_research_worker_unavailable')
+    frozen = bool(getattr(sys, 'frozen', False))
+    if frozen and script is not None:
+        raise ValueError('frozen_worker_override_refused')
     if provider not in ('tavily', 'google', 'duckduckgo'):
         raise ValueError('unsupported_search_provider')
     path = script or Path(__file__).resolve().parents[1] / 'scripts' / 'search_worker.py'
+    command = [sys.executable,'--run-research-worker'] if frozen else [sys.executable,'-I','-X','utf8',str(path)]
     payload = {'provider': provider, 'query': query, 'max_results': max_results,
                'region': region, 'timeout': timeout, 'key': key if provider == 'tavily' else None}
     with tempfile.TemporaryDirectory(prefix='inebotten-search-') as home:
@@ -52,7 +54,7 @@ def run_sdk_worker(provider, query, max_results, region, timeout, key, *, script
         if os.name == 'nt' and 'SYSTEMROOT' in os.environ:
             environment['SYSTEMROOT'] = os.environ['SYSTEMROOT']
         try:
-            result = subprocess.run([sys.executable, '-I', '-X', 'utf8', str(path)],
+            result = subprocess.run(command,
                 input=json.dumps(payload).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd=home, env=environment, timeout=max(.01, timeout), check=False)
         except subprocess.TimeoutExpired:

@@ -73,8 +73,8 @@ jobs:
 
       - name: Run tests
         run: |
-          python scripts/run_offline_tests.py --python python -- -q --ignore=tests/test_console_frontend.py
-          python scripts/run_offline_tests.py --python python -- -q tests/test_console_frontend.py
+          python scripts/run_offline_tests.py --python python -- -q --ignore=tests/test_console_frontend.py --ignore=tests/test_web_console_frontend_security.py
+          python scripts/run_offline_tests.py --python python -- -q tests/test_console_frontend.py tests/test_web_console_frontend_security.py
 
       - name: Check for committed secrets
         run: |

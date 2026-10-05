@@ -93,6 +93,16 @@ jobs:
           fi
           "$PYTHON" -m pip install --disable-pip-version-check --require-hashes --index-url https://pypi.org/simple -r requirements/desktop.lock
 
+      - name: Rehearse native Tk and owned process shutdown without accounts
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PYTHON=.superpowers/desktop-env/Scripts/python.exe
+          else
+            PYTHON=.superpowers/desktop-env/bin/python
+          fi
+          "$PYTHON" scripts/check_desktop_lifecycle.py
+
       - name: Build and smoke the selected platform artifact
         shell: bash
         env:
