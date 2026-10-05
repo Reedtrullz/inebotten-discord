@@ -442,11 +442,11 @@ These are ordered milestones, not calendar promises. After each wave, run the of
 **Files:** create cal_system/recurrence.py and tests/test_recurring_occurrences.py; modify cal_system/calendar_manager.py, cal_system/google_calendar_manager.py, cal_system/reminder_manager.py, cal_system/reminder_checker.py and features/calendar_handler.py.
 **Interfaces:** Series(series_id: str, anchor_time: EventTime, rule: dict, end_count: int|None, end_date: date|None); Occurrence(occurrence_id: str, series_id: str, original_start: aware datetime, state planned|completed|skipped, override: dict|None). Delivery keys include occurrence ID and stage. Mutation scope is this|future|series.
 
-- [ ] Add month-end anchor/no-drift, leap day, skipped/moved/completed occurrence, end rules, restart delivery deduplication, imported exception and unsupported-rule fixtures.
-- [ ] Record old recurrence advancement/collapse as migration fixtures rather than silently interpreting them as a complete series.
-- [ ] Preserve supported recurrence types, migrate old items with backups, introduce stable occurrence identities and explicit edit scopes, and retain unsupported imported rules readably without flattening.
-- [ ] Run tests/test_recurring_occurrences.py, tests/test_calendar_sync.py, tests/test_reminder_crud.py, calendar time and outbox tests.
-- [ ] Review and commit slices; current official Google recurrence/exception contracts and approved test-calendar round trips are gates for remote acceptance.
+- [x] Add month-end anchor/no-drift, leap day, skipped/moved/completed occurrence, end rules, restart delivery deduplication, imported exception and unsupported-rule fixtures.
+- [x] Record old recurrence advancement/collapse as migration fixtures rather than silently interpreting them as a complete series.
+- [x] Preserve supported recurrence types, migrate old items with backups, introduce stable occurrence identities and explicit edit scopes, and retain unsupported imported rules readably without flattening.
+- [x] Run tests/test_recurring_occurrences.py, tests/test_calendar_sync.py, tests/test_reminder_crud.py, calendar time and outbox tests.
+- [x] Review and commit slices; current official Google recurrence/exception contracts and approved test-calendar round trips are gates for remote acceptance.
 
 ### Task 32: I23 — Supported deployment profiles and compatible rollback
 
