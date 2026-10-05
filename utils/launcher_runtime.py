@@ -22,6 +22,10 @@ from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHand
 from utils.logger import diagnostic_line
 
 
+def _is_windows():
+    return os.name == 'nt'
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self,*args,**kwargs):return None
 
@@ -135,7 +139,7 @@ class PosixOwnedGroup:
 
 
 def owned_group(process):
-    if os.name == 'nt':
+    if _is_windows():
         from utils.launcher_windows import WindowsOwnedJob
         return WindowsOwnedJob(process)
     return PosixOwnedGroup(process)
@@ -145,7 +149,13 @@ class LauncherController:
     def __init__(self, *, popen_factory=None, group_factory=None, probe=None,
                  event_capacity=256, poll_interval=.1):
         self._main_thread = threading.get_ident()
-        self._popen = popen_factory or subprocess.Popen
+        if popen_factory is not None:
+            self._popen = popen_factory
+        elif _is_windows():
+            from utils.launcher_windows import WindowsSuspendedPopen
+            self._popen = WindowsSuspendedPopen
+        else:
+            self._popen = subprocess.Popen
         self._requires_trusted_gate = group_factory is None
         self._group_factory = group_factory or owned_group
         self._probe = probe or (lambda nonce: None)
@@ -240,8 +250,9 @@ class LauncherController:
         try:
             kwargs={'stdin':subprocess.PIPE,'stdout':subprocess.PIPE,'stderr':subprocess.STDOUT,'text':True,
                     'encoding':'utf-8','errors':'replace','bufsize':1,'cwd':cwd,'env':environment}
-            if os.name=='nt':
-                kwargs['creationflags']=subprocess.CREATE_NEW_PROCESS_GROUP
+            if _is_windows():
+                from utils.launcher_windows import CREATE_SUSPENDED
+                kwargs['creationflags']=subprocess.CREATE_NEW_PROCESS_GROUP|CREATE_SUSPENDED
             else:kwargs['start_new_session']=True
             process=self._popen(command,**kwargs)
             self._process=process
@@ -292,10 +303,18 @@ class LauncherController:
             self._emit('log',f'Prosessen er avsluttet (kode {process.poll()})',generation)
             self._emit('state','exited',generation)
             with self._lock:self._active=False;self._process=None
-        except Exception:
+        except Exception as error:
             if process is None:
-                self._emit('log','Oppstart mislyktes',generation)
-                self._finish(generation)
+                failed_process=getattr(error,'process',None)
+                if getattr(failed_process,'_launcher_setup_failed',False):
+                    process=failed_process
+                    self._process=process
+                    self._emit('log','Oppstartens opprydding er ikke bekreftet',generation)
+                    self._emit('state','degraded',generation)
+                    self._recover_owned(process,None,None,generation)
+                else:
+                    self._emit('log','Oppstart mislyktes',generation)
+                    self._finish(generation)
             else:
                 self._emit('log','Prosesskontrollen krever gjennomgang',generation)
                 self._emit('state','degraded',generation)
@@ -306,9 +325,10 @@ class LauncherController:
         with self._lock:self._active=False;self._process=None
 
     def _recover_owned(self, process, group, reader, generation):
-        # The trusted entrypoint is still behind its stdin gate if job assignment
-        # failed. Popen's owned handle is safe; no PID lookup or external service
-        # is used as a fallback. Keep the worker alive until closure is confirmed.
+        # A Windows child is still suspended if job assignment failed; POSIX
+        # children remain behind the cooperative stdin gate. Recover only through
+        # the process/group handles created for this launch, and retain ownership
+        # until exit and output-reader closure are both confirmed.
         if group is None:
             try:process.kill()
             except OSError:pass
@@ -319,6 +339,13 @@ class LauncherController:
             try:
                 alive=group.is_alive() if group is not None else process.poll() is None
                 if not alive and process.poll() is not None and (reader is None or not reader.is_alive()):
+                    if getattr(process,'_launcher_setup_failed',False):
+                        for name in ('_thread_handle','_handle'):
+                            handle=getattr(process,name,None)
+                            if handle is not None:
+                                handle.Close()
+                                setattr(process,name,None)
+                        process._launcher_setup_failed=False
                     if group is not None:group.close()
                     for name in ('stdout','stdin'):
                         stream=getattr(process,name,None)

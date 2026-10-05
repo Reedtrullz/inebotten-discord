@@ -59,6 +59,34 @@ def finish(owner):
     eventually(lambda:not owner.active)
 
 
+def fake_windows_job_api(monkeypatch,calls,*,assignment=True,resume=1):
+    import utils.launcher_windows as windows
+
+    def api(callback):
+        def invoke(*args):return callback(*args)
+        return invoke
+
+    class Kernel:
+        def __init__(self):
+            self.CreateJobObjectW=api(lambda *_:(calls.append('create_job') or 101))
+            self.SetInformationJobObject=api(lambda *_:(calls.append('set_limits') or True))
+            self.AssignProcessToJobObject=api(lambda *_:(calls.append('assign_process') or assignment))
+            self.QueryInformationJobObject=api(lambda *_:True)
+            self.ResumeThread=api(lambda *_:(calls.append('resume_thread') or resume))
+            self.TerminateJobObject=api(lambda *_:(calls.append('terminate_job') or True))
+            self.CloseHandle=api(lambda handle:(calls.append(('close_handle',int(handle))) or True))
+
+    class ThreadHandle(int):
+        def Close(self):calls.append('close_thread')
+
+    class Process:
+        _handle=17
+        _thread_handle=ThreadHandle(19)
+
+    monkeypatch.setattr(windows.ctypes,'WinDLL',lambda *a,**k:Kernel(),raising=False)
+    return windows,Process
+
+
 def test_double_start_is_rejected_before_spawn_and_creates_owned_session():
     owner,process,group,calls=controller()
     try:
@@ -66,7 +94,9 @@ def test_double_start_is_rejected_before_spawn_and_creates_owned_session():
         assert owner.start(['fixture-child']) is False
         eventually(lambda:len(calls)==1)
         import os,subprocess
-        if os.name=='nt':assert calls[0][1]['creationflags']==subprocess.CREATE_NEW_PROCESS_GROUP
+        if os.name=='nt':
+            from utils.launcher_windows import CREATE_SUSPENDED
+            assert calls[0][1]['creationflags']==subprocess.CREATE_NEW_PROCESS_GROUP|CREATE_SUSPENDED
         else:assert calls[0][1].get('start_new_session') is True
         assert calls[0][1]['env']['INEBOTTEN_LAUNCHER_INSTANCE']
     finally:finish(owner)
@@ -169,6 +199,168 @@ def test_blocked_output_reader_does_not_mark_shutdown_complete_before_reader_fin
         finish(owner)
 
 
+def test_windows_launcher_creates_redirector_suspended_before_owned_group(monkeypatch):
+    import utils.launcher_runtime as runtime
+    monkeypatch.setattr(runtime,'_is_windows',lambda:True,raising=False)
+    monkeypatch.setattr(runtime.subprocess,'CREATE_NEW_PROCESS_GROUP',0x200,raising=False)
+    owner,process,group,calls=controller()
+    try:
+        owner.start(['fixture-child'])
+        eventually(lambda:len(calls)==1)
+        assert calls[0][1]['creationflags'] & 0x4
+    finally:finish(owner)
+
+
+@pytest.mark.parametrize('existing_handles',[None,[99]])
+def test_windows_popen_limits_inherited_handles_to_launcher_pipes(monkeypatch,existing_handles):
+    import subprocess
+    import utils.launcher_windows as windows
+
+    class StartupInfo:
+        def __init__(self,lpAttributeList=None):
+            self.dwFlags=0
+            self.lpAttributeList=lpAttributeList
+        def copy(self):return StartupInfo(self.lpAttributeList)
+
+    class Handle(int):
+        def Close(self):pass
+
+    class Native:
+        STARTF_USESTDHANDLES=0x100
+        def CreateProcess(self,*args):
+            self.arguments=args
+            return 101,202,303,404
+
+    class Child:
+        _filter_handle_list=staticmethod(lambda handles:list(dict.fromkeys(handles)))
+        _close_pipe_fds=lambda self,*handles:None
+
+    native=Native();child=Child()
+    startupinfo=StartupInfo({'handle_list':existing_handles}) if existing_handles is not None else None
+    with monkeypatch.context() as patch:
+        patch.setattr(windows.os,'name','nt')
+        patch.setattr(subprocess,'STARTUPINFO',StartupInfo,raising=False)
+        patch.setattr(subprocess,'Handle',Handle,raising=False)
+        patch.setattr(subprocess,'_winapi',native,raising=False)
+        windows.WindowsSuspendedPopen._execute_child(
+            child,args=['python.exe','--run-bot'],executable=None,preexec_fn=None,
+            close_fds=True,pass_fds=(),cwd=None,env={},startupinfo=startupinfo,
+            creationflags=0x204,shell=False,p2cread=11,p2cwrite=21,
+            c2pread=22,c2pwrite=12,errread=-1,errwrite=12,
+            unused_restore_signals=None,unused_gid=None,unused_gids=None,
+            unused_uid=None,unused_umask=None,unused_start_new_session=None,
+            unused_process_group=None)
+
+    inherit_handles=native.arguments[4]
+    flags=native.arguments[5]
+    startupinfo=native.arguments[8]
+    assert inherit_handles==1
+    assert flags & 0x4
+    assert startupinfo.lpAttributeList['handle_list']==[11,12]
+    assert (int(child._handle),int(child._thread_handle),child.pid)==(101,202,303)
+
+
+@pytest.mark.parametrize(('terminate_fails','wait_result','unconfirmed'),[
+    (True,258,True),(False,258,True),(True,0,False)])
+def test_windows_startup_cleanup_wait_is_bounded_and_retains_unconfirmed_handles(
+        monkeypatch,terminate_fails,wait_result,unconfirmed):
+    import subprocess
+    import utils.launcher_windows as windows
+    closed=[]
+
+    class StartupInfo:
+        def __init__(self):
+            self.dwFlags=0
+            self.lpAttributeList=None
+
+    class Native:
+        STARTF_USESTDHANDLES=0x100
+        WAIT_OBJECT_0=0
+        WAIT_TIMEOUT=258
+        def __init__(self):self.wait_timeouts=[]
+        def CreateProcess(self,*args):return 101,202,303,404
+        def TerminateProcess(self,*args):
+            if terminate_fails:raise OSError('terminate_failed')
+        def WaitForSingleObject(self,handle,timeout):
+            self.wait_timeouts.append(timeout)
+            return wait_result
+        def CloseHandle(self,handle):closed.append(int(handle))
+
+    native=Native()
+
+    class Handle(int):
+        def Close(self):closed.append(int(self))
+
+    class Child:
+        _filter_handle_list=staticmethod(lambda handles:list(dict.fromkeys(handles)))
+        def _close_pipe_fds(self,*handles):raise OSError('parent_pipe_close_failed')
+
+    child=Child()
+    with monkeypatch.context() as patch:
+        patch.setattr(windows.os,'name','nt')
+        patch.setattr(subprocess,'STARTUPINFO',StartupInfo,raising=False)
+        patch.setattr(subprocess,'Handle',Handle,raising=False)
+        patch.setattr(subprocess,'_winapi',native,raising=False)
+        if unconfirmed:
+            with pytest.raises(RuntimeError,match='windows_start_cleanup_unconfirmed') as caught:
+                windows.WindowsSuspendedPopen._execute_child(
+                    child,args=['python.exe','--run-bot'],executable=None,preexec_fn=None,
+                    close_fds=True,pass_fds=(),cwd=None,env={},startupinfo=None,
+                    creationflags=0x204,shell=False,p2cread=11,p2cwrite=21,
+                    c2pread=22,c2pwrite=12,errread=-1,errwrite=12,
+                    unused_restore_signals=None,unused_gid=None,unused_gids=None,
+                    unused_uid=None,unused_umask=None,unused_start_new_session=None,
+                    unused_process_group=None)
+        else:
+            with pytest.raises(OSError,match='parent_pipe_close_failed'):
+                windows.WindowsSuspendedPopen._execute_child(
+                    child,args=['python.exe','--run-bot'],executable=None,preexec_fn=None,
+                    close_fds=True,pass_fds=(),cwd=None,env={},startupinfo=None,
+                    creationflags=0x204,shell=False,p2cread=11,p2cwrite=21,
+                    c2pread=22,c2pwrite=12,errread=-1,errwrite=12,
+                    unused_restore_signals=None,unused_gid=None,unused_gids=None,
+                    unused_uid=None,unused_umask=None,unused_start_new_session=None,
+                    unused_process_group=None)
+
+    assert native.wait_timeouts==[1000]
+    if unconfirmed:
+        assert caught.value.process is child
+        assert caught.value.failure.args==('parent_pipe_close_failed',)
+        assert child._launcher_cleanup_unconfirmed is True
+        assert (int(child._handle),int(child._thread_handle))==(101,202)
+        assert len(caught.value.cleanup_failures)==(2 if terminate_fails else 1)
+        assert closed==[]
+    else:
+        assert child._handle is child._thread_handle is None
+        assert child._child_created is False
+        assert closed==[202,101]
+
+
+def test_windows_owned_job_assigns_before_resuming_primary_thread(monkeypatch):
+    calls=[]
+    windows,Process=fake_windows_job_api(monkeypatch,calls)
+    job=windows.WindowsOwnedJob(Process())
+    assert calls==['create_job','set_limits','assign_process','resume_thread','close_thread']
+    job.close()
+
+
+def test_windows_assignment_failure_closes_suspended_thread_without_resuming(monkeypatch):
+    calls=[]
+    windows,Process=fake_windows_job_api(monkeypatch,calls,assignment=False)
+    with pytest.raises(OSError,match='job_assignment_failed'):
+        windows.WindowsOwnedJob(Process())
+    assert calls==['create_job','set_limits','assign_process','close_thread',('close_handle',101)]
+
+
+def test_windows_resume_failure_terminates_assigned_job_before_returning(monkeypatch):
+    calls=[]
+    windows,Process=fake_windows_job_api(monkeypatch,calls,resume=0xFFFFFFFF)
+    with pytest.raises(OSError,match='process_resume_failed'):
+        windows.WindowsOwnedJob(Process())
+    assert calls==['create_job','set_limits','assign_process','resume_thread','terminate_job',
+                   'close_thread',('close_handle',101)]
+
+
 def test_group_setup_failure_stops_only_gated_owned_child_and_releases_after_exit():
     class Input(io.StringIO):
         def close(self):self.written=self.getvalue();super().close()
@@ -182,6 +374,33 @@ def test_group_setup_failure_stops_only_gated_owned_child_and_releases_after_exi
     eventually(lambda:process.kills==1)
     eventually(lambda:not owner.active)
     assert process.stdin.closed and 'start' not in process.stdin.written
+
+
+def test_unconfirmed_windows_startup_cleanup_retains_launcher_ownership():
+    process=Process();process.kills=0
+    def kill():process.kills+=1
+    process.kill=kill
+    class OwnedHandle:
+        def __init__(self,name):self.name=name;self.closed=False
+        def Close(self):self.closed=True
+    process._handle=OwnedHandle('process')
+    process._thread_handle=OwnedHandle('thread')
+    process._launcher_setup_failed=True
+    failure=RuntimeError('windows_start_cleanup_unconfirmed')
+    failure.process=process
+    owner=LauncherController(popen_factory=lambda *a,**k:(_ for _ in ()).throw(failure),
+                             poll_interval=.01)
+    owner.start(['fixture-child','--run-bot'])
+    try:
+        eventually(lambda:process.kills==1)
+        assert owner.active
+        assert owner.state=='degraded'
+        assert owner._process is process
+        assert not process._handle.closed and not process._thread_handle.closed
+    finally:
+        process.returncode=-9
+        eventually(lambda:not owner.active)
+    assert process._handle is None and process._thread_handle is None
 
 
 def test_secret_and_private_debug_log_lines_are_redacted_before_ui_handoff():
