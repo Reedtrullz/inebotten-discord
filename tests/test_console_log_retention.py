@@ -132,3 +132,59 @@ def test_writer_ownership_and_symlink_logs_are_refused(store, tmp_path):
     with pytest.raises(ValueError, match='unsafe_log_file'):
         store.read_log_page(None, max_bytes=4096, filters={})
     assert outside.read_text() == 'preserve synthetic'
+
+
+def test_rotated_cursor_rejects_reused_file_identity(store, monkeypatch):
+    from types import SimpleNamespace
+    from web_console import log_store
+    for n in range(18):
+        store.append_record(line=f"old-generation-{n}", component="fixture")
+    page = store.read_log_page(None, max_bytes=1024, filters={})
+    cursor = page["next_cursor"]
+    old_state = store._diagnostic_logs._decode(cursor, {})
+    assert len(old_state["files"]) == 1
+    old_identity, old_offset = old_state["files"][0]
+    old_dev, old_ino = map(int, old_identity.split(":")[:2])
+    for n in range(1000):
+        store.append_record(line=f"new-generation-{n}", component="fixture")
+    for n in range(100):
+        if store._logs_file.stat().st_size >= old_offset:
+            break
+        store.append_record(line=f"new-tail-{n}", component="fixture")
+    assert store._logs_file.stat().st_size >= old_offset
+    for path in store._data_dir.glob('logs.*.jsonl'):
+        path.unlink()
+    replacement = store._logs_file.stat()
+    original_info = store._diagnostic_logs._info
+    original_fstat = log_store.os.fstat
+    def reused_identity(info):
+        values = {name:getattr(info,name) for name in dir(info) if name.startswith('st_')}
+        values.update(st_dev=old_dev, st_ino=old_ino)
+        return SimpleNamespace(**values)
+    monkeypatch.setattr(store._diagnostic_logs, '_info', lambda path: reused_identity(original_info(path)))
+    def fstat(fd):
+        info = original_fstat(fd)
+        return reused_identity(info) if (info.st_dev,info.st_ino)==(replacement.st_dev,replacement.st_ino) else info
+    monkeypatch.setattr(log_store.os,'fstat',fstat)
+    with pytest.raises(ValueError,match='stale_cursor'):
+        store.read_log_page(cursor,max_bytes=1024,filters={})
+
+
+def test_cursor_survives_append_and_moving_live_segment(store):
+    for n in range(18):
+        store.append_record(line=f"snapshot-{n}",component="fixture")
+    first = store.read_log_page(None,max_bytes=1024,filters={})
+    assert first['next_cursor']
+    for n in range(30):
+        store.append_record(line=f"later-{n}",component="fixture")
+    rows = first['records'][:]
+    cursor = first['next_cursor']
+    for _ in range(10):
+        page = store.read_log_page(cursor,max_bytes=1024,filters={})
+        rows.extend(page['records'])
+        cursor = page['next_cursor']
+        if cursor is None:break
+    assert cursor is None
+    assert {row['line'] for row in rows}=={f"snapshot-{n}" for n in range(18)}
+    assert len(rows)==18
+    assert len(store._diagnostic_logs._generations)<=4

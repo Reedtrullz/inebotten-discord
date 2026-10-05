@@ -17,7 +17,11 @@ or opaque request ID. Missing metadata in legacy lines has an explicit default.
 Malformed or oversized records are skipped within the budget.
 
 Cursors are authenticated, bound to filters and file identities, and contain
-no log text or pathname. Appending does not repeat a snapshot's rows. Rotation,
+no log text or pathname. Each live segment also has a process-local generation nonce,
+forgotten on owned deletion/replacement so an immediately recycled inode cannot
+revive an older cursor. The generation registry retains only the four live segments;
+it changes no persisted log format. Moving a still-live segment during rotation
+keeps its identity. Appending does not repeat a snapshot's rows. Rotation,
 maintenance replacement or truncation can invalidate a cursor (HTTP 409);
 process restart invalidates its ephemeral authentication key (HTTP 400). Fetch
 the latest page again. No historical snapshot is retained just to serve a cursor.

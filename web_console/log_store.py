@@ -29,7 +29,25 @@ class DiagnosticLogs:
         self.paths = [path] + [path.with_name(f'logs.{n}.jsonl') for n in range(1, 4)]
         self.owner = ProcessOwnership(path)
         self.key = secrets.token_bytes(32)
+        # Cursor keys are process-local. Keep a bounded generation for each
+        # live segment too: filesystems can immediately recycle deleted inodes.
+        self._generations = {}
         self._last_maintenance = 0.0
+
+    def _identity(self, info):
+        inode = (info.st_dev, info.st_ino)
+        if inode not in self._generations:
+            self._generations[inode] = secrets.token_hex(16)
+        return f'{info.st_dev}:{info.st_ino}:{self._generations[inode]}'
+
+    def _forget(self, info):
+        self._generations.pop((info.st_dev, info.st_ino), None)
+
+    def _discard(self, path):
+        if path.exists() or path.is_symlink():
+            info = self._info(path)
+            path.unlink()
+            self._forget(info)
 
     def _open(self, path, flags):
         fd = os.open(path, flags | getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -69,14 +87,14 @@ class DiagnosticLogs:
             if path.exists() or path.is_symlink():
                 info = self._info(path)
                 if info.st_mtime < cutoff:
-                    path.unlink()
+                    self._discard(path)
                 elif maintain or info.st_size > self.segment_bytes:
                     self._maintain(path, info.st_size, cutoff)
         if maintain:
             self._last_maintenance = time.monotonic()
         size = self._info(self.path).st_size if self.path.exists() else 0
         if size + len(raw) > self.segment_bytes:
-            self.paths[-1].unlink(missing_ok=True)
+            self._discard(self.paths[-1])
             for index in range(2, -1, -1):
                 if self.paths[index].exists():
                     self.paths[index].replace(self.paths[index + 1])
@@ -124,7 +142,9 @@ class DiagnosticLogs:
         try:
             with os.fdopen(fd, 'wb') as handle:
                 handle.write(replacement)
+            previous = self._info(path)
             os.replace(name, path)
+            self._forget(previous)
         finally:
             Path(name).unlink(missing_ok=True)
 
@@ -156,12 +176,16 @@ class DiagnosticLogs:
             raise ValueError('invalid_filters')
         available = {}
         snapshot = []
+        live_inodes = set()
         for path in self.paths:
             if path.exists() or path.is_symlink():
                 info = self._info(path)
-                identity = f'{info.st_dev}:{info.st_ino}'
+                live_inodes.add((info.st_dev, info.st_ino))
+                identity = self._identity(info)
                 available[identity] = (path, info.st_size)
                 snapshot.append([identity, info.st_size])
+        self._generations = {inode: generation for inode, generation in self._generations.items()
+                             if inode in live_inodes}
         state = self._decode(cursor, filters) if cursor else {'files': snapshot, 'filters': filters}
         files = state['files']
         if any(identity not in available or offset > available[identity][1] for identity, offset in files):
@@ -175,7 +199,7 @@ class DiagnosticLogs:
                 continue
             start = max(0, end - (max_bytes - bytes_read))
             with self._open(available[identity][0], os.O_RDONLY) as handle:
-                if f'{os.fstat(handle.fileno()).st_dev}:{os.fstat(handle.fileno()).st_ino}' != identity:
+                if self._identity(os.fstat(handle.fileno())) != identity:
                     raise ValueError('stale_cursor')
                 handle.seek(start)
                 raw = handle.read(end - start)
