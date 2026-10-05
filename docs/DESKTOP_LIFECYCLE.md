@@ -57,7 +57,9 @@ Run `python scripts/check_desktop_lifecycle.py` with the locked desktop profile
 on the target platform. It creates a temporary synthetic home under the owned
 scratch directory, records native Tk call thread IDs, checks layout/focus/scaling,
 and rehearses window close with an owned child and descendant. An unrelated
-fixture process must remain alive. It opens a fixture window but starts no bot,
+fixture process must remain alive. Geometry is chosen within the native display
+with room for OS chrome, then admitted only after a bounded mapping wait; the
+receipt records screen, requested and actual sizes. It opens a fixture window but starts no bot,
 bridge, account connection or real search provider.
 
 The native desktop workflow runs this check before building. The builder also

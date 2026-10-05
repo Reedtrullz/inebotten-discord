@@ -18,6 +18,18 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 
+def resize_native_window(root, pump):
+    screen = [root.winfo_screenwidth(), root.winfo_screenheight()]
+    # Native runners can have smaller virtual displays and asynchronous WMs.
+    # Leave room for OS chrome while retaining the launcher's minimum layout.
+    requested = [min(950, max(480, screen[0] - 120)),
+                 min(760, max(480, screen[1] - 160))]
+    root.geometry(f'{requested[0]}x{requested[1]}')
+    pump(lambda: root.winfo_width() >= requested[0] and root.winfo_height() >= requested[1])
+    return {'screen_size': screen, 'requested_size': requested,
+            'actual_size': [root.winfo_width(), root.winfo_height()]}
+
+
 def main(*,ui_only=False):
     scratch=Path(os.getenv('TMPDIR') or tempfile.gettempdir()) if getattr(sys,'frozen',False) else ROOT/'.superpowers'/'desktop-checks'
     scratch.mkdir(parents=True,exist_ok=True)
@@ -65,8 +77,7 @@ while True:time.sleep(.01)
         try:
             # Real native widget layout, focus, scaling and timer-driven events.
             root.tk.call('tk','scaling',1.5)
-            root.geometry('950x760');root.update()
-            assert root.winfo_width()>=900 and root.winfo_height()>=700
+            native_layout = resize_native_window(root, pump)
             app.start_button.focus_force();root.update()
             assert root.focus_get()==app.start_button
             root.tk.call('tk','scaling',2.0);root.update()
@@ -76,6 +87,7 @@ while True:time.sleep(.01)
                 receipt={'passed':True,'platform':sys.platform,'frozen':bool(getattr(sys,'frozen',False)),
                          'tk_version':str(root.tk.call('info','patchlevel')),'widget_calls':len(calls),
                          'all_widget_calls_on_main_thread':True,'layout_focus_scaling_checked':True,
+                         'native_layout':native_layout,
                          'ui_started':True,'service_started':False,
                          'private_state_initialized':False,'human_acceptance':False,
                          'owned_process_check':'not_exercised_in_ui_smoke'}
@@ -106,6 +118,7 @@ while True:time.sleep(.01)
             assert not (home/'discord').exists(),'private_app_state_initialized'
             print(json.dumps({'passed':True,'platform':sys.platform,'tk_version':str(root.tk.call('info','patchlevel')),
                 'widget_calls':len(calls),'all_widget_calls_on_main_thread':True,'owned_group_exit_confirmed':True,
+                'native_layout':native_layout,
                 'unrelated_process_preserved':True,'private_state_initialized':False,
                 'human_acceptance':False},sort_keys=True))
         finally:
