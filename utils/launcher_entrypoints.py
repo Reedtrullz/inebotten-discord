@@ -62,6 +62,7 @@ def dispatch_worker(argv=None):
     args=list(sys.argv[1:] if argv is None else argv)
     if not args:return False
     if len(args)!=1 or args[0] not in MODES:raise SystemExit('unsupported_launcher_mode')
+    configure_frozen_tls()
     ensure_worker_stdio()
     mode=args[0]
     if mode=='--smoke-ui':
@@ -77,6 +78,16 @@ def dispatch_worker(argv=None):
         raise SystemExit(asyncio.run(main()) or 0)
     from scripts.run_both import main
     raise SystemExit(main())
+
+
+def configure_frozen_tls():
+    """Use the shipped CA bundle before clients cache their SSL contexts.
+
+    Preserve explicitly configured trust; never disable TLS verification.
+    """
+    if not getattr(sys, 'frozen', False):return
+    import certifi
+    os.environ.setdefault('SSL_CERT_FILE', certifi.where())
 
 
 def bundle_root():
