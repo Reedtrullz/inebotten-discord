@@ -470,6 +470,30 @@ class ReleaseContractTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "dirty checkout"):
                 builder._ensure_clean_checkout(ROOT)
 
+    def test_builder_resolves_checkout_actions_pull_ref_without_trusting_head(self):
+        from scripts import build_desktop as builder
+
+        missing = subprocess.CalledProcessError(128, ["git", "rev-parse"])
+        for kind in ("merge", "head"):
+            selected = f"refs/pull/72/{kind}"
+            remote = f"refs/remotes/pull/72/{kind}"
+            with self.subTest(kind=kind), patch.object(
+                builder, "_git_output", side_effect=[missing, "a" * 40, "a" * 40]
+            ) as git:
+                self.assertEqual(builder._selected_commit(ROOT, selected), "a" * 40)
+                self.assertEqual(git.call_args_list[1].args,
+                                 (ROOT, "rev-parse", "--verify", remote + "^{commit}"))
+        with patch.object(builder, "_git_output", side_effect=[missing, "a" * 40, "b" * 40]):
+            with self.assertRaisesRegex(RuntimeError, "does not match selected ref"):
+                builder._selected_commit(ROOT, "refs/pull/72/merge")
+        with patch.object(builder, "_git_output", side_effect=[missing, missing]):
+            with self.assertRaises(subprocess.CalledProcessError):
+                builder._selected_commit(ROOT, "refs/pull/72/merge")
+        with patch.object(builder, "_git_output", side_effect=missing) as git:
+            with self.assertRaises(subprocess.CalledProcessError):
+                builder._selected_commit(ROOT, "refs/tags/missing")
+            self.assertEqual(git.call_count, 1)
+
     def test_recursive_packaging_accepts_new_tracked_assets_and_rejects_ignored_private_files(self):
         path = ROOT / "scripts" / "build_desktop.py"
         spec = importlib.util.spec_from_file_location("inebotten_build_desktop_sources", path)

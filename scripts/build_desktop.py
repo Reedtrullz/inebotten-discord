@@ -113,7 +113,15 @@ def _default_ref(repository_root: Path) -> str:
 
 
 def _selected_commit(repository_root: Path, selected_ref: str) -> str:
-    selected = _git_output(repository_root, "rev-parse", "--verify", f"{selected_ref}^{{commit}}")
+    try:
+        selected = _git_output(repository_root, "rev-parse", "--verify", f"{selected_ref}^{{commit}}")
+    except subprocess.CalledProcessError:
+        # actions/checkout stores PR refs under refs/remotes/pull. Resolve only
+        # that exact alias; an absent ref must never silently become HEAD.
+        if not re.fullmatch(r"refs/pull/[1-9][0-9]*/(?:head|merge)", selected_ref):
+            raise
+        checkout_ref = selected_ref.replace("refs/pull/", "refs/remotes/pull/", 1)
+        selected = _git_output(repository_root, "rev-parse", "--verify", f"{checkout_ref}^{{commit}}")
     head = _git_output(repository_root, "rev-parse", "HEAD")
     if len(selected) != 40 or len(head) != 40:
         raise RuntimeError("selected ref and checkout must resolve to full Git commit SHAs")
