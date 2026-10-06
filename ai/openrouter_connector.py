@@ -11,6 +11,7 @@ import os
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any
+from urllib.parse import quote
 from utils.logger import LoggerMixin
 from ai.result_schema import (
     AIResult,
@@ -248,8 +249,10 @@ class OpenRouterConnector(LoggerMixin):
         Returns: (is_healthy, message)
         """
         try:
-            # Try to get available models as a health check
-            result = await self._make_request("models", method="GET")
+            # The global catalog can exceed the bounded provider envelope.
+            # Query only the configured model while keeping the same limit.
+            endpoint = f"models/{quote(self.model, safe='/')}/endpoints"
+            result = await self._make_request(endpoint, method="GET")
             if result.status == "success":
                 return True, f"API reachable (using model: {self.model})"
             else:

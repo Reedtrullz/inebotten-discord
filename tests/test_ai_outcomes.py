@@ -79,6 +79,24 @@ class FakeMessage:
 
 
 class AIOutcomeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openrouter_health_queries_selected_model_with_existing_envelope_bound(self):
+        connector = OpenRouterConnector("synthetic-key", model="google/gemma-4-31b-it:free")
+        requested = []
+
+        async def request(endpoint, method="POST", payload=None):
+            requested.append((endpoint, method))
+            data = ({"data": [{"description": "x" * 131073}]} if endpoint == "models"
+                    else {"data": {"id": connector.model, "endpoints": [{"status": 0}]}})
+            return await connector._handle_response(FakeResponse(200, data=data), expect_text=False)
+
+        connector._make_request = request
+        healthy, _ = await connector.check_health()
+        self.assertTrue(healthy)
+        self.assertEqual(requested, [("models/google/gemma-4-31b-it%3Afree/endpoints", "GET")])
+        oversized = await connector._handle_response(
+            FakeResponse(200, data={"data": "x" * 131073}), expect_text=False)
+        self.assertEqual(oversized.status, "unavailable")
+
     def result(self, **kwargs):
         AIResult = require_result_type(self)
         defaults = {
