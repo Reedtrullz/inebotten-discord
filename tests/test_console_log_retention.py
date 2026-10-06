@@ -102,7 +102,9 @@ def test_malformed_and_oversized_records_are_bounded_and_cursor_is_not_a_path(st
         store.read_log_page(None, max_bytes=99999999, filters={})
 
 
-def test_age_cleanup_on_write_preserves_recent_rows_and_separate_audit(store):
+def test_age_cleanup_on_write_preserves_recent_rows_and_separate_audit(store, monkeypatch):
+    # Fresh CI hosts can have less than a minute of monotonic uptime.
+    monkeypatch.setattr('web_console.log_store.time.monotonic', lambda: 1.0)
     expired = datetime.now(timezone.utc) - timedelta(days=8)
     recent = datetime.now(timezone.utc)
     store._logs_file.write_text('\n'.join(json.dumps({'ts': ts.isoformat(), 'line': line})

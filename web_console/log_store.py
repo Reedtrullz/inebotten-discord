@@ -32,7 +32,7 @@ class DiagnosticLogs:
         # Cursor keys are process-local. Keep a bounded generation for each
         # live segment too: filesystems can immediately recycle deleted inodes.
         self._generations = {}
-        self._last_maintenance = 0.0
+        self._last_maintenance = None
 
     def _identity(self, info):
         inode = (info.st_dev, info.st_ino)
@@ -82,7 +82,8 @@ class DiagnosticLogs:
                'request_id': self._label(request_id, None)}
         raw = (json.dumps(row, ensure_ascii=False) + '\n').encode()
         cutoff = time.time() - self.days * 86400
-        maintain = time.monotonic() - self._last_maintenance >= 60
+        maintain = (self._last_maintenance is None
+                    or time.monotonic() - self._last_maintenance >= 60)
         for path in self.paths:
             if path.exists() or path.is_symlink():
                 info = self._info(path)
