@@ -18,6 +18,7 @@ from features.poll_manager import PollManager, validate_poll_document
 from core.access_policy import AccessPolicy, policy_summary, invocation_description
 
 from utils.storage_contract import load_document, bucket_records, user_records
+from utils.backup_bundle import STORE_SCHEMAS, store_upgrade_versions
 
 _JSON_READ_ERRORS: dict[str, str] = {}
 _DOCUMENT_VALIDATORS = {
@@ -40,7 +41,8 @@ def _read_json_file(path: Path, default: Any) -> Any:
             _JSON_READ_ERRORS.pop(str(path), None)
             return default
         if path.name in _DOCUMENT_VALIDATORS:
-            outcome = load_document(path, 1)
+            outcome = load_document(path, STORE_SCHEMAS[path.name],
+                                    upgrade_from=store_upgrade_versions(path.name))
             if outcome.status not in ("valid", "missing"):
                 raise ValueError(outcome.error_code)
             data = outcome.document or default
@@ -74,7 +76,8 @@ def _probe_json_files() -> dict[str, str]:
             continue
         try:
             if name in _DOCUMENT_VALIDATORS:
-                result = load_document(path, 1)
+                result = load_document(path, STORE_SCHEMAS[name],
+                                       upgrade_from=store_upgrade_versions(name))
                 if result.status not in ("valid", "missing"):
                     raise ValueError(result.error_code)
                 if not _DOCUMENT_VALIDATORS[name](result.document or {}):
