@@ -58,6 +58,8 @@ async def test_human_explanation_reaches_chat_without_touching_reminders(tmp_pat
         monitor.rate_limiter = FakeRateLimiter()
         monitor.loc = SimpleNamespace(detect_language=lambda _: 'no')
         monitor.intent_router = IntentRouter(DummyMonitor())
+        from memory.conversation_context import ConversationContext
+        monitor.intent_router.monitor.conversation = ConversationContext()
         monitor._send_ai_response = AsyncMock()
         monitor.handlers = {'reminders': SimpleNamespace(handle_reminder_create=AsyncMock())}
         await monitor.handle_message(FakeMessage(

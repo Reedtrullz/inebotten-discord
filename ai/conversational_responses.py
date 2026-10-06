@@ -37,7 +37,7 @@ class ConversationalResponseGenerator:
         if hour < 12:
             lines.append("God morgen! ☀️")
         elif hour < 18:
-            lines.append("Hei der! 👋")
+            lines.append("Hei.")
         else:
             lines.append("God kveld! 🌙")
         
