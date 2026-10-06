@@ -14,7 +14,7 @@ remain available; generated replies and user text are not globally filtered.
 The connector defaults (`ai/system_prompt*.txt`), personalized prompt and local
 chat templates share this direction. LM Studio's simplified prompt branches
 also receive it. Calendar action proposals still require their existing
-confirmation flow.
+confirmation flow. Greetings and general questions should not propose actions.
 
 ## Release acceptance
 
