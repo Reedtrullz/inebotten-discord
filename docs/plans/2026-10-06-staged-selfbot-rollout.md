@@ -1,9 +1,32 @@
 # Staged selfbot rollout and dependency review — 6 October 2026
 
-Status: **prepared for review; live activation has not run**. This document
+Status: **release execution authorized; live acceptance is pending**. This document
 records the approved continuation: finalize calendar compatibility, defer the
 optional bot transport, review the stack, and prepare a staged selfbot rollout.
 A merge or production restart is a separate action, not an effect of this plan.
+
+## Release execution — 6 October
+
+The owner authorized execution of the recommended review, merge, canary and
+promotion sequence. The release candidate is the complete reviewed stack in
+original commit dependency order. Integrate it atomically through #72 targeting
+master; preserve all historical proposal heads and reconcile their GitHub
+dispositions against the resulting master ancestry. Do not deploy intermediate
+proposal heads, bypass required checks or weaken branch protection.
+
+The owner selected OpenRouter and identified the allowed human tester as
+175509051822702593. The existing selfbot identity remains 1474528156131266815.
+Canary invocation is restricted to that tester and test-en 798653999027978320
+in guild 484393415149223936, with a separate empty HERMES_HOME and explicit
+calendar scope. Provider credentials are configured privately; never include
+them in source, evidence receipts or chat. A real accepted model response and
+human invocation are required before production promotion.
+
+The existing service degradation was traced to default LM Studio configuration
+with neither its bridge nor model endpoint available. Discord and persistence
+were healthy at the read-only baseline. Selecting OpenRouter is an owner
+configuration decision; provider readiness remains pending until the private
+key, accepted inference and canary checks succeed.
 
 ## Current disposition
 
