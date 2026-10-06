@@ -261,6 +261,8 @@ def create_release_manifest(
     if not isinstance(receipt, dict):
         raise ValueError("smoke receipt must be a JSON object")
     _validate_smoke_receipt(receipt, require_frozen=True)
+    if receipt.get('revision') != full_commit_sha.lower():
+        raise ValueError('frozen smoke revision does not match the selected build')
 
     return {
         "schema_version": 1,
@@ -337,6 +339,8 @@ def verify_release_manifest(
     if receipt != manifest.get("smoke_receipt"):
         raise ValueError("smoke receipt sidecar differs from the manifest")
     _validate_smoke_receipt(receipt, require_frozen=True)
+    if receipt.get('revision') != expected_commit.lower():
+        raise ValueError('frozen smoke revision does not match the selected build')
 
 
 def write_windows_version_file(path: Path, version: str) -> None:

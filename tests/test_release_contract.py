@@ -31,6 +31,39 @@ def _load_release_contract():
 
 
 class ReleaseContractTests(unittest.TestCase):
+    def test_frozen_smoke_refuses_missing_or_malformed_revision(self):
+        from scripts import smoke_release_artifact as smoke
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(smoke, '_block_network'), \
+                patch.object(smoke, '_verify_network_blocked'), \
+                patch.object(smoke, 'verify_bundle_assets', return_value=()):
+            root = Path(directory)
+            for value in (None, 'bad', 'a' * 40):
+                if value is not None:
+                    (root / 'commit_hash.txt').write_text(value, encoding='ascii')
+                if value == 'a' * 40:
+                    self.assertEqual(smoke.build_smoke_receipt(root, frozen=True)['revision'], value)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'revision'):
+                        smoke.build_smoke_receipt(root, frozen=True)
+
+    def test_generated_revision_reaches_frozen_data_without_dirtying_source(self):
+        from scripts import build_desktop
+        from utils.deployment_contract import built_revision
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'
+            root.mkdir()
+            staged = build_desktop._stage_packaged_data(
+                root, Path(directory) / 'staged', set(), build_revision='a' * 40)
+            self.assertEqual(built_revision(staged), 'a' * 40)
+            self.assertFalse((root / 'commit_hash.txt').exists())
+            command = build_desktop.pyinstaller_arguments(
+                'macos', root, root / 'dist', root / 'work', root / 'spec',
+                revision_file=staged / 'commit_hash.txt')
+            self.assertIn(f"--add-data={staged / 'commit_hash.txt'}{os.pathsep}.", command)
+
     @unittest.skipUnless(sys.platform == 'darwin', 'requires native macOS codesign and ditto')
     def test_final_metadata_and_extracted_archive_keep_a_valid_app_signature(self):
         from scripts import build_desktop
@@ -231,6 +264,7 @@ class ReleaseContractTests(unittest.TestCase):
                         f"Inebotten.app/Contents/Frameworks/{relative}", b"fixture"
                     )
             receipt = {
+                "revision": "a" * 40,
                 "schema_version": 1,
                 "passed": True,
                 "frozen": True,
@@ -288,6 +322,17 @@ class ReleaseContractTests(unittest.TestCase):
                 expected_platform="macos",
                 expected_lock_digest=lock_digest,
             )
+            for observed in (None, 'b' * 40):
+                wrong = dict(manifest)
+                wrong_receipt = dict(receipt, revision=observed)
+                receipt_path.write_text(json.dumps(wrong_receipt), encoding='utf-8')
+                wrong['smoke_receipt'] = wrong_receipt
+                wrong['smoke_receipt_checksum'] = contract.sha256_file(receipt_path)
+                with self.assertRaisesRegex(ValueError, 'revision'):
+                    verify_manifest(wrong, artifact_dir=root, expected_commit='a' * 40,
+                                    expected_ref='refs/tags/v2.8.3', expected_platform='macos',
+                                    expected_lock_digest=lock_digest)
+            receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
             with self.assertRaisesRegex(ValueError, "commit"):
                 verify_manifest(
                     manifest,
