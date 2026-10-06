@@ -28,46 +28,35 @@ class InebottenPersonality:
         # Greetings - varierer basert på kontekst
         self.greetings = {
             "morning": [
-                "God morgen! ☀️",
-                "Morn! Håper du får en fin start på dagen!",
-                "God morgen! Klar for en ny dag?",
-                "Hei! Godt å se deg igjen! 👋",
+                "God morgen.",
+                "Hei. Hva kan jeg hjelpe deg med?",
             ],
             "day": [
-                "Hei! 👋",
-                "Heisann!",
-                "Halla! Hva skjer?",
-                "Hei på deg!",
+                "Hei.",
+                "Hei. Hva kan jeg hjelpe deg med?",
             ],
             "evening": [
-                "God kveld! 🌙",
-                "Kvelden! Håper dagen har vært bra!",
-                "God kveld! Klar for å slappe av?",
+                "God kveld.",
+                "Hei. Hva kan jeg hjelpe deg med?",
             ],
             "returning": [
-                "Velkommen tilbake! 🎉",
-                "Hei igjen! Godt å se deg!",
-                "Morn! Lenge siden sist!",
+                "Hei igjen.",
+                "Velkommen tilbake.",
             ]
         }
         
         # Signoffs - varm og personlig
         self.signoffs = [
-            "Ha en fin dag! 🌈",
-            "Ta vare! 💫",
-            "Kos deg videre! 🎈",
-            "Snakkes! 👋",
-            "Ha det! Si fra hvis du trenger noe! ✌️",
-            "Lykke til videre! 🍀",
+            "Ha en fin dag.",
+            "Ta vare.",
+            "Snakkes.",
         ]
         
         # Acknowledgments
         self.acknowledgments = [
-            "Skjønner! 👍",
-            "Følger med! ✍️",
-            "Notert! 📝",
-            "Fikk det! ✅",
-            "Supert! 🎯",
+            "Skjønner.",
+            "Notert.",
+            "Greit.",
         ]
         
         # Weather comments - personlige og kontekst-aware
@@ -108,10 +97,10 @@ class InebottenPersonality:
         
         # Celebration messages
         self.celebrations = [
-            "Woohoo! 🎉",
-            "Yay! 🎊",
-            "Kjempebra! 🌟",
-            "Perfekt! ✨",
+            "Ferdig.",
+            "Bra.",
+            "Bra jobbet.",
+            "Ferdig.",
         ]
         
         # Empathy for when user seems stressed/down
@@ -186,10 +175,8 @@ class InebottenPersonality:
     def format_task_completed(self, text):
         """Celebrate completing a task"""
         responses = [
-            f"Bra jobba! ✅ **{text}** er fullført! {self.get_celebration()}",
-            f"Ferdig! 🎉 **{text}** - check! {self.get_celebration()}",
-            f"Supert! ✅ **{text}** er gjort! En ting mindre å tenke på!",
-            f"Woohoo! **{text}** er i boks! 🌟",
+            f"✅ **{text}** er fullført.",
+            f"✅ Ferdig med **{text}**.",
         ]
         return random.choice(responses)
     
@@ -204,7 +191,7 @@ class InebottenPersonality:
         if 5 <= hour < 12:
             parts.append("God morgen! ☀️")
         elif 12 <= hour < 17:
-            parts.append("God ettermiddag! 👋")
+            parts.append("God ettermiddag!")
         else:
             parts.append("God kveld! 🌙")
         
@@ -260,7 +247,7 @@ class InebottenPersonality:
         """Friendly error message"""
         errors = {
             "general": [
-                "Hmm, skjønte ikke helt det der. Kan du forklare på en annen måte? 🤔",
+                "Hmm, skjønte ikke helt det der. Kan du forklare på en annen måte?",
                 "Oi, ble litt forvirra. Hva var det du lurte på?",
                 "Beklager, den gikk over hodet på meg. Si det en gang til?",
             ],
@@ -286,30 +273,26 @@ class InebottenPersonality:
         # Check for dialect expressions (use word boundaries)
         if re.search(r"\bkjekt\b", content_lower):
             return random.choice([
-                "Det var kjekt å høre! 😊",
-                "Kjekt at du sier det!",
-                "Det høres kjekt ut!",
+                "Det var kjekt å høre.",
+                "Det høres hyggelig ut.",
             ])
         
         if re.search(r"\btøft\b", content_lower):
             return random.choice([
-                "Skikkelig tøft! 👍",
-                "Det var tøft!",
-                "Tøft å høre!",
+                "Det var tøft.",
+                "Det høres bra ut.",
             ])
         
         if re.search(r"\brått\b", content_lower):
             return random.choice([
-                "Helt rått! 🎉",
-                "Det var rått!",
-                "Rått! Kjempebra!",
+                "Det høres bra ut.",
+                "Bra.",
             ])
         
         if re.search(r"\bskikkelig\b", content_lower):
             return random.choice([
-                "Skikkelig bra! 👍",
-                "Det var skikkelig fint!",
-                "Skikkelig!",
+                "Skjønner.",
+                "Greit.",
             ])
         
         return None
@@ -347,7 +330,7 @@ def get_fallback_response(intent="general"):
     """Legacy fallback response function"""
     fallbacks = {
         "general": [
-            "Hehe, skjønte ikke helt hva du mente der. Kan du forklare på en annen måte? 🤔",
+            "Hehe, skjønte ikke helt hva du mente der. Kan du forklare på en annen måte?",
             "Hmm, ble litt forvirra. Hva var det du lurte på?",
             "Oi, den gikk over hodet på meg. Si det en gang til?",
         ],

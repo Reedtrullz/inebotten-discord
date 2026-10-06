@@ -69,24 +69,25 @@ def get_system_prompt(
         conversation_history = conversation_context
     
     # Base prompt - SIMPLE and NATURAL
-    prompt = """Du er Ine. Snakk norsk. Vær vennlig.
+    prompt = """Du er Ine, en norsk Discord-assistent. Svar på naturlig, korrekt bokmål.
+Vær rolig, vennlig og kortfattet. En enkel hilsen trenger bare én setning.
+Bruk ren tekst uten emojier som standard, særlig uten gule ansikter og håndtegn.
+Bruk bare emojier når brukeren ber om det. Unngå overdreven ros og utropstegn.
+Ikke press inn ord som «kjempe» eller «supert». Ikke presenter deg uten å bli spurt.
 
 EKSEMPLER:
 Q: Hei!
-A: Hei! 👋 Hvordan går det?
+A: Hei. Hva kan jeg hjelpe deg med?
 
 Q: Hvem er du?
-A: Jeg er **Ine**, din personlige assistent! 📅 Jeg hjelper deg med å holde styr på alt fra møter til bursdager.
-
-Q: Hvor finner jeg info om bålforbud?
-A: Du kan sjekke de nyeste reglene hos [Miljødirektoratet](https://www.miljodirektoratet.no/balforbud). Husk at det er **strengt forbudt** i tørre perioder! 🔥
+A: Jeg er Ine. Jeg kan hjelpe med kalenderen, påminnelser og spørsmål.
 
 Q: Hvordan har du det?
-A: Jeg har det helt strålende! 😊 Alt i orden med deg?
+A: Jeg er klar til å hjelpe. Hva trenger du?
 
 REGLER:
-- Svar alltid på norsk
-- Vær vennlig og naturlig
+- Svar på bokmål, med mindre brukeren ber om et annet språk
+- Svar på det brukeren spør om. Ikke legg til en meny eller en lang avslutning
 - DIN VIKTIGSTE OPPGAVE ER Å OPPFATE HVA BRUKEREN VIL GJØRE OG UTFØRE HANDLINGER.
 - Hvis brukeren vil planlegge noe, lagre en avtale, eller minne seg selv på noe, SKAL du inkludere:
   `[SAVE_EVENT: Tittel | Dato | Tid]`
@@ -100,7 +101,6 @@ REGLER:
 - Bruk Discord Markdown:
   * **fet skrift** for viktige ting
   * Bruk formatet [Tekst](URL) for lenker, men **kun hvis du er 100% sikker på at URL-en er ekte**.
-- Bruk emojis naturlig for å skape stemning ✨
 - Ikke list opp kommandoer med mindre noen spør spesifikt"""
 
     # Add intent routing information if available
@@ -149,9 +149,9 @@ Hvis dette stemmer, fortsett med handlingen. Hvis ikke, svar naturlig.
     
     # Simple time-based greeting suggestion
     if time_of_day == "morning":
-        prompt += "\nDet er morgen - vær fresh og positiv! ☀️\n"
+        prompt += "\nDet er morgen. En eventuell hilsen kan være «God morgen».\n"
     elif time_of_day == "evening":
-        prompt += "\nDet er kveld - vær avslappet og rolig 🌙\n"
+        prompt += "\nDet er kveld. En eventuell hilsen kan være «God kveld».\n"
     
     return prompt
 
@@ -159,15 +159,13 @@ Hvis dette stemmer, fortsett med handlingen. Hvis ikke, svar naturlig.
 def get_greeting(user_name: str = "", time_since_last: str = "", last_topic: str = "") -> str:
     """Get a simple, natural greeting"""
     greetings = [
-        "Hei! 👋",
-        "Heisann!",
-        "Halla!",
-        "Hei på deg!",
-        "God dag!",
+        "Hei.",
+        "Hei. Hva kan jeg hjelpe deg med?",
+        "God dag.",
     ]
     
     if user_name and time_since_last:
-        return f"Hei {user_name}! Godt å se deg igjen! 👋"
+        return f"Hei igjen, {user_name}."
     
     return random.choice(greetings)
 
@@ -178,29 +176,29 @@ def get_time_based_greeting() -> str:
     hour = datetime.now().hour
     
     if 5 <= hour < 12:
-        return random.choice(["God morgen! ☀️", "Morn!", "God formiddag!"])
+        return random.choice(["God morgen.", "God formiddag."])
     elif 12 <= hour < 17:
-        return random.choice(["God dag! 👋", "Hei!", "God ettermiddag!"])
+        return random.choice(["God dag.", "Hei.", "God ettermiddag."])
     elif 17 <= hour < 22:
-        return random.choice(["God kveld! 🌙", "Kvelden!", "God kveld!"])
+        return "God kveld."
     else:
-        return random.choice(["God natt! 🌙", "Hei! Sent ute?"])
+        return "Hei."
 
 
 def get_farewell() -> str:
     """Get simple farewell"""
     return random.choice([
-        "Ha det! 👋",
-        "Snakkes!",
-        "Ha en fin dag!",
-        "Ta vare!",
+        "Ha det.",
+        "Snakkes.",
+        "Ha en fin dag.",
+        "Ta vare.",
     ])
 
 
 def get_confused_response() -> str:
     """Simple confusion response"""
     return random.choice([
-        "Skjønte ikke helt. Kan du si det på en annen måte? 🤔",
+        "Skjønte ikke helt. Kan du si det på en annen måte?",
         "Hmm, ble litt forvirra. Hva mener du?",
         "Oi, den skjønte jeg ikke. Si det igjen?",
     ])
@@ -209,9 +207,9 @@ def get_confused_response() -> str:
 def get_gratitude_response() -> str:
     """Simple gratitude response"""
     return random.choice([
-        "Bare hyggelig! 😊",
-        "Ingen årsak!",
-        "Så lite!",
+        "Bare hyggelig.",
+        "Ingen årsak.",
+        "Så lite.",
     ])
 
 
@@ -219,7 +217,7 @@ def get_fallback_response(intent: str = "general") -> str:
     """Fallback when AI fails"""
     fallbacks = {
         "general": [
-            "Skjønte ikke helt. Kan du forklare? 🤔",
+            "Skjønte ikke helt. Kan du forklare?",
             "Hmm, prøv å si det på en annen måte?",
         ],
         "weather": [

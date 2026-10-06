@@ -184,9 +184,8 @@ MODEL_CONFIG = {
 # Fun response templates (fallback when LM Studio unavailable)
 RESPONSES = {
     "greeting": [
-        "Hei! 👋 Jeg er Ine, din kalender-venn!",
-        "Heisann! 📅 Hva kan jeg hjelpe med?",
-        "Hei der! 🌟 Klar for å hjelpe!",
+        "Hei. Hva kan jeg hjelpe deg med?",
+        "Hei. Hva trenger du hjelp til?",
     ],
     "weather": [
         "Været? 🌤️ La meg sjekke...",
@@ -204,14 +203,12 @@ RESPONSES = {
         "Jeg kan hjelpe med:\n📅 Kalender og arrangementer\n🌤️ Værmelding\n💬 Generelle spørsmål\n🎯 Og mye mer!",
     ],
     "fun_fact": [
-        "Visste du at? 🤔 Den korteste krigen i historien varte bare 38-45 minutter!",
+        "Visste du at? Den korteste krigen i historien varte bare 38-45 minutter!",
         "Morsomt faktum: 🍯 Honning kan holde seg i tusenvis av år!",
         "Visste du? 🐙 Blekkspruter har tre hjerter og blått blod!",
     ],
     "default": [
-        "😅 Beklager, jeg sliter med å svare akkurat nå. Prøv å spørre igjen!",
-        "Hmm, AI-modellen virker litt trett. Kan du spørre på nytt? 🤔",
-        "Oi, jeg fikk ikke svar fra hjernen min. Prøv igjen! 🧠",
+        "Jeg fikk ikke svar fra AI-tjenesten. Prøv igjen om litt.",
     ],
 }
 
@@ -334,9 +331,9 @@ class HermesBridgeServer:
                     f"Snakker med {author_name}. "
                     "EKSEMPLER:\n"
                     "Bruker: Hei!\n"
-                    "Deg: Hei! 👋 Hvordan går det?\n"
+                    "Deg: Hei. Hva kan jeg hjelpe deg med?\n"
                     "Bruker: Hvordan har du det?\n"
-                    "Deg: Det går bra! 😊 Hva med deg?\n"
+                    "Deg: Det går bra! Hva med deg?\n"
                     "REGLER:\n"
                     "- ALLTID norsk (ikke engelsk)\n"
                     "- Bruk 'deg' (ikke 'dig')\n"
@@ -361,7 +358,7 @@ class HermesBridgeServer:
                     "ALDRI start med 'The user', 'This is', 'My reasoning', 'I should'. "
                     "BARE svar direkte. "
                     "Max 2 setninger. "
-                    "Eksempel: Hei! → Hei! 👋 Hvordan går det?"
+                    "Eksempel: Hei! → Hei. Hva kan jeg hjelpe deg med?"
                 )
             elif is_qwen:
                 # Qwen prompt - VERY direct, no thinking allowed
@@ -370,12 +367,12 @@ class HermesBridgeServer:
                     f"Dato: {today}. "
                     "\n"
                     "VIKTIG: Bare svar direkte. Ikke forklar. Ikke tenk høyt.\n\n"
-                    "Hei! → Hei! 👋 Hvordan går det?\n"
+                    "Hei! → Hei. Hva kan jeg hjelpe deg med?\n"
                     "Hvem er du? → Jeg er Ine! Jeg hjelper deg med kalender og prat. 📅\n"
-                    "Hva kan du gjøre? → Jeg kan lagre arrangementer, minne deg på ting, eller prate! 😊\n"
-                    "Hvordan har du det? → Det går bra! 😊 Hva med deg?\n"
-                    "Fortell en vits → Hvorfor gikk kyllingen over veien? For å komme til den andre siden! 😄\n"
-                    "Takk! → Bare hyggelig! 😊\n"
+                    "Hva kan du gjøre? → Jeg kan lagre arrangementer, minne deg på ting, eller prate!\n"
+                    "Hvordan har du det? → Det går bra! Hva med deg?\n"
+                    "Fortell en vits → Hvorfor gikk kyllingen over veien? For å komme til den andre siden!\n"
+                    "Takk! → Bare hyggelig!\n"
                     "\n"
                     "REGLER:\n"
                     "- Svar KUN med svaret, ingen forklaring\n"
@@ -401,7 +398,7 @@ class HermesBridgeServer:
                     "Svar på norsk. Vær naturlig og hjelpsom. "
                     "Svar direkte på spørsmålet.\n\n"
                     "Eksempler:\n"
-                    "Bruker: Hei! → Hei! 👋 Hvordan går det?\n"
+                    "Bruker: Hei! → Hei. Hva kan jeg hjelpe deg med?\n"
                     "Bruker: Hvordan fungerer solen? → Solen er en stor stjerne som gir varme og lys! ☀️\n"
                     "Bruker: Hva er 2+2? → 2+2 = 4 🧮"
                 )
@@ -413,9 +410,9 @@ class HermesBridgeServer:
                     f"Snakker med {author_name}. "
                     "EKSEMPLER:\n"
                     "Bruker: Hei!\n"
-                    "Deg: Hei! 👋 Hvordan går det?\n"
+                    "Deg: Hei. Hva kan jeg hjelpe deg med?\n"
                     "Bruker: Hvordan har du det?\n"
-                    "Deg: Det går bra! 😊 Hva med deg?\n"
+                    "Deg: Det går bra! Hva med deg?\n"
                     "REGLER:\n"
                     "- ALLTID norsk (ikke engelsk)\n"
                     "- Bruk 'deg' (ikke 'dig')\n"
@@ -432,8 +429,8 @@ class HermesBridgeServer:
                     "Svar på norsk. Vær kortfattet og naturlig. "
                     "Ikke bruk engelsk. Ikke forklar hva du gjør.\n\n"
                     "Eksempler:\n"
-                    "Bruker: Hei! → Hei! 👋 Hvordan går det?\n"
-                    "Bruker: Hvordan er livet? → Livet er bra! 😊 Hva med deg?\n"
+                    "Bruker: Hei! → Hei. Hva kan jeg hjelpe deg med?\n"
+                    "Bruker: Hvordan er livet? → Livet er bra! Hva med deg?\n"
                     "Bruker: Hvordan fungerer solen? → Solen er en stor stjerne som gir varme og lys! ☀️"
                 )
             else:
@@ -462,6 +459,14 @@ class HermesBridgeServer:
 
         logger.info(
             f"Using model config: temp={config.get('temperature')}, max_tokens={config.get('max_tokens')}"
+        )
+
+        system_prompt += (
+            "\nSvar på naturlig bokmål med en rolig, kortfattet tone. "
+            "Unngå overdreven begeistring og utropstegn. "
+            "Bruk ren tekst uten emojier som standard, særlig uten gule "
+            "ansikter og håndtegn. Bruk bare emojier når brukeren ber om det. "
+            "En enkel hilsen trenger bare én setning."
         )
 
         payload = {
