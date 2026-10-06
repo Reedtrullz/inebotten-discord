@@ -75,10 +75,21 @@ class CalendarHandler(BaseHandler):
                     self.monitor.response_count+=1
             else:
                 attachments = list(getattr(message,'attachments',[]))
+                if not attachments:
+                    await self.send_response(message,
+                        'Legg ved én ICS-fil i samme melding som `@inebotten kalender importer ics`. '
+                        'Last ned filen fra eksportmeldingen og legg den ved med Discords filknapp. '
+                        'Du får en forhåndsvisning før du bekrefter; kalenderen er ikke endret.')
+                    return
                 if len(attachments)!=1 or not attachments[0].filename.lower().endswith('.ics'):
-                    raise ValueError('Legg ved én ICS-fil i denne meldingen.')
+                    await self.send_response(message,
+                        'Legg ved nøyaktig én ICS-fil med filendelsen `.ics`. '
+                        'ZIP-filer må pakkes ut først. Kalenderen er ikke endret.')
+                    return
                 if type(attachments[0].size) is not int or not 0<attachments[0].size<=MAX_BYTES:
-                    raise ValueError('ICS-filen må være høyst 1 MiB.')
+                    await self.send_response(message,
+                        'ICS-filen må være større enn 0 byte og høyst 1 MiB. Kalenderen er ikke endret.')
+                    return
                 raw = await self._read_ics_attachment(message,attachments[0],MAX_BYTES)
                 proposal = self._exchange.preview_ics(actor,scope,raw)
                 lines = [f"ICS i {scope}: {proposal['new']} nye, {proposal['changed']} endrede, {proposal['duplicate']} identiske."]

@@ -16,6 +16,19 @@ and revision. File UIDs are data, never provider identifiers or instructions.
 Stable UID mappings live inside calendar records and make reimport idempotent.
 Applying a file does not synchronize to Google or send invitations.
 
+## Importing in Discord
+
+Download the `.ics` attachment from the export message. Attach that file to a
+new Discord message containing `@inebotten kalender importer ics`; the command
+and file must be in the same message. The command alone cannot import a previous
+export. Use one `.ics` file, at most 1 MiB; unzip calendar archives first.
+
+Read the preview, then send its exact `bekreft ics …` command within five minutes.
+Reimporting an unchanged exported meeting should preview `0 nye, 0 endrede,
+1 identiske`. The confirmation applies no changes for that duplicate. Missing,
+multiple, wrongly named or oversized attachments receive specific recovery
+instructions and do not change the calendar.
+
 Supported records are VEVENT with DATE or aware DATE-TIME start and end, and
 VTODO with a DATE due date. Unicode titles and descriptions are preserved.
 Floating times, custom timezones, invitations/attendees, attachments, alarms,

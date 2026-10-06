@@ -28,7 +28,6 @@ from core.intent_keywords import (
     REMINDER_COMPLETE_KEYWORDS,
     REMINDER_DELETE_KEYWORDS,
     REMINDER_EDIT_KEYWORDS,
-    REMINDER_LIST_KEYWORDS,
     SCHOOL_HOLIDAYS_KEYWORDS,
     STATUS_KEYWORDS,
     SYNC_KEYWORDS,
@@ -697,9 +696,6 @@ class IntentRouter:
                 {"reminder": {"action": "complete", "number": number}},
                 "active_reminder_complete_number",
             )
-
-        if has_any_keyword(lower, REMINDER_LIST_KEYWORDS):
-            return IntentResult(BotIntent.REMINDER_LIST, 0.97, {"reminder": {"action": "list"}}, "reminder_list_keyword")
 
         try:
             from cal_system.reminder_manager import parse_reminder_command

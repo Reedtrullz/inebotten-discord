@@ -669,11 +669,12 @@ def parse_reminder_command(message_content):
         number = complete_match.group(1)
         return {"action": "complete", "number": int(number) if number else None}
 
-    # Check for list reminders before singular creation.
-    list_keywords = ["påminnelser", "gjøremål", "reminders", "todos", "huskeliste"]
-    if any(
-        re.search(rf"\b{re.escape(word)}\b", content_lower)
-        for word in list_keywords
+    # A mention of reminders in ordinary prose is not a command.
+    polite_prefix = r"(?:(?:kan du|kunne du|vennligst|please)\s+)?"
+    list_names = r"(?:påminnelser|gjøremål|reminders|todos|huskeliste)"
+    if re.fullmatch(
+        polite_prefix + r"(?:(?:vis|list(?: opp)?|show)\s+(?:(?:mine|alle|my|all)\s+)?)?"
+        + list_names + r"[.!?]?", content_lower
     ):
         return {"action": "list"}
 
@@ -688,17 +689,15 @@ def parse_reminder_command(message_content):
     ]
 
     for keyword in reminder_keywords:
-        if re.search(rf"\b{re.escape(keyword)}\b", content_lower):
+        match = re.match(
+            polite_prefix
+            + r"(?:(?:legg til|legge til|lag|lage|opprett|opprette|sett|sette|add|create|set)\s+(?:en\s+|a\s+)?)?"
+            + re.escape(keyword) + r"\s*:?\s+",
+            cleaned_content, flags=re.IGNORECASE,
+        )
+        if match:
             # Extract reminder text
-            text = cleaned_content
-
-            # Remove the keyword phrase
-            patterns = [
-                f"^{keyword}\\s*",
-                f"{keyword}\\s*",
-            ]
-            for pattern in patterns:
-                text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+            text = cleaned_content[match.end():].strip()
 
             # Clean up common prefixes
             prefixes = ["å", "at", "om å", "på å", "meg om å", "meg på å"]
