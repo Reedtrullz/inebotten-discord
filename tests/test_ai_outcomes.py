@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import json
+import ssl
 import time
 import unittest
 from collections import defaultdict
@@ -79,6 +80,21 @@ class FakeMessage:
 
 
 class AIOutcomeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openrouter_tls_has_bundled_roots_when_external_store_is_empty(self):
+        connector = OpenRouterConnector('synthetic-key')
+        empty = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.assertEqual(empty.get_ca_certs(), [])
+        try:
+            with patch('ssl.create_default_context', return_value=empty):
+                session = await connector._get_session()
+            context = session.connector._ssl
+            self.assertIsInstance(context, ssl.SSLContext)
+            self.assertTrue(context.get_ca_certs())
+            self.assertTrue(context.check_hostname)
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        finally:
+            await connector.close()
+
     async def test_openrouter_health_queries_selected_model_with_existing_envelope_bound(self):
         connector = OpenRouterConnector("synthetic-key", model="google/gemma-4-31b-it:free")
         requested = []

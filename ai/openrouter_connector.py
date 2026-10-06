@@ -9,6 +9,8 @@ import asyncio
 import aiohttp
 import os
 import time
+import ssl
+import certifi
 from datetime import datetime
 from typing import Optional, Dict, Any
 from urllib.parse import quote
@@ -99,9 +101,18 @@ class OpenRouterConnector(LoggerMixin):
             }
             self.session = aiohttp.ClientSession(
                 headers=headers,
-                timeout=timeout
+                timeout=timeout,
+                # Frozen Python cannot rely on the build host's external CA
+                # path. Add the pinned bundle while retaining system roots.
+                connector=aiohttp.TCPConnector(ssl=self._tls_context()),
             )
         return self.session
+
+    @staticmethod
+    def _tls_context():
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=certifi.where())
+        return context
 
     async def close(self):
         """

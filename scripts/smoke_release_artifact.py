@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import sys
@@ -39,10 +40,17 @@ def build_smoke_receipt(bundle_root: Path, *, frozen: bool) -> dict:
     _block_network()
     _verify_network_blocked()
     assets = verify_bundle_assets(bundle_root)
+    try:
+        revision = (bundle_root / 'commit_hash.txt').read_text(encoding='ascii').strip()
+    except (OSError, UnicodeError):
+        revision = None
+    if frozen and (revision is None or not re.fullmatch('[0-9a-f]{40}', revision)):
+        raise ValueError('frozen bundle omits a valid build revision')
     return {
         "schema_version": 1,
         "passed": True,
         "frozen": frozen,
+        "revision": revision,
         "network_blocked": True,
         "ui_started": False,
         "service_started": False,

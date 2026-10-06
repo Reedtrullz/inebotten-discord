@@ -42,6 +42,7 @@ def pyinstaller_arguments(
     spec_dir: Path,
     windows_version_file: Path | None = None,
     data_root: Path | None = None,
+    revision_file: Path | None = None,
 ) -> list[str]:
     """Build one platform command entirely from the shared release contract."""
     if platform_name not in _LAUNCHERS:
@@ -68,6 +69,8 @@ def pyinstaller_arguments(
     for relative in release_contract.BUNDLE_DATA_FILES:
         source = data_source_root / relative
         arguments.append(f"--add-data={source}{os.pathsep}{Path(relative).parent.as_posix()}")
+    if revision_file is not None:
+        arguments.append(f"--add-data={Path(revision_file)}{os.pathsep}.")
     for package in release_contract.PYINSTALLER_COLLECT_PACKAGES:
         arguments.append(f"--collect-submodules={package}")
     for module in release_contract.PYINSTALLER_HIDDEN_IMPORTS:
@@ -201,7 +204,8 @@ def _ensure_packaged_sources_are_versioned(repository_root: Path) -> set[str]:
 
 
 def _stage_packaged_data(
-    repository_root: Path, destination: Path, tracked_sources: set[str]
+    repository_root: Path, destination: Path, tracked_sources: set[str],
+    *, build_revision: str | None = None,
 ) -> Path:
     """Copy only versioned data inputs into the bounded PyInstaller build tree."""
     root = Path(repository_root).resolve()
@@ -224,6 +228,10 @@ def _stage_packaged_data(
         target = staged / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+    if build_revision is not None:
+        if not re.fullmatch('[0-9a-f]{40}', build_revision):
+            raise ValueError('invalid build revision')
+        (staged / 'commit_hash.txt').write_text(build_revision + '\n', encoding='ascii')
     return staged
 
 
@@ -489,7 +497,8 @@ def build_desktop(
         if platform_name == "windows":
             version_file = scratch / "windows-version.txt"
             release_contract.write_windows_version_file(version_file, version)
-        data_root = _stage_packaged_data(root, scratch / "source-data", tracked_sources)
+        data_root = _stage_packaged_data(
+            root, scratch / "source-data", tracked_sources, build_revision=commit)
 
         command = pyinstaller_arguments(
             platform_name,
@@ -499,6 +508,7 @@ def build_desktop(
             spec_dir,
             windows_version_file=version_file,
             data_root=data_root,
+            revision_file=data_root / 'commit_hash.txt',
         )
         build_env = _isolated_build_environment(scratch)
         try:
