@@ -1,6 +1,6 @@
 # Portfolio review stack — 5 October 2026
 
-Forty-six nonempty draft PR units preserve the actual ancestry of the 39 proposals and their corrections. I26 has two follow-up corrections, I03/I36 has shared outbound-mention suppression, and I18/I31/I22 have corrections from remote CI and artifact review. Each PR targets the preceding draft branch; review and merge order follows this table. The ten older dependency PRs were reconciled as superseded after integrated platform verification; their branches remain preserved. No automatic merge or deployment is requested.
+Forty-eight published nonempty draft PR units preserve the actual ancestry of the 39 proposals and their corrections. I26 has two follow-up corrections, I03/I36 has shared outbound-mention suppression, and I18/I31/I22 have corrections from remote CI and artifact review. Each PR targets the preceding draft branch; review and merge order follows this table. The ten older dependency PRs were reconciled as superseded after integrated platform verification; their branches remain preserved. No automatic merge or deployment is requested.
 
 Only the root targets master. Current CI and desktop workflow pull-request filters target master/main; final-stack remote workflows therefore need explicit dispatch at the final full head. Intermediate historical task checks and final integrated receipts are not exact-head CI proof for each draft.
 
@@ -53,6 +53,9 @@ Only the root targets master. Current CI and desktop workflow pull-request filte
 | 45 | I31 | [#68](https://github.com/Reedtrullz/inebotten-discord/pull/68) | `codex/portfolio-45-windows-owned-admission` | `a15658f00a001d95a039f46ba5ba6b3fd8c55ce6` |
 | 46 | I22/I21 | [#69](https://github.com/Reedtrullz/inebotten-discord/pull/69) | `codex/portfolio-46-cross-platform-release-contract` | `02272e7a465c048caaa508eb72d46cc7e8eb2ceb` |
 
+| 47 | I22/I31 | [#70](https://github.com/Reedtrullz/inebotten-discord/pull/70) | `codex/portfolio-47-macos-signature-integrity` | `f4a1b287eae564362e5c9f635ceaa35a0b7babf0` |
+| 48 | I39 | [#71](https://github.com/Reedtrullz/inebotten-discord/pull/71) | `codex/portfolio-48-member-csv-discriminator` | `9bccbfdf0f727859a80e7c749de09079a669c977` |
+
 The final draft also includes current execution/dependency/review documentation. Its published full head and workflow runs are recorded after creation. The corrected source checkpoint is `17907fdb2f86d780bdc6341c41e1869ea56c3c29`; local receipt logs remain in the ignored worktree evidence directory.
 
 Remaining acceptance owners: user-selected spreadsheet readers (I39), two real calendar clients (I36), supported target-platform CI and dependency reconciliation (I21), Windows/native build/signing/human release acceptance (I22/I31), and production bot factory/scheduler/test-guild/live proof (I37). These drafts do not certify those gates.
@@ -74,3 +77,14 @@ The Windows candidate is now integrated as `a15658f` and published in draft #68.
 Source654f8ac subsequently passed full CI (1,370 offline / 46 browser / 130 bot checks and all three clean platform profile jobs) and both native source/build/frozen checks. Downloaded native checksums/receipts also matched, but the actual Windows manifest failed Linux publisher validation because of checkout line endings in the lock digest. Draft #69 fixes that observed mismatch and adds joint nonpublishing verification through the publisher contract, preserving small review receipts. The regression failed before correction; 44 focused checks / 4 subtests passed afterward. Its final exact-head CI/native receipts will be appended to that draft body; older Windows packaging success is not substituted for publisher compatibility.
 
 I21 platform verification and all ten older dependency supersessions are complete locally. Remaining acceptance owners are the I39 spreadsheet reader, I31 human desktop/keyboard trial, I36 two calendar clients, I37 production composition/test guild, plus signing/distribution and deployment decisions. I22's new joint native-verification job remains a required gate at this publication checkpoint.
+
+## Current review — 6 October 2026
+
+The [staged selfbot rollout and dependency review](2026-10-06-staged-selfbot-rollout.md)
+is the current acceptance/disposition record. It includes freshly verified full
+published heads for all 48 existing drafts. I39 selected-reader and I31 requested
+idle human checks pass; I36 is accepted for its documented event subset with
+explicit task/timezone limits. I37 activation is deferred, with its prototype
+ancestry retained. Current local count:38 implemented in scope and 1 deferred,
+not 39 live acceptances. Historical pending statements above describe their own
+checkpoints; latest source/Actions receipts belong to the follow-up PR body.

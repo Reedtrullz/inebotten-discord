@@ -2,6 +2,21 @@
 
 Status: **bounded adapter, real shared-domain handlers, and the actual monitor lifecycle are feasible in an isolated bot profile; a production application factory remains deferred**. `MessageMonitor` was imported, constructed with a disconnected client and synthetic home, set up, and closed with `DISCORD_TOKEN=None`. Its broader selfbot service graph and default Hermes-home stores still require an explicit caller-supplied factory/configuration. No bot token, guild, Discord login, application command registration, or live test was used.
 
+## Release disposition — 6 October 2026
+
+I37 is deferred from the current selfbot rollout. The human approved finishing
+the existing selfbot work and deferring the optional bot transport. Its isolated
+prototype and tests remain preserved in draft #63; they do not constitute a
+production factory, proactive scheduler, or actual bot-account acceptance.
+Do not install the bot profile into the selfbot environment, activate the adapter,
+request a bot application ID for the existing selfbot, or remove the existing
+mode. Deferral is a scope disposition, not a completed live bot implementation.
+
+Draft #63 is an ancestor of later corrections. The current stack retains its
+inert source; deferring activation does not remove that ancestry. If a later
+review requires excluding its source entirely, restack and revalidate downstream
+PRs before merging, rather than silently skipping a middle draft.
+
 ## Policy and API findings
 
 Discord provides bot accounts and says automating a normal user account outside the OAuth2/bot API is forbidden. The new runtime therefore accepts only `BOT_DISCORD_TOKEN`; `DISCORD_USER_TOKEN` and ambiguous `DISCORD_TOKEN` are rejected, and this code never reads either `.env` file. The current selfbot remains a separate product/runtime and is not migrated by this change. [Discord: Automated User Accounts](https://support.discord.com/hc/en-us/articles/115002192352-Automated-User-Accounts-Self-Bots)

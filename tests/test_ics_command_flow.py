@@ -71,6 +71,48 @@ async def test_export_uses_shared_sender_and_policy_after_quota(tmp_path):
     finally:calendar._storage.close()
 
 
+@pytest.mark.parametrize('all_day,new_zone', [(False, 'Europe/Berlin'), (True, 'UTC')])
+async def test_small_import_shows_timezone_change_before_confirmation(tmp_path, all_day, new_zone):
+    calendar=CalendarManager(storage_path=tmp_path/'calendar.json')
+    try:
+        with request_scope(actor()):
+            item=calendar.add_item('shared','7','Tester','Møte','04.01.2027',
+                None if all_day else '09:30',duration_minutes=1440 if all_day else 90)
+        original=CalendarExchange(calendar).export_ics(actor(),'shared',[item['id']])
+        returned=original.replace(b'X-INEBOTTEN-TIMEZONE:Europe/Oslo',
+            b'X-INEBOTTEN-TIMEZONE:'+new_zone.encode())
+        service=handler(calendar)
+        service._read_ics_attachment=AsyncMock(return_value=returned)
+        attached=SimpleNamespace(filename='returned.ics',size=len(returned))
+        await service.handle_exchange(message('kalender importer ics',[attached]),{'action':'import'})
+        reply=service.send_response.await_args.args[1]
+        assert '1 endrede' in reply
+        assert f'tidssone Europe/Oslo → {new_zone}' in reply
+        assert calendar.items['shared'][0]['timezone']=='Europe/Oslo'
+        assert len(service._exchange.previews.entries)==1
+    finally:calendar._storage.close()
+
+
+@pytest.mark.parametrize('include_task', [False, True])
+async def test_export_warns_only_for_selected_tasks_without_converting_them(tmp_path, include_task):
+    calendar=CalendarManager(storage_path=tmp_path/'calendar.json')
+    sender=SimpleNamespace(send=AsyncMock(return_value=DeliveryResult('delivered',message_id='receipt')))
+    try:
+        with request_scope(actor()):
+            event=calendar.add_item('shared','7','Tester','Møte','04.01.2027')
+            task=calendar.add_item('shared','7','Tester','Frist','05.01.2027',kind='task')
+        selected=[event['id'],task['id']] if include_task else [event['id']]
+        await handler(calendar,sender).handle_exchange(message('kalender eksporter ics'),
+            {'action':'export','item_ids':selected})
+        call=sender.send.await_args
+        assert ('Google Kalender og Proton Kalender kan utelate oppgaver' in call.args[1])==include_task
+        raw=call.kwargs['attachments'][0].data
+        assert (b'BEGIN:VTODO' in raw)==include_task
+        assert raw.count(b'BEGIN:VEVENT')==1
+        assert task['kind']=='task' and task['time'] is None
+    finally:calendar._storage.close()
+
+
 @pytest.mark.parametrize('url',['http://cdn.discordapp.com/attachments/9/42/f.ics',
     'https://example.invalid/attachments/9/42/f.ics','https://cdn.discordapp.com/attachments/8/42/f.ics',
     'https://cdn.discordapp.com/attachments/9/41/f.ics'])

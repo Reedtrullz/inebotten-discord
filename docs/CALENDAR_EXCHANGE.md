@@ -36,9 +36,49 @@ occurrence exceptions, completed occurrences or split history require a later
 reviewed exchange extension. Reimport cannot overwrite such local history or
 pending provider mutations.
 
-Parser round trips are engineering checks. Acceptance through two selected
-calendar clients, with recorded versions and human-reviewed dates, remains a
-separate gate. No calendar-client acceptance has been performed yet.
+## Verified client compatibility — 5 October 2026
+
+The selected event subset was imported and exported through two actual web
+clients. Export PRODID identifies Google Calendar 70.9054 and Proton
+WebCalendar 5.0.423.0.a; these are producer-declared versions. The submitted
+recordings show the imports, and the returned files were compared read-only.
+Apple Calendar was not exercised.
+
+| Fixture | Google Calendar | Proton Calendar |
+| --- | --- | --- |
+| Unicode title and multiline description | Preserved | Preserved |
+| 4 January 2027, 09:30–11:00 Oslo | Same instants and duration | Same instants and duration |
+| Two all-day dates, 4–5 January, exclusive end 6 January | Preserved | Preserved |
+| Five Monday occurrences, 4 January–1 February | Preserved | Preserved |
+| 28 March, 01:30–04:30 Oslo, 120 elapsed minutes across DST | Preserved | Preserved |
+| Stable event UIDs | Preserved | Preserved |
+| Due-date task Frist (VTODO) | Omitted by client | Omitted by client |
+| Original timezone metadata | Europe/Oslo preserved | Timed TZIDs rewritten to Europe/Berlin; custom fields removed |
+
+Acceptance covers these event schedules and the previously declared recurrence
+subset. It does not promise lossless task or timezone-identifier round trips.
+Inebotten retains due-date tasks as VTODO and warns on exports that select tasks;
+it does not invent an event time to accommodate a client. Keep the original
+local task or the original ICS when the receiving client omits it.
+
+Proton's returned all-day record has no timezone metadata, so the import uses
+UTC for that date-only item. This preserves the fixture dates but changes the
+stored timezone identity. An import confirmation now shows the timezone, with
+old → new values for timezone changes. Review them before confirming: matching
+these January/March instants does not make two timezone names interchangeable
+for arbitrary historical dates or future rules.
+
+Returned Google events preview against the original five-item store as four
+duplicates; Proton events preview as four timezone changes. Neither creates
+new event identities or deletes the absent task. Importing either returned file
+into a separate empty fixture store gives four events; importing it again gives
+four duplicates without changing the revision. Imports add/update selected UIDs;
+absence from a file is never a deletion instruction.
+
+Private source files remain outside Git. Local review receipts contain only the
+synthetic fixtures, aggregate counts, file hashes and comparisons. The selected
+reader trial also verified all seven guarded CSV IDs, names and discriminator
+values in Google Sheets; raw JSON remains the lossless member-export reference.
 
 ## Commands
 

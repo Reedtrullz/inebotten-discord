@@ -57,8 +57,14 @@ class CalendarHandler(BaseHandler):
                     ids = [item['id'] for item in self.calendar.items.get(scope,[])
                         if not item.get('_mutation_deleted') and not item.get('delete_pending')]
                 raw = self._exchange.export_ics(actor,scope,ids)
+                text = f'Kalenderområdet {scope}: {len(ids)} valgte oppføringer som ICS.'
+                selected = set(ids)
+                if any(item['id'] in selected and item.get('kind')=='task'
+                    for item in self.calendar.items.get(scope,[])):
+                    text += ('\nGoogle Kalender og Proton Kalender kan utelate oppgaver. '
+                        'Oppgavene beholdes som oppgaver i filen og lokalt; kontroller mottakerens import.')
                 result = await monitor_sender(self.monitor).send(str(message.channel.id),
-                    f'Kalenderområdet {scope}: {len(ids)} valgte oppføringer som ICS.',
+                    text,
                     deadline=time.monotonic()+10,delivery_key=f'ics-export:{actor.user_id}:{message.id}',
                     attachments=(Attachment('inebotten-kalender.ics','text/calendar',raw),),
                     _dispatch=message.channel.send,
@@ -79,7 +85,10 @@ class CalendarHandler(BaseHandler):
                 for effect in proposal['effects'][:10]:
                     title = re.sub(r'[`\r\n]',' ',effect['title'])[:100]
                     fields = effect['after']
-                    lines.append(f"• {title}: {fields['date']} {fields.get('time') or 'dato'} ({fields['kind']})")
+                    zone = fields['timezone']
+                    prior_zone = effect['before'].get('timezone')
+                    zone_change = f'{prior_zone} → {zone}' if prior_zone and prior_zone!=zone else zone
+                    lines.append(f"• {title}: {fields['date']} {fields.get('time') or 'dato'} ({fields['kind']}; tidssone {zone_change})")
                 if len(proposal['effects'])>10: lines.append(f"… og {len(proposal['effects'])-10} andre oppføringer.")
                 if proposal['unsupported']:
                     lines.append(f"{len(proposal['unsupported'])} oppføringer støttes ikke og blir utelatt: "+', '.join(sorted({x['reason'] for x in proposal['unsupported']}))[:250])
