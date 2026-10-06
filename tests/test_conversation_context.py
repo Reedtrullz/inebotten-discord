@@ -1,7 +1,24 @@
 import unittest
+import pytest
 from typing import Protocol, cast
 
 from memory.conversation_context import ConversationContext
+
+
+@pytest.mark.parametrize('text', [
+    'Forklar kort forskjellen på et møte og en påminnelse',
+    'Kan du forklare forskjellen på kalender og påminnelser?',
+    'Fortell hvorfor været varierer',
+    'Explain how a calendar works',
+])
+def test_explanation_requests_stay_chat_with_dashboard_keywords(text):
+    context = ConversationContext()
+    assert context.should_show_dashboard(text, 123)[0] is False
+
+
+@pytest.mark.parametrize('text', ['vis dashboard', 'vær i Trondheim', 'Hva er været i dag?'])
+def test_explicit_dashboard_requests_still_work(text):
+    assert ConversationContext().should_show_dashboard(text, 123)[0] is True
 
 
 class _ConversationContextProto(Protocol):

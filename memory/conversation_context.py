@@ -139,6 +139,14 @@ class ConversationContext:
         Check if message implies user wants dashboard/info
         """
         content_lower = content.lower()
+
+        # Explaining a feature or topic does not request the live dashboard.
+        # This shared gate is used by both the router and the AI fallback.
+        if re.match(
+            r'^\s*(?:(?:kan|kunne) du\s+)?(?:forklar(?:e)?|fortell(?:e)?|explain)\b',
+            content_lower,
+        ):
+            return False
         
         # Un-match explicit questions that use "hva er" unless they specifically ask for weather/status
         if re.search(r'\bhva er\b', content_lower) and not re.search(r'\b(været|status|værmelding)\b', content_lower):
