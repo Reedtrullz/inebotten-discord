@@ -78,6 +78,8 @@ class CryptoManager:
         }
     
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('crypto_closed')
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
@@ -333,6 +335,7 @@ class CryptoManager:
     
     async def close(self):
         """Close the aiohttp session"""
+        self._closed = True
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None

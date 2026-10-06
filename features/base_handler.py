@@ -13,10 +13,11 @@ This class should be inherited by all new handlers.
 """
 
 import discord
-import inspect
 import re
 from typing import Optional, Union
 from utils.logger import LoggerMixin
+from core.request_context import current_request, request_localization
+from core.outbound_sender import monitor_sender
 
 
 class BaseHandler(LoggerMixin):
@@ -37,8 +38,16 @@ to ensure consistent access to shared state like rate limiting and
         """
         self.monitor = monitor
         self.rate_limiter = monitor.rate_limiter
-        self.loc = monitor.loc
+        self._localization = monitor.loc
         self.client = monitor.client
+
+    @property
+    def loc(self):
+        return request_localization(self._localization)
+
+    @property
+    def request_context(self):
+        return current_request()
 
     async def send_response(
         self,
@@ -60,44 +69,12 @@ to ensure consistent access to shared state like rate limiting and
         Returns:
             The sent message object, or None if failed
         """
-        can_send, reason = self.rate_limiter.can_send()
-        if not can_send:
-            self.logger.warning("Rate limited: cannot send response (%s)", reason)
-            if hasattr(self.rate_limiter, "record_dropped"):
-                self.rate_limiter.record_dropped()
-            return None
-
-        wait_result = self.rate_limiter.wait_if_needed()
-        if inspect.isawaitable(wait_result):
-            wait_result = await wait_result
-        if not wait_result:
-            self.logger.warning("Rate limited: wait_if_needed refused send")
-            if hasattr(self.rate_limiter, "record_dropped"):
-                self.rate_limiter.record_dropped()
-            return None
-
-        try:
-            if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
-                sent = await message.channel.send(content)
-            else:
-                sent = await message.reply(content, mention_author=mention_author)
-
-            # Record successful send
-            self.rate_limiter.record_sent()
+        result = await monitor_sender(self.monitor).reply(message, content, mention_author=mention_author)
+        if result.status == 'delivered' and result.reason_code == 'remote_message':
             if hasattr(self.monitor, 'response_count'):
                 self.monitor.response_count += 1
-
-            return sent
-        except discord.errors.Forbidden:
-            self.logger.warning("Forbidden: Cannot send message in this channel")
-            self.rate_limiter.record_failure()
-        except discord.errors.HTTPException as e:
-            self.logger.error(f"HTTP error sending message: {e}")
-            self.rate_limiter.record_failure(is_rate_limit=(e.status == 429))
-        except Exception as e:
-            self.logger.error(f"Error sending response: {e}")
-            self.rate_limiter.record_failure()
-
+            return result.message
+        self.logger.warning('Response delivery: %s (%s)', result.status, result.reason_code)
         return None
 
     async def check_rate_limit(self) -> tuple[bool, Optional[str]]:

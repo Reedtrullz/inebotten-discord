@@ -27,11 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
-COPY requirements.txt .
-
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the reviewed production graph with artifact hashes.
+COPY requirements/prod.lock requirements/prod.lock
+RUN python -m pip install --require-hashes --no-cache-dir -r requirements/prod.lock
 
 # Create a fixed-UID non-root runtime user and its persistent data directory
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin inebotten
@@ -42,7 +40,11 @@ ENV HERMES_HOME=/home/inebotten/.hermes
 COPY . .
 
 # Bake the current git commit hash into the image at build time
-RUN python scripts/write_version.py || echo "warning: could not write commit_hash.txt"
+RUN python scripts/write_version.py --require-full
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT \
+      io.inebotten.config-schema="1" \
+      io.inebotten.data-schema-min="0" \
+      io.inebotten.data-schema-max="4"
 
 # The bot stores data in ~/.hermes, now under the non-root user's home
 RUN mkdir -p /home/inebotten/.hermes \
@@ -53,6 +55,9 @@ USER inebotten
 # Expose the bridge port (if needed for external access, though run_both uses localhost)
 EXPOSE 3000
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["python", "scripts/deployment_health.py"]
 
 # Run the bot
 CMD ["python", "scripts/run_both.py"]

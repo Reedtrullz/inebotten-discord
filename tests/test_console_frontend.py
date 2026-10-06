@@ -1,5 +1,6 @@
 """Comprehensive frontend tests for the Inebotten web console."""
 
+import json
 from typing import Any
 
 import pytest
@@ -72,6 +73,63 @@ def test_dashboard_renders_cards(page: Any, console_server: ConsoleServer) -> No
     assert "Intents" in content
     assert "Minne" in content
     assert "Logger" in content
+    assert page.locator("[data-poll-endpoint]").count() == 8
+    assert page.locator("[data-poll-retry]").count() == 8
+
+
+def test_readiness_panel_updates_from_synthetic_cloud_fixture(page: Any, console_server: ConsoleServer) -> None:
+    """Cloud readiness stays clear when an unused optional bridge is unavailable."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    assert page.locator("#readiness").is_visible()
+
+    page.evaluate(
+        """() => window.consoleApp.updateDashboard('bridge', {
+          status: 'unavailable',
+          lm_studio: 'unknown',
+          readiness: {
+            status: 'ready',
+            checked_at: '2026-10-04T12:00:00+00:00',
+            components: {
+              provider: {
+                enabled: true, required: true, status: 'ready',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'provider_ready',
+                recovery_action: null, transport_status: 'reachable',
+                model_discovery_status: 'catalog_reachable', inference_acceptance_status: 'accepted'
+              },
+              bridge: {
+                enabled: false, required: false, status: 'disabled',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'bridge_not_required',
+                recovery_action: null
+              },
+              google_calendar: {
+                enabled: false, required: false, status: 'disabled',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'google_calendar_disabled',
+                recovery_action: null
+              },
+              scheduler: {
+                enabled: true, required: true, status: 'ready',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'scheduler_running',
+                recovery_action: null
+              },
+              store: {
+                enabled: true, required: true, status: 'ready',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'store_healthy',
+                recovery_action: null
+              },
+              calendar_sync: {
+                enabled: false, required: false, status: 'disabled',
+                checked_at: '2026-10-04T12:00:00+00:00', reason_code: 'google_calendar_disabled',
+                recovery_action: null
+              }
+            }
+          }
+        });"""
+    )
+
+    assert "inferens godkjent" in page.locator("#readiness").inner_text()
+    assert "Bridge" in page.locator("#readiness").inner_text()
+    assert "Ikke nødvendig" in page.locator("#readiness").inner_text()
+    assert "Nede" not in page.locator("#bridge").inner_text()
 
 
 def test_gcal_auth_page_renders_after_login(page: Any, console_server: ConsoleServer) -> None:
@@ -118,7 +176,8 @@ def test_health_endpoint_no_auth(page: Any, console_server: ConsoleServer) -> No
     body = response.json()
     assert body.get("status") in {"healthy", "degraded", "starting"}
     assert body.get("console", {}).get("status") == "running"
-    assert "persistence" in body
+    assert set(body) == {"status", "console", "revision", "readiness"}
+    assert body["revision"] is None or len(body["revision"]) == 40
 
 
 def test_theme_toggle_login_page(page: Any, console_server: ConsoleServer) -> None:
@@ -262,3 +321,425 @@ def test_demo_page_has_no_console_warnings(page: Any, console_server: ConsoleSer
 
     warnings = [message for message in messages if message.startswith(("warning:", "error:"))]
     assert warnings == []
+
+
+def _poll_synthetic_state(page: Any, endpoint: str, responses: list[dict[str, Any]]) -> None:
+    """Drive the real browser poller with generated loopback API payloads."""
+    index = 0
+
+    def respond(route: Any) -> None:
+        nonlocal index
+        payload = responses[index]
+        index = min(index + 1, len(responses) - 1)
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route(f"**{endpoint}**", respond)
+    page.evaluate(
+        """async (endpoint) => {
+          const app = window.consoleApp;
+          app.isPolling = true;
+          app.pollingConfig[endpoint].lastFetch = 0;
+          await app.pollEndpoint(endpoint);
+        }""",
+        endpoint,
+    )
+
+
+def test_calendar_details_and_open_modal_follow_latest_poll(page: Any, console_server: ConsoleServer) -> None:
+    """Calendar details, count and modal must use the same fetched snapshot."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    hostile_title = '<img src=x onerror="window.pwned=true"> New event'
+    refreshed_title = '<script>window.pwned=true</script> Newest event'
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [
+            {
+                "event_count": 1,
+                "task_count": 2,
+                "upcoming_events": [{"title": hostile_title, "date": "2026-10-05"}],
+            },
+            {
+                "event_count": 1,
+                "task_count": 2,
+                "upcoming_events": [{"title": refreshed_title, "date": "2026-10-06"}],
+            },
+        ],
+    )
+
+    assert page.locator('[data-metric="calendar.events"]').first.inner_text() == "1"
+    assert any(hostile_title in row for row in page.locator("#calendar .mini-row").all_inner_texts())
+    assert page.locator("#calendar img").count() == 0
+
+    page.locator('#calendar [data-section-modal="calendar"]').click()
+    modal = page.locator("#modal-content")
+    assert hostile_title in modal.inner_text()
+    close_button = page.locator(".modal-close")
+    close_button.focus()
+    page.evaluate(
+        """async () => {
+          window.consoleApp.pollingConfig['/api/calendar'].lastFetch = 0;
+          await window.consoleApp.pollEndpoint('/api/calendar');
+        }"""
+    )
+    assert refreshed_title in page.locator("#calendar .mini-row").inner_text()
+    assert refreshed_title in modal.inner_text()
+    assert page.evaluate("document.activeElement.className") == "modal-close"
+    assert page.evaluate("window.pwned || false") is False
+
+
+def test_removing_last_calendar_event_renders_empty_state(page: Any, console_server: ConsoleServer) -> None:
+    """A transition from one event to none must remove stale detail rows."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [
+            {"event_count": 1, "task_count": 0, "upcoming_events": [{"title": "One event", "date": "Tomorrow"}]},
+            {"event_count": 0, "task_count": 0, "upcoming_events": []},
+        ],
+    )
+    page.evaluate(
+        """async () => {
+          window.consoleApp.pollingConfig['/api/calendar'].lastFetch = 0;
+          await window.consoleApp.pollEndpoint('/api/calendar');
+        }"""
+    )
+
+    assert page.locator('[data-metric="calendar.events"]').first.inner_text() == "0"
+    assert page.locator("#calendar .mini-row").count() == 0
+    assert page.locator("#calendar .empty-state").inner_text() == "Ingen kommende kalenderhendelser."
+
+
+def test_poll_details_render_actual_collector_payload_and_modal(page: Any, console_server: ConsoleServer) -> None:
+    """Poll title and vote count from the existing API appear in card and modal."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    _poll_synthetic_state(
+        page,
+        "/api/polls",
+        [{"active_polls": 1, "polls": [{"title": "Dinner choice", "vote_count": 7}]}],
+    )
+
+    assert "Dinner choice" in page.locator("#polls .card-body").inner_text()
+    assert "7" in page.locator("#polls .card-body").inner_text()
+    page.locator('#polls [data-section-modal="polls"]').click()
+    assert "Dinner choice" in page.locator("#modal-content").inner_text()
+    assert "7" in page.locator("#modal-content").inner_text()
+
+
+def test_latest_logs_render_as_text_and_copy_matches_visible_lines(page: Any, console_server: ConsoleServer) -> None:
+    """Log detail and copy output must follow the latest response safely."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    hostile_line = '<svg onload="window.pwned=true"> latest log'
+    _poll_synthetic_state(page, "/api/logs?lines=50", [{"logs": [hostile_line]}])
+    page.evaluate(
+        """() => Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {writeText: async (text) => { window.copiedLogs = text; }}
+        })"""
+    )
+
+    visible = page.locator("#log-container")
+    assert hostile_line in visible.inner_text()
+    assert visible.locator("svg").count() == 0
+    page.locator("[data-copy-logs]").click()
+    page.wait_for_function("window.copiedLogs !== undefined")
+    assert page.evaluate("window.copiedLogs") == visible.inner_text()
+    assert page.evaluate("window.pwned || false") is False
+
+
+def test_log_pause_filter_cursor_and_download_use_one_owned_request(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f'{_base_url(console_server)}/demo')
+    page.evaluate("""() => {
+      window.calls = [];
+      window.fetch = async (url) => {
+        window.calls.push(url);
+        return {ok:true, status:200, json:async () => ({logs:['<svg> synthetic'],
+          next_cursor:'synthetic-cursor', truncated:true, bytes_read:4096})};
+      };
+      window.consoleApp.isPolling = true;
+      window.consoleApp.updateDashboard('logs', {logs:['initial'], next_cursor:'synthetic-cursor', truncated:true});
+      window.savedLog = null;
+      URL.createObjectURL = (blob) => {blob.text().then(text => window.savedLog = text); return 'blob:synthetic';};
+      URL.revokeObjectURL = () => {};
+      HTMLAnchorElement.prototype.click = () => {};
+    }""")
+    page.locator('[data-log-pause]').click()
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].paused")
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].timerId") is None
+    page.locator('[data-log-older]').click()
+    page.wait_for_function('() => window.calls.length === 1')
+    assert 'cursor=synthetic-cursor' in page.evaluate('window.calls[0]')
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].timerId") is None
+    page.locator('[data-log-level]').select_option('ERROR')
+    page.wait_for_function('() => window.calls.length === 2')
+    assert 'level=ERROR' in page.evaluate('window.calls[1]')
+    assert 'cursor=' not in page.evaluate('window.calls[1]')
+    page.locator('[data-download-logs]').click()
+    page.wait_for_function('() => window.savedLog !== null')
+    assert '<svg> synthetic' in page.evaluate('window.savedLog')
+    assert page.locator('#log-container svg').count() == 0
+    page.locator('[data-log-pause]').click()
+    page.wait_for_function('() => window.calls.length === 3')
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/logs?lines=50'].timerId !== null")
+
+def test_calendar_refresh_keeps_keyboard_focus_and_narrow_layout(page: Any, console_server: ConsoleServer) -> None:
+    """Updating details keeps the open dialog usable at a narrow viewport."""
+    page.set_viewport_size({"width": 375, "height": 812})
+    page.goto(f"{_base_url(console_server)}/demo")
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [{"event_count": 1, "task_count": 0, "upcoming_events": [{"title": "Focused event", "date": "Today"}]}],
+    )
+    page.locator('#calendar [data-section-modal="calendar"]').click()
+    dialog = page.locator('[role="dialog"]')
+    close_button = page.locator(".modal-close")
+    close_button.focus()
+    page.evaluate(
+        """async () => {
+          window.consoleApp.pollingConfig['/api/calendar'].lastFetch = 0;
+          await window.consoleApp.pollEndpoint('/api/calendar');
+        }"""
+    )
+
+    assert page.evaluate("document.activeElement.className") == "modal-close"
+    assert "Focused event" in page.locator("#modal-content").inner_text()
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth") is True
+    close_button.press("Tab")
+    assert dialog.is_visible()
+
+
+def test_calendar_scope_policy_explains_owner_and_audience_as_text(page: Any, console_server: ConsoleServer) -> None:
+    """Optional scope fields explain access without interpreting hostile text as markup."""
+    page.goto(f"{_base_url(console_server)}/demo")
+    hostile_summary = '<img src=x onerror="window.scopePwned=true"> Owner controls writes'
+    _poll_synthetic_state(
+        page,
+        "/api/calendar",
+        [{
+            "sync_states": {"pending": 2, "unknown": 1, "failed": 3, "conflict": 4, "synced": 5},
+            "event_count": 0,
+            "task_count": 0,
+            "upcoming_events": [],
+            "scope_policy": [{
+                "scope_id": "private-calendar",
+                "kind": "private",
+                "owner_id": "owner-123",
+                "collaborator_ids": ["member-456"],
+                "channel_ids": ["channel-789"],
+                "read_policy": "owner and approved members",
+                "write_policy": "owner only",
+            }],
+            "default_scope": "private-calendar",
+            "access_summary": hostile_summary,
+            "invocation_policy": {
+                "mode": "allowlist",
+                "allowed_users": ["owner-123", "member-456"],
+                "allowed_channels": ["channel-789"],
+                "legacy_group_dm_bypass": False,
+                "inherited_defaults": "Legacy group settings apply until reviewed",
+            },
+        }],
+    )
+
+    explanation = page.locator("#calendar [data-calendar-scope]")
+    assert explanation.is_visible()
+    rendered = explanation.inner_text()
+    for expected in (
+        "owner-123", "member-456", "channel-789", "owner and approved members",
+        "Ventende: 2", "Uavklart: 1", "Feilet: 3", "Konflikt: 4", "Bekreftet: 5",
+        "owner only", "allowlist", "Legacy group settings apply until reviewed",
+    ):
+        assert expected in rendered
+    assert hostile_summary in rendered
+    assert explanation.locator("img").count() == 0
+
+    page.locator('#calendar [data-section-modal="calendar"]').click()
+    assert hostile_summary in page.locator("#modal-content").inner_text()
+    assert "owner-123" in page.locator("#modal-content").inner_text()
+    assert page.evaluate("window.scopePwned || false") is False
+
+
+def test_calendar_poll_is_safe_when_auxiliary_page_has_no_calendar_card(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("document.getElementById('calendar').remove()")
+    page.evaluate("window.consoleApp.updateDashboard('calendar', {event_count: 0, task_count: 0, upcoming_events: [], access_summary: 'Delt område'})")
+    assert page.evaluate("window.consoleApp.authExpired") is False
+
+
+def test_section_renderer_owns_latest_modal_and_overview_snapshot(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("window.consoleApp.showSectionModal('calendar')")
+    page.evaluate("window.consoleApp.renderSection('calendar', {event_count: 1, task_count: 0, upcoming_events: [{title: 'Latest owned snapshot', date: 'Tomorrow'}]})")
+    assert 'Latest owned snapshot' in page.locator('#modal-content').inner_text()
+    assert page.locator('[data-metric="overview.calendar"]').inner_text()=='1 / 0'
+
+
+def _start_fake_poller(page: Any, console_server: ConsoleServer, responses: dict[str, Any] | None = None) -> None:
+    page.clock.install(time="2026-10-04T09:00:00")
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate(
+        """async (responses) => {
+          window.__responses = responses || {};
+          window.__requestCounts = {};
+          window.__settledRequests = 0;
+          window.__abortedRequests = {};
+          window.fetch = async (url, options = {}) => {
+            const endpoint = String(url);
+            window.__requestCounts[endpoint] = (window.__requestCounts[endpoint] || 0) + 1;
+            const configured = window.__responses[endpoint] || {status: 200, body: {}};
+            const queue = Array.isArray(configured) ? configured : [configured];
+            const response = queue.length > 1 ? queue.shift() : queue[0];
+            window.__settledRequests += 1;
+            if (response.hang) {
+              return new Promise((resolve, reject) => {
+                options.signal?.addEventListener('abort', () => {
+                  window.__abortedRequests[endpoint] = (window.__abortedRequests[endpoint] || 0) + 1;
+                  reject(new DOMException('Aborted', 'AbortError'));
+                }, {once: true});
+              });
+            }
+            return {
+              status: response.status ?? 200,
+              ok: (response.status ?? 200) >= 200 && (response.status ?? 200) < 300,
+              json: async () => response.body || {},
+            };
+          };
+          const app = window.consoleApp;
+          app.isDemo = false;
+          app.startPolling();
+          for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+        }""",
+        responses or {},
+    )
+
+
+def test_visibility_cycles_keep_one_poll_chain_per_endpoint(page: Any, console_server: ConsoleServer) -> None:
+    """Repeated hide/show cycles leave only one scheduled request per endpoint."""
+    _start_fake_poller(page, console_server)
+    page.evaluate(
+        """async () => {
+          let visibility = 'visible';
+          Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => visibility});
+          window.__setVisibility = async (state) => {
+            visibility = state;
+            document.dispatchEvent(new Event('visibilitychange'));
+            for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+          };
+          await window.__setVisibility('hidden');
+          await window.__setVisibility('visible');
+          await window.__setVisibility('hidden');
+          await window.__setVisibility('visible');
+        }"""
+    )
+    page.clock.fast_forward(5000)
+
+    assert page.evaluate("window.__requestCounts['/api/status']") == 4
+    assert page.evaluate("Object.keys(window.consoleApp.pollingEntries).length") == 8
+    assert page.evaluate("Object.values(window.consoleApp.pollingEntries).every((entry) => entry.timerId !== null)")
+
+
+def test_endpoint_failure_stays_stale_until_its_own_retry_succeeds(page: Any, console_server: ConsoleServer) -> None:
+    """A healthy endpoint cannot make a failing calendar card look fresh."""
+    _start_fake_poller(
+        page,
+        console_server,
+        {"/api/calendar": [
+            {"status": 503, "body": {}},
+            {"status": 200, "body": {"event_count": 2, "task_count": 0, "upcoming_events": []}},
+        ]},
+    )
+
+    calendar_state = page.locator('#calendar [data-poll-endpoint="/api/calendar"]')
+    status_state = page.locator('#status [data-poll-endpoint="/api/status"]')
+    assert calendar_state.count() == 1
+    assert "Feil" in calendar_state.inner_text() or "utdatert" in calendar_state.inner_text().lower()
+    assert "utdaterte" in page.locator("#last-updated").inner_text().lower()
+    first_status_time = status_state.get_attribute("data-last-success")
+    page.locator('#calendar [data-poll-retry="/api/calendar"]').click()
+    page.wait_for_function("window.__requestCounts['/api/calendar'] === 2")
+
+    assert "Oppdatert" in calendar_state.inner_text()
+    assert status_state.get_attribute("data-last-success") == first_status_time
+
+
+def test_hung_endpoint_times_out_and_reports_failure(page: Any, console_server: ConsoleServer) -> None:
+    """A hung API request is aborted by its elapsed deadline and marked stale."""
+    _start_fake_poller(page, console_server, {"/api/calendar": {"hang": True}})
+    page.clock.fast_forward(16000)
+
+    assert page.evaluate("window.__abortedRequests['/api/calendar'] || 0") == 1
+    calendar_state = page.locator('#calendar [data-poll-endpoint="/api/calendar"]')
+    assert "Tidsavbrudd" in calendar_state.inner_text() or "utdatert" in calendar_state.inner_text().lower()
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/calendar'].controller") is None
+
+
+def test_auth_expiry_stops_all_endpoint_chains(page: Any, console_server: ConsoleServer) -> None:
+    """A 401 stops every timer and blocks further requests after expiry."""
+    _start_fake_poller(page, console_server, {"/api/status": {"status": 401, "body": {}}})
+    page.wait_for_function("window.consoleApp.authExpired === true")
+    counts_at_expiry = page.evaluate("window.__requestCounts")
+    page.clock.fast_forward(120000)
+
+    assert page.locator("#auth-expired").is_visible()
+    assert page.evaluate("window.__requestCounts") == counts_at_expiry
+    assert page.evaluate("Boolean(window.consoleApp.pollingEntries) && Object.values(window.consoleApp.pollingEntries).every((entry) => entry.timerId === null)")
+
+
+def test_poll_deadlines_ignore_wall_clock_jumps(page: Any, console_server: ConsoleServer) -> None:
+    """Moving wall time backward does not postpone a monotonic poll deadline."""
+    _start_fake_poller(page, console_server)
+    page.clock.set_fixed_time("2020-01-01T00:00:00")
+    page.clock.fast_forward(5000)
+
+    assert page.evaluate("window.__requestCounts['/api/status']") == 2
+
+
+def test_old_poll_generation_cannot_expire_new_auth_session(page: Any, console_server: ConsoleServer) -> None:
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("""async () => {
+        let first = true;
+        window.fetch = async (url) => {
+            if (String(url) === '/api/status' && first) {
+                first = false;
+                return new Promise(resolve => { window.resolveOldPoll = resolve; });
+            }
+            return {status: 200, ok: true, json: async () => ({})};
+        };
+        const app=window.consoleApp;
+        app.isDemo=false;
+        app.startPolling();
+        app.stopPolling();
+        app.startPolling();
+        for (let turn=0; turn<10; turn++) await Promise.resolve();
+        window.resolveOldPoll({status:401, ok:false, json:async()=>({})});
+        for (let turn=0; turn<10; turn++) await Promise.resolve();
+    }""")
+    assert page.evaluate('window.consoleApp.authExpired') is False
+    assert page.evaluate('window.consoleApp.isPolling') is True
+    assert page.locator('#auth-expired').is_hidden()
+
+
+def test_reply_after_elapsed_deadline_cannot_refresh_endpoint(page: Any, console_server: ConsoleServer) -> None:
+    page.clock.install(time='2026-10-04T09:00:00')
+    page.goto(f"{_base_url(console_server)}/demo")
+    page.evaluate("""async () => {
+        window.fetch=async (url) => String(url)==='/api/calendar'
+            ? new Promise(resolve => {window.resolveLateCalendar=resolve;})
+            : {status:200,ok:true,json:async()=>({})};
+        window.consoleApp.isDemo=false;
+        window.consoleApp.startPolling();
+        for(let turn=0;turn<10;turn++) await Promise.resolve();
+    }""")
+    page.clock.fast_forward(16000)
+    page.evaluate("""async () => {
+        window.resolveLateCalendar({status:200,ok:true,json:async()=>({event_count:123,task_count:0,upcoming_events:[]})});
+        for(let turn=0;turn<10;turn++) await Promise.resolve();
+    }""")
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/calendar'].lastSuccess") is None
+    assert page.evaluate("window.consoleApp.pollingEntries['/api/calendar'].status") == 'timeout'

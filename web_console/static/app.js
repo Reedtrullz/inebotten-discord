@@ -7,11 +7,12 @@ class ConsoleApp {
     this.lastUpdated = null;
     this.isPolling = false;
     this.authExpired = false;
-    this.pollingControllers = {};
     this.pollingBackoff = {};
     this._focusTrapHandler = null;
     this._lastFocusedElement = null;
+    this.openSection = null;
     this.isDemo = document.body.classList.contains("demo-mode");
+    this.calendarWorkspace = { state: null, selected: null, pending: null, csrf: null };
     this.pollingConfig = {
       "/api/status": { interval: 5000, lastFetch: 0 },
       "/api/bridge": { interval: 5000, lastFetch: 0 },
@@ -22,6 +23,19 @@ class ConsoleApp {
       "/api/memory": { interval: 10000, lastFetch: 0 },
       "/api/logs?lines=50": { interval: 30000, lastFetch: 0 },
     };
+    this.requestTimeout = 15000;
+    this.pollingEntries = Object.fromEntries(Object.entries(this.pollingConfig).map(([endpoint, config]) => [endpoint, {
+      endpoint,
+      interval: config.interval,
+      timerId: null,
+      deadlineId: null,
+      controller: null,
+      generation: 0,
+      lastSuccess: null,
+      status: "idle",
+      deadline: null,
+      timedOut: false,
+    }]));
   }
 
   init() {
@@ -29,6 +43,7 @@ class ConsoleApp {
     this.bindShell();
     this.bindModalButtons();
     this.initData();
+    this.bindCalendarWorkspace();
     this.updateShellStatus();
     if (!this.isDemo) {
       this.startPolling();
@@ -71,6 +86,30 @@ class ConsoleApp {
     document.querySelectorAll("[data-copy-logs]").forEach((button) => {
       button.addEventListener("click", () => copyLogs());
     });
+    document.querySelector('[data-log-pause]')?.addEventListener('click', () => {
+      const entry = this.pollingEntries['/api/logs?lines=50'];
+      this.pauseLogs(!entry.paused);
+      if (!entry.paused) this.requestLogs();
+    });
+    document.querySelector('[data-log-older]')?.addEventListener('click', () => {
+      this.pauseLogs(true);
+      this.requestLogs(this.data.logs?.next_cursor);
+    });
+    ['[data-log-level]', '[data-log-component]'].forEach(selector => {
+      document.querySelector(selector)?.addEventListener('change', () => this.requestLogs());
+    });
+    document.querySelector('[data-download-logs]')?.addEventListener('click', () => {
+      const text = document.getElementById('log-container')?.innerText || '';
+      const url = URL.createObjectURL(new Blob([text], {type:'text/plain;charset=utf-8'}));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'inebotten-diagnostikk.txt';
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+    document.querySelectorAll("[data-poll-retry]").forEach((button) => {
+      button.addEventListener("click", () => this.retryEndpoint(button.dataset.pollRetry));
+    });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") this.closeModal();
     });
@@ -82,6 +121,236 @@ class ConsoleApp {
         this.showSectionModal(button.getAttribute("data-section-modal"));
       });
     });
+  }
+
+  bindCalendarWorkspace() {
+    const root = document.querySelector("[data-calendar-workspace]");
+    if (!root) return;
+    const form = root.querySelector("[data-calendar-form]");
+    root.querySelector("[data-calendar-refresh]")?.addEventListener("click", () => this.loadCalendarWorkspace());
+    root.querySelector("[data-calendar-new]")?.addEventListener("click", () => this.resetCalendarForm(true));
+    root.querySelector("[data-calendar-filter]")?.addEventListener("input", () => this.renderCalendarAgenda());
+    form?.addEventListener("submit", (event) => { event.preventDefault(); this.previewCalendarForm(); });
+    root.querySelector("[data-calendar-agenda]")?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-calendar-action]");
+      if (!button) return;
+      const item = this.calendarWorkspace.state?.items?.find((entry) => entry.id === button.dataset.itemId);
+      if (!item) return;
+      if (button.dataset.calendarAction === "edit") this.editCalendarItem(item);
+      else this.previewCalendarAction(button.dataset.calendarAction, item);
+    });
+    root.querySelector("[data-calendar-conflicts]")?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-conflict-id]");
+      if (button) this.previewCalendarConflict(button.dataset.conflictId, button.dataset.choice);
+    });
+    root.querySelector("[data-calendar-apply]")?.addEventListener("click", () => this.applyCalendarPreview());
+    root.querySelector("[data-calendar-cancel]")?.addEventListener("click", () => this.cancelCalendarPreview());
+    this.loadCalendarWorkspace();
+  }
+
+  calendarStatus(message, isError = false) {
+    const status = document.querySelector("[data-calendar-status]");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("is-error", isError);
+  }
+
+  async calendarRequest(path, payload = null) {
+    const headers = { Accept: "application/json" };
+    const options = { method: payload ? "POST" : "GET", credentials: "same-origin", headers };
+    if (payload) {
+      headers["Content-Type"] = "application/json";
+      if (this.calendarWorkspace.csrf) headers["X-CSRF-Token"] = this.calendarWorkspace.csrf;
+      options.body = JSON.stringify(payload);
+    }
+    const response = await fetch(path, options);
+    let body;
+    try { body = await response.json(); } catch (_) { body = {}; }
+    if (!response.ok) {
+      const error = new Error(body.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  }
+
+  async loadCalendarWorkspace() {
+    if (this.isDemo) {
+      this.calendarStatus("Demo viser eksempeldata. Kalenderendringer er deaktivert.");
+      return;
+    }
+    this.calendarStatus("Henter kalender …");
+    try {
+      const state = await this.calendarRequest("/api/calendar/items");
+      this.calendarWorkspace.state = state;
+      this.calendarWorkspace.csrf = state.csrf_token || null;
+      this.renderCalendarAgenda();
+      const writeReady = state.enabled && state.write_available === true;
+      document.querySelectorAll("[data-calendar-form] input, [data-calendar-form] select, [data-calendar-form] textarea, [data-calendar-form] button").forEach((el) => { el.disabled = !writeReady; });
+      this.calendarStatus(state.enabled ? `${state.items.length} oppføringer · område ${state.scope_id}${writeReady ? " · endringer klare" : " · skriveadgang ikke konfigurert"}` : (state.message || "Kalenderarbeidsområdet er deaktivert."), !state.enabled);
+    } catch (error) {
+      this.calendarStatus(error.status === 401 ? "Økta er utløpt. Logg inn på nytt." : "Kalenderen kunne ikke lastes. Prøv igjen.", true);
+    }
+  }
+
+  renderCalendarAgenda() {
+    const root = document.querySelector("[data-calendar-agenda]");
+    if (!root) return;
+    const state = this.calendarWorkspace.state;
+    root.replaceChildren();
+    if (!state?.enabled) {
+      const empty = document.createElement("p"); empty.className = "empty-state";
+      empty.textContent = state?.message || "Kalenderarbeidsområdet er deaktivert."; root.append(empty); return;
+    }
+    this.renderCalendarConflicts();
+    const filter = (document.querySelector("[data-calendar-filter]")?.value || "").trim().toLocaleLowerCase("no");
+    const rows = state.items.filter((item) => !filter || `${item.title} ${item.date} ${item.description || ""}`.toLocaleLowerCase("no").includes(filter));
+    const weekGroups = new Map();
+    rows.forEach((item) => {
+      const date = this.calendarDateInput(item.date);
+      const parsed = new Date(`${date}T12:00:00`);
+      if (Number.isNaN(parsed.getTime())) return;
+      const monday = new Date(parsed); monday.setDate(parsed.getDate() - ((parsed.getDay() + 6) % 7));
+      const key = monday.toLocaleDateString("no-NO", { day: "numeric", month: "short", year: "numeric" });
+      weekGroups.set(key, (weekGroups.get(key) || 0) + 1);
+    });
+    const summary = document.querySelector("[data-calendar-week-summary]");
+    if (summary) summary.textContent = rows.length ? `Ukesoversikt: ${[...weekGroups].map(([week, count]) => `uken fra ${week}: ${count}`).join(" · ")}` : "Ingen oppføringer i denne agenda-visningen.";
+    if (!rows.length) {
+      const empty = document.createElement("p"); empty.className = "empty-state";
+      empty.textContent = state.items.length ? "Ingen treff på filteret." : "Kalenderen er tom. Legg til den første oppføringen."; root.append(empty); return;
+    }
+    rows.forEach((item) => {
+      const article = document.createElement("article"); article.className = "calendar-agenda-item";
+      const heading = document.createElement("h5"); heading.textContent = item.title || "Uten tittel";
+      const details = document.createElement("p"); details.textContent = `${item.date || "Ukjent dato"}${item.time ? ` · ${item.time}` : " · Hele dagen"} · ${item.kind === "task" ? "Oppgave" : "Hendelse"}${item.completed ? " · fullført" : ""}`;
+      const sync = document.createElement("p"); sync.className = `calendar-sync sync-${item.sync_state || "synced"}`;
+      sync.textContent = item.sync_blocked ? `Synkronisering blokkert: ${item.sync_blocked}` : ({ pending: "Synkronisering venter", unknown: "Synkronisering uavklart", conflict: "Synkroniseringskonflikt", failed: "Synkronisering feilet" }[item.sync_state] || "Synkronisert lokalt");
+      const actions = document.createElement("div"); actions.className = "calendar-item-actions";
+      [["edit", "Rediger"], [item.completed ? "complete" : "complete", item.completed ? "Fullført" : "Fullfør"], ["delete", "Slett"]].forEach(([action, label]) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "btn btn-secondary";
+        button.dataset.calendarAction = action; button.dataset.itemId = item.id; button.textContent = label;
+        button.disabled = !state.enabled || state.read_only || (action === "complete" && item.completed); actions.append(button);
+      });
+      const disclosure = document.createElement("details");
+      const summary = document.createElement("summary"); summary.textContent = "Detaljer";
+      const description = document.createElement("p"); description.textContent = item.description || "Ingen beskrivelse.";
+      const extra = document.createElement("p");
+      extra.textContent = [item.timezone, item.duration_minutes ? `${item.duration_minutes} min` : "", item.recurrence ? `Gjentakelse: ${item.recurrence}` : ""].filter(Boolean).join(" · ") || "Ingen ekstra tidsdetaljer.";
+      disclosure.append(summary, description, extra);
+      article.append(heading, details, disclosure, sync, actions); root.append(article);
+    });
+  }
+
+  renderCalendarConflicts() {
+    const root = document.querySelector("[data-calendar-conflicts]");
+    if (!root) return;
+    root.replaceChildren();
+    const conflicts = (this.calendarWorkspace.state?.items || []).flatMap((item) => (item.conflicts || []).map((conflict) => ({ ...conflict, title: item.title })));
+    if (!conflicts.length) return;
+    const heading = document.createElement("h5"); heading.textContent = "Synkroniseringskonflikter"; root.append(heading);
+    conflicts.forEach((conflict) => {
+      const row = document.createElement("div"); row.className = "calendar-conflict-row";
+      const label = document.createElement("p"); label.textContent = `${conflict.title}: ${conflict.reason_code || "Konflikt"}`; row.append(label);
+      [["use_local", "Behold lokal"], ["use_remote", "Bruk Google"]].forEach(([choice, text]) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "btn btn-secondary";
+        button.textContent = text; button.dataset.conflictId = conflict.operation_id; button.dataset.choice = choice;
+        button.disabled = this.calendarWorkspace.state.read_only; row.append(button);
+      });
+      root.append(row);
+    });
+  }
+
+  resetCalendarForm(focus = false) {
+    const form = document.querySelector("[data-calendar-form]");
+    if (!form) return;
+    form.reset(); form.elements.item_id.value = ""; this.calendarWorkspace.selected = null;
+    document.querySelector("[data-calendar-form-title]").textContent = "Ny oppføring";
+    if (focus) form.elements.title.focus();
+  }
+
+  editCalendarItem(item) {
+    const form = document.querySelector("[data-calendar-form]");
+    form.elements.item_id.value = item.id; form.elements.title.value = item.title || "";
+    form.elements.date.value = this.calendarDateInput(item.date); form.elements.time.value = item.time || "";
+    form.elements.kind.value = item.kind || "event"; form.elements.duration_minutes.value = item.duration_minutes || "";
+    form.elements.description.value = item.description || "";
+    this.calendarWorkspace.selected = item.id;
+    document.querySelector("[data-calendar-form-title]").textContent = "Rediger oppføring";
+    form.elements.title.focus();
+  }
+
+  calendarDateInput(value) {
+    if (!value) return "";
+    const norwegian = String(value).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    return norwegian ? `${norwegian[3]}-${norwegian[2]}-${norwegian[1]}` : String(value).slice(0, 10);
+  }
+
+  calendarDateDomain(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return match ? `${match[3]}.${match[2]}.${match[1]}` : value;
+  }
+
+  async previewCalendarForm() {
+    const form = document.querySelector("[data-calendar-form]");
+    const values = new FormData(form); const id = values.get("item_id");
+    const changes = { title: values.get("title").trim(), date: this.calendarDateDomain(values.get("date")),
+      time: values.get("time") || null, kind: values.get("kind"), description: values.get("description"),
+      timezone: "Europe/Oslo", all_day: !values.get("time") };
+    if (values.get("duration_minutes")) changes.duration_minutes = Number(values.get("duration_minutes"));
+    const payload = { operation: id ? "edit" : "create", revision: this.calendarWorkspace.state.revision, ...(id ? { item_id: id } : {}), changes };
+    await this.requestCalendarPreview(payload);
+  }
+
+  async previewCalendarAction(action, item) {
+    if (action === "edit") return this.editCalendarItem(item);
+    if (action === "complete" && item.completed) return;
+    await this.requestCalendarPreview({ operation: action, item_id: item.id, revision: this.calendarWorkspace.state.revision });
+  }
+
+  async previewCalendarConflict(operationId, choice) {
+    await this.requestCalendarPreview({ operation: "conflict", operation_id: operationId, choice, revision: this.calendarWorkspace.state.revision });
+  }
+
+  async requestCalendarPreview(payload) {
+    try {
+      const preview = await this.calendarRequest("/api/calendar/preview", payload);
+      this.calendarWorkspace.pending = preview;
+      const panel = document.querySelector("[data-calendar-preview]"); const content = panel.querySelector("[data-calendar-preview-content]");
+      content.replaceChildren();
+      (preview.effects || []).forEach((effect) => {
+        const line = document.createElement("p");
+        line.textContent = preview.operation === "create" ? `Opprett: ${effect.after.title} · ${effect.after.date}` :
+          `${preview.operation}: ${(effect.before?.title || effect.title || "Oppføring")} → ${(effect.after?.title || "fjernes/oppdateres")}`;
+        content.append(line);
+      });
+      panel.hidden = false; panel.querySelector("[data-calendar-apply]").focus();
+      this.calendarStatus("Forhåndsvisningen er klar. Bekreft for å lagre.");
+    } catch (error) {
+      this.calendarStatus(error.message === "revision_changed" ? "Kalenderen ble endret. Oppdater og prøv på nytt." : "Endringen kunne ikke forhåndsvises. Kontroller feltene og tilgangen.", true);
+    }
+  }
+
+  async applyCalendarPreview() {
+    const pending = this.calendarWorkspace.pending;
+    if (!pending) return;
+    try {
+      const result = await this.calendarRequest("/api/calendar/apply", { token: pending.token });
+      this.calendarWorkspace.pending = null; document.querySelector("[data-calendar-preview]").hidden = true;
+      this.calendarStatus(result.remote_pending ? "Lagret lokalt. Synkronisering venter." : "Endringen er lagret.");
+      await this.loadCalendarWorkspace();
+      document.querySelector("[data-calendar-refresh]")?.focus();
+    } catch (error) {
+      this.calendarStatus(error.message === "revision_changed" ? "Kalenderen ble endret. Forhåndsvis på nytt." : "Endringen ble avvist. Oppdater kalenderen og kontroller tilgang eller konflikt.", true);
+      this.calendarWorkspace.pending = null; document.querySelector("[data-calendar-preview]").hidden = true;
+      await this.loadCalendarWorkspace();
+    }
+  }
+
+  cancelCalendarPreview() {
+    this.calendarWorkspace.pending = null; document.querySelector("[data-calendar-preview]").hidden = true;
+    document.querySelector("[data-calendar-form] [type=submit]")?.focus();
+    this.calendarStatus("Forhåndsvisningen ble avbrutt.");
   }
 
   toggleTheme() {
@@ -109,11 +378,17 @@ class ConsoleApp {
   }
 
   touchUpdated() {
-    this.lastUpdated = new Date().toLocaleTimeString("no-NO", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    const entries = Object.values(this.pollingEntries);
+    const allFresh = entries.length > 0 && entries.every((entry) => entry.status === "fresh" && entry.lastSuccess !== null);
+    const anyFailure = entries.some((entry) => entry.status === "error" || entry.status === "timeout");
+    const anyPaused = entries.some((entry) => entry.status === "paused");
+    this.lastUpdated = this.authExpired
+      ? "Økta er utløpt"
+      : !this.isPolling && anyPaused
+        ? "Oppdatering satt på pause"
+        : anyFailure
+          ? "Noen data er utdaterte"
+          : allFresh ? "Alle data oppdatert" : "Oppdaterer data";
     const wrapper = document.getElementById("last-updated");
     const value = document.querySelector("[data-last-updated-time]");
     if (wrapper && value) {
@@ -125,66 +400,157 @@ class ConsoleApp {
   startPolling() {
     if (this.isPolling || this.authExpired) return;
     this.isPolling = true;
-    Object.keys(this.pollingConfig).forEach((endpoint) => {
-      this.pollEndpoint(endpoint);
+    Object.keys(this.pollingEntries).forEach((endpoint) => {
+      const entry = this.pollingEntries[endpoint];
+      if (entry.paused || entry.timerId !== null || entry.controller !== null) return;
+      this.pollEndpoint(endpoint, entry.generation);
     });
   }
 
   stopPolling() {
     this.isPolling = false;
-    Object.values(this.pollingControllers).forEach((controller) => controller.abort());
-    this.pollingControllers = {};
+    Object.values(this.pollingEntries).forEach((entry) => {
+      entry.generation += 1;
+      if (entry.timerId !== null) clearTimeout(entry.timerId);
+      if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+      entry.timerId = null;
+      entry.deadlineId = null;
+      entry.deadline = null;
+      entry.controller?.abort();
+      entry.controller = null;
+      entry.timedOut = false;
+      entry.status = "paused";
+      this.renderEndpointState(entry.endpoint);
+    });
   }
 
-  async pollEndpoint(endpoint) {
-    if (!this.isPolling || this.authExpired) return;
-    const config = this.pollingConfig[endpoint];
-    const now = Date.now();
-    const backoff = this.pollingBackoff[endpoint] || 0;
-    const interval = config.interval + backoff;
+  scheduleEndpoint(endpoint, delay, generation) {
+    const entry = this.pollingEntries[endpoint];
+    if (!this.isPolling || this.authExpired || entry.paused || entry.generation !== generation || entry.timerId !== null) return;
+    entry.timerId = setTimeout(() => {
+      if (entry.generation !== generation) return;
+      entry.timerId = null;
+      this.pollEndpoint(endpoint, generation);
+    }, Math.max(0, delay));
+  }
 
-    if (now - config.lastFetch < interval) {
-      setTimeout(() => this.pollEndpoint(endpoint), interval - (now - config.lastFetch));
+  retryEndpoint(endpoint) {
+    const entry = this.pollingEntries[endpoint];
+    if (!entry || this.authExpired) return;
+    if (!this.isPolling) {
+      if (document.visibilityState === "hidden") return;
+      this.startPolling();
       return;
     }
+    if (entry.timerId !== null) clearTimeout(entry.timerId);
+    if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+    entry.timerId = null;
+    entry.deadlineId = null;
+    entry.controller?.abort();
+    entry.controller = null;
+    entry.generation += 1;
+    this.pollingBackoff[endpoint] = 0;
+    this.pollEndpoint(endpoint, entry.generation);
+  }
 
-    this.pollingControllers[endpoint]?.abort();
+  async pollEndpoint(endpoint, generation = this.pollingEntries[endpoint]?.generation) {
+    const entry = this.pollingEntries[endpoint];
+    if (!entry || !this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== null) return;
+    const config = this.pollingConfig[endpoint];
     const controller = new AbortController();
-    this.pollingControllers[endpoint] = controller;
+    entry.controller = controller;
+    entry.timedOut = false;
+    entry.deadline = performance.now() + this.requestTimeout;
+    entry.status = "loading";
+    this.renderEndpointState(endpoint);
+    entry.deadlineId = setTimeout(() => {
+      if (entry.generation !== generation || entry.controller !== controller) return;
+      entry.timedOut = true;
+      controller.abort();
+    }, this.requestTimeout);
 
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetch(endpoint === '/api/logs?lines=50' ? this.logRequestUrl() : endpoint, {
         credentials: "same-origin",
         signal: controller.signal,
       });
+      if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== controller) return;
+      if (controller.signal.aborted || performance.now() >= entry.deadline) {
+        entry.timedOut = true;
+        throw new DOMException('Deadline exceeded', 'AbortError');
+      }
       if (response.status === 401) {
         this.authExpired = true;
         this.stopPolling();
         const banner = document.getElementById("auth-expired");
         if (banner) banner.hidden = false;
+        this.touchUpdated();
         return;
+      }
+      if (endpoint === '/api/logs?lines=50' && response.status === 409) {
+        this.logCursor = null;
+        const status = document.querySelector('[data-log-page-status]');
+        if (status) status.textContent = 'Loggen er rotert. Hent siste side på nytt.';
+        this.data.logs.next_cursor = null;
+        document.querySelector('[data-log-older]')?.setAttribute('disabled', '');
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const data = await response.json();
+      if (!this.isPolling || this.authExpired || entry.generation !== generation || entry.controller !== controller) return;
+      if (controller.signal.aborted || performance.now() >= entry.deadline) {
+        entry.timedOut = true;
+        throw new DOMException('Deadline exceeded', 'AbortError');
+      }
       const key = endpoint.replace("/api/", "").replace("?lines=50", "");
       this.data[key] = data;
       this.pollingBackoff[endpoint] = 0;
-      config.lastFetch = now;
-      this.touchUpdated();
+      config.lastFetch = performance.now();
+      entry.lastSuccess = performance.now();
+      entry.status = "fresh";
       this.updateDashboard(key, data);
+      this.renderEndpointState(endpoint);
     } catch (error) {
-      if (error.name !== "AbortError") {
+      if (this.isPolling && !this.authExpired && entry.generation === generation) {
         this.pollingBackoff[endpoint] = Math.min((this.pollingBackoff[endpoint] || 0) + config.interval, 60000);
-        console.error(`Poll error for ${endpoint}:`, error);
+        entry.status = entry.timedOut ? "timeout" : "error";
+        this.renderEndpointState(endpoint);
+        if (!entry.timedOut && error.name !== "AbortError") console.error(`Poll error for ${endpoint}:`, error);
       }
     } finally {
-      delete this.pollingControllers[endpoint];
+      if (entry.generation === generation && entry.controller === controller) {
+        if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+        entry.deadlineId = null;
+        entry.deadline = null;
+        entry.controller = null;
+      }
     }
 
-    if (this.isPolling && !this.authExpired) {
-      setTimeout(() => this.pollEndpoint(endpoint), config.interval + (this.pollingBackoff[endpoint] || 0));
+    if (this.isPolling && !this.authExpired && entry.generation === generation) {
+      this.scheduleEndpoint(endpoint, config.interval + (this.pollingBackoff[endpoint] || 0), generation);
     }
+  }
+
+  renderEndpointState(endpoint) {
+    const entry = this.pollingEntries[endpoint];
+    if (!entry) return;
+    const age = entry.lastSuccess === null ? null : Math.max(0, Math.floor((performance.now() - entry.lastSuccess) / 1000));
+    const lastSuccess = entry.lastSuccess === null ? "" : String(entry.lastSuccess);
+    let label;
+    if (entry.status === "fresh") label = age === 0 ? "Oppdatert nå" : `Oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "loading") label = age === null ? "Laster inn" : `Oppdaterer · sist oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "timeout") label = age === null ? "Tidsavbrudd · ingen vellykket oppdatering" : `Tidsavbrudd · utdatert, sist oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "error") label = age === null ? "Feil · ingen vellykket oppdatering" : `Feil · utdatert, sist oppdatert for ${age} sekunder siden`;
+    else if (entry.status === "paused") label = age === null ? "Pausert · ingen vellykket oppdatering" : `Pausert · sist oppdatert for ${age} sekunder siden`;
+    else label = "Venter på oppdatering";
+    document.querySelectorAll("[data-poll-endpoint]").forEach((element) => {
+      if (element.dataset.pollEndpoint !== endpoint) return;
+      element.textContent = label;
+      element.dataset.lastSuccess = lastSuccess;
+      element.dataset.pollStatus = entry.status;
+      element.classList.toggle("is-stale", entry.status === "error" || entry.status === "timeout");
+    });
+    this.touchUpdated();
   }
 
   updateDashboard(section, data) {
@@ -207,11 +573,14 @@ class ConsoleApp {
         break;
       }
       case "bridge": {
-        setText("bridge.status", data.status);
-        setText("bridge.lm_studio", data.lm_studio);
-        setText("bridge.requests", data.requests);
-        setText("bridge.errors", data.errors);
-        this.updateBridgeBadge(data.status);
+        const bridgeReadiness = data.readiness?.components?.bridge;
+        const bridgeDisabled = bridgeReadiness?.status === "disabled";
+        setText("bridge.status", bridgeDisabled ? "Ikke nødvendig" : data.status);
+        setText("bridge.lm_studio", bridgeDisabled ? "Ikke i bruk" : data.lm_studio);
+        setText("bridge.requests", bridgeDisabled ? "–" : data.requests);
+        setText("bridge.errors", bridgeDisabled ? "–" : data.errors);
+        this.updateBridgeBadge(bridgeDisabled ? "disabled" : data.status);
+        if (data.readiness) this.renderSection("readiness", data.readiness);
         break;
       }
       case "calendar":
@@ -235,6 +604,331 @@ class ConsoleApp {
         setText("logs.count", Array.isArray(data.logs) ? data.logs.length : 0);
         break;
     }
+    this.renderSection(section, data);
+  }
+
+  renderSection(sectionName, sectionState) {
+    if (!sectionState || typeof sectionState !== "object") return;
+    this.data[sectionName] = sectionState;
+    const setText = (selector, value) => {
+      document.querySelectorAll(selector).forEach((element) => {
+        element.textContent = value ?? "N/A";
+      });
+    };
+    const make = (tag, className, text) => {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = String(text);
+      return element;
+    };
+    const empty = (message) => make("div", "empty-state", message);
+    const rateLimits = sectionName === "rate-limits";
+    const state = sectionState;
+
+    if (sectionName === "readiness") {
+      const container = document.querySelector("#readiness [data-readiness-list]");
+      const badge = document.querySelector('#readiness [data-metric="readiness.status"]');
+      const statusLabels = {
+        ready: "Klar", degraded: "Svekket", unavailable: "Utilgjengelig",
+        stale: "Utdatert", disabled: "Deaktivert",
+      };
+      const statusClass = {
+        ready: "badge-online", degraded: "badge-warning", unavailable: "badge-error",
+        stale: "badge-warning", disabled: "badge-neutral",
+      };
+      const labelFor = (value) => statusLabels[String(value || "").toLowerCase()] || "Ukjent";
+      if (badge) {
+        const status = String(state.status || "stale").toLowerCase();
+        badge.className = `badge ${statusClass[status] || "badge-warning"}`;
+        badge.textContent = labelFor(status);
+      }
+      if (container) {
+        container.replaceChildren();
+        const labels = {
+          provider: "Valgt AI-provider", bridge: "Bridge", google_calendar: "Google Calendar",
+          scheduler: "Påminnelsesplanlegger", store: "Konsolllager", calendar_sync: "Kalendersynkronisering",
+        };
+        const components = state.components && typeof state.components === "object" ? state.components : {};
+        Object.entries(labels).forEach(([key, label]) => {
+          const item = components[key];
+          if (!item || typeof item !== "object") return;
+          const row = make("div", "mini-row readiness-row");
+          const summary = make("span");
+          summary.append(make("strong", "", label));
+          if (key === "provider") {
+            const evidenceLabel = (value) => ({
+              reachable: "tilkoblet", unavailable: "utilgjengelig", unverified: "ikke verifisert",
+              catalog_reachable: "modelliste tilgjengelig",
+              accepted: "inferens godkjent", not_observed: "inferens ikke observert", rejected: "inferens feilet",
+            }[String(value || "").toLowerCase()] || "ikke verifisert");
+            const evidence = make("small", "", `Transport: ${evidenceLabel(item.transport_status)} · modelliste: ${evidenceLabel(item.model_discovery_status)} · faktisk inferens: ${evidenceLabel(item.inference_acceptance_status)}`);
+            summary.append(document.createElement("br"), evidence);
+          }
+          if (item.recovery_action) {
+            summary.append(document.createElement("br"), make("small", "", item.recovery_action));
+          }
+          const status = String(item.status || "unavailable").toLowerCase();
+          const statusLabel = key === "bridge" && status === "disabled" ? "Ikke nødvendig" : labelFor(status);
+          const badge = make("strong", `badge ${statusClass[status] || "badge-warning"}`, statusLabel);
+          row.append(summary, badge);
+          container.append(row);
+        });
+        if (!container.childElementCount) container.append(empty("Venter på readiness-data."));
+      }
+    } else if (sectionName === "calendar") {
+      const card = document.querySelector("#calendar .card-body");
+      if (card) {
+        card.querySelector(".mini-list, .empty-state")?.remove();
+        const events = Array.isArray(state.upcoming_events) ? state.upcoming_events.slice(0, 3) : [];
+        if (events.length) {
+          const list = make("div", "mini-list");
+          events.forEach((event) => {
+            if (!event || typeof event !== "object") return;
+            const row = make("div", "mini-row");
+            const title = event.title || event.name || "Uten tittel";
+            const date = event.date || event.when || event.start || "Ukjent tid";
+            const when = event.time ? `${date} ${event.time}`.trim() : date;
+            row.append(make("span", "", title), make("strong", "", when));
+            list.append(row);
+          });
+          card.append(list);
+        } else {
+          card.append(empty("Ingen kommende kalenderhendelser."));
+        }
+      }
+      setText("#calendar .card-header .badge", `${state.event_count ?? 0} hendelser`);
+      const overviewCalendar = document.querySelector('[data-metric="overview.calendar"]');
+      if (overviewCalendar) overviewCalendar.textContent = `${state.event_count ?? 0} / ${state.task_count ?? 0}`;
+      this.renderCalendarScope(card, state, make);
+    } else if (sectionName === "polls") {
+      const body = document.querySelector("#polls .card-body");
+      if (body) {
+        body.replaceChildren();
+        const polls = Array.isArray(state.polls) ? state.polls.slice(0, 5) : [];
+        if (!polls.length) {
+          body.append(empty("Ingen aktive avstemninger akkurat nå."));
+        } else {
+          const list = make("div", "mini-list");
+          polls.forEach((poll) => {
+            if (!poll || typeof poll !== "object") return;
+            const item = make("div", "poll-detail");
+            item.append(make("strong", "", poll.question || poll.title || "Uten spørsmål"));
+            if (poll.votes && typeof poll.votes === "object" && !Array.isArray(poll.votes)) {
+              const votes = Object.entries(poll.votes);
+              const total = votes.reduce((sum, [, count]) => sum + (Number.isFinite(Number(count)) ? Number(count) : 0), 0);
+              const bars = make("div", "poll-bars");
+              votes.forEach(([option, rawCount]) => {
+                const count = Number.isFinite(Number(rawCount)) ? Number(rawCount) : 0;
+                const row = make("div", "poll-row");
+                const track = make("div", "bar-track");
+                const fill = make("div", "bar-fill");
+                fill.style.width = `${total > 0 ? Math.max(0, Math.min(100, count / total * 100)) : 0}%`;
+                track.append(fill);
+                row.append(make("span", "", option), track, make("strong", "", count));
+                bars.append(row);
+              });
+              item.append(bars);
+            } else if (Number.isFinite(Number(poll.vote_count))) {
+              item.append(make("span", "muted", `${Number(poll.vote_count)} stemmer`));
+            }
+            list.append(item);
+          });
+          body.append(list);
+        }
+      }
+    } else if (rateLimits) {
+      const body = document.querySelector("#rate-limits .card-body");
+      if (body) {
+        body.replaceChildren();
+        const users = state.user_stats && typeof state.user_stats === "object" ? Object.entries(state.user_stats) : [];
+        if (!users.length) {
+          body.append(empty("Ingen rate-limit-data ennå."));
+        } else {
+          const counts = users.map(([user, raw]) => [user, typeof raw === "object" && raw !== null ? Number(raw.requests ?? raw.count ?? 0) || 0 : Number(raw) || 0]);
+          const total = Math.max(...counts.map(([, count]) => count), 1);
+          const shell = make("div", "table-shell");
+          const table = make("table");
+          const head = make("thead");
+          const headRow = make("tr");
+          ["Bruker", "Antall", "Bruk"].forEach((label) => headRow.append(make("th", "", label)));
+          head.append(headRow);
+          const tbody = make("tbody");
+          counts.sort((a, b) => b[1] - a[1]).slice(0, 5).forEach(([user, count]) => {
+            const row = make("tr");
+            const usage = make("div", "usage-bar bar-track");
+            const fill = make("div", "bar-fill");
+            fill.style.width = `${Math.max(0, Math.min(100, count / total * 100))}%`;
+            usage.append(fill);
+            const usageCell = make("td");
+            usageCell.append(usage);
+            row.append(make("td", "", user), make("td", "", count), usageCell);
+            tbody.append(row);
+          });
+          table.append(head, tbody);
+          shell.append(table);
+          body.append(shell);
+        }
+      }
+    } else if (sectionName === "intents") {
+      const body = document.querySelector("#intents .card-body");
+      if (body) {
+        body.replaceChildren();
+        const intents = state.intent_counts && typeof state.intent_counts === "object" ? Object.entries(state.intent_counts) : [];
+        if (!intents.length) {
+          body.append(empty("Ingen intent-data ennå."));
+        } else {
+          const shell = make("div", "table-shell");
+          const table = make("table");
+          const head = make("thead");
+          const headRow = make("tr");
+          ["Intent", "Antall"].forEach((label) => headRow.append(make("th", "", label)));
+          head.append(headRow);
+          const bodyRows = make("tbody");
+          intents.sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0)).slice(0, 5).forEach(([intent, count]) => {
+            const row = make("tr");
+            row.append(make("td", "", intent), make("td", "", count));
+            bodyRows.append(row);
+          });
+          table.append(head, bodyRows);
+          shell.append(table);
+          body.append(shell);
+        }
+      }
+    } else if (sectionName === "logs") {
+      this.data.logs = state;
+      const older = document.querySelector('[data-log-older]');
+      if (older) older.disabled = !state.next_cursor;
+      const status = document.querySelector('[data-log-page-status]');
+      if (status) status.textContent = state.truncated ? 'Avgrenset side. Eldre logger kan hentes separat.' : 'Ingen eldre logger i denne visningen.';
+      const lines = Array.isArray(state.logs) ? state.logs.map((line) => String(line)) : [];
+      const container = document.getElementById("log-container");
+      if (container) {
+        container.replaceChildren();
+        if (lines.length) {
+          const pre = make("pre");
+          lines.forEach((line, index) => {
+            if (index) pre.append(document.createTextNode("\n"));
+            const upper = line.toUpperCase();
+            const kind = upper.includes("ERROR") || upper.includes("CRITICAL") ? "log-error" : upper.includes("WARN") ? "log-warn" : upper.includes("INFO") ? "log-info" : "log-debug";
+            pre.append(make("span", kind, line));
+          });
+          container.append(pre);
+        } else {
+          container.append(empty("Ingen logger tilgjengelig"));
+        }
+      }
+      const activity = document.querySelector("#activity .activity-list");
+      if (activity) {
+        activity.replaceChildren();
+        if (!lines.length) {
+          activity.append(empty("Ingen aktivitet fanget ennå."));
+        } else {
+          lines.slice(-4).reverse().forEach((line) => {
+            const upper = line.toUpperCase();
+            const tone = upper.includes("ERROR") || upper.includes("CRITICAL") ? "log-error" : upper.includes("WARN") ? "log-warn" : upper.includes("INFO") ? "log-info" : "log-debug";
+            const title = line.includes("]") ? line.split("]", 2)[1].trim() : line;
+            const prefix = line.includes("[") ? line.split("[", 1)[0].trim() : "Nylig";
+            const item = make("div", "activity-item");
+            item.append(make("strong", tone, title.slice(0, 120)), make("span", "", prefix));
+            activity.append(item);
+          });
+        }
+      }
+      setText('[data-metric="logs.count"]', lines.length);
+    }
+
+    if (this.openSection === sectionName && !document.getElementById("section-modal")?.hidden) {
+      this.updateSectionModal(sectionName);
+    }
+    this.updateOverview();
+  }
+
+  pauseLogs(paused) {
+    const entry = this.pollingEntries['/api/logs?lines=50'];
+    entry.paused = paused;
+    if (entry.timerId !== null) clearTimeout(entry.timerId);
+    if (entry.deadlineId !== null) clearTimeout(entry.deadlineId);
+    entry.timerId = entry.deadlineId = null;
+    entry.controller?.abort();
+    entry.controller = null;
+    entry.generation += 1;
+    const button = document.querySelector('[data-log-pause]');
+    if (button) {
+      button.textContent = paused ? 'Følg siste logger' : 'Sett på pause';
+      button.setAttribute('aria-pressed', String(paused));
+    }
+  }
+
+  logRequestUrl() {
+    const query = new URLSearchParams('lines=50');
+    const level = document.querySelector('[data-log-level]')?.value;
+    const component = document.querySelector('[data-log-component]')?.value.trim();
+    if (level) query.set('level', level);
+    if (component) query.set('component', component);
+    if (this.logCursor) query.set('cursor', this.logCursor);
+    return '/api/logs?' + query.toString();
+  }
+
+  requestLogs(cursor = null) {
+    this.logCursor = cursor;
+    this.retryEndpoint('/api/logs?lines=50');
+  }
+
+  updateOverview() {
+    const calendar = this.data.calendar || {};
+    const polls = this.data.polls || {};
+    const calendarMetric = document.querySelector('[data-metric="overview.calendar"]');
+    if (calendarMetric) calendarMetric.textContent = `${calendar.event_count ?? 0} / ${calendar.task_count ?? 0}`;
+    const pollMetric = document.querySelector('[data-metric="overview.polls"]');
+    if (pollMetric) pollMetric.textContent = polls.active_polls ?? 0;
+  }
+
+  calendarScopeLines(state) {
+    const lines = [];
+    const display = (value) => Array.isArray(value)
+      ? value.join(", ")
+      : value === undefined || value === null || value === "" ? "Ingen" : String(value);
+    if (state.access_summary) lines.push(`Tilgang: ${display(state.access_summary)}`);
+    if (state.default_scope) lines.push(`Standardområde: ${display(state.default_scope)}`);
+    if (Array.isArray(state.scope_policy)) {
+      state.scope_policy.forEach((scope) => {
+        if (!scope || typeof scope !== "object") return;
+        lines.push(`Område: ${display(scope.scope_id)} (${display(scope.kind)})`);
+        lines.push(`Eier: ${display(scope.owner_id)}`);
+        lines.push(`Godkjente medlemmer: ${display(scope.collaborator_ids)}`);
+        lines.push(`Kanaler: ${display(scope.channel_ids)}`);
+        lines.push(`Lesetilgang: ${display(scope.read_policy)}`);
+        lines.push(`Skrivetilgang: ${display(scope.write_policy)}`);
+      });
+    }
+    if (state.sync_states && typeof state.sync_states === "object") {
+      const labels = { pending: "Ventende", unknown: "Uavklart", failed: "Feilet", conflict: "Konflikt", synced: "Bekreftet" };
+      lines.push("Google: " + Object.entries(labels).map(([key, label]) => `${label}: ${Number(state.sync_states[key]) || 0}`).join(", "));
+    }
+    const invocation = state.invocation_policy;
+    if (invocation && typeof invocation === "object") {
+      lines.push(`Kalleregel: ${display(invocation.mode)}`);
+      lines.push(`Tillatte brukere: ${display(invocation.allowed_users)}`);
+      lines.push(`Tillatte kanaler: ${display(invocation.allowed_channels)}`);
+      lines.push(`Omvei for gruppedirektemeldinger: ${invocation.legacy_group_dm_bypass ? "Ja" : "Nei"}`);
+      if (invocation.inherited_defaults) {
+        lines.push(`Advarsel om arvede standarder: ${display(invocation.inherited_defaults)}`);
+      }
+    }
+    return lines;
+  }
+
+  renderCalendarScope(card, state, make) {
+    if (!card) return;
+    card.querySelector("[data-calendar-scope]")?.remove();
+    const lines = this.calendarScopeLines(state);
+    if (!lines.length) return;
+    const explanation = make("section", "calendar-scope");
+    explanation.dataset.calendarScope = "";
+    explanation.setAttribute("aria-label", "Tilgang og målgruppe");
+    explanation.append(make("h4", "", "Tilgang og målgruppe"));
+    explanation.append(make("p", "calendar-scope-summary", lines.join("\n")));
+    card.append(explanation);
   }
 
   updateShellStatus() {
@@ -254,6 +948,11 @@ class ConsoleApp {
     const badge = document.querySelector("#bridge .badge");
     if (!badge) return;
     const s = String(status || "").toLowerCase();
+    if (s === "disabled") {
+      badge.className = "badge badge-neutral";
+      badge.textContent = "Ikke nødvendig";
+      return;
+    }
     const ok = ["online", "connected", "ok", "healthy", "running", "active", "true", "yes"];
     const err = ["offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"];
     if (ok.includes(s)) {
@@ -290,6 +989,7 @@ class ConsoleApp {
     if (!modal || !title || !content) return;
     title.textContent = data.title || "Detaljer";
     content.textContent = data.content || "";
+    this.openSection = section;
     modal.hidden = false;
     document.body.classList.add("modal-open");
     this._trapFocus(modal);
@@ -304,6 +1004,7 @@ class ConsoleApp {
     this._untrapFocus();
     this._lastFocusedElement?.focus();
     this._lastFocusedElement = null;
+    this.openSection = null;
   }
 
   _trapFocus(modal) {
@@ -348,6 +1049,24 @@ class ConsoleApp {
     const data = section === "rate-limits"
       ? (this.data["rate-limits"] || this.data.rate_limits || {})
       : (this.data[section] || {});
+    this.openModal(section, { title: titles[section] || "Detaljer", content: this.sectionModalText(section, data) });
+  }
+
+  updateSectionModal(section) {
+    const titles = {
+      status: "Bot-status", bridge: "Bridge", calendar: "Kalender", polls: "Avstemninger",
+      "rate-limits": "Rate limits", intents: "Intents", memory: "Minne", logs: "Logger",
+    };
+    const data = section === "rate-limits"
+      ? (this.data["rate-limits"] || this.data.rate_limits || {})
+      : (this.data[section] || {});
+    const title = document.getElementById("modal-title");
+    const content = document.getElementById("modal-content");
+    if (title) title.textContent = titles[section] || "Detaljer";
+    if (content) content.textContent = this.sectionModalText(section, data);
+  }
+
+  sectionModalText(section, data) {
     const lines = [];
     const add = (label, value) => lines.push(`${label}: ${value ?? "N/A"}`);
     const addBlank = () => lines.push("");
@@ -361,8 +1080,8 @@ class ConsoleApp {
         add("Discord-tilkobling", data.discord_connected ? "Ja" : "Nei");
         break;
       case "bridge":
-        add("Status", data.status || "N/A");
-        add("LM Studio", data.lm_studio || "N/A");
+        add("Status", data.readiness?.components?.bridge?.status === "disabled" ? "Ikke nødvendig" : data.status || "N/A");
+        add("LM Studio", data.readiness?.components?.bridge?.status === "disabled" ? "Ikke i bruk" : data.lm_studio || "N/A");
         add("Forespørsler", data.requests ?? 0);
         add("Feil", data.errors ?? 0);
         break;
@@ -377,13 +1096,39 @@ class ConsoleApp {
             const when = event.when || event.start || event.date || "Ukjent tid";
             lines.push(`- ${title} — ${when}`);
           });
+        } else {
+          addBlank();
+          lines.push("Kommende hendelser: Ingen kommende kalenderhendelser.");
+        }
+        const scopeLines = this.calendarScopeLines(data);
+        if (scopeLines.length) {
+          addBlank();
+          lines.push("Tilgang og målgruppe:");
+          lines.push(...scopeLines);
         }
         break;
       case "polls":
         add("Aktive avstemninger", data.active_polls ?? 0);
+        if (Array.isArray(data.polls) && data.polls.length) {
+          addBlank();
+          data.polls.forEach((poll) => {
+            lines.push(`${poll.question || poll.title || "Uten spørsmål"}`);
+            if (poll.votes && typeof poll.votes === "object") {
+              Object.entries(poll.votes).forEach(([option, count]) => lines.push(`- ${option}: ${count}`));
+            } else if (Number.isFinite(Number(poll.vote_count))) {
+              lines.push(`- Stemmer: ${Number(poll.vote_count)}`);
+            }
+          });
+        } else {
+          add("Detaljer", "Ingen aktive avstemninger akkurat nå.");
+        }
         break;
       case "rate-limits":
         add("Totale forespørsler", data.summary?.total_requests ?? 0);
+        Object.entries(data.user_stats || {}).forEach(([user, raw]) => {
+          const count = typeof raw === "object" && raw !== null ? raw.requests ?? raw.count ?? "N/A" : raw;
+          lines.push(`- ${user}: ${count}`);
+        });
         break;
       case "intents":
         add("Fallbacks", data.fallback_count ?? 0);
@@ -409,8 +1154,7 @@ class ConsoleApp {
       default:
         lines.push("Ingen detaljer tilgjengelig");
     }
-
-    this.openModal(section, { title: titles[section] || "Detaljer", content: lines.join("\n") });
+    return lines.join("\n");
   }
 }
 

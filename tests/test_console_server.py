@@ -1,16 +1,18 @@
 import asyncio
+from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import quote_plus
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from web_console.server import ConsoleServer, MAX_BODY_BYTES
 
 
 HOST = "127.0.0.1"
-PORT = 18080
+PORT = 0
+_test_port = ContextVar('console_test_port', default=0)
 API_KEY = "test-key-123"
 
 
@@ -36,7 +38,8 @@ class FakeCloudflareAccessVerifier:
 async def start_server(monitor: object | None = None, *, secure_cookies: bool | None = None) -> tuple[ConsoleServer, asyncio.Task[None]]:
     server = ConsoleServer(host=HOST, port=PORT, api_key=API_KEY, monitor=monitor, secure_cookies=secure_cookies)
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     return server, task
 
 
@@ -58,7 +61,7 @@ async def request(
     cookie: str | None = None,
     extra_headers: list[str] | None = None,
 ):
-    reader, writer = await asyncio.open_connection(HOST, PORT)
+    reader, writer = await asyncio.open_connection(HOST, _test_port.get())
     headers = [
         f"{method} {path} HTTP/1.1",
         "Host: localhost",
@@ -92,6 +95,18 @@ def extract_cookie(response: bytes, name: str) -> str:
 
 def json_body(response: bytes) -> dict:
     return json.loads(response.split(b"\r\n\r\n", 1)[1].decode("utf-8"))
+
+
+async def test_launcher_health_nonce_is_echoed_only_to_matching_probe_and_never_authenticates(monkeypatch):
+    nonce='a'*32
+    monkeypatch.setenv('INEBOTTEN_LAUNCHER_INSTANCE',nonce)
+    server,task=await start_server()
+    try:
+        assert 'launcher_instance' not in json_body(await request('/health'))
+        assert 'launcher_instance' not in json_body(await request('/health',extra_headers=['X-Launcher-Probe: '+'b'*32]))
+        assert json_body(await request('/health',extra_headers=['X-Launcher-Probe: '+nonce]))['launcher_instance']==nonce
+        assert b'401' in await request('/api/status',extra_headers=['X-Launcher-Probe: '+nonce])
+    finally:await stop_server(server,task)
 
 
 async def test_auth_missing_key():
@@ -130,7 +145,8 @@ async def test_cloudflare_access_header_authenticates_when_enabled():
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request(
             "/api/status",
@@ -151,7 +167,8 @@ async def test_cloudflare_access_mode_keeps_api_key_recovery_auth():
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request("/api/status", api_key=API_KEY)
         assert b"200" in response
@@ -169,7 +186,8 @@ async def test_cloudflare_access_mode_does_not_show_api_key_login_without_access
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request("/")
         assert b"401" in response
@@ -188,7 +206,8 @@ async def test_cloudflare_access_mode_disables_browser_api_key_login():
         cloudflare_access_verifier=FakeCloudflareAccessVerifier(),
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         response = await request(
             "/api/login",
@@ -251,9 +270,8 @@ async def test_health_no_auth():
         body = json_body(response)
         assert body["status"] in {"healthy", "degraded", "starting"}
         assert body["console"]["status"] == "running"
-        assert "bot" in body
-        assert "persistence" in body
-        assert "tasks" in body
+        assert set(body) == {"status", "console", "revision", "readiness"}
+        assert body["revision"] is None or len(body["revision"]) == 40
     finally:
         await stop_server(server, task)
 
@@ -281,6 +299,42 @@ async def test_bridge_endpoint():
     try:
         response = await request("/api/bridge", api_key=API_KEY)
         assert b"lm_studio" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_bridge_readiness_details_require_auth_and_are_sanitized():
+    server, task = await start_server()
+    readiness = {
+        "status": "stale",
+        "checked_at": "2026-10-04T12:00:00+00:00",
+        "components": {
+            "provider": {
+                "enabled": True,
+                "required": True,
+                "status": "stale",
+                "checked_at": "2026-10-04T12:00:00+00:00",
+                "reason_code": "inference_acceptance_unobserved",
+                "recovery_action": "Send a normal AI request to verify inference.",
+                "transport_status": "reachable",
+                "model_discovery_status": "catalog_reachable",
+                "inference_acceptance_status": "not_observed",
+            }
+        },
+    }
+    try:
+        unauthorized = await request("/api/bridge")
+        assert b"401" in unauthorized
+
+        with patch("web_console.server.collect_bridge_health", new=AsyncMock(return_value={"status": "healthy", "lm_studio": "connected"})), patch(
+            "web_console.server.collect_provider_readiness", new=AsyncMock(return_value=readiness)
+        ):
+            response = await request("/api/bridge", api_key=API_KEY)
+
+        assert b"200" in response
+        body = json_body(response)
+        assert body["readiness"]["components"]["provider"]["inference_acceptance_status"] == "not_observed"
+        assert "prompt" not in json.dumps(body).lower()
     finally:
         await stop_server(server, task)
 
@@ -685,7 +739,8 @@ async def test_login_throttles_repeated_failures():
         login_window_seconds=60,
     )
     task = asyncio.create_task(server.start())
-    await asyncio.sleep(0.1)
+    await task
+    _test_port.set(server.actual_port)
     try:
         body = b"api_key=wrong-key"
         assert b"401" in await request("/api/login", method="POST", body=body)
@@ -720,6 +775,23 @@ async def test_logs_endpoint():
         response = await request("/api/logs", api_key=API_KEY)
         assert b"200" in response
         assert b"logs" in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_log_pages_are_private_and_reject_invalid_cursor_and_budget():
+    server, task = await start_server()
+    try:
+        assert b'401' in await request('/api/logs?level=ERROR')
+        for query in ('cursor=/etc/passwd', 'max_bytes=99999999', 'max_bytes=wrong', 'level=ERROR&level=INFO'):
+            response = await request('/api/logs?' + query, api_key=API_KEY)
+            assert b'400 Bad Request' in response
+        response = await request('/api/logs?max_bytes=4096&level=ERROR', api_key=API_KEY)
+        assert b'200 OK' in response
+        page = json_body(response)
+        assert page['bytes_read'] <= 4096
+        assert all(row['level'] == 'ERROR' for row in page['records'])
+        assert b'Cache-Control: no-store' in response
     finally:
         await stop_server(server, task)
 
@@ -859,5 +931,75 @@ async def test_internal_exception_returns_generic_error_without_detail():
         assert b"500 Internal Server Error" in response
         assert b"Internal server error" in response
         assert b"secret-detail" not in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_setup_settings_requires_console_auth(tmp_path, monkeypatch):
+    hermes = tmp_path / "hermes"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text("DISCORD_USER_TOKEN=existing-synthetic-token\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    server, task = await start_server()
+    try:
+        body = json.dumps({"settings": {"AI_PROVIDER": "lm_studio"}}).encode()
+        response = await request(
+            "/api/setup/settings",
+            method="POST",
+            body=body,
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"401" in response
+        assert env_path.read_text(encoding="utf-8") == "DISCORD_USER_TOKEN=existing-synthetic-token\n"
+    finally:
+        await stop_server(server, task)
+
+
+async def test_setup_settings_uses_shared_writer_and_returns_no_secret_values(tmp_path, monkeypatch):
+    hermes = tmp_path / "hermes home"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text("# keep\nDISCORD_USER_TOKEN=existing-synthetic-token\nALLOWED_USERS=123,456\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    server, task = await start_server()
+    try:
+        body = json.dumps({"settings": {"AI_PROVIDER": "lm_studio"}}).encode()
+        response = await request(
+            "/api/setup/settings",
+            method="POST",
+            api_key=API_KEY,
+            body=body,
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"200" in response
+        assert env_path.read_text(encoding="utf-8") == (
+            "# keep\nDISCORD_USER_TOKEN=existing-synthetic-token\n"
+            "ALLOWED_USERS=123,456\nAI_PROVIDER=lm_studio\n"
+        )
+        assert b"existing-synthetic-token" not in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_setup_settings_rejects_email_password_without_echoing_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    server, task = await start_server()
+    email = "synthetic-private@example.test"
+    password = "synthetic-private-password"
+    try:
+        body = json.dumps({"settings": {"DISCORD_EMAIL": email, "DISCORD_PASSWORD": password}}).encode()
+        response = await request(
+            "/api/setup/settings",
+            method="POST",
+            api_key=API_KEY,
+            body=body,
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"400" in response
+        assert email.encode() not in response
+        assert password.encode() not in response
     finally:
         await stop_server(server, task)

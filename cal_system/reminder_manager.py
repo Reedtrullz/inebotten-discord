@@ -4,43 +4,167 @@ Reminder Manager for Inebotten
 Tracks reminders that can be marked as completed
 """
 
-import json
 import re
 import uuid
-from datetime import datetime, timedelta
+import copy
+from collections import OrderedDict
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageMutationError, bucket_records, writable_store, store_worker
+from cal_system.event_schema import Clock, EventTime
+from cal_system.recurrence import Series, Occurrence, occurrence_at
+from cal_system.sync_outbox import SyncOwnerMixin, SyncOutbox, enqueue, SyncOperation, remote_completion
+from core.access_policy import AccessPolicy
+from core.request_context import current_request
 
 
-class ReminderManager:
+class ReminderManager(SyncOwnerMixin):
     """
     Manages reminders that users can mark as completed
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path=None, *, gcal_manager=None, clock=None, access_policy=None):
         if storage_path is None:
             storage_path = hermes_discord_data_path("reminders.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.reminders = self._load_reminders()
+        self.clock = clock or Clock()
+        self.access_policy = access_policy or AccessPolicy()
+        self.gcal = gcal_manager
+        self.gcal_enabled = gcal_manager is not None
+        self._storage = DocumentOwner(self.storage_path, self._validate_document, schema_version=2, upgrade_from=(1,))
+        self.reminders = self._storage.rollback()
+        self._outbox = SyncOutbox(self)
+        self._sync_conflicts = OrderedDict()
+
+    @staticmethod
+    def _validate_document(document):
+        if not bucket_records('text', require_ids=True)(document):
+            return False
+        try:
+            for items in document.values():
+                for item in items:
+                    operations = item.get('sync_operations', [])
+                    if not isinstance(operations, list) or len(operations) > 8:
+                        return False
+                    for raw in operations:
+                        if SyncOperation.from_document(raw).item_id != item['id']:
+                            return False
+                    series = item.get('series')
+                    if series is not None:
+                        parsed = Series.from_document(series)
+                        if (parsed.series_id != item['id'] or type(item.get('series_next_index')) is not int
+                            or item['series_next_index'] < 0):
+                            return False
+                        occurrences = item.get('occurrences', {})
+                        if not isinstance(occurrences, dict) or len(occurrences) > 10000:
+                            return False
+                        for key, saved in occurrences.items():
+                            occurrence = Occurrence.from_document(saved)
+                            if key != occurrence.occurrence_id or occurrence.series_id != parsed.series_id:
+                                return False
+        except (TypeError, ValueError, AttributeError, KeyError):
+            return False
+        return True
+
+    @property
+    def items(self):
+        return self.reminders
+
+    @items.setter
+    def items(self, value):
+        self.reminders = value
+
+    def configure_google(self, provider, *, slot=None, access_policy=None):
+        self.gcal, self.gcal_enabled = provider, provider is not None
+        if slot is not None:
+            self._outbox.slot = slot
+        if access_policy is not None:
+            self.access_policy = access_policy
+
+    def _authorize_mutation(self, actor, scope):
+        decision = self.access_policy.authorize(actor, scope, 'write')
+        if not decision.allowed:
+            raise PermissionError(decision.reason_code)
+
+    def _scope_bucket(self, guild_id, operation):
+        """Authorize this request and resolve only its selected storage bucket."""
+        guild_key = str(guild_id)
+        scope = guild_key if guild_key in self.access_policy.scopes else self.access_policy.default_scope
+        actor = current_request()
+        if operation == 'write':
+            self._authorize_mutation(actor, scope)
+        else:
+            decision = self.access_policy.authorize(actor, scope, operation)
+            if not decision.allowed:
+                raise PermissionError(decision.reason_code)
+
+        bucket = scope
+        scope_record = self.access_policy.scopes[scope]
+        if (scope_record.kind == 'legacy_shared' and guild_key not in self.access_policy.scopes
+                and not guild_key.startswith(('private:', 'group:'))):
+            # Legacy stores used the Discord guild/channel ID as their bucket.
+            bucket = guild_key
+        return bucket, scope
+
+    def _record_in_scope(self, item, scope):
+        stored_scope = item.get('scope_id')
+        # The selected bucket is the durable scope marker for new records.
+        # Accept unscoped legacy rows there, but reject an explicit other scope.
+        return stored_scope in (None, scope)
+
+    def _records_in_scope(self, bucket, scope):
+        return [item for item in self.reminders.get(bucket, []) if self._record_in_scope(item, scope)]
+
+    def sync_payload(self, item):
+        # Legacy linked reminders patch only their text/completion. A deadline
+        # task is never turned into a newly created timed Google event.
+        return {'summary': item['text'] + (' [FERDIG]' if item.get('completed') else ''),
+                'extendedProperties': {'private': {'inebotten_completed': 'true' if item.get('completed') else 'false'}}}
+
+    def apply_remote_sync_fields(self, item, remote):
+        item['text'], item['completed'] = remote_completion(remote)
+        if remote.get('start'):
+            item['due_date'] = EventTime.from_google(remote).local_date.strftime('%d.%m.%Y')
+
+    def _queue_sync(self, item, kind, scope):
+        if item.get('gcal_event_id'):
+            enqueue(item, kind, scope, payload={} if kind == 'delete' else self.sync_payload(item))
+
+    async def process_due(self, *, deadline):
+        return await self._outbox.process_due(deadline=deadline)
+
+    async def _save_data(self):
+        result = await store_worker(self._storage.commit, copy.deepcopy(self.reminders), writer=write_json_atomic)
+        if not result.ok:
+            self.reminders = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
+
+    @property
+    def reminders(self):
+        return self._storage.data
+
+    @reminders.setter
+    def reminders(self, value):
+        self._storage.data = value
+
+    @property
+    def storage_state(self):
+        return self._storage.state
 
     def _load_reminders(self):
-        """Load reminders from storage"""
-        if self.storage_path.exists():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[CALENDAR] Reminder load error: {e}")
-                return {}
-        return {}
+        return self._storage.load()
 
     def _save_reminders(self):
-        """Save reminders to storage"""
-        write_json_atomic(self.storage_path, self.reminders)
+        result = self._storage.commit(self.reminders, writer=write_json_atomic)
+        if not result.ok:
+            self.reminders = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
+    @writable_store
     def add_reminder(
         self,
         guild_id,
@@ -54,6 +178,8 @@ class ReminderManager:
         gcal_event_id=None,
         gcal_link=None,
         channel_id=None,
+        end_count=None,
+        end_date=None,
     ):
         """
         Add a new reminder
@@ -74,7 +200,7 @@ class ReminderManager:
         Returns:
             reminder_id
         """
-        guild_key = str(guild_id)
+        guild_key, _ = self._scope_bucket(guild_id, 'write')
         reminder_id = f"rem_{guild_id}_{uuid.uuid4().hex}"
 
         if guild_key not in self.reminders:
@@ -99,12 +225,23 @@ class ReminderManager:
             "completed_at": None,
             "completed_by": None,
         }
+        if recurrence and due_date:
+            anchor_date = self._recurrence_date(due_date)
+            anchor = EventTime('task', anchor_date, None, 'Europe/Oslo', True)
+            rule = {'frequency': recurrence}
+            if rrule_day or recurrence_day:
+                rule['weekday'] = rrule_day or recurrence_day
+            reminder['series'] = Series(reminder_id, anchor, rule, end_count,
+                self._coerce_recurrence_end_date(end_date)).to_document()
+            reminder['series_next_index'] = 0
+            reminder['occurrences'] = {}
 
         self.reminders[guild_key].append(reminder)
         self._save_reminders()
 
         return reminder_id
 
+    @writable_store
     def complete_reminder(self, guild_id, reminder_num=None, reminder_id=None):
         """
         Mark a reminder as completed
@@ -118,12 +255,13 @@ class ReminderManager:
         Returns:
             (success, reminder_text, next_date) - next_date is set for recurring reminders
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             return False, None, None
 
-        incomplete = self.get_active_reminders(guild_id)
+        incomplete = [r for r in self._records_in_scope(guild_key, scope) if not r['completed']]
+        incomplete.sort(key=lambda x: x['created_at'])
 
         target_reminder = None
 
@@ -135,7 +273,7 @@ class ReminderManager:
 
         elif reminder_id:
             # Find by ID
-            for reminder in self.reminders[guild_key]:
+            for reminder in incomplete:
                 if reminder["id"] == reminder_id and not reminder["completed"]:
                     target_reminder = reminder
                     break
@@ -145,26 +283,93 @@ class ReminderManager:
 
         # Check if it's a recurring reminder
         if target_reminder.get("recurrence") and target_reminder.get("due_date"):
-            # Calculate next occurrence
-            next_date = self._calculate_next_date(
-                target_reminder["due_date"],
-                target_reminder["recurrence"],
-                target_reminder.get("recurrence_day"),
-            )
-
-            if next_date:
-                target_reminder["due_date"] = next_date
-                target_reminder["completed_count"] = (
-                    target_reminder.get("completed_count", 0) + 1
-                )
+            series = self._ensure_series(target_reminder)
+            index = target_reminder.get('series_next_index', 0)
+            current = occurrence_at(series, index)
+            if current is not None:
+                occurrence_records = target_reminder.setdefault('occurrences', {})
+                if current.occurrence_id not in occurrence_records and len(occurrence_records) >= 10000:
+                    raise ValueError('recurrence_exception_limit')
+                occurrence_records[current.occurrence_id] = Occurrence(
+                    current.occurrence_id, current.series_id, current.original_start, 'completed',
+                ).to_document()
+                target_reminder['completed_count'] = target_reminder.get('completed_count', 0) + 1
+                next_occurrence = self._next_occurrence(target_reminder, series, index + 1)
+                target_reminder['series_next_index'] = next_occurrence[0] if next_occurrence else index + 1
+                next_date = None
+                if next_occurrence:
+                    next_date = next_occurrence[1].original_start.strftime('%d.%m.%Y')
+                    target_reminder['due_date'] = next_date
+                else:
+                    target_reminder['completed'] = True
+                    target_reminder['completed_at'] = self.clock.now().isoformat()
+                # Legacy reminders have no explicit event duration; advancing a
+                # local deadline must not invent a remote timed event.
+                if target_reminder.get('gcal_event_id'):
+                    target_reminder['sync_blocked'] = 'explicit_event_time_required'
+                    raw = enqueue(target_reminder, 'update', guild_key, payload=self.sync_payload(target_reminder))
+                    raw.update(state='failed', reason_code='explicit_event_time_required')
                 self._save_reminders()
                 return True, target_reminder["text"], next_date
 
         # Non-recurring reminder - mark as completed
         target_reminder["completed"] = True
         target_reminder["completed_at"] = datetime.now().isoformat()
+        self._queue_sync(target_reminder, 'update', guild_key)
         self._save_reminders()
         return True, target_reminder["text"], None
+
+    @staticmethod
+    def _coerce_recurrence_end_date(value):
+        if value is None or value == '':
+            return None
+        if type(value) is date:
+            return value
+        if not isinstance(value, str):
+            raise ValueError('invalid_recurrence_end_date')
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return datetime.strptime(value, '%d.%m.%Y').date()
+
+    def _recurrence_date(self, value):
+        try:
+            return datetime.strptime(value, '%d.%m.%Y').date()
+        except ValueError:
+            return datetime.strptime(value, '%d.%m').replace(year=self.clock.now().year).date()
+
+    def _ensure_series(self, item):
+        if item.get('series'):
+            return Series.from_document(item['series'])
+        anchor = EventTime('task', self._recurrence_date(item['due_date']), None, 'Europe/Oslo', True)
+        rule = {'frequency': item['recurrence']}
+        if item.get('rrule_day') or item.get('recurrence_day'):
+            rule['weekday'] = item.get('rrule_day') or item.get('recurrence_day')
+        series = Series(item['id'], anchor, rule,
+            item.get('recurrence_end_count'), self._coerce_recurrence_end_date(item.get('recurrence_end_date')))
+        item['series'] = series.to_document()
+        item.setdefault('series_next_index', 0)
+        item.setdefault('occurrences', {})
+        item['recurrence_migration'] = {
+            'status': 'legacy_collapsed', 'anchor_source': 'stored_current_date',
+            'recovered_before_anchor': False, 'legacy_advanced_count': item.get('completed_count'),
+        }
+        return series
+
+    @staticmethod
+    def _next_occurrence(item, series, index):
+        exceptions = item.get('occurrences', {})
+        while True:
+            occurrence = occurrence_at(series, index)
+            if occurrence is None:
+                return None
+            saved = exceptions.get(occurrence.occurrence_id)
+            if saved is None:
+                return index, occurrence
+            value = Occurrence.from_document(saved)
+            if value.state == 'planned':
+                return index, value
+            index += 1
 
     def _calculate_next_date(self, current_date_str, recurrence, recurrence_day=None):
         """
@@ -201,6 +406,7 @@ class ReminderManager:
             print(f"[CALENDAR] Reminder parse error: {e}")
             return None
 
+    @writable_store
     def get_active_reminders(self, guild_id, include_events=True):
         """
         Get all active (incomplete) reminders
@@ -208,33 +414,28 @@ class ReminderManager:
         Returns:
             List of reminder dicts
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            return []
+        guild_key, scope = self._scope_bucket(guild_id, 'read')
 
         # Filter incomplete reminders
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active = [r for r in self._records_in_scope(guild_key, scope) if not r["completed"]]
 
         # Sort by creation date
         active.sort(key=lambda x: x["created_at"])
 
         return active
 
+    @writable_store
     def get_completed_reminders(self, guild_id, days=7):
         """
         Get recently completed reminders
         """
-        guild_key = str(guild_id)
-
-        if guild_key not in self.reminders:
-            return []
+        guild_key, scope = self._scope_bucket(guild_id, 'read')
 
         cutoff = datetime.now() - timedelta(days=days)
 
         completed = []
-        for r in self.reminders[guild_key]:
-            if r["completed"] and r.get("completed_at"):
+        for r in self._records_in_scope(guild_key, scope):
+            if r["completed"] and r.get("completed_at") and not r.get('_mutation_deleted'):
                 completed_at = datetime.fromisoformat(r["completed_at"])
                 if completed_at >= cutoff:
                     completed.append(r)
@@ -287,27 +488,29 @@ class ReminderManager:
 
         return "\n".join(lines) if lines else None
 
+    @writable_store
     def delete_old_completed(self, guild_id, days=7):
         """Delete reminders completed more than N days ago"""
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             return
 
         cutoff = datetime.now() - timedelta(days=days)
 
-        self.reminders[guild_key] = [
-            r
-            for r in self.reminders[guild_key]
-            if not r["completed"]
-            or (
-                r.get("completed_at")
-                and datetime.fromisoformat(r["completed_at"]) >= cutoff
-            )
-        ]
+        kept = []
+        for reminder in self.reminders[guild_key]:
+            if not self._record_in_scope(reminder, scope):
+                kept.append(reminder)
+                continue
+            if (not reminder['completed'] or reminder.get('completed_at')
+                    and datetime.fromisoformat(reminder['completed_at']) >= cutoff):
+                kept.append(reminder)
+        self.reminders[guild_key] = kept
 
         self._save_reminders()
 
+    @writable_store
     def edit_reminder(self, guild_id, index, title=None, date=None, time=None, recurrence=None):
         """
         Edit an existing reminder by its 1-based index in active reminders.
@@ -326,12 +529,12 @@ class ReminderManager:
         Raises:
             ValueError: If index is invalid
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
 
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active = [r for r in self._records_in_scope(guild_key, scope) if not r["completed"]]
         active.sort(key=lambda x: x["created_at"])
 
         idx = index - 1
@@ -346,10 +549,14 @@ class ReminderManager:
             target["due_date"] = date
         if recurrence is not None:
             target["recurrence"] = recurrence
-
+        self._queue_sync(target, 'update', guild_key)
+        if target.get('gcal_event_id') and (date is not None or recurrence is not None):
+            target['sync_blocked'] = 'explicit_event_time_required'
+            target['sync_operations'][-1].update(state='failed', reason_code='explicit_event_time_required')
         self._save_reminders()
         return target
 
+    @writable_store
     def delete_reminder_by_id(self, guild_id, index):
         """
         Delete a reminder by its 1-based index in active reminders.
@@ -364,12 +571,12 @@ class ReminderManager:
         Raises:
             ValueError: If index is invalid
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'write')
 
         if guild_key not in self.reminders:
             raise ValueError(f"Ingen påminnelser funnet for denne serveren.")
 
-        active = [r for r in self.reminders[guild_key] if not r["completed"]]
+        active = [r for r in self._records_in_scope(guild_key, scope) if not r["completed"]]
         active.sort(key=lambda x: x["created_at"])
 
         idx = index - 1
@@ -377,10 +584,17 @@ class ReminderManager:
             raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
 
         target = active[idx]
-        self.reminders[guild_key].remove(target)
+        if target.get('gcal_event_id'):
+            self._queue_sync(target, 'delete', guild_key)
+            target['completed'] = True
+            target['delete_pending'] = True
+            target['_mutation_deleted'] = True
+        else:
+            self.reminders[guild_key].remove(target)
         self._save_reminders()
         return target
 
+    @writable_store
     def search_reminders(self, guild_id, query):
         """
         Search all reminders (active and completed) by title text.
@@ -392,15 +606,12 @@ class ReminderManager:
         Returns:
             List of matching reminder dicts
         """
-        guild_key = str(guild_id)
+        guild_key, scope = self._scope_bucket(guild_id, 'read')
         query_lower = query.lower()
-
-        if guild_key not in self.reminders:
-            return []
 
         matches = [
             r
-            for r in self.reminders[guild_key]
+            for r in self._records_in_scope(guild_key, scope)
             if query_lower in r.get("text", "").lower()
         ]
         return matches

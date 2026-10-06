@@ -65,6 +65,11 @@ class Config:
         self.CONSOLE_CF_ACCESS_TEAM_DOMAIN = os.getenv('CONSOLE_CF_ACCESS_TEAM_DOMAIN', '').strip()
         self.CONSOLE_CF_ACCESS_AUD = self._split_csv(os.getenv('CONSOLE_CF_ACCESS_AUD', ''))
         self.CONSOLE_CF_ACCESS_ALLOWED_EMAILS = self._split_csv(os.getenv('CONSOLE_CF_ACCESS_ALLOWED_EMAILS', ''))
+        # Calendar workspace identity is mapped from trusted server config; it
+        # is never derived from request payloads, API key text, or CF email.
+        self.CONSOLE_ACTOR_USER_ID = os.getenv('CONSOLE_ACTOR_USER_ID', '').strip()
+        self.CONSOLE_ACTOR_CHANNEL_ID = os.getenv('CONSOLE_ACTOR_CHANNEL_ID', 'console').strip()
+        self.CONSOLE_TRUSTED_ORIGIN = os.getenv('CONSOLE_TRUSTED_ORIGIN', '').strip().rstrip('/')
         console_api_key = os.getenv('CONSOLE_API_KEY')
         self.CONSOLE_API_KEY_FILE = hermes_discord_data_path('console/api_key.txt')
         self.CONSOLE_API_KEY_AUTO_GENERATED = not bool(console_api_key)
@@ -83,6 +88,13 @@ class Config:
         self.ALLOWED_CHANNELS = [int(c.strip()) for c in os.getenv('ALLOWED_CHANNELS', '1178146867540930601').split(',') if c.strip()]
         self.CALENDAR_OWNER_NAME = os.getenv('CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
         
+        self.INVOCATION_MODE = os.getenv('INVOCATION_MODE', 'legacy')
+        self.CALENDAR_MODE = os.getenv('CALENDAR_MODE', 'legacy_shared')
+        self.CALENDAR_OWNER_ID = os.getenv('CALENDAR_OWNER_ID', '').strip()
+        self.CALENDAR_COLLABORATORS = self._split_csv(os.getenv('CALENDAR_COLLABORATORS', ''))
+        self.CALENDAR_GROUP_CHANNELS = self._split_csv(os.getenv('CALENDAR_GROUP_CHANNELS', ''))
+        self.AUTHORIZATION_DEFAULTS_INHERITED = 'ALLOWED_USERS' not in os.environ or 'ALLOWED_CHANNELS' not in os.environ
+
         # Monitoring
         self.POLL_INTERVAL = int(os.getenv('POLL_INTERVAL', 8))  # seconds
         
@@ -102,8 +114,12 @@ class Config:
         # token cannot silently win.  When no override is configured, retain
         # the local-development convenience of loading .env first.
         hermes_env = hermes_home_path() / 'discord' / '.env'
-        if os.getenv('HERMES_HOME'):
-            env_paths = [hermes_env]
+        if 'HERMES_HOME' in os.environ:
+            if os.environ['HERMES_HOME'].strip():
+                env_paths = [hermes_env]
+            else:
+                print("[CONFIG] Warning: ignoring empty HERMES_HOME; project .env fallback is disabled")
+                env_paths = []
         else:
             env_paths = [Path('.env'), hermes_env]
         
@@ -118,7 +134,7 @@ class Config:
                         print(f"[CONFIG] Warning: ignoring env file with unsafe permissions {env_path}")
                         continue
                     # override=True ensures .env wins over pre-set environment variables
-                    load_dotenv(env_path, override=True)
+                    load_dotenv(env_path, override=True, interpolate=False)
                     self.env_file_loaded = str(env_path)
                     break
                 except Exception as e:
@@ -128,24 +144,36 @@ class Config:
         """
         Validate configuration - ensure we have at least one auth method
         """
+        if self.DISCORD_EMAIL or self.DISCORD_PASSWORD:
+            raise ValueError(
+                "Email/password authentication is unsupported; configure DISCORD_USER_TOKEN."
+            )
+        if self.AI_PROVIDER not in {"lm_studio", "openrouter"}:
+            raise ValueError("AI_PROVIDER must be 'lm_studio' or 'openrouter'.")
+
+        from core.config_schema import validate_settings
+        errors = validate_settings({
+            'INVOCATION_MODE': getattr(self, 'INVOCATION_MODE', 'legacy'),
+            'CALENDAR_MODE': getattr(self, 'CALENDAR_MODE', 'legacy_shared'),
+            'CALENDAR_OWNER_ID': getattr(self, 'CALENDAR_OWNER_ID', ''),
+            'CALENDAR_GROUP_CHANNELS': ','.join(getattr(self, 'CALENDAR_GROUP_CHANNELS', [])),
+            'CALENDAR_COLLABORATORS': ','.join(getattr(self, 'CALENDAR_COLLABORATORS', [])),
+        })
+        if errors:
+            raise ValueError('; '.join(error['field'] + ': ' + error['reason'] for error in errors))
+
         has_token = bool(self.DISCORD_TOKEN)
-        has_email_password = bool(self.DISCORD_EMAIL and self.DISCORD_PASSWORD)
         
-        if not has_token and not has_email_password:
+        if not has_token:
             print("[CONFIG] WARNING: No Discord credentials configured!")
             print("  Please set one of the following:")
             print("    - DISCORD_USER_TOKEN (preferred)")
-            print("    - OR both DISCORD_EMAIL and DISCORD_PASSWORD")
-        
-        if not self.DISCORD_TOKEN and has_email_password:
-            print("[CONFIG] Using username/password auth (slower than token)")
         
         # Validate AI provider configuration
         if self.AI_PROVIDER == 'openrouter':
             if not self.OPENROUTER_API_KEY:
                 print("[CONFIG] WARNING: AI_PROVIDER is 'openrouter' but OPENROUTER_API_KEY is not set!")
-                print("  Falling back to LM Studio...")
-                object.__setattr__(self, 'AI_PROVIDER', 'lm_studio')
+                print("  Configure the selected provider before starting AI requests.")
             else:
                 if self.env_file_loaded:
                     print(f"[CONFIG] Settings loaded from {self.env_file_loaded}")
@@ -195,28 +223,20 @@ class Config:
     def get_auth_type(self) -> str:
         """
         Determine which authentication method is configured
-        Returns: 'token' or 'email/password'
+        Returns: 'token' or 'none'
         """
         if self.DISCORD_TOKEN:
             return 'token'
-        elif self.DISCORD_EMAIL and self.DISCORD_PASSWORD:
-            return 'email/password'
         else:
             return 'none'
     
     def get_auth_creds(self):
         """
         Get authentication credentials
-        Returns: dict with token or email/password
+        Returns: dict with token, or None
         """
         if self.DISCORD_TOKEN:
             return {'type': 'token', 'token': self.DISCORD_TOKEN}
-        elif self.DISCORD_EMAIL and self.DISCORD_PASSWORD:
-            return {
-                'type': 'password',
-                'email': self.DISCORD_EMAIL,
-                'password': self.DISCORD_PASSWORD
-            }
         else:
             return None
     

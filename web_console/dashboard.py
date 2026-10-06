@@ -59,9 +59,11 @@ def _status_badge(status: object) -> str:
     if isinstance(status, bool):
         return "badge-online" if status else "badge-error"
     s = str(status or "").lower()
-    if s in ("online", "connected", "ok", "healthy", "running", "active", "true", "yes"):
+    if s in ("online", "connected", "ok", "healthy", "ready", "running", "active", "true", "yes"):
         return "badge-online"
-    if s in ("offline", "disconnected", "error", "unhealthy", "stopped", "inactive", "false", "no"):
+    if s in ("disabled", "not_required"):
+        return "badge-neutral"
+    if s in ("offline", "disconnected", "error", "unhealthy", "unavailable", "stopped", "inactive", "false", "no"):
         return "badge-error"
     return "badge-warning"
 
@@ -216,6 +218,16 @@ def _modal_button(section: str, label: str = "Detaljer") -> str:
     )
 
 
+def _poll_controls(endpoint: str) -> str:
+    safe_endpoint = escape(endpoint)
+    return (
+        f'<span class="endpoint-freshness" data-poll-endpoint="{safe_endpoint}" '
+        f'data-last-success="" role="status" aria-live="polite">Venter på oppdatering</span>'
+        f'<button type="button" class="btn btn-secondary poll-retry" '
+        f'data-poll-retry="{safe_endpoint}">Prøv igjen</button>'
+    )
+
+
 def _metric_tile(label: str, value: object, *, metric: str | None = None) -> str:
     metric_attr = f' data-metric="{escape(metric)}"' if metric else ""
     return (
@@ -240,6 +252,9 @@ def _signal_card(tone: str, symbol: str, title: str, detail: str, value: object)
 def _render_overview_section(data: dict[str, Any]) -> str:
     status = _section(data, "status")
     bridge = _section(data, "bridge")
+    readiness = _section(data, "readiness")
+    components = readiness.get("components", {}) if isinstance(readiness.get("components"), dict) else {}
+    bridge_readiness = components.get("bridge", {}) if isinstance(components, dict) else {}
     intents = _section(data, "intents")
     logs = _section(data, "logs")
     calendar = _section(data, "calendar")
@@ -255,10 +270,12 @@ def _render_overview_section(data: dict[str, Any]) -> str:
     event_count = _safe_int(calendar, "event_count", default=0)
     task_count = _safe_int(calendar, "task_count", default=0)
 
+    bridge_required = bool(bridge_readiness.get("required", True))
+    readiness_status = str(readiness.get("status", "")).lower()
     has_attention = (
         _status_badge(bot_status) != "badge-online"
-        or _status_badge(bridge_status) == "badge-error"
-        or bridge_errors > 0
+        or readiness_status in {"degraded", "unavailable", "stale"}
+        or (bridge_required and (_status_badge(bridge_status) == "badge-error" or bridge_errors > 0))
         or log_counts["error"] > 0
     )
 
@@ -279,13 +296,14 @@ def _render_overview_section(data: dict[str, Any]) -> str:
         [
             f'<div class="hero-stat"><span>Oppetid</span><strong data-metric="status.uptime">{escape(_uptime_fmt(_safe_int(status, "uptime_seconds", default=-1)))}</strong></div>',
             f'<div class="hero-stat"><span>Servere</span><strong data-metric="status.guilds">{escape(str(status.get("guilds", "N/A")))}</strong></div>',
-            f'<div class="hero-stat"><span>Kalender</span><strong>{event_count} / {task_count}</strong></div>',
-            f'<div class="hero-stat"><span>Avstemninger</span><strong data-metric="polls.active">{active_polls}</strong></div>',
+            f'<div class="hero-stat"><span>Kalender</span><strong data-metric="overview.calendar">{event_count} / {task_count}</strong></div>',
+            f'<div class="hero-stat"><span>Avstemninger</span><strong data-metric="overview.polls">{active_polls}</strong></div>',
         ]
     )
 
-    bridge_tone = "ok" if _status_badge(bridge_status) == "badge-online" and bridge_errors == 0 else "warn"
-    if _status_badge(bridge_status) == "badge-error":
+    bridge_disabled = bridge_readiness.get("status") == "disabled"
+    bridge_tone = "ok" if bridge_disabled or (_status_badge(bridge_status) == "badge-online" and bridge_errors == 0) else "warn"
+    if bridge_required and _status_badge(bridge_status) == "badge-error":
         bridge_tone = "error"
     fallback_tone = "warn" if fallback_count > 5 else "ok"
     log_tone = "error" if log_counts["error"] else ("warn" if log_counts["warn"] else "ok")
@@ -293,7 +311,7 @@ def _render_overview_section(data: dict[str, Any]) -> str:
     signals = "\n".join(
         [
             _signal_card("ok" if _status_badge(bot_status) == "badge-online" else "warn", "OK", "Bot", f"Status: {bot_status}", _badge_text(bot_status, ok="Online")),
-            _signal_card(bridge_tone, "AI", "Bridge", f"LM Studio: {bridge.get('lm_studio', 'ukjent')}", _badge_text(bridge_status, ok="Tilkoblet", error="Nede")),
+            _signal_card(bridge_tone, "AI", "Bridge", "Ikke nødvendig for valgt provider" if bridge_disabled else f"LM Studio: {bridge.get('lm_studio', 'ukjent')}", "Ikke nødvendig" if bridge_disabled else _badge_text(bridge_status, ok="Tilkoblet", error="Nede")),
             _signal_card(fallback_tone, "?", "Fallbacks", "Lav trygghet eller AI-chat-ruting", fallback_count),
             _signal_card(log_tone, "!", "Logger", f"{log_counts['warn']} varsler, {log_counts['error']} feil", len(log_lines) if isinstance(log_lines, list) else 0),
         ]
@@ -341,29 +359,103 @@ def _render_status_section(data: dict[str, Any]) -> str:
     <span class="badge {_status_badge(bot_status)}">{escape(_badge_text(bot_status, ok="Online", error="Offline"))}</span>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
-  <div class="card-footer">{_modal_button("status")}</div>
+  <div class="card-footer">{_poll_controls("/api/status")}{_modal_button("status")}</div>
 </section>"""
 
 
 def _render_bridge_section(data: dict[str, Any]) -> str:
     bridge = _section(data, "bridge")
+    readiness = _section(data, "readiness")
+    components = readiness.get("components", {}) if isinstance(readiness.get("components"), dict) else {}
+    bridge_readiness = components.get("bridge", {}) if isinstance(components, dict) else {}
+    bridge_disabled = bridge_readiness.get("status") == "disabled"
     bridge_status = bridge.get("status", "ukjent")
     err_val = _safe_int(data, "bridge", "errors", default=0)
     metrics = "\n".join(
         [
-            _metric_tile("Status", bridge_status, metric="bridge.status"),
-            _metric_tile("LM Studio", bridge.get("lm_studio", "N/A"), metric="bridge.lm_studio"),
-            _metric_tile("Forespørsler", bridge.get("requests", 0), metric="bridge.requests"),
-            _metric_tile("Feil", err_val, metric="bridge.errors"),
+            _metric_tile("Status", "Ikke nødvendig" if bridge_disabled else bridge_status, metric="bridge.status"),
+            _metric_tile("LM Studio", "Ikke i bruk" if bridge_disabled else bridge.get("lm_studio", "N/A"), metric="bridge.lm_studio"),
+            _metric_tile("Forespørsler", "–" if bridge_disabled else bridge.get("requests", 0), metric="bridge.requests"),
+            _metric_tile("Feil", "–" if bridge_disabled else err_val, metric="bridge.errors"),
         ]
     )
+    display_status = "disabled" if bridge_disabled else bridge_status
+    description = "Ikke nødvendig for valgt provider." if bridge_disabled else "AI-broen og LM Studio-kontakten."
     return f"""<article class="card" id="bridge">
   <div class="card-header">
-    <div><h3>Bridge</h3><p class="muted">AI-broen og LM Studio-kontakten.</p></div>
-    <span class="badge {_status_badge(bridge_status)}">{escape(_badge_text(bridge_status, ok="Tilkoblet", error="Frakoblet"))}</span>
+    <div><h3>Bridge</h3><p class="muted">{escape(description)}</p></div>
+    <span class="badge {_status_badge(display_status)}">{escape("Ikke nødvendig" if bridge_disabled else _badge_text(bridge_status, ok="Tilkoblet", error="Frakoblet"))}</span>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
-  <div class="card-footer">{_modal_button("bridge")}</div>
+  <div class="card-footer">{_poll_controls("/api/bridge")}{_modal_button("bridge")}</div>
+</article>"""
+
+
+def _readiness_label(status: object) -> str:
+    return {
+        "ready": "Klar",
+        "degraded": "Svekket",
+        "unavailable": "Utilgjengelig",
+        "stale": "Utdatert",
+        "disabled": "Deaktivert",
+    }.get(str(status or "").lower(), "Ukjent")
+
+
+def _verification_label(value: object) -> str:
+    return {
+        "reachable": "tilkoblet",
+        "unavailable": "utilgjengelig",
+        "unverified": "ikke verifisert",
+        "catalog_reachable": "modelliste tilgjengelig",
+        "accepted": "inferens godkjent",
+        "not_observed": "inferens ikke observert",
+        "rejected": "inferens feilet",
+    }.get(str(value or "").lower(), "ikke verifisert")
+
+
+def _render_readiness_section(data: dict[str, Any]) -> str:
+    readiness = _section(data, "readiness")
+    components = readiness.get("components", {})
+    rows: list[str] = []
+    labels = {
+        "provider": "Valgt AI-provider",
+        "bridge": "Bridge",
+        "google_calendar": "Google Calendar",
+        "scheduler": "Påminnelsesplanlegger",
+        "store": "Konsolllager",
+        "calendar_sync": "Kalendersynkronisering",
+    }
+    if isinstance(components, dict):
+        for key, label in labels.items():
+            item = components.get(key)
+            if not isinstance(item, dict):
+                continue
+            detail = ""
+            if key == "provider":
+                detail = (
+                    "Transport: " + _verification_label(item.get("transport_status"))
+                    + " · modelliste: " + _verification_label(item.get("model_discovery_status"))
+                    + " · faktisk inferens: " + _verification_label(item.get("inference_acceptance_status"))
+                )
+            action = item.get("recovery_action")
+            status_label = "Ikke nødvendig" if key == "bridge" and item.get("status") == "disabled" else _readiness_label(item.get("status"))
+            rows.append(
+                '<div class="mini-row readiness-row">'
+                f'<span><strong>{escape(label)}</strong><br><small>{escape(detail)}</small>'
+                + (f'<br><small>{escape(str(action))}</small>' if action else "")
+                + "</span>"
+                + f'<strong class="badge {_status_badge(item.get("status"))}">{escape(status_label)}</strong>'
+                + "</div>"
+            )
+    body = "".join(rows) or '<div class="empty-state">Venter på driftsstatus.</div>'
+    overall = readiness.get("status", "stale")
+    return f"""<article class="card" id="readiness">
+  <div class="card-header">
+    <div><h3>Driftsklarhet</h3><p class="muted">Tilkobling, modelliste og faktisk svar vises som separate signaler.</p></div>
+    <span class="badge {_status_badge(overall)}" data-metric="readiness.status">{escape(_readiness_label(overall))}</span>
+  </div>
+  <div class="card-body" data-readiness-list>{body}</div>
+  <div class="card-footer"><span class="muted">Oppdateres sammen med Bridge-diagnostikken.</span></div>
 </article>"""
 
 
@@ -401,9 +493,38 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
   <div class="card-body">
     <div class="metric-grid">{metrics}</div>
     {upcoming_html}
+    <section class="calendar-workspace" aria-labelledby="calendar-workspace-title" data-calendar-workspace>
+      <div class="workspace-heading"><div><h4 id="calendar-workspace-title">Agenda</h4><p class="muted">Se detaljer og gjør endringer med forhåndsvisning.</p></div>
+        <button class="btn btn-secondary" type="button" data-calendar-refresh>Oppdater</button></div>
+      <p class="calendar-workspace-status" role="status" aria-live="polite" data-calendar-status>Henter kalender …</p>
+      <p class="calendar-week-summary" data-calendar-week-summary aria-live="polite"></p>
+      <div class="calendar-workspace-grid">
+        <div><label class="sr-only" for="calendar-filter">Filtrer agenda</label><input id="calendar-filter" type="search" placeholder="Filtrer agenda" data-calendar-filter>
+          <div class="calendar-agenda" data-calendar-agenda tabindex="0" aria-label="Kalenderagenda"></div></div>
+        <form class="calendar-editor" data-calendar-form>
+          <h5 data-calendar-form-title>Ny oppføring</h5>
+          <input type="hidden" name="item_id">
+          <label>Tittel<input name="title" maxlength="200" required></label>
+          <label>Dato<input name="date" type="date" required></label>
+          <label>Tid<input name="time" type="time"></label>
+          <label>Type<select name="kind"><option value="event">Hendelse</option><option value="task">Oppgave</option></select></label>
+          <label>Varighet i minutter<input name="duration_minutes" type="number" min="1" max="10080"></label>
+          <label>Beskrivelse<textarea name="description" maxlength="4000" rows="3"></textarea></label>
+          <div class="calendar-editor-actions"><button class="btn btn-primary" type="submit">Forhåndsvis</button>
+            <button class="btn btn-secondary" type="button" data-calendar-new>Ny</button></div>
+        </form>
+      </div>
+      <section class="calendar-preview" data-calendar-preview hidden aria-labelledby="calendar-preview-title">
+        <h5 id="calendar-preview-title">Forhåndsvis endring</h5><div data-calendar-preview-content></div>
+        <div class="calendar-editor-actions"><button class="btn btn-primary" type="button" data-calendar-apply>Bruk endring</button>
+          <button class="btn btn-secondary" type="button" data-calendar-cancel>Avbryt</button></div>
+      </section>
+      <section class="calendar-conflicts" data-calendar-conflicts aria-label="Synkroniseringskonflikter"></section>
+    </section>
   </div>
   <div class="card-footer">
     <a href="/gcal-auth" class="btn btn-secondary">Google-oppsett</a>
+    {_poll_controls("/api/calendar")}
     {_modal_button("calendar", "Vis alle")}
   </div>
 </section>"""
@@ -451,7 +572,7 @@ def _render_polls_section(data: dict[str, Any]) -> str:
     <span class="badge badge-neutral"><span data-metric="polls.active">{escape(str(active_polls))}</span> aktive</span>
   </div>
   <div class="card-body">{polls_html}</div>
-  <div class="card-footer">{_modal_button("polls", "Vis alle")}</div>
+  <div class="card-footer">{_poll_controls("/api/polls")}{_modal_button("polls", "Vis alle")}</div>
 </section>"""
 
 
@@ -487,7 +608,7 @@ def _render_rate_limits_section(data: dict[str, Any]) -> str:
     <span class="badge badge-neutral"><span data-metric="rate_limits.total">{total_requests}</span> totalt</span>
   </div>
   <div class="card-body">{table_html}</div>
-  <div class="card-footer">{_modal_button("rate-limits")}</div>
+  <div class="card-footer">{_poll_controls("/api/rate-limits")}{_modal_button("rate-limits")}</div>
 </article>"""
 
 
@@ -516,7 +637,7 @@ def _render_intents_section(data: dict[str, Any]) -> str:
     <span class="badge {fallback_badge_class}">Fallbacks: <span data-metric="intents.fallback">{fallback_count}</span></span>
   </div>
   <div class="card-body">{table_html}</div>
-  <div class="card-footer">{_modal_button("intents")}</div>
+  <div class="card-footer">{_poll_controls("/api/intents")}{_modal_button("intents")}</div>
 </article>"""
 
 
@@ -535,7 +656,7 @@ def _render_memory_section(data: dict[str, Any]) -> str:
     <div><h3>Minne</h3><p class="muted">Hva botten husker på tvers av samtaler.</p></div>
   </div>
   <div class="card-body"><div class="metric-grid">{metrics}</div></div>
-  <div class="card-footer">{_modal_button("memory")}</div>
+  <div class="card-footer">{_poll_controls("/api/memory")}{_modal_button("memory")}</div>
 </section>"""
 
 
@@ -548,10 +669,17 @@ def _render_logs_section(data: dict[str, Any]) -> str:
     <span class="badge badge-neutral">Siste <span data-metric="logs.count">{line_count}</span> linjer</span>
   </div>
   <div class="card-body">
+    <label>Nivå <select data-log-level><option value="">Alle</option><option>ERROR</option><option>WARNING</option><option>INFO</option><option>DEBUG</option></select></label>
+    <label>Komponent <input data-log-component maxlength="64" placeholder="Alle"></label>
+    <p data-log-page-status class="muted" role="status"></p>
     <div id="log-container" class="log-console">{_render_log_block(log_lines)}</div>
   </div>
   <div class="card-footer">
     <button type="button" class="btn btn-secondary" data-copy-logs>Kopier</button>
+    <button type="button" class="btn btn-secondary" data-download-logs>Last ned vist side</button>
+    <button type="button" class="btn btn-secondary" data-log-pause aria-pressed="false">Sett på pause</button>
+    <button type="button" class="btn btn-secondary" data-log-older disabled>Eldre side</button>
+    {_poll_controls("/api/logs?lines=50")}
     {_modal_button("logs", "Vis alle")}
   </div>
 </section>"""
@@ -591,6 +719,7 @@ def _render_diagnostics_section(data: dict[str, Any]) -> str:
     </div>
   </div>
   <div class="diagnostics-grid">
+    {_render_readiness_section(data)}
     {_render_bridge_section(data)}
     {_render_rate_limits_section(data)}
     {_render_intents_section(data)}
@@ -759,226 +888,21 @@ def render_gcal_auth_page(
 
 
 def render_commands_page() -> str:
-    sections = [
-        (
-            "💬 Samtale & AI",
-            "Naturlige samtaler og AI-assisterte svar.",
-            [
-                ("@inebotten Hei! Hvordan går det?", "Generell AI-samtale"),
-                ("@inebotten Hva synes du om RBK?", "AI-chat med kontekst"),
-                ("@inebotten Fortell en vits", "Be om kreativt innhold"),
-                ("@inebotten Hva er meningen med livet?", "Filosofiske spørsmål"),
-            ],
-        ),
-        (
-            "📅 Kalender",
-            "Opprett, administrer og synkroniser hendelser.",
-            [
-                ("@inebotten møte med Ola i morgen kl 14", "Opprett hendelse med naturlig språk"),
-                ("@inebotten lunsj hver fredag kl 12", "Opprett gjentagende hendelse"),
-                ("@inebotten bursdag til mamma 15.05 hvert år", "Årlig gjentagelse"),
-                ("@inebotten kalender", "Vis alle kommende hendelser (90 dager)"),
-                ("@inebotten søk kalender møte", "Søk etter hendelser"),
-                ("@inebotten endre 1 tittel: Ny tittel dato: 15.05 kl 14", "Rediger hendelse"),
-                ("@inebotten slett 2", "Slett hendelse etter nummer"),
-                ("@inebotten slett spaghetti", "Slett etter delvis tittel"),
-                ("@inebotten slett alle spaghetti", "Slett alle treff"),
-                ("@inebotten slett alt", "Slett alt (krever bekreftelse)"),
-                ("@inebotten ferdig 2", "Marker som fullført"),
-                ("@inebotten ferdig meldekort", "Fullfør etter tittel"),
-                ("@inebotten synk", "Synkroniser med Google Calendar"),
-                ("@inebotten kalender auth", "Start Google Calendar-innlogging"),
-                ("@inebotten kalender kode <kode>", "Fullfør Google Calendar-innlogging"),
-            ],
-        ),
-        (
-            "🔔 Påminnelser",
-            "Opprett og administrer påminnelser.",
-            [
-                ("@inebotten påminnelse Ring lege om 2 timer", "Opprett påminnelse"),
-                ("@inebotten påminnelser", "Vis aktive påminnelser"),
-                ("@inebotten ferdig påminnelse 1", "Fullfør påminnelse"),
-                ("@inebotten endre påminnelse 1 dato: 20.06", "Rediger påminnelse"),
-                ("@inebotten slett påminnelse 1", "Slett påminnelse"),
-                ("@inebotten søk påminnelse lege", "Søk etter påminnelse"),
-            ],
-        ),
-        (
-            "📊 Avstemninger",
-            "Opprett, stem og administrer avstemninger.",
-            [
-                ("@inebotten avstemning Pizza eller burger? Pepperoni, Margherita, Kebab", "Opprett avstemning"),
-                ("@inebotten stem 1", "Stem når én avstemning er aktiv"),
-                ("@inebotten polls", "Vis aktive avstemninger"),
-                ("@inebotten endre poll 1", "Rediger avstemning"),
-                ("@inebotten slett poll 1", "Slett avstemning"),
-                ("@inebotten lukk poll 1", "Lukk avstemning"),
-            ],
-        ),
-        (
-            "💬 Sitater",
-            "Inspirerende sitater og administrasjon.",
-            [
-                ("@inebotten sitat", "Tilfeldig sitat"),
-                ("@inebotten sitater", "Vis alle sitater"),
-                ("@inebotten endre sitat 1 tekst: Ny tekst forfatter: Ola", "Rediger sitat"),
-                ("@inebotten slett sitat 1", "Slett sitat"),
-            ],
-        ),
-        (
-            "📺 Watchlist",
-            "Hold styr på filmer og serier dere vil se.",
-            [
-                ("@inebotten watchlist", "Vis watchlist"),
-                ("@inebotten legg til Inception", "Legg til film eller serie"),
-                ("@inebotten hva skal vi se?", "Få et forslag"),
-                ("@inebotten endre watchlist 1 The Matrix", "Endre tittel"),
-                ("@inebotten fjern watchlist 1", "Fjern fra watchlist"),
-            ],
-        ),
-        (
-            "🎂 Bursdager",
-            "Husk bursdager med automatisk daglig oppsummering.",
-            [
-                ("@inebotten bursdag Ola 15.05", "Legg til bursdag"),
-                ("@inebotten endre bursdag Ola 20.05", "Endre bursdag"),
-                ("@inebotten bursdager", "Vis alle bursdager"),
-            ],
-        ),
-        (
-            "🌦️ Vær",
-            "Værmeldinger og lokasjonslagring.",
-            [
-                ("@inebotten vær", "Værmelding for din lokasjon"),
-                ("@inebotten været i Trondheim", "Vær for spesifikt sted"),
-                ("@inebotten Jeg bor i Trondheim", "Lagre faste lokasjon"),
-            ],
-        ),
-        (
-            "💰 Krypto & Priser",
-            "Sjekk kryptovaluta-priser.",
-            [
-                ("@inebotten pris BTC", "Sjekk kryptopris"),
-                ("@inebotten pris ETH", "Støttede symboler: BTC, ETH, SOL, ADA, XRP, DOGE, m.fl."),
-            ],
-        ),
-        (
-            "🧮 Kalkulator",
-            "Utfør matematiske beregninger.",
-            [
-                ("@inebotten kalk (100 * 1.25) / 2", "Regn ut uttrykk"),
-            ],
-        ),
-        (
-            "🔗 URL-forkorter",
-            "Forkort lenker.",
-            [
-                ("@inebotten shorten https://example.com", "Forkort URL"),
-            ],
-        ),
-        (
-            "🔮 Horoskop",
-            "Daglig horoskop.",
-            [
-                ("@inebotten horoskop væren", "Daglig horoskop"),
-            ],
-        ),
-        (
-            "💕 Komplimenter",
-            "Send et kompliment.",
-            [
-                ("@inebotten kompliment", "Tilfeldig kompliment"),
-            ],
-        ),
-        (
-            "🌌 Nordlys",
-            "Nordlysvarsel for ditt område.",
-            [
-                ("@inebotten nordlys", "Sjekk nordlysutsikter"),
-            ],
-        ),
-        (
-            "📖 Dagens ord",
-            "Lær et nytt norsk ord.",
-            [
-                ("@inebotten dagens ord", "Norsk ord med definisjon"),
-            ],
-        ),
-        (
-            "📰 Daglig oppsummering",
-            "Omfattende morgenbrief.",
-            [
-                ("@inebotten daglig oppsummering", "Vær, marked, kalender og bursdager"),
-            ],
-        ),
-        (
-            "⏱️ Nedtelling",
-            "Nedtelling til hendelser.",
-            [
-                ("@inebotten nedtelling til 17. mai", "Nedtelling til dato"),
-                ("@inebotten nedtelling til julaften", "Nedtelling til høytid"),
-            ],
-        ),
-        (
-            "🔍 Søk & Nettleser",
-            "Søk på nettet og les artikler.",
-            [
-                ("@inebotten søk [spørring]", "Søk på nettet"),
-                ("@inebotten les [URL]", "Hent artikkelinnhold"),
-            ],
-        ),
-        (
-            "👤 Profil",
-            "Endre din Discord-status og aktivitet.",
-            [
-                ("@inebotten status", "Vis bot-helse"),
-                ("@inebotten status dnd", "online, idle, dnd, invisible"),
-                ("@inebotten spiller CS2", "Endre aktivitet"),
-                ("@inebotten ser på Netflix", "Endre aktivitet"),
-            ],
-        ),
-        (
-            "🔐 Minne",
-            "Se, eksporter eller slett brukerminnet ditt.",
-            [
-                ("@inebotten vis minnet mitt", "Vis lagret brukerminne"),
-                ("@inebotten eksporter minnet mitt", "Eksporter som JSON"),
-                ("@inebotten slett minnet mitt bekreft", "Slett brukerminnet"),
-            ],
-        ),
-        (
-            "🩺 Drift",
-            "Bot-drift og diagnostikk.",
-            [
-                ("@inebotten bot status", "Uptime, AI-status, handlers, rate-limit"),
-                ("@inebotten health", "Kort helsesjekk"),
-            ],
-        ),
-        (
-            "❓ Hjelp",
-            "Få hjelp med botten.",
-            [
-                ("@inebotten hjelp", "Vis hjelpemelding"),
-                ("@inebotten hva kan du gjøre", "Funksjonsoversikt"),
-            ],
-        ),
-    ]
-
-    def _render_cmd_section(title: str, description: str, commands: list[tuple[str, str]]) -> str:
-        rows = "\n".join(
-            f"<tr><td><code>{escape(cmd)}</code></td><td>{escape(desc)}</td></tr>"
-            for cmd, desc in commands
-        )
-        return f"""<section class="card scroll-mt-24">
-  <h2>{escape(title)}</h2>
-  <p class="muted">{escape(description)}</p>
-  <table>
-    <thead><tr><th>Kommando</th><th>Beskrivelse</th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
-</section>"""
-
-    main_content = "\n".join(_render_cmd_section(t, d, c) for t, d, c in sections)
+    from core.command_registry import COMMANDS
+    scope_labels = {'invocation': 'Tillatt invokasjon', 'calendar': 'Tillatt kalenderområde',
+                    'controller': 'Egen konto / tilgangskontroll', 'self': 'Bare deg selv',
+                    'channel': 'Denne chatten', 'poll_owner': 'Pollens eier'}
+    rows = []
+    for spec in COMMANDS:
+        examples = '<br>'.join('<code>@inebotten ' + escape(example) + '</code>' for example in spec.examples)
+        rows.append('<tr data-command-intent="' + escape(spec.intent.value) + '"><td>' + examples
+                    + '</td><td>' + escape(spec.description) + '</td><td>'
+                    + escape(scope_labels.get(spec.scope_rule, spec.scope_rule)) + '</td></tr>')
+    main_content = ('<section class="card"><h2>Kommandoer</h2>'
+                    '<p class="muted">Tagg Inebotten. Gjeldende rettigheter, områder og bekreftelser '
+                    'kontrolleres ved kjøring. Numeriske valg krever relevant aktiv / vist liste.</p>'
+                    '<table><thead><tr><th>Eksempler</th><th>Beskrivelse</th><th>Område</th></tr></thead>'
+                    '<tbody>' + ''.join(rows) + '</tbody></table></section>')
 
     return _BASE_TEMPLATE.format(
         title="Inebotten - Kommandoer",

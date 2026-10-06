@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Authentication Handler for Discord Selfbot
-Handles token-based and email/password authentication
+Handles token-based Discord authentication
 """
 
 import os
@@ -13,9 +13,7 @@ from utils.json_storage import hermes_home_path
 
 class AuthHandler:
     """
-    Manages Discord authentication with support for:
-    - Token-based auth (preferred, faster)
-    - Email/password auth (fallback)
+    Manages the supported Discord user-token authentication method.
     """
 
     def __init__(self, config):
@@ -33,16 +31,14 @@ class AuthHandler:
         if not creds:
             raise ValueError(
                 "No Discord credentials configured!\n"
-                "Set DISCORD_USER_TOKEN or both DISCORD_EMAIL and DISCORD_PASSWORD"
+                "Set DISCORD_USER_TOKEN"
             )
 
         self.auth_method = creds["type"]
+        if self.auth_method != "token":
+            raise ValueError("Unsupported Discord authentication method; configure DISCORD_USER_TOKEN.")
         self.credentials = creds
-
-        if self.auth_method == "token":
-            self._validate_token()
-        else:
-            self._validate_email_password()
+        self._validate_token()
 
     def _validate_token(self):
         """
@@ -64,21 +60,6 @@ class AuthHandler:
             )
 
         print(f"[AUTH] Token authentication configured ({len(token)} chars)")
-
-    def _validate_email_password(self):
-        """
-        Validate email/password format
-        """
-        email = self.credentials["email"]
-        password = self.credentials["password"]
-
-        if "@" not in email:
-            print(f"[AUTH] WARNING: Email format looks invalid: {email}")
-
-        if len(password) < 6:
-            print(f"[AUTH] WARNING: Password seems very short")
-
-        print(f"[AUTH] Email/password authentication configured ({email})")
 
     def get_discord_credentials(self):
         """
@@ -103,10 +84,8 @@ class AuthHandler:
 
     def get_email_password(self):
         """
-        Get email and password (only valid for email/password auth)
+        Retained for API compatibility; password authentication is unsupported.
         """
-        if self.auth_method == "email/password":
-            return (self.credentials["email"], self.credentials["password"])
         return None
 
     def get_auth_type(self):

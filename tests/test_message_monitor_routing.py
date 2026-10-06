@@ -76,8 +76,9 @@ class RecordingMessage:
         self.author = SimpleNamespace(id=7, name="Tester")
         self.replies = []
 
-    async def reply(self, content, mention_author=False):
+    async def reply(self, content, mention_author=False, **kwargs):
         self.replies.append(content)
+        return SimpleNamespace(id=f'reply-{self.id}')
 
 
 class RecordingPollsHandler:

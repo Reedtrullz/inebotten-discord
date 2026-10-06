@@ -49,8 +49,20 @@ def test_delete_user_memory_persists_and_does_not_touch_other_users():
 
         deleted = _run(memory.delete_user_memory("u1"))
 
-        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored = json.loads(path.read_text(encoding="utf-8"))["document"]
 
     assert deleted is True
     assert "u1" not in stored
     assert stored["u2"]["location"] == "Oslo"
+
+
+def test_legacy_facts_are_preserved_but_sharing_defaults_are_closed(tmp_path):
+    path = tmp_path / 'memory.json'
+    original = {'u1': {'preferences': {}, 'interests': ['RBK'], 'last_topics': ['Old topic'], 'location': 'Oslo'}}
+    path.write_text(json.dumps(original))
+    memory = UserMemory(path)
+    assert _run(memory.build_prompt_memory('u1', 'openrouter', 'private:u1')) == {}
+    assert memory.memory['u1']['interests'] == ['RBK']
+    assert path.read_text() == json.dumps(original)
+    assert _run(memory.format_context_for_prompt('u1')) == ''
+    memory._storage.close()

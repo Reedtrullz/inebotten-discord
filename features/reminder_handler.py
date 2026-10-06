@@ -12,6 +12,8 @@ from typing import Dict, Optional, Tuple
 
 from cal_system.reminder_manager import parse_reminder_command
 from features.base_handler import BaseHandler
+from utils.storage_contract import StorageMutationError
+from datetime import timedelta
 
 
 class ReminderHandler(BaseHandler):
@@ -32,6 +34,34 @@ class ReminderHandler(BaseHandler):
     def __init__(self, monitor):
         super().__init__(monitor)
         self.reminders = monitor.reminders
+
+    async def handle_snooze(self, message, payload):
+        from cal_system.notification_preferences import occurrence_identity
+        from cal_system.reminder_checker import project_current_occurrence
+        from core.request_context import current_request
+        actor = current_request()
+        calendar = self.monitor.calendar
+        if actor is None or actor.user_id != str(message.author.id):
+            raise PermissionError('snooze_actor_required')
+        scope = calendar.scope_key(operation='read')
+        minutes = payload['minutes']
+        if type(minutes) is not int or not 1 <= minutes <= 1440:
+            raise ValueError('invalid_snooze_minutes')
+        items = [i for bucket in calendar._scope_buckets() for i in calendar.items.get(bucket, [])]
+        items += self.reminders.get_active_reminders(self.get_guild_id(message), include_events=False)
+        matches = []
+        for item in items:
+            if (item['id'] != payload['item_id'] or str(item.get('user_id')) != actor.user_id
+                    or item.get('completed') or item.get('_mutation_deleted') or item.get('delete_pending')):
+                continue
+            projected = project_current_occurrence(item)
+            if projected is not None:
+                matches.append(projected)
+        if len(matches) != 1:
+            raise PermissionError('snooze_own_active_item_required')
+        due = calendar.clock.now('UTC') + timedelta(minutes=minutes)
+        await self.monitor.user_memory.set_notification_snooze(actor.user_id, scope, matches[0]['id'], occurrence_identity(matches[0]), due)
+        await self.send_response(message, f'✅ Egen påminnelse slumret {minutes} minutter. Stille timer gjelder fortsatt.')
 
     def _parse_edit_command(self, content: str) -> Tuple[Optional[int], Dict[str, str]]:
         """
@@ -116,6 +146,8 @@ class ReminderHandler(BaseHandler):
                     getattr(self.loc, "current_lang", "no"),
                 ),
             )
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error searching reminders: {e}")
             await self.send_response(message, self.loc.t("error_generic"))
@@ -145,6 +177,8 @@ class ReminderHandler(BaseHandler):
                 message,
                 f"✅ **Påminnelse lagt til!**\n{data['text']}{due}",
             )
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error creating reminder: {e}")
             await self.send_response(message, self.loc.t("error_generic"))
@@ -158,6 +192,8 @@ class ReminderHandler(BaseHandler):
                 await self.send_response(message, f"🔔 **Påminnelser:**\n{reminders_text}")
             else:
                 await self.send_response(message, "📭 Ingen aktive påminnelser.")
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error listing reminders: {e}")
             await self.send_response(message, self.loc.t("error_generic"))
@@ -209,6 +245,8 @@ class ReminderHandler(BaseHandler):
                 )
             else:
                 await self.send_response(message, f"✅ **Fullført! {text}**")
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error completing reminder: {e}")
             await self.send_response(message, self.loc.t("error_generic"))
@@ -241,6 +279,8 @@ class ReminderHandler(BaseHandler):
             await self.send_response(
                 message, self.loc.t("reminder_edit_not_found", num=index or "?")
             )
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error editing reminder: {e}")
             await self.send_response(message, self.loc.t("error_generic"))
@@ -269,6 +309,8 @@ class ReminderHandler(BaseHandler):
             await self.send_response(
                 message, self.loc.t("reminder_delete_not_found", num=index or "?")
             )
+        except StorageMutationError:
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error deleting reminder: {e}")
             await self.send_response(message, self.loc.t("error_generic"))

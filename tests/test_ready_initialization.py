@@ -92,3 +92,39 @@ async def test_failed_reminder_setup_closes_unpublished_monitor(monkeypatch):
         await message_monitor.SelfbotClient.on_ready(client)
     assert client.monitor is None
     assert closed
+
+
+@pytest.mark.asyncio
+async def test_cancelled_monitor_setup_closes_unpublished_candidate(monkeypatch):
+    import asyncio
+    entered = asyncio.Event()
+    calls = []
+    class Candidate:
+        def __init__(self, **kwargs):
+            pass
+        async def setup(self):
+            entered.set()
+            await asyncio.Future()
+        async def close(self):
+            calls.append('closed')
+    class Client:
+        monitor = console_server = hermes = None
+        rate_limiter = response_gen = object()
+        user = SimpleNamespace(id=1)
+        guilds = []
+        config = SimpleNamespace(MAX_MSGS_PER_SECOND=5, DAILY_QUOTA=10000)
+        def _get_commit_hash(self):
+            return 'synthetic'
+        def _ensure_current_commit_hash(self, value):
+            return value
+        async def change_presence(self, **kwargs):
+            pass
+    monkeypatch.setattr(message_monitor, 'MessageMonitor', Candidate)
+    client = Client()
+    task = asyncio.create_task(message_monitor.SelfbotClient.on_ready(client))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client.monitor is None
+    assert calls == ['closed']

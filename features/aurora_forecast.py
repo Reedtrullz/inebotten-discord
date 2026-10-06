@@ -7,7 +7,9 @@ Uses NOAA Space Weather API and Norwegian sources
 
 import aiohttp
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import math
+import time
 
 
 class AuroraForecast:
@@ -24,13 +26,17 @@ class AuroraForecast:
         "extreme": 8,  # Visible across all of Norway
     }
 
-    def __init__(self):
+    def __init__(self, *, now=None, monotonic=None):
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.monotonic = monotonic or time.monotonic
         self.session = None
         self.headers = {"User-Agent": "Inebotten-Discord-Selfbot/1.0"}
         self.cache = None
         self.cache_time = None
 
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('aurora_closed')
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(headers=self.headers)
@@ -38,6 +44,7 @@ class AuroraForecast:
 
     async def close(self):
         """Close the session"""
+        self._closed = True
         if self.session and not self.session.closed:
             await self.session.close()
 
@@ -47,8 +54,9 @@ class AuroraForecast:
         Returns dict with KP index, visibility, and recommendation
         """
         # Check cache (valid for 30 minutes)
-        if self.cache and self.cache_time:
-            if (datetime.now() - self.cache_time).total_seconds() < 1800:
+        if self.cache and self.cache_time is not None:
+            if ((self.monotonic() - self.cache_time) < 1800
+                    and self.now().astimezone(timezone.utc) < self.cache["expires_at"]):
                 return self.cache
 
         try:
@@ -58,7 +66,7 @@ class AuroraForecast:
             if noaa_data:
                 forecast = self._parse_forecast(noaa_data)
                 self.cache = forecast
-                self.cache_time = datetime.now()
+                self.cache_time = self.monotonic()
                 return forecast
 
             return None
@@ -96,8 +104,11 @@ class AuroraForecast:
             else:
                 forecast_data = data
 
-            if not forecast_data or len(forecast_data) < 2:
+            if not forecast_data:
                 return None
+            # NOAA now emits object rows; keep the historical table adapter too.
+            if isinstance(forecast_data[0], dict):
+                forecast_data = [[row.get("time_tag"), row.get("kp"), row.get("observed")] for row in forecast_data if isinstance(row, dict)]
 
             # Check if first row is header
             start_idx = 0
@@ -110,7 +121,8 @@ class AuroraForecast:
             latest = None
             next_forecast = None
 
-            now = datetime.now()
+            from features.forecast_service import aware_time
+            now = aware_time(self.now())
 
             for entry in forecast_data[start_idx:]:
                 if not isinstance(entry, list) or len(entry) < 2:
@@ -120,8 +132,13 @@ class AuroraForecast:
 
                 # Try to parse KP value
                 try:
+                    if isinstance(entry[1], bool):
+                        continue
                     kp_value = float(entry[1])
                 except (ValueError, TypeError):
+                    continue
+
+                if not math.isfinite(kp_value) or not 0 <= kp_value <= 9:
                     continue
 
                 # Parse timestamp (format: 2026-03-17T18:00:00Z)
@@ -129,18 +146,23 @@ class AuroraForecast:
                     entry_time = datetime.fromisoformat(
                         timestamp_str.replace("Z", "+00:00")
                     )
-                    entry_time = entry_time.replace(tzinfo=None)
+                    # Offsetless time_tag belongs to this NOAA UTC product,
+                    # never to the host timezone. Other providers stay strict.
+                    if entry_time.tzinfo is None:
+                        entry_time = entry_time.replace(tzinfo=timezone.utc)
+                    entry_time = aware_time(entry_time)
                 except Exception as e:
                     print(f"[FEATURES] Aurora parse error: {e}")
                     continue
 
                 # Find current/next forecast
                 if entry_time <= now:
-                    latest = {"time": entry_time, "kp": kp_value}
+                    if latest is None or entry_time > latest["time"]:
+                        latest = {"time": entry_time, "kp": kp_value, "data_kind": entry[2] if len(entry) > 2 else "unknown"}
                 elif entry_time > now and not next_forecast:
                     next_forecast = {"time": entry_time, "kp": kp_value}
 
-            if not latest:
+            if not latest or now >= latest["time"] + timedelta(hours=3):
                 return None
 
             # Determine visibility
@@ -155,11 +177,16 @@ class AuroraForecast:
 
             return {
                 "kp_index": kp,
+                "data_kind": latest["data_kind"],
                 "visibility": visibility,
-                "probability": probability,
+                "score": probability,
+                "score_kind": "heuristic",
+                "source": "NOAA SWPC",
+                "valid_at": latest["time"],
+                "expires_at": latest["time"] + timedelta(hours=3),
                 "recommendation": recommendation,
                 "next_forecast": next_forecast,
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now.isoformat(),
             }
 
         except Exception as e:
@@ -222,7 +249,7 @@ class AuroraForecast:
     def _get_recommendation(self, kp):
         """Get activity recommendation"""
         if kp >= 7:
-            return "Perfekte forhold! Gå ut og se!"
+            return "Høy geomagnetisk aktivitet. Sjekk lokalt mørke og skydekke."
         elif kp >= 5:
             return "Gode sjanser! Verdt å sjekke himmelen."
         elif kp >= 4:
@@ -230,7 +257,7 @@ class AuroraForecast:
         elif kp >= 2:
             return "Svakt, men mulig i Nord-Norge."
         else:
-            return "Ingen nordlys i kveld."
+            return "Lav geomagnetisk aktivitet; lokale observasjoner er ikke kjent."
 
     def format_forecast(self, forecast):
         """Format forecast for display"""
@@ -244,10 +271,11 @@ class AuroraForecast:
             "",
             f"{vis['emoji']} **Aktivitet:** {vis['level']}",
             f"📊 **KP-indeks:** {forecast['kp_index']:.1f}",
-            f"🎯 **Sjanse:** {forecast['probability']}%",
-            f"📍 **Synlig:** {vis['areas']}",
+            f"🎯 **Heuristisk synlighetsscore:** {forecast['score']}/100 (ikke målt sannsynlighet)",
+            f"📍 **Mulig område (heuristikk):** {vis['areas']}",
             "",
             f"💡 **Tips:** {forecast['recommendation']}",
+            f"Kilde: {forecast.get('source', 'NOAA SWPC')}; varseltid: {forecast.get('valid_at', '?')}",
         ]
 
         return "\n".join(lines)

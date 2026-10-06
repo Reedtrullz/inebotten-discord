@@ -26,11 +26,14 @@ class DailyDigestHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
             lang = self.loc.current_lang
+            scope = self.monitor.calendar.scope_key(guild_id, operation='read')
+            profile = self.monitor.user_memory.notification_profile(message.author.id, scope)
 
             response_text = await self.daily_digest.generate_digest(
-                guild_id, 
+                guild_id,
                 lang, 
-                user_id=message.author.id
+                user_id=message.author.id,
+                card_ids=profile.card_ids if profile else None,
             )
             await self.send_response(message, response_text)
 

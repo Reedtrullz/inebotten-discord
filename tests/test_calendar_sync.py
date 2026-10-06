@@ -94,6 +94,9 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synced[0]["title"], "Ukentlig møte")
         self.assertEqual(synced[0]["date"], first.strftime("%d.%m.%Y"))
         self.assertEqual(synced[0]["gcal_event_id"], "master")
+        self.assertEqual(len(synced[0]["google_instances"]), 2)
+        self.assertEqual(synced[0]["recurrence_diagnostic"], "google_master_unavailable")
+        self.assertFalse(synced[0].get("series"))
         self.assertEqual(gcal.list_calls, [90])
 
     async def test_sync_imports_new_recurring_series_once_with_master_id(self):
@@ -117,6 +120,9 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(synced[0]["title"], "Yoga")
         self.assertEqual(synced[0]["date"], first.strftime("%d.%m.%Y"))
         self.assertEqual(synced[0]["gcal_event_id"], "series-master")
+        self.assertEqual(len(synced[0]["google_instances"]), 2)
+        self.assertTrue(synced[0]["_recurrence_readonly"])
+        self.assertFalse(synced[0].get("series"))
 
     async def test_manual_sync_rechecks_gcal_configuration(self):
         class ConfiguredGCal(FakeGCal):
@@ -154,7 +160,7 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🔄 Synkroniserer med Google Calendar...", responses)
         self.assertNotIn("❌ Google Calendar er ikke konfigurert eller koblet til ennå.", responses)
 
-    def test_local_edit_pushes_full_update_to_gcal(self):
+    def test_local_edit_queues_full_update_before_google_io(self):
         gcal = FakeGCal()
         manager = CalendarManager(storage_path=self.storage_path, gcal_manager=gcal)
         manager.add_item(
@@ -163,21 +169,24 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
             "Alice",
             "Møte",
             "10.06.2027",
-            time_str="09:00",
+            time_str="09:00", duration_minutes=60,
             gcal_event_id="gcal-1",
         )
 
         updated = manager.edit_item(1, title="Nytt møte", date="11.06.2027")
 
-        self.assertEqual(updated["gcal_link"], "https://calendar.example/gcal-1")
-        self.assertEqual(gcal.update_calls[0][0], "gcal-1")
-        self.assertEqual(gcal.update_calls[0][1]["title"], "Nytt møte")
-        self.assertEqual(gcal.update_calls[0][1]["date_str"], "11.06.2027")
-        self.assertEqual(gcal.update_calls[0][1]["time_str"], "09:00")
+        self.assertEqual(gcal.update_calls, [])
+        operation = updated['sync_operations'][-1]
+        self.assertEqual(operation['kind'], 'update')
+        self.assertEqual(operation['remote_id'], 'gcal-1')
+        self.assertEqual(operation['payload']['summary'], 'Nytt møte')
+        self.assertTrue(operation['payload']['start']['dateTime'].startswith('2027-06-11T09:00'))
+        self.assertTrue(operation['payload']['end']['dateTime'].startswith('2027-06-11T10:00'))
+        self.assertEqual(operation['state'], 'pending')
 
     async def test_sync_removes_deleted_gcal_item_inside_sync_window(self):
         tomorrow = datetime.now() + timedelta(days=1)
-        gcal = FakeGCal(events=[])
+        gcal = FakeGCal(events=[], fetched_events={"missing-gcal": {"id": "missing-gcal", "status": "cancelled"}})
         manager = CalendarManager(storage_path=self.storage_path, gcal_manager=gcal)
         manager.items = {
             manager.SHARED_KEY: [
@@ -213,7 +222,7 @@ class CalendarSyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GoogleCalendarPushTests(unittest.TestCase):
-    def test_sync_local_event_defaults_missing_time(self):
+    def test_sync_local_event_missing_time_is_explicit_all_day(self):
         manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
         manager.enabled = True
         captured = {}
@@ -230,7 +239,8 @@ class GoogleCalendarPushTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"id": "created"})
-        self.assertIn("T12:00:00", captured["start_time"])
+        self.assertEqual(captured["start_time"], "2027-06-10")
+        self.assertTrue(captured["all_day"])
 
     def test_list_upcoming_events_pages_through_all_results(self):
         manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
@@ -269,6 +279,46 @@ class GoogleCalendarPushTests(unittest.TestCase):
 
         self.assertEqual(events, [{"id": "one"}, {"id": "two"}])
         self.assertEqual(events_resource.page_tokens, [None, "page-2"])
+
+    def test_list_upcoming_events_fetches_masters_for_expanded_instances(self):
+        manager = GoogleCalendarManager.__new__(GoogleCalendarManager)
+        manager.enabled = True
+        manager.calendar_id = "primary"
+        manager._save_credentials = lambda creds: None
+
+        class FakeCreds:
+            expired = False
+            refresh_token = None
+
+        class FakeRequest:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def execute(self):
+                return self.payload
+
+        child = {"id": "instance-1", "recurringEventId": "series-1", "originalStartTime": {"date": "2027-01-11"}}
+        master = {"id": "series-1", "recurrence": ["RRULE:FREQ=WEEKLY;COUNT=4"]}
+
+        class FakeEventsResource:
+            def __init__(self):
+                self.list_args = None
+            def list(self, **kwargs):
+                self.list_args = kwargs
+                return FakeRequest({"items": [child]})
+
+            def get(self, **kwargs):
+                return FakeRequest(master)
+
+        events_resource = FakeEventsResource()
+        service = SimpleNamespace(events=lambda: events_resource)
+
+        with patch("google.oauth2.credentials.Credentials.from_authorized_user_file", return_value=FakeCreds()):
+            with patch("googleapiclient.discovery.build", return_value=service):
+                events = GoogleCalendarManager.list_upcoming_events(manager, days=30)
+
+        self.assertEqual(events, [child, master])
+        self.assertTrue(events_resource.list_args['showDeleted'])
 
 
 if __name__ == "__main__":

@@ -2,10 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from importlib import import_module
-import os
-import shutil
 import sys
-import tempfile
 import threading
 import time
 import asyncio
@@ -16,24 +13,14 @@ from typing import Generator
 import pytest
 import pytest_asyncio
 
+# Test isolation must precede application imports, including ConsoleServer.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "support"))
+import inebotten_offline
+inebotten_offline.bootstrap()
+pytest_plugins = ["inebotten_offline"]
 from web_console.server import ConsoleServer
 
-
-_REAL_HOME = Path.home()
-_TEST_HOME = Path(tempfile.mkdtemp(prefix="inebotten-tests-"))
-os.environ["HOME"] = str(_TEST_HOME)
-_ = os.environ.setdefault("HERMES_HOME", str(_TEST_HOME / ".hermes"))
-_ = os.environ.setdefault("DISCORD_USER_TOKEN", "test_token_1234567890.abc.defghijklmnopqrstuvwxyz")
-# Point Playwright to real browser cache (tests override HOME)
-# macOS: ~/Library/Caches/ms-playwright, Linux: ~/.cache/ms-playwright
-_pw_cache_mac = _REAL_HOME / "Library" / "Caches" / "ms-playwright"
-_pw_cache_linux = _REAL_HOME / ".cache" / "ms-playwright"
-_pw_cache = _pw_cache_mac if _pw_cache_mac.exists() else _pw_cache_linux
-if _pw_cache.exists():
-    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_pw_cache))
-
 HOST = "127.0.0.1"
-PORT = 18081
 API_KEY = "test-key-frontend"
 
 try:
@@ -93,11 +80,6 @@ except ModuleNotFoundError:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    for item in items:
-        module_name = getattr(getattr(item, "module", None), "__name__", "")
-        if item.name == "test_remaining" and module_name.endswith("test_advanced_dialect"):
-            item.add_marker(pytest.mark.skip(reason="external LM Studio dialect smoke test"))
-
     # pytest-playwright's sync `page` fixture keeps Playwright's event loop
     # active for the session, which conflicts with pytest-asyncio tests that
     # still need to run. Keep Playwright-backed frontend tests at the end so
@@ -105,9 +87,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     # initialized.
     items.sort(key=lambda item: int("page" in getattr(item, "fixturenames", ())))
 
-
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    shutil.rmtree(_TEST_HOME, ignore_errors=True)
 
 
 @pytest.fixture
@@ -148,8 +127,8 @@ def api_key() -> str:
 
 
 @pytest.fixture
-def frontend_base_url() -> str:
-    return f"http://{HOST}:{PORT}"
+def frontend_base_url(console_server: ConsoleServer) -> str:
+    return f"http://{HOST}:{console_server.actual_port}"
 
 
 @pytest_asyncio.fixture
@@ -161,10 +140,10 @@ async def auth_page(console_server: ConsoleServer) -> AsyncGenerator[object, Non
         browser = await playwright.chromium.launch()
         context = await browser.new_context()
         page = await context.new_page()
-        await page.goto(f"http://{HOST}:{PORT}/login")
+        await page.goto(f"http://{HOST}:{console_server.actual_port}/login")
         await page.fill('input[name="api_key"]', API_KEY)
         await page.click('button[type="submit"]')
-        await page.wait_for_url(f"http://{HOST}:{PORT}/")
+        await page.wait_for_url(f"http://{HOST}:{console_server.actual_port}/")
         try:
             yield page
         finally:

@@ -125,7 +125,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -149,7 +149,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -174,7 +174,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -197,7 +197,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 
@@ -222,7 +222,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         captured = {}
 
-        async def reply(content, mention_author=False):
+        async def reply(content, mention_author=False, **kwargs):
             captured["content"] = content
             captured["mention_author"] = mention_author
 

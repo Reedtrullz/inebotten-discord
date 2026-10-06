@@ -1,15 +1,13 @@
-# Development dependencies
+# Development and offline-test profile input.
+-r requirements.txt
+-r requirements/optional-google.in
 
-# Linting
 flake8>=7.3.0
-pylint>=2.17.0
-
-# Testing
-pytest>=9.0.3
+pylint>=4.1.2
+pytest>=9.1.1
 pytest-asyncio>=1.4.0
 pytest-playwright>=0.4.0
-
-# Security scanning
-bandit>=1.7.0
+bandit>=1.9.4
 pip-audit>=2.10.0
 pip>=26.1.2
+mypy>=1.17.1

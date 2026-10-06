@@ -7,10 +7,69 @@ Stores preferences, conversation history, and personal details per user
 import json
 import asyncio
 import copy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
+from utils.storage_contract import DocumentOwner, StorageMutationError, user_records, writable_store, store_worker
+
+
+@dataclass(frozen=True)
+class MemoryPolicy:
+    learning_enabled: bool = False
+    topic_retention_days: int | None = 7
+    allowed_provider_ids: tuple[str, ...] = ()
+    private_facts_enabled: bool = False
+
+    def __post_init__(self):
+        if type(self.learning_enabled) is not bool or type(self.private_facts_enabled) is not bool:
+            raise ValueError('invalid_memory_policy')
+        if self.topic_retention_days is not None and (type(self.topic_retention_days) is not int or not 1 <= self.topic_retention_days <= 365):
+            raise ValueError('invalid_topic_retention')
+        if not isinstance(self.allowed_provider_ids, (list, tuple)) or any(p not in ('hermes', 'openrouter') for p in self.allowed_provider_ids):
+            raise ValueError('invalid_memory_provider')
+        object.__setattr__(self, 'allowed_provider_ids', tuple(dict.fromkeys(self.allowed_provider_ids)))
+
+    def document(self):
+        value = asdict(self)
+        value['allowed_provider_ids'] = list(self.allowed_provider_ids)
+        return value
+
+
+def validate_memory(document):
+    if not user_records(document):
+        return False
+    try:
+        for owner_id,user in document.items():
+            from cal_system.notification_preferences import NotificationProfile
+            from features.workflow_manager import validate_workflows
+            if not validate_workflows(user.get('workflow_recipes',{}),owner_id):
+                return False
+            profiles = user.get('notification_profiles', {})
+            if not isinstance(profiles, dict) or len(profiles) > 16:
+                return False
+            for scope, value in profiles.items():
+                if NotificationProfile.from_document(value).scope_id != scope:
+                    return False
+            snoozes = user.get('notification_snoozes', {})
+            if not isinstance(snoozes, dict) or len(snoozes) > 100:
+                return False
+            for key, value in snoozes.items():
+                if (not isinstance(key, str) or len(key) > 400 or not isinstance(value, dict)
+                    or set(value) != {'scope_id', 'item_id', 'occurrence_id', 'due_at'}
+                    or any(not isinstance(v, str) or not 1 <= len(v) <= 100 for k, v in value.items() if k != 'due_at')
+                    or not isinstance(value['due_at'], str) or len(value['due_at']) > 100
+                    or datetime.fromisoformat(value['due_at']).tzinfo is None):
+                    return False
+            if 'memory_policy' in user:
+                MemoryPolicy(**user['memory_policy'])
+            if 'topic_timestamps' in user and (not isinstance(user['topic_timestamps'], dict)
+                or any(not isinstance(key, str) or not isinstance(value, str) for key, value in user['topic_timestamps'].items())):
+                return False
+        return True
+    except (TypeError, ValueError, KeyError):
+        return False
 
 
 class UserMemory:
@@ -18,40 +77,43 @@ class UserMemory:
     Manages persistent memory about users across conversations
     """
 
-    def __init__(self, storage_path=None):
+    def __init__(self, storage_path=None, *, wall=None, conversation=None):
         if storage_path is None:
             storage_path = hermes_discord_data_path("user_memory.json")
 
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.memory = {}
+        self.wall = wall or (lambda: datetime.now(timezone.utc))
+        self.conversation = conversation
+        self._storage = DocumentOwner(self.storage_path, validate_memory,schema_version=4,upgrade_from=(1,))
+        self.memory = self._storage.rollback()
 
     async def setup(self):
         """Async initialization"""
         self.memory = await self._load_memory()
 
+    @property
+    def memory(self):
+        return self._storage.data
+
+    @memory.setter
+    def memory(self, value):
+        self._storage.data = value
+
+    @property
+    def storage_state(self):
+        return self._storage.state
+
     async def _load_memory(self):
-        """Load memory from storage asynchronously"""
-        if not self.storage_path.exists():
-            return {}
-
-        def _read():
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[MEMORY] User memory load error: {e}")
-                return {}
-
-        return await asyncio.to_thread(_read)
+        return await asyncio.to_thread(self._storage.load)
 
     async def _save_memory(self):
-        """Save memory to storage atomically and asynchronously"""
-        try:
-            await asyncio.to_thread(write_json_atomic, self.storage_path, self.memory)
-        except Exception as e:
-            print(f"[MEMORY] User memory save error: {e}")
+        result = await store_worker(self._storage.commit, copy.deepcopy(self.memory), writer=write_json_atomic)
+        if not result.ok:
+            self.memory = self._storage.rollback()
+            raise StorageMutationError(result.error_code)
 
+    @writable_store
     async def get_user(self, user_id, username=None):
         """
         Get or create user memory
@@ -85,25 +147,162 @@ class UserMemory:
 
         return self.memory[user_key]
 
-    async def update_last_interaction(self, user_id, topic=None, username=None):
-        """Update last interaction time and optionally topic"""
-        user = await self.get_user(user_id, username)
-        user["last_interaction"] = datetime.now().isoformat()
-        user["conversation_count"] = user.get("conversation_count", 0) + 1
+    def policy_for_user(self, user_id):
+        user = self.memory.get(str(user_id), {})
+        return MemoryPolicy(**user.get('memory_policy', {}))
 
-        if topic:
-            if isinstance(topic, list):
-                # Flatten the list of topics
-                current_topics = user.get("last_topics", [])
-                for t in reversed(topic): # Add them in order
-                    if t not in current_topics:
-                        current_topics = [t] + current_topics
-                user["last_topics"] = current_topics[:5]
-            else:
-                user["last_topics"] = ([topic] + user.get("last_topics", []))[:5]
+    def notification_profile(self, user_id, scope_id):
+        from cal_system.notification_preferences import NotificationProfile
+        value = self.memory.get(str(user_id), {}).get('notification_profiles', {}).get(scope_id)
+        return NotificationProfile.from_document(value) if value is not None else None
 
+    def notification_profiles(self):
+        return [(user_id, self.notification_profile(user_id, scope)) for user_id, user in self.memory.items()
+                for scope in user.get('notification_profiles', {})]
+
+    @writable_store
+    async def set_notification_profile(self, user_id, profile):
+        from cal_system.notification_preferences import NotificationProfile
+        profile = NotificationProfile.from_document(profile.document())
+        user = await self.get_user(user_id)
+        profiles = user.setdefault('notification_profiles', {})
+        if profile.scope_id not in profiles and len(profiles) >= 16:
+            raise ValueError('notification_profile_capacity')
+        profiles[profile.scope_id] = profile.document()
+        await self._save_memory()
+        return profile
+
+    def notification_snoozes(self, user_id, scope_id):
+        return [dict(value, key=key) for key, value in self.memory.get(str(user_id), {}).get('notification_snoozes', {}).items()
+                if value['scope_id'] == scope_id]
+
+    @writable_store
+    async def set_notification_snooze(self, user_id, scope_id, item_id, occurrence_id, due):
+        if due.tzinfo is None or any(not isinstance(v, str) or not 1 <= len(v) <= 100 for v in (scope_id, item_id, occurrence_id)):
+            raise ValueError('invalid_snooze')
+        profile = self.notification_profile(user_id, scope_id)
+        if not profile or not profile.enabled or not profile.destination_id:
+            raise ValueError('notification_profile_required')
+        user = await self.get_user(user_id)
+        snoozes = user.setdefault('notification_snoozes', {})
+        key = json.dumps([scope_id, item_id, occurrence_id], separators=(',', ':'))
+        if key not in snoozes and len(snoozes) >= 100:
+            raise ValueError('snooze_capacity')
+        snoozes[key] = {'scope_id': scope_id, 'item_id': item_id, 'occurrence_id': occurrence_id,
+                        'due_at': due.astimezone(timezone.utc).isoformat()}
         await self._save_memory()
 
+    @writable_store
+    async def acknowledge_notification_snooze(self, user_id, key, due_at):
+        snoozes = self.memory.get(str(user_id), {}).get('notification_snoozes', {})
+        if key in snoozes and snoozes[key]['due_at'] == due_at:
+            del snoozes[key]
+            await self._save_memory()
+
+    @writable_store
+    async def set_policy(self, user_id, **changes):
+        policy = self.policy_for_user(user_id).document()
+        policy.update(changes)
+        validated = MemoryPolicy(**policy)
+        user = await self.get_user(user_id)
+        user['memory_policy'] = validated.document()
+        await self._save_memory()
+        return validated
+
+    @writable_store
+    async def update_last_interaction(self, user_id, topic=None, username=None):
+        """Only opted-in temporary topics are automatically retained."""
+        if not self.policy_for_user(user_id).learning_enabled:
+            return
+        user = await self.get_user(user_id, username)
+        now = self.wall().isoformat()
+        user['last_interaction'] = now
+        user['conversation_count'] = user.get('conversation_count', 0) + 1
+        if topic:
+            topics = topic if isinstance(topic, list) else [topic]
+            valid = [value for value in topics if isinstance(value, str) and value.strip() and len(value) <= 500]
+            dated = user.setdefault('topic_timestamps', {})
+            for value in reversed(valid[:5]):
+                user['last_topics'] = [value] + [old for old in user.get('last_topics', []) if old != value]
+                dated[value] = now
+            user['last_topics'] = user['last_topics'][:5]
+            user['topic_timestamps'] = {key: value for key, value in dated.items() if key in user['last_topics']}
+        await self._save_memory()
+
+    @writable_store
+    async def prune_topics(self):
+        changed = False
+        now = self.wall()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        for user_id, user in self.memory.items():
+            days = self.policy_for_user(user_id).topic_retention_days
+            if days is None:
+                continue
+            timestamps = user.get('topic_timestamps', {})
+            expired = set()
+            for topic, raw in timestamps.items():
+                try:
+                    stamp = datetime.fromisoformat(raw)
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=timezone.utc)
+                    if now - stamp >= timedelta(days=days):
+                        expired.add(topic)
+                except (TypeError, ValueError):
+                    continue  # Unknown legacy age is never inferred for deletion.
+            if expired:
+                user['last_topics'] = [topic for topic in user.get('last_topics', []) if not isinstance(topic, str) or topic not in expired]
+                user['topic_timestamps'] = {key: value for key, value in timestamps.items() if key not in expired}
+                changed = True
+        if changed:
+            await self._save_memory()
+        return changed
+
+    async def build_prompt_memory(self, user_id, provider_id, scope_id):
+        await self.prune_topics()
+        policy = self.policy_for_user(user_id)
+        if not policy.learning_enabled or provider_id not in policy.allowed_provider_ids:
+            return {}
+        user = self.memory.get(str(user_id), {})
+        result = {'preferences': copy.deepcopy(user.get('preferences', {}))}
+        # Personal facts and remembered topics cannot travel into a group or
+        # shared audience simply because a provider has been allowed.
+        if policy.private_facts_enabled and scope_id == f'private:{user_id}':
+            result.update({key: copy.deepcopy(user[key]) for key in ('location', 'interests', 'saved_facts', 'school_locality') if user.get(key)})
+            timestamps = user.get('topic_timestamps', {})
+            topics = []
+            now = self.wall()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            for topic in user.get('last_topics', []):
+                if not isinstance(topic, str) or topic not in timestamps:
+                    continue
+                try:
+                    stamp = datetime.fromisoformat(timestamps[topic])
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=timezone.utc)
+                    if stamp <= now:
+                        topics.append(topic)
+                except (TypeError, ValueError):
+                    pass
+            result['last_topics'] = topics[:5]
+        return result
+
+    @writable_store
+    async def set_saved_fact(self, user_id, key, value):
+        if key != 'school_locality' or value not in ('oslo', 'trondheim'):
+            raise ValueError('unsupported_saved_fact')
+        user = await self.get_user(user_id)
+        user[key] = value
+        await self._save_memory()
+
+    async def delete_local_memory(self, user_id, *, include_transient):
+        deleted = await self.delete_user_memory(user_id)
+        count = self.conversation.delete_user(user_id) if include_transient and self.conversation is not None else 0
+        return {'persistent_deleted': deleted, 'transient_deleted': count,
+            'exclusions': ['backups', 'remote_providers', 'discord_messages']}
+
+    @writable_store
     async def add_interest(self, user_id, interest):
         """Add an interest for a user"""
         user = await self.get_user(user_id)
@@ -111,6 +310,7 @@ class UserMemory:
             user["interests"].append(interest)
             await self._save_memory()
 
+    @writable_store
     async def set_preference(self, user_id, key, value):
         """Set a user preference"""
         user = await self.get_user(user_id)
@@ -119,6 +319,7 @@ class UserMemory:
         user["preferences"][key] = value
         await self._save_memory()
 
+    @writable_store
     async def set_location(self, user_id, location):
         """Set user location"""
         user = await self.get_user(user_id)
@@ -134,7 +335,12 @@ class UserMemory:
 
         try:
             last_date = datetime.fromisoformat(last)
-            delta = datetime.now() - last_date
+            now = self.wall()
+            if last_date.tzinfo is None:
+                last_date = last_date.replace(tzinfo=timezone.utc)
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            delta = now - last_date
             return delta.days
         except Exception as e:
             print(f"[MEMORY] Date parse error: {e}")
@@ -179,9 +385,11 @@ class UserMemory:
 
         return " ".join(greetings)
 
-    async def format_context_for_prompt(self, user_id, username=None):
+    async def format_context_for_prompt(self, user_id, username=None, *, provider_id=None, scope_id='shared'):
         """Format user memory as context for AI prompt"""
-        user = await self.get_user(user_id, username)
+        if provider_id is None:
+            return ''  # Compatibility callers must name the actual recipient.
+        user = await self.build_prompt_memory(user_id, provider_id, scope_id)
 
         context_parts = []
 
@@ -219,8 +427,10 @@ class UserMemory:
 
         return " | ".join(context_parts) if context_parts else ""
 
+    @writable_store
     async def export_user_memory(self, user_id):
         """Return a copy of one user's stored memory without creating new data."""
+        await self.prune_topics()
         user = self.memory.get(str(user_id))
         return copy.deepcopy(user) if isinstance(user, dict) else {}
 
@@ -233,6 +443,7 @@ class UserMemory:
         preferences = user.get("preferences") or {}
         interests = user.get("interests") or []
         topics = user.get("last_topics") or []
+        policy = self.policy_for_user(user_id)
         lines = [
             "🧠 **Dette husker jeg om deg:**",
             f"Navn: {user.get('username') or username or 'ikke lagret'}",
@@ -240,12 +451,20 @@ class UserMemory:
             f"Interesser: {', '.join(map(str, interests)) if interests else 'ingen lagret'}",
             f"Preferanser: {json.dumps(preferences, ensure_ascii=False)}",
             f"Siste tema: {', '.join(map(str, topics[:5])) if topics else 'ingen lagret'}",
+            f"Automatisk læring: {'på' if policy.learning_enabled else 'pauset'}",
+            f"Deling med AI: {', '.join(policy.allowed_provider_ids) or 'ingen'}",
+            f"Private fakta i direktemelding: {'på' if policy.private_facts_enabled else 'av'}",
+            f"Behold midlertidige tema: {str(policy.topic_retention_days) + ' dager' if policy.topic_retention_days else 'ubegrenset'}",
+            f"Skolekommune: {user.get('school_locality') or 'ikke valgt'}",
+            'Automatisk læring og provider-deling er av som standard. Bruk `minne læring på|av`, '
+            '`minne del med lokal|openrouter|ingen`, `minne private fakta på|av` og `minne behold tema 7 dager`.',
             "",
             "Skriv `@inebotten eksporter minnet mitt` for JSON, eller "
             "`@inebotten slett minnet mitt bekreft` for å slette det.",
         ]
         return "\n".join(lines)
 
+    @writable_store
     async def delete_user_memory(self, user_id):
         """Delete one user's stored memory, returning True if anything was removed."""
         user_key = str(user_id)

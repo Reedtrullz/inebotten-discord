@@ -53,18 +53,13 @@ macOS kan vise en Gatekeeper-advarsel fordi appen ikke er notarized. Høyreklikk
 git clone https://github.com/Reedtrullz/inebotten-discord.git
 cd inebotten-discord
 
-python3 -m pip install -r requirements.txt
-python3 setup.py
-python3 scripts/run_both.py
+python3 -m venv .venv312
+.venv312/bin/python -m pip install -r requirements.txt
+.venv312/bin/python setup.py
+.venv312/bin/python scripts/run_both.py
 ```
 
-På systemer med `externally-managed-environment` kan du bruke virtuelt miljø:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-```
+På Windows bruker du `.venv312\Scripts\python.exe` i stedet for `.venv312/bin/python`. Oppsett, konfigurasjonsstier, tokenbasert autentisering og sikker gjenoppretting er dokumentert i [docs/SETUP.md](docs/SETUP.md).
 
 ### Docker/VPS
 

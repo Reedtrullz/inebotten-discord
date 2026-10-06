@@ -21,7 +21,7 @@ async def test_send_response_drops_when_rate_limiter_says_no():
     )
     monitor = SimpleNamespace(rate_limiter=rate_limiter, loc=object(), client=object())
     handler = FakeHandler(monitor)
-    message = SimpleNamespace(channel=object(), reply=AsyncMock())
+    message = SimpleNamespace(channel=SimpleNamespace(id=123), reply=AsyncMock())
 
     result = await handler.send_response(message, "hei")
 
@@ -41,8 +41,8 @@ async def test_send_response_waits_before_sending():
     )
     monitor = SimpleNamespace(rate_limiter=rate_limiter, loc=object(), client=object(), response_count=0)
     handler = FakeHandler(monitor)
-    sent = object()
-    message = SimpleNamespace(channel=object(), reply=AsyncMock(return_value=sent))
+    sent = SimpleNamespace(id='remote-message')
+    message = SimpleNamespace(channel=SimpleNamespace(id=123), reply=AsyncMock(return_value=sent))
 
     result = await handler.send_response(message, "hei")
 
@@ -63,7 +63,7 @@ async def test_send_response_drops_when_wait_refuses_send():
     )
     monitor = SimpleNamespace(rate_limiter=rate_limiter, loc=object(), client=object())
     handler = FakeHandler(monitor)
-    message = SimpleNamespace(channel=object(), reply=AsyncMock())
+    message = SimpleNamespace(channel=SimpleNamespace(id=123), reply=AsyncMock())
 
     result = await handler.send_response(message, "hei")
 
@@ -83,8 +83,8 @@ async def test_send_response_accepts_legacy_sync_wait_mock():
     )
     monitor = SimpleNamespace(rate_limiter=rate_limiter, loc=object(), client=object(), response_count=0)
     handler = FakeHandler(monitor)
-    sent = object()
-    message = SimpleNamespace(channel=object(), reply=AsyncMock(return_value=sent))
+    sent = SimpleNamespace(id='remote-message')
+    message = SimpleNamespace(channel=SimpleNamespace(id=123), reply=AsyncMock(return_value=sent))
 
     result = await handler.send_response(message, "hei")
 

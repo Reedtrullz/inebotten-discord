@@ -64,3 +64,32 @@ def test_stdout_wrapper_redacts_underlying_stream_and_buffer():
     wrapper.flush()
     assert "stdout-secret" not in stream.getvalue()
     assert "stdout-secret" not in buffer.get_lines(1)[0]
+
+
+def test_stdout_incomplete_line_is_bounded_and_content_is_omitted():
+    import io
+    stream = io.StringIO()
+    buffer = LogBuffer()
+    buffer._lazy_store = lambda: None
+    wrapper = StdoutWrapper(stream, buffer)
+    wrapper.write('x' * 20000)
+    wrapper.write('PRIVATE_CONTINUATION')
+    assert len(wrapper._pending) <= 16384
+    wrapper.write('\n[MONITOR] Mention detected from PRIVATE_MEMBER in DM\n')
+    wrapper.flush()
+    assert 'PRIVATE_CONTINUATION' not in stream.getvalue()
+    assert 'PRIVATE_MEMBER' not in stream.getvalue()
+
+
+def test_persisted_tail_does_not_repeat_the_same_live_entries(monkeypatch):
+    buffer = LogBuffer()
+    captured = []
+    class Store:
+        def append_logs(self, lines):
+            captured.extend(lines)
+        def load_logs(self, count):
+            return captured[-count:]
+    monkeypatch.setattr(buffer, '_lazy_store', lambda: Store())
+    buffer.append('first diagnostic')
+    buffer.append('second diagnostic')
+    assert buffer.get_lines(4) == ['first diagnostic', 'second diagnostic']

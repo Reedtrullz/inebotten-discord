@@ -5,62 +5,37 @@ Polls DMs and detects @inebotten mentions using discord.py
 """
 
 import asyncio
+import json
+import time
+from utils.storage_contract import StorageMutationError
+from core.outbound_sender import monitor_sender
+from core.access_policy import AccessPolicy, invocation_decision
 import os
 import re
 import signal
 import subprocess
 import sys
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 
 from core.intent_router import BotIntent, IntentRouter
+from core.request_context import RequestContext, request_scope, request_localization
 from core.intent_thresholds import CONFIDENCE_THRESHOLDS
-from core.intent_keywords import (
-    CALENDAR_KEYWORDS,
-    COMPLETE_KEYWORDS,
-    DELETE_KEYWORDS,
-    EDIT_KEYWORDS,
-    HELP_KEYWORDS,
-    LIST_KEYWORDS,
-    STATUS_KEYWORDS,
-)
+from ai.action_schema import parse_action_draft
+from ai.result_schema import AIResult, MAX_AI_PROMPT_CHARS
+from core.intent_keywords import STATUS_KEYWORDS
+from core.command_registry import command_metadata, dispatch_command, CommandPayloadError
 from web_console.server import ConsoleServer
 
 
-COMMAND_REGISTRY = [
-    {"name": "help", "aliases": HELP_KEYWORDS, "priority": 10, "scope": "any"},
-    {"name": "status", "aliases": STATUS_KEYWORDS, "priority": 20, "scope": "any"},
-    {
-        "name": "calendar",
-        "aliases": CALENDAR_KEYWORDS + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS,
-        "priority": 30,
-        "scope": "any",
-    },
-    {
-        "name": "polls",
-        "aliases": ["poll", "avstemning", "vote", "stemme"],
-        "priority": 40,
-        "scope": "any",
-    },
-    {
-        "name": "watchlist",
-        "aliases": ["watchlist", "filmforslag", "hva skal vi se"],
-        "priority": 50,
-        "scope": "any",
-    },
-    {
-        "name": "memory",
-        "aliases": ["vis minnet mitt", "eksporter minnet mitt", "slett minnet mitt"],
-        "priority": 60,
-        "scope": "any",
-    },
-    {"name": "ai_chat", "aliases": [], "priority": 1000, "scope": "any"},
-]
+# Compatibility export; consumers obtain fresh copied metadata via the getter.
+COMMAND_REGISTRY = command_metadata()
 
 
 _COUNTER_STAT_KEYS = ("count", "low_confidence", "errors")
+AI_REPLY_TIMEOUT_S = 20.0
 
 
 def _counter_stats_delta(current, previous):
@@ -139,10 +114,17 @@ class MessageMonitor:
         response_generator,
         bot_name="inebotten",
     ):
+        from utils.resource_shutdown import OwnedResources
+        self._owned_resources = OwnedResources()
+        self._active_requests = set()
+        self._closing = False
+        self._shutdown_registered = False
         self.client = client
         self.bot = client
         self.hermes = hermes_connector
         self.rate_limiter = rate_limiter
+        monitor_sender(self)
+        self._owned_resources.add('outbound', self.outbound.aclose)
         self.response_gen = response_generator
         self.bot_name = bot_name
         self.bot_mention = f"@{bot_name}"
@@ -159,15 +141,23 @@ class MessageMonitor:
         else:
             print("[MONITOR] Google Calendar integration enabled")
 
+        self.access_policy = AccessPolicy.from_config(self.client.config)
         self.calendar = CalendarManager(
+            access_policy=self.access_policy,
             gcal_manager=gcal,
             owner_email=getattr(self.client.config, 'DISCORD_EMAIL', None),
             owner_name=getattr(self.client.config, 'CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
         )
+        self._owned_resources.add('calendar-store', self.calendar._storage.aclose)
+        self._owned_resources.add('google-slot', self.calendar._outbox.slot.close)
         self.nlp_parser = NaturalLanguageParser()
 
         from cal_system.reminder_manager import ReminderManager
-        self.reminders = ReminderManager()
+        self.reminders = ReminderManager(gcal_manager=gcal, access_policy=self.access_policy,
+            clock=self.calendar.clock)
+        self._owned_resources.add('reminder-store', self.reminders._storage.aclose)
+        self.reminders.configure_google(gcal, slot=self.calendar._outbox.slot,
+            access_policy=self.access_policy)
 
         # Initialize personality and memory systems
         from memory.user_memory import get_user_memory
@@ -176,6 +166,7 @@ class MessageMonitor:
 
         self.user_memory = get_user_memory()
         self.conversation = get_context_manager()
+        self.user_memory.conversation = self.conversation
         self.get_system_prompt = get_system_prompt
         self.ResponseStyle = ResponseStyle
 
@@ -208,27 +199,43 @@ class MessageMonitor:
 
         self.countdown = CountdownManager()
         self.poll = PollManager()
+        self._owned_resources.add('poll-store', self.poll._storage.aclose)
         self.watchlist = WatchlistManager()
+        from features.planning_manager import PlanningManager
+        self.planning = PlanningManager(self.calendar,self.poll,watchlist=self.watchlist)
         self.wod = WordOfTheDay()
         self.quote = QuoteManager()
         self.crypto = CryptoManager()
+        self._owned_resources.add('crypto', self.crypto.close)
         self.compliments = ComplimentsManager()
         self.horoscope = HoroscopeManager()
         self.calculator = CalculatorManager()
         self.url_shortener = URLShortener()
         self.aurora = AuroraForecast()
+        self._owned_resources.add('aurora', self.aurora.close)
+        from features.forecast_service import ForecastService
+        self.forecasts = ForecastService(aurora_client=self.aurora, owns_aurora=False)
+        self._owned_resources.add('forecasts', self.forecasts.close)
         self.search_manager = SearchManager()
+        self._owned_resources.add('search', self.search_manager.close)
         self.browser_manager = BrowserManager()
+        self._owned_resources.add('public-extraction', self.browser_manager.close)
         self.detect_search_intent = detect_search_intent
         from features.birthday_manager import BirthdayManager
         self.birthdays = BirthdayManager()
+
+        from features.workflow_manager import WorkflowManager
+        self.workflows = WorkflowManager(self.calendar,self.user_memory)
 
         self.daily_digest = DailyDigestManager(
             event_manager=self.calendar,
             birthday_manager=self.birthdays,
             crypto_manager=self.crypto,
             aurora_manager=self.aurora,
-            watchlist_manager=self.watchlist
+            watchlist_manager=self.watchlist,
+            forecast_service=self.forecasts,
+            user_memory=self.user_memory,
+            workflows=self.workflows,
         )
 
         self.parse_poll_command = parse_poll_command
@@ -251,6 +258,7 @@ class MessageMonitor:
         self._last_persisted_rate_stats: dict[str, int] = {}
         self._background_tasks = set()
         self._task_health: dict[str, dict[str, object]] = {}
+        self._provider_readiness: dict[str, object] = {"probe": None, "inference": None}
 
         self.handlers = {}
         self._register_handlers()
@@ -259,32 +267,74 @@ class MessageMonitor:
     def _track_background_task(self, coro, name):
         task = asyncio.create_task(coro, name=name)
         self._background_tasks.add(task)
-        self._set_task_health(name, state="running", started_at=datetime.now().isoformat(), last_error=None)
+        self._set_task_health(name, state="running", started_at=datetime.now(timezone.utc).isoformat(), last_error=None)
 
         def _done_callback(done_task):
             self._background_tasks.discard(done_task)
             if done_task.cancelled():
-                self._set_task_health(name, state="cancelled", finished_at=datetime.now().isoformat())
+                self._set_task_health(name, state="cancelled", finished_at=datetime.now(timezone.utc).isoformat())
                 return
             try:
                 exc = done_task.exception()
             except Exception:
                 return
             if exc:
-                self._mark_task_error(name, exc, state="failed", finished_at=datetime.now().isoformat())
+                self._mark_task_error(name, exc, state="failed", finished_at=datetime.now(timezone.utc).isoformat())
                 print(f"[MONITOR] Background task {name} failed: {exc}")
             else:
                 self._set_task_health(
                     name,
                     state="completed",
-                    finished_at=datetime.now().isoformat(),
-                    last_ok=datetime.now().isoformat(),
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    last_ok=datetime.now(timezone.utc).isoformat(),
                     last_error=None,
                     exception_type=None,
                 )
 
         task.add_done_callback(_done_callback)
         return task
+
+    def record_scheduler_iteration(self, successful):
+        if successful:
+            self._mark_task_ok('reminder-checker')
+        else:
+            self._set_task_health('reminder-checker', state='degraded',
+                reason_code='scheduler_iteration_failed',
+                last_error_at=datetime.now(timezone.utc).isoformat())
+
+    def record_provider_health_check(self, healthy):
+        """Retain only startup reachability evidence; discard provider text."""
+        if not isinstance(getattr(self, '_provider_readiness', None), dict):
+            self._provider_readiness = {'probe': None, 'inference': None}
+        self._provider_readiness["probe"] = {
+            "ok": bool(healthy),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def record_provider_inference(self, result):
+        """Retain outcome metadata from a real request, never its prompt or text."""
+        status = str(getattr(result, "status", "unavailable")).lower()
+        if status not in {"success", "busy", "retryable", "auth_error", "unavailable"}:
+            status = "unavailable"
+        provider = str(getattr(result, "provider", "unknown")).strip().lower()
+        if not re.fullmatch(r"[a-z0-9_.-]{1,32}", provider):
+            provider = "unknown"
+        accepted = status == "success" and bool(getattr(result, "text", None))
+        if not isinstance(getattr(self, '_provider_readiness', None), dict):
+            self._provider_readiness = {'probe': None, 'inference': None}
+        self._provider_readiness["inference"] = {
+            "status": status,
+            "provider": provider,
+            "fallback": bool(getattr(result, "fallback", False)),
+            "accepted": accepted,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_provider_readiness(self):
+        return {
+            key: dict(value) if isinstance(value, dict) else None
+            for key, value in self._provider_readiness.items()
+        }
 
     def _set_task_health(self, name, **updates):
         health = self._task_health.setdefault(name, {"state": "unknown"})
@@ -294,7 +344,7 @@ class MessageMonitor:
         self._set_task_health(
             name,
             state="running",
-            last_ok=datetime.now().isoformat(),
+            last_ok=datetime.now(timezone.utc).isoformat(),
             last_error=None,
             exception_type=None,
         )
@@ -305,12 +355,20 @@ class MessageMonitor:
             state=state,
             last_error=str(exc),
             exception_type=type(exc).__name__,
-            last_error_at=datetime.now().isoformat(),
+            last_error_at=datetime.now(timezone.utc).isoformat(),
             **extra,
         )
 
     def get_task_health(self):
         return {name: dict(values) for name, values in self._task_health.items()}
+
+    @property
+    def loc(self):
+        return request_localization(self._localization)
+
+    @loc.setter
+    def loc(self, value):
+        self._localization = value
 
     async def setup(self):
         await self.calendar.setup()
@@ -330,15 +388,32 @@ class MessageMonitor:
 
         print("[MONITOR] Async managers (Calendar, Memory, Birthdays) initialized")
 
-    async def close(self):
-        """Cancel monitor-owned background tasks."""
-        tasks = list(self._background_tasks)
-        if not tasks:
-            return
+    async def _drain_owned_work(self):
+        tasks = set(getattr(self, '_background_tasks', set())) | set(getattr(self, '_active_requests', set()))
+        tasks.discard(asyncio.current_task())
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self._background_tasks.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        getattr(self, '_background_tasks', set()).clear()
+
+    async def close(self, deadline=None):
+        """Close only owned resources; retain pending work and failed deltas."""
+        from utils.resource_shutdown import OwnedResources
+        self._closing = True
+        if not hasattr(self, '_owned_resources'):
+            self._owned_resources = OwnedResources()
+        if not getattr(self, '_shutdown_registered', False):
+            if hasattr(self, 'intent_stats'):
+                self._owned_resources.add('final-counters', self._persist_console_stats_once)
+            self._owned_resources.add('owned-work', self._drain_owned_work)
+            self._shutdown_registered = True
+        try:
+            await self._owned_resources.close(deadline if deadline is not None else time.monotonic() + 10)
+        finally:
+            self.shutdown_receipt = self._owned_resources.receipt()
+            self.shutdown_receipt['unsaved_intents'] = self.get_unsaved_intent_stats() if hasattr(self, 'intent_stats') else {}
+            self.shutdown_receipt['unsaved_rate_requests'] = sum(getattr(self, '_pending_console_delta', {}).get('rates', {}).values())
 
     async def _console_persistence_loop(self) -> None:
         """Periodically save intent and rate-limit stats to disk."""
@@ -354,6 +429,12 @@ class MessageMonitor:
 
     async def _persist_console_stats_once(self) -> None:
         """Persist one stats delta batch and update health only after success."""
+        if not hasattr(self, '_stats_flush_lock'):
+            self._stats_flush_lock = asyncio.Lock()
+        async with self._stats_flush_lock:
+            await self._persist_console_stats_locked()
+
+    async def _persist_console_stats_locked(self) -> None:
         from web_console.console_store import get_console_store
 
         store = get_console_store()
@@ -376,12 +457,25 @@ class MessageMonitor:
             rate_stats,
             getattr(self, "_last_persisted_rate_stats", {}),
         )
+        self._pending_console_delta = {'intents': intent_delta, 'rates': rate_delta}
         if intent_delta or rate_delta:
-            if not store.save_stats(intent_delta, rate_delta):
+            worker = asyncio.create_task(asyncio.to_thread(store.save_stats, intent_delta, rate_delta))
+            cancelled = False
+            try:
+                saved = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+                saved = await worker
+            if not saved:
                 raise RuntimeError("console stats save failed")
+        else:
+            cancelled = False
         self._last_persisted_intent_stats = intent_snapshot
         self._last_persisted_rate_stats = dict(rate_stats)
+        self._pending_console_delta = {'intents': {}, 'rates': {}}
         self._mark_task_ok("console-persistence")
+        if cancelled:
+            raise asyncio.CancelledError
 
     def is_mention(self, message):
         """Check if message explicitly mentions the bot."""
@@ -431,25 +525,30 @@ class MessageMonitor:
         return AuthorizedMessage(message, self.clean_authorized_content(message))
 
     async def handle_message(self, message):
+        if getattr(self, '_closing', False):
+            return
+        if not hasattr(self, '_active_requests'):
+            self._active_requests = set()
+        task = asyncio.current_task()
+        self._active_requests.add(task)
+        try:
+            await self._handle_message(message)
+        finally:
+            self._active_requests.discard(task)
+
+    async def _handle_message(self, message):
         """Process an incoming message"""
         # Skip own messages
         if message.author.id == self.client.user.id:
             return
 
-        # Security & Privacy Gate: Only respond to authorized users
-        # This is a selfbot, so we should be very strict about who can trigger AI/actions.
-        allowed_users = getattr(self.client.config, 'ALLOWED_USERS', [])
-        if allowed_users and message.author.id not in allowed_users:
+        invocation = invocation_decision(
+            RequestContext.from_message(message, 'no'),
+            mode=getattr(self.client.config, 'INVOCATION_MODE', 'legacy'),
+            allowed_users=getattr(self.client.config, 'ALLOWED_USERS', []),
+            allowed_channels=getattr(self.client.config, 'ALLOWED_CHANNELS', []))
+        if not invocation.allowed:
             return
-
-        # Optional: Channel restriction for non-DM channels
-        allowed_channels = getattr(self.client.config, 'ALLOWED_CHANNELS', [])
-        if allowed_channels and not isinstance(message.channel, discord.DMChannel):
-            if message.channel.id not in allowed_channels:
-                # If it's a group DM, we might still want to allow it, 
-                # but the user specifically pointed to one channel.
-                if not isinstance(message.channel, discord.GroupChannel):
-                    return
 
         authorized_message = self.authorize_message(message)
         if not authorized_message:
@@ -483,34 +582,39 @@ class MessageMonitor:
 
         # Detect language from message
         lang = self.loc.detect_language(message.content)
-        self.loc.set_language(lang)
         print(f"[MONITOR] Detected language: {lang}")
 
-        guild_id = message.guild.id if message.guild else message.channel.id
-        route = None
-        try:
-            route = self.intent_router.route(message.content, guild_id=guild_id)
-            self._last_routed_intent = route.intent
-            print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
-            await self._handle_intent(message, route)
-            self.intent_stats[route.intent.value]["count"] += 1
-        except Exception as exc:
-            import traceback
-
-            route_name = route.intent.value if route else "unknown"
-            print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
-            traceback.print_exc()
-            self.error_count += 1
-            self.intent_stats[route_name]["errors"] += 1
+        context = RequestContext.from_message(message, lang)
+        with request_scope(context):
+            guild_id = message.guild.id if message.guild else message.channel.id
+            route = None
             try:
-                await self._send_ai_response(message)
-            except Exception as ai_exc:
-                print(f"[MONITOR] AI fallback also failed: {ai_exc}")
+                route = self.intent_router.route(message.content, guild_id=guild_id)
+                self._last_routed_intent = route.intent
+                print(f"[MONITOR] Intent matched: {route.intent.value} ({route.reason}, {route.confidence:.2f})")
+                await self._handle_intent(message, route)
+                self.intent_stats[route.intent.value]["count"] += 1
+            except StorageMutationError:
+                self.error_count += 1
+                await self._send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
+            except Exception as exc:
+                route_name = route.intent.value if route else "unknown"
+                print(f"[MONITOR] ERROR handling intent {route_name}: {exc}")
+                self.error_count += 1
+                self.intent_stats[route_name]["errors"] += 1
+                error_message = (
+                    "🤖 Jeg fikk ikke hentet et svar nå. Prøv igjen om litt."
+                    if route and route.intent == BotIntent.AI_CHAT
+                    else "❌ Kommandoen kunne ikke fullføres. Kontroller status før du prøver igjen, "
+                    "eller bruk hjelp."
+                )
+                await self._send_response(
+                    message,
+                    error_message,
+                )
 
     async def _handle_intent(self, message, route):
         """Execute the handler for a routed intent."""
-        payload = route.payload
-
         threshold = CONFIDENCE_THRESHOLDS.get(route.intent, 0.0)
         if route.confidence < threshold:
             print(
@@ -520,110 +624,33 @@ class MessageMonitor:
             await self._send_ai_response(message)
             return
 
-        if route.intent == BotIntent.HELP:
-            await self.handlers["help"].handle_help(message)
-        elif route.intent == BotIntent.CALENDAR_HELP:
-            await self._send_response(message, self.conv_gen.get_calendar_help())
-        elif route.intent == BotIntent.STATUS:
-            await self._send_status_response(message)
-        elif route.intent == BotIntent.PROFILE:
-            if not await self.handlers["profile"].handle_profile_command(message):
-                await self._send_ai_response(message)
-        elif route.intent == BotIntent.CALENDAR_LIST:
-            await self.handlers["calendar"].handle_list(message)
-        elif route.intent == BotIntent.CALENDAR_SYNC:
-            await self.handlers["calendar"].handle_sync(message)
-        elif route.intent == BotIntent.CALENDAR_DELETE:
-            await self.handlers["calendar"].handle_delete(message)
-        elif route.intent == BotIntent.CALENDAR_COMPLETE:
-            await self.handlers["calendar"].handle_complete(message)
-        elif route.intent == BotIntent.CALENDAR_EDIT:
-            await self.handlers["calendar"].handle_edit(message)
-        elif route.intent == BotIntent.CALENDAR_SEARCH:
-            await self.handlers["calendar"].handle_search(message, payload)
-        elif route.intent == BotIntent.CALENDAR_CLEAR:
-            await self.handlers["calendar"].handle_clear(message)
-        elif route.intent == BotIntent.CALENDAR_ITEM:
-            await self.handlers["calendar"].handle_calendar_item(message, payload["calendar_item"])
-        elif route.intent == BotIntent.CALENDAR_AUTH:
-            await self.handlers["calendar"].handle_auth(message, payload)
-        elif route.intent == BotIntent.REMINDER_EDIT:
-            await self.handlers["reminders"].handle_reminder_edit(message, payload)
-        elif route.intent == BotIntent.REMINDER_DELETE:
-            await self.handlers["reminders"].handle_reminder_delete(message, payload)
-        elif route.intent == BotIntent.REMINDER_SEARCH:
-            await self.handlers["reminders"].handle_reminder_search(message, payload)
-        elif route.intent == BotIntent.REMINDER_CREATE:
-            await self.handlers["reminders"].handle_reminder_create(message, payload)
-        elif route.intent == BotIntent.REMINDER_LIST:
-            await self.handlers["reminders"].handle_reminder_list(message, payload)
-        elif route.intent == BotIntent.REMINDER_COMPLETE:
-            await self.handlers["reminders"].handle_reminder_complete(message, payload)
-        elif route.intent == BotIntent.POLL_CREATE:
-            await self.handlers["polls"].handle_poll(message, payload["poll"])
-        elif route.intent == BotIntent.POLL_VOTE:
-            await self.handlers["polls"].handle_vote(message, payload["vote"])
-        elif route.intent == BotIntent.POLL_EDIT:
-            await self.handlers["polls"].handle_poll_edit(message, payload["poll_edit"])
-        elif route.intent == BotIntent.POLL_DELETE:
-            await self.handlers["polls"].handle_poll_delete(message, payload["poll_delete"])
-        elif route.intent == BotIntent.POLL_CLOSE:
-            await self.handlers["polls"].handle_poll_close(message, payload["poll_close"])
-        elif route.intent == BotIntent.POLL_LIST:
-            await self.handlers["polls"].handle_poll_list(message)
-        elif route.intent == BotIntent.COUNTDOWN:
-            await self.handlers["countdown"].handle_countdown(message, payload["countdown"])
-        elif route.intent == BotIntent.WATCHLIST:
-            watchlist_payload = payload.get("watchlist", {})
-            action = watchlist_payload.get("action")
-            if action == "remove":
-                response_text = await self.handlers["watchlist"].handle_watchlist_remove(message, watchlist_payload)
-                if response_text:
-                    await self._send_response(message, response_text)
-            elif action == "edit":
-                response_text = await self.handlers["watchlist"].handle_watchlist_edit(message, watchlist_payload)
-                if response_text:
-                    await self._send_response(message, response_text)
-            else:
-                await self.handlers["watchlist"].handle_watchlist(message, watchlist_payload)
-        elif route.intent == BotIntent.WORD_OF_DAY:
-            await self.handlers["fun"].handle_word_of_day(message)
-        elif route.intent == BotIntent.QUOTE:
-            await self.handlers["fun"].handle_quote_command(message, payload["quote"])
-        elif route.intent == BotIntent.QUOTE_LIST:
-            await self.handlers["quotes"].handle_quote_list(message)
-        elif route.intent == BotIntent.QUOTE_EDIT:
-            await self.handlers["quotes"].handle_quote_edit(message, payload)
-        elif route.intent == BotIntent.QUOTE_DELETE:
-            await self.handlers["quotes"].handle_quote_delete(message, payload)
-        elif route.intent == BotIntent.AURORA:
-            await self.handlers["aurora"].handle_aurora(message)
-        elif route.intent == BotIntent.SCHOOL_HOLIDAYS:
-            await self.handlers["school_holidays"].handle_school_holidays(message)
-        elif route.intent == BotIntent.PRICE:
-            await self.handlers["utility"].handle_price(message, payload["price"])
-        elif route.intent == BotIntent.HOROSCOPE:
-            await self.handlers["fun"].handle_horoscope(message, payload["horoscope"])
-        elif route.intent == BotIntent.COMPLIMENT:
-            await self.handlers["fun"].handle_compliment(message, payload["compliment"])
-        elif route.intent == BotIntent.CALCULATOR:
-            await self.handlers["utility"].handle_calculator(message, payload["calculator"])
-        elif route.intent == BotIntent.SHORTEN_URL:
-            await self.handlers["utility"].handle_shorten(message, payload["shorten"])
-        elif route.intent == BotIntent.DAILY_DIGEST:
-            await self.handlers["daily_digest"].handle_daily_digest(message)
-        elif route.intent == BotIntent.BIRTHDAY_EDIT:
-            await self.handlers["birthdays"].handle_birthday_edit(message, payload)
-        elif route.intent == BotIntent.SET_LOCATION:
-            await self._handle_set_location(message, payload["city"])
-        elif route.intent in (BotIntent.MEMORY_VIEW, BotIntent.MEMORY_EXPORT, BotIntent.MEMORY_DELETE):
-            await self.handlers["memory"].handle_memory(message, payload.get("memory", {}))
-        elif route.intent == BotIntent.SEARCH:
-            await self._send_ai_response(message, forced_search_info=payload.get("search"))
-        elif route.intent == BotIntent.DASHBOARD:
-            await self._send_dashboard_response(message)
+        try:
+            return await dispatch_command(self, message, route)
+        except CommandPayloadError:
+            await self._send_response(message,
+                '❌ Kommandodataene er ugyldige. Bruk hjelp og prøv en støttet kommando.')
+
+    async def _registry_calendar_help(self, message):
+        return await self._send_response(message, self.conv_gen.get_calendar_help())
+
+    async def _registry_profile(self, message):
+        if not await self.handlers['profile'].handle_profile_command(message):
+            await self._send_response(message,
+                'Jeg kjenner ikke igjen profilkommandoen. Prøv status eller aktivitet.')
+
+    async def _registry_watchlist(self, message, payload):
+        action = payload.get('action')
+        if action == 'remove':
+            text = await self.handlers['watchlist'].handle_watchlist_remove(message, payload)
+        elif action == 'edit':
+            text = await self.handlers['watchlist'].handle_watchlist_edit(message, payload)
         else:
-            await self._send_ai_response(message)
+            return await self.handlers['watchlist'].handle_watchlist(message, payload)
+        if text:
+            return await self._send_response(message, text)
+
+    async def _registry_search(self, message, search):
+        return await self._send_ai_response(message, forced_search_info=search)
 
     async def _send_dashboard_response(self, message):
         """Generate and send an explicit dashboard response."""
@@ -631,30 +658,71 @@ class MessageMonitor:
         content_lower = message.content.lower()
         from features.weather_api import extract_city
 
-        response_text = await self._generate_dashboard(
-            guild_id,
-            city_name=extract_city(message.content),
-            show_navnedag=any(
-                re.search(rf"\b{re.escape(word)}\b", content_lower)
-                for word in ["navnedag", "oppsummering", "brief", "status"]
-            ),
-            user_id=message.author.id,
-        )
+        try:
+            response_text = await self._generate_dashboard(
+                guild_id,
+                city_name=extract_city(message.content),
+                show_navnedag=any(
+                    re.search(rf"\b{re.escape(word)}\b", content_lower)
+                    for word in ["navnedag", "oppsummering", "brief", "status"]
+                ),
+                user_id=message.author.id,
+            )
+        except ValueError as error:
+            response_text = str(error)
         await self._send_response(message, response_text)
+
+    async def _provider_memory_context(self, message, channel_id):
+        """Filter every retained surface for every route that could receive it."""
+        build = getattr(self.user_memory, 'build_prompt_memory', None)
+        policy_for = getattr(self.user_memory, 'policy_for_user', None)
+        if not callable(build) or not callable(policy_for):
+            return '', ''
+        primary = getattr(self.hermes, 'primary', self.hermes)
+        providers = [getattr(primary, 'provider', 'unknown')]
+        fallback = getattr(self.hermes, 'fallback', None)
+        if fallback is not None:
+            providers.append(getattr(fallback, 'provider', 'unknown'))
+        from core.request_context import current_request
+        actor = current_request() or RequestContext.from_message(message, 'no')
+        scope = f'private:{message.author.id}' if actor.channel_kind == 'dm' else 'shared'
+        snapshots = [await build(message.author.id, provider, scope) for provider in providers]
+        # One prompt is reused by declared fallback: sharing cannot expand on it.
+        policy = policy_for(message.author.id)
+        shared = {key: value for key, value in snapshots[0].items()
+            if all(key in snapshot and snapshot[key] == value for snapshot in snapshots)} if snapshots and all(snapshots) else {}
+        if not policy.learning_enabled or any(provider not in policy.allowed_provider_ids for provider in providers):
+            shared = {}
+        elif not policy.private_facts_enabled or scope != f'private:{message.author.id}':
+            shared = {key: value for key, value in shared.items() if key == 'preferences'}
+        user_context = json.dumps(shared, ensure_ascii=False) if shared else ''
+        messages = []
+        get_messages = getattr(self.conversation, 'get_channel_messages', None)
+        if callable(get_messages):
+            for entry in get_messages(channel_id, limit=5):
+                owner = entry.get('source_user_id') if entry.get('is_bot') else entry.get('user_id')
+                if owner is None:
+                    continue
+                policy = policy_for(owner)
+                if policy.learning_enabled and all(provider in policy.allowed_provider_ids for provider in providers):
+                    if str(owner) == str(message.author.id) or actor.channel_kind != 'dm':
+                        messages.append(f'{entry.get("username", "Bruker")}: {entry["content"]}')
+        return user_context, '\n'.join(messages)
 
     async def _send_ai_response(self, message, forced_search_info=None):
         """
         Generate and send an AI response to a mention.
         Uses Hermes AI with personality system.
         """
-        print(f"[MONITOR] _send_ai_response called for message: {message.content[:50]}...")
+        print('[MONITOR] AI response requested')
 
         channel_type = self._get_channel_type(message.channel)
         print(f"[MONITOR] Channel type: {channel_type}")
         guild_id = message.guild.id if message.guild else message.channel.id
+        context_channel = message.channel.id
         content_lower = message.content.lower()
         wants_dashboard, dashboard_reason = self.conversation.should_show_dashboard(
-            message.content, guild_id
+            message.content, context_channel
         )
         print(f"[MONITOR] AI fallback mode: dashboard={wants_dashboard} ({dashboard_reason})")
 
@@ -671,17 +739,20 @@ class MessageMonitor:
 
         # Update conversation history
         self.conversation.add_message(
-            channel_id=guild_id,
+            channel_id=context_channel,
             user_id=message.author.id,
             username=message.author.name,
             content=message.content,
             is_bot=False,
         )
 
-        # Update user memory
+        # Automatic topics belong only to the opted-in speaker.
+        policy_for = getattr(self.user_memory, 'policy_for_user', None)
+        learning = callable(policy_for) and policy_for(message.author.id).learning_enabled
+        topic = self.conversation.get_conversation_summary(context_channel, user_id=message.author.id) if learning else None
         await self.user_memory.update_last_interaction(
             message.author.id,
-            topic=self.conversation.get_conversation_summary(guild_id),
+            topic=topic,
             username=message.author.name,
         )
 
@@ -694,50 +765,44 @@ class MessageMonitor:
             dialect_response = get_personality().respond_to_dialect(message.content)
             if dialect_response:
                 response_text = dialect_response
-                print(f"[MONITOR] Using dialect response for: {message.content[:50]}")
+                print('[MONITOR] Using dialect response')
             
             # Fall back to AI if no dialect match and hermes is available
             if not response_text and self.hermes:
                 try:
-                    user_context = await self.user_memory.format_context_for_prompt(
-                        message.author.id, message.author.name
-                    )
-                    conversation_context = self.conversation.get_context(
-                        guild_id, limit=5
-                    )
-
                     # Check for search intent
                     search_info = forced_search_info or self.detect_search_intent(message.content)
                     search_context = ""
+                    search_results = []
                     search_was_requested = False
                     if search_info:
                         search_was_requested = True
                         query = search_info["query"]
                         search_type = search_info["type"]
-                        print(f"[MONITOR] Web search ({search_type}) triggered for: {query}")
+                        print('[MONITOR] Web search requested')
+                        research_deadline = time.monotonic() + 8
                         
                         if search_type == "news":
-                            search_results = await self.search_manager.get_news(query)
+                            search_results = await self.search_manager.get_news(query, deadline=research_deadline)
                         else:
-                            search_results = await self.search_manager.search(query)
+                            search_results = await self.search_manager.search(query, deadline=research_deadline)
                             
                         if search_results:
-                            search_context = self.search_manager.format_results_for_ai(search_results)
                             print(f"[MONITOR] Found {len(search_results)} search results")
                             
                             # WEB LOOKUP: Only use Browserbase if we don't have deep content yet
-                            has_deep_content = any(len(res.get('body', '')) > 500 for res in search_results)
+                            has_deep_content = any(res.get('content_kind') == 'extracted' for res in search_results)
                             
                             if not has_deep_content and self.browser_manager.is_configured() and len(search_results) > 0:
                                 top_url = search_results[0].get('href') or search_results[0].get('url')
                                 if top_url:
-                                    print(f"[MONITOR] Web Lookup: Tavily content was shallow. Using Browserbase fallback for: {top_url}")
-                                    page_content = await self.browser_manager.fetch_page_content(top_url)
-                                    if page_content:
-                                        search_context += f"\n\nDETALJERT INFORMASJON FRA KILDEN ({top_url}):\n{page_content}\n"
-                                        print("[MONITOR] Web Lookup: Browserbase fallback successful")
+                                    fetch_card = getattr(self.browser_manager, 'fetch_page_card', None)
+                                    page_card = await fetch_card(top_url, deadline=research_deadline) if callable(fetch_card) else None
+                                    if page_card:
+                                        search_results = [page_card] + search_results[1:]
                             elif has_deep_content:
-                                print("[MONITOR] Web Lookup: Tavily provided deep content. Skipping Browserbase.")
+                                print('[MONITOR] Provider returned extracted text')
+                            search_context = self.search_manager.format_results_for_ai(search_results)
                         else:
                             response_text = (
                                 "Jeg fant ingen ferske kilder akkurat nå, så jeg vil ikke late som jeg "
@@ -746,6 +811,7 @@ class MessageMonitor:
                             )
 
                     if not response_text:
+                        user_context, conversation_context = await self._provider_memory_context(message, context_channel)
                         system_prompt = self.get_system_prompt(
                             user_context=user_context,
                             conversation_context=conversation_context,
@@ -771,20 +837,54 @@ class MessageMonitor:
 
                         print(f"[MONITOR] Using personalized system prompt ({len(system_prompt)} chars)")
 
-                        success, ai_response = await self.hermes.generate_response(
-                            message_content=message.content,
-                            author_name=message.author.name,
-                            channel_type=channel_type,
-                            is_mention=True,
-                            system_prompt=system_prompt,
-                        )
+                        from core.request_context import current_request
 
-                        if success and ai_response:
-                            print("[MONITOR] Using personalized AI response")
-                            # Parse and execute actions before sending
-                            response_text = await self._parse_and_execute_actions(ai_response, message)
+                        request_context = current_request() or RequestContext.from_message(
+                            message, "no"
+                        )
+                        prompt = f"{system_prompt}\n\nBrukermelding:\n{message.content}"
+                        if len(prompt) > MAX_AI_PROMPT_CHARS:
+                            result = AIResult("unavailable", None, "monitor", None)
+                        elif not callable(getattr(self.hermes, "generate_reply", None)):
+                            result = AIResult("unavailable", None, "monitor", None)
+                        else:
+                            result = await self.hermes.generate_reply(
+                                request_context,
+                                prompt,
+                                deadline=time.monotonic() + AI_REPLY_TIMEOUT_S,
+                            )
+
+                        if not isinstance(result, AIResult):
+                            result = AIResult("unavailable", None, "monitor", None)
+                        self.record_provider_inference(result)
+                        if result.status == "success" and result.text:
+                            print(
+                                f"[MONITOR] AI response from {result.provider} "
+                                f"(fallback={result.fallback})"
+                            )
+                            from features.search_manager import cited_reply_is_valid
+                            if search_was_requested and (not cited_reply_is_valid(result.text, search_results)
+                                    or any(parse_action_draft(line.strip()) for line in result.text.splitlines())):
+                                response_text = 'Svaret manglet tydelige kildehenvisninger for påstandene. Prøv et smalere søk eller åpne kildene selv.'
+                            elif search_was_requested:
+                                response_text = result.text
+                            else:
+                                response_text = await self._parse_and_execute_actions(result.text, message)
+                            if result.fallback and response_text:
+                                origin = result.provider
+                                if result.model:
+                                    origin += f" ({result.model})"
+                                response_text = (
+                                    f"_(Svar fra lokal reserve {origin})_\n\n"
+                                    f"{response_text}"
+                                )
+                        else:
+                            response_text = self._ai_outcome_message(result)
                 except Exception as e:
                     print(f"[MONITOR] Personalized AI failed: {e}")
+                    response_text = self._ai_outcome_message(
+                        AIResult("unavailable", None, "monitor", None)
+                    )
 
         # Fallback: dashboard or basic response
         if not response_text:
@@ -796,80 +896,45 @@ class MessageMonitor:
                     user_id=message.author.id
                 )
             else:
-                from ai.personality_config import get_fallback_response
-                response_text = get_fallback_response("general")
+                response_text = self._ai_outcome_message(
+                    AIResult("unavailable", None, "monitor", None)
+                )
 
         # Send the response
         await self._send_response(message, response_text)
 
     async def _parse_and_execute_actions(self, response_text, message):
-        """
-        Parses AI response for [ACTION] tags and executes them.
-        Returns the cleaned response text.
-        """
-        cleaned_text = response_text
-        import json
+        """Turn one validated model draft into user-confirmed text only."""
+        output_lines = []
+        draft_confirmation = None
+        for line in response_text.splitlines():
+            action = parse_action_draft(line.strip())
+            if action and action.get("action") == "SAVE_EVENT" and draft_confirmation is None:
+                draft_confirmation = self._append_calendar_draft_confirmation(
+                    "", action["title"], action["date"], action["time"]
+                )
+            else:
+                output_lines.append(line)
 
-        # 0. Try JSON format first
-        for line in cleaned_text.split('\n'):
-            line = line.strip()
-            if line.startswith('{') and line.endswith('}'):
-                try:
-                    action_data = json.loads(line)
-                    action_type = action_data.get('action')
-                    if action_type == 'SAVE_EVENT':
-                        title = action_data.get('title', '')
-                        date = action_data.get('date', '')
-                        time = action_data.get('time', '')
-                        print(f"[ROUTER] Drafted SAVE_EVENT action (JSON), waiting for user confirmation: {title} on {date} at {time}")
-                        cleaned_text = cleaned_text.replace(line, '').strip()
-                        cleaned_text = self._append_calendar_draft_confirmation(
-                            cleaned_text, title, date, time
-                        )
-                    elif action_type == 'SHOW_DASHBOARD':
-                        print("[ROUTER] Detected SHOW_DASHBOARD action (JSON)")
-                        try:
-                            guild_id = message.guild.id if message.guild else message.channel.id
-                            user_mem = await self.user_memory.get_user(message.author.id)
-                            city_name = user_mem.get("location", "Oslo")
-
-                            dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
-                            await self._send_response(message, dashboard_text)
-                        except Exception as e:
-                            print(f"[ROUTER] Failed to show dashboard: {e}")
-
-                        cleaned_text = cleaned_text.replace(line, '').strip()
-                except json.JSONDecodeError:
-                    pass
-
-        # 1. Handle [SAVE_EVENT: Title | Date | Time]
-        event_match = re.search(r'\[SAVE_EVENT:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\]', cleaned_text)
-        if event_match:
-            title, date, time = event_match.groups()
-            print(f"[ROUTER] Drafted SAVE_EVENT action, waiting for user confirmation: {title} on {date} at {time}")
-            
-            cleaned_text = cleaned_text.replace(event_match.group(0), "").strip()
-            cleaned_text = self._append_calendar_draft_confirmation(
-                cleaned_text, title, date, time
-            )
-
-        # 2. Handle [SHOW_DASHBOARD]
-        if '[SHOW_DASHBOARD]' in cleaned_text:
-            print("[ROUTER] Detected SHOW_DASHBOARD action")
-            try:
-                guild_id = message.guild.id if message.guild else message.channel.id
-                # Get location from user memory
-                user_mem = await self.user_memory.get_user(message.author.id)
-                city_name = user_mem.get("location", "Oslo")
-                
-                dashboard_text = await self._generate_dashboard(guild_id, city_name=city_name)
-                await self._send_response(message, dashboard_text)
-            except Exception as e:
-                print(f"[ROUTER] Failed to show dashboard: {e}")
-            
-            cleaned_text = cleaned_text.replace('[SHOW_DASHBOARD]', "").strip()
-            
+        cleaned_text = "\n".join(output_lines).strip()
+        if draft_confirmation:
+            cleaned_text = f"{cleaned_text}\n\n{draft_confirmation}".strip()
         return cleaned_text
+
+    @staticmethod
+    def _ai_outcome_message(result: AIResult) -> str:
+        if result.status == "busy":
+            delay = result.retry_after_s
+            if delay is not None:
+                return f"🤖 Jeg er opptatt akkurat nå. Prøv igjen om {max(1, int(delay))} sekunder."
+            return "🤖 Jeg er opptatt akkurat nå. Prøv igjen om litt."
+        if result.status == "cancelled":
+            return "🤖 Forespørselen ble avbrutt før jeg rakk å svare."
+        if result.status == "auth_error":
+            return "🤖 AI-tilkoblingen trenger oppmerksomhet. Prøv igjen senere."
+        if result.status == "retryable":
+            return "🤖 AI-tjenesten feilet midlertidig. Prøv igjen om litt."
+        return "🤖 AI-tjenesten er ikke tilgjengelig akkurat nå."
 
     def _append_calendar_draft_confirmation(self, text, title, date, time):
         """Ask the user to confirm model-suggested calendar writes explicitly."""
@@ -959,44 +1024,28 @@ class MessageMonitor:
     async def _generate_dashboard(self, guild_id: int, city_name: str = None, show_navnedag: bool = False, user_id: int = None) -> str:
         """Generate dashboard response with weather, events, etc."""
         from cal_system.norwegian_calendar import get_todays_info
-        from features.weather_api import METWeatherAPI, NORWEGIAN_CITIES
-
+        from features.forecast_service import ForecastService, resolve_location
+        from core.request_context import current_request
         norwegian_data = get_todays_info()
-        weather_api = METWeatherAPI()
-        
-        # If no city name provided, check user memory
         if not city_name and user_id:
             user_mem = await self.user_memory.get_user(user_id)
-            if user_mem.get("location"):
-                city_name = user_mem["location"]
-                print(f"[MONITOR] Using stored location for dashboard: {city_name}")
-
-        # Get coordinates for city if provided, otherwise default to Oslo
-        city_info = NORWEGIAN_CITIES.get(city_name.lower()) if city_name else NORWEGIAN_CITIES['oslo']
-        
-        weather_data = await weather_api.get_weather(
-            lat=city_info['lat'],
-            lon=city_info['lon'],
-            location_name=city_info['name']
-        )
-        await weather_api.close()
-
-        if weather_data:
-            weather_formatted = {
-                "conditions": weather_data["condition"],
-                "temp": weather_data["temp"],
-                "location": weather_data["location"],
-                "lat": city_info['lat'],
-                "lon": city_info['lon']
-            }
-        else:
-            weather_formatted = {
-                "conditions": "Delvis skyet", 
-                "temp": 8, 
-                "location": city_info['name'],
-                "lat": city_info['lat'],
-                "lon": city_info['lon']
-            }
+            city_name = user_mem.get("location")
+        location = resolve_location(city_name or "oslo")
+        service = getattr(self, "forecasts", None)
+        if service is None:
+            self.forecasts = service = ForecastService(aurora_client=getattr(self, "aurora", None))
+        result = await service.get_weather(location)
+        context = current_request()
+        weather_formatted = {
+            "status": result.status, "source": result.source,
+            "valid_at": result.valid_at.isoformat() if result.valid_at else None,
+            "expires_at": result.expires_at.isoformat() if result.expires_at else None,
+            "fetched_at": result.fetched_at.isoformat(),
+            "locale": context.locale if context else "no",
+            "location": location["name"], "lat": location["lat"], "lon": location["lon"],
+            "temp": result.data.get("temp") if result.data else None,
+            "conditions": result.data.get("condition") if result.data else None,
+        }
 
         upcoming_items = self.calendar.get_upcoming(guild_id, days=7)
 
@@ -1011,37 +1060,13 @@ class MessageMonitor:
         return dashboard
 
     async def _send_response(self, message, response_text):
-        """Send response with proper channel handling."""
-        try:
-            if not response_text:
-                print("[MONITOR] Warning: Attempted to send empty response. Skipping.")
-                return
-
-            if isinstance(message.channel, (discord.DMChannel, discord.GroupChannel)):
-                await message.channel.send(response_text)
-            else:
-                await message.reply(response_text, mention_author=False)
-
-            self.rate_limiter.record_sent()
+        """Only acknowledged responses enter counters and conversation history."""
+        result = await monitor_sender(self).reply(message, response_text)
+        if result.status == 'delivered' and result.reason_code == 'remote_message':
             self.response_count += 1
-            print(f"[MONITOR] Response sent to {message.author.name}: {response_text[:100]}...")
-
-            # Add bot response to conversation history
-            guild_id = message.guild.id if message.guild else message.channel.id
-            self.conversation.add_message(
-                channel_id=guild_id,
-                user_id=None,
-                username="Inebotten",
-                content=response_text,
-                is_bot=True,
-            )
-
-        except discord.errors.Forbidden:
-            print("[MONITOR] Forbidden: Cannot send message in this channel")
-            self.rate_limiter.record_failure()
-        except discord.errors.HTTPException as e:
-            print(f"[MONITOR] HTTP error sending message: {e}")
-            self.rate_limiter.record_failure(is_rate_limit=(e.status == 429))
+            self.conversation.add_message(channel_id=message.channel.id, user_id=None,
+                username='Inebotten', content=response_text, is_bot=True, source_user_id=message.author.id)
+        return result
 
     def _get_channel_type(self, channel):
         """Get string representation of channel type"""
@@ -1081,7 +1106,7 @@ class MessageMonitor:
 
     def get_command_registry(self):
         """Return command metadata used by help/status surfaces."""
-        return COMMAND_REGISTRY
+        return command_metadata()
 
     def _register_handlers(self):
         """Register all handlers"""
@@ -1099,6 +1124,8 @@ class MessageMonitor:
         from features.quote_handler import QuoteHandler
         from features.reminder_handler import ReminderHandler
         from features.memory_handler import MemoryHandler
+        from features.workflow_handler import WorkflowHandler
+        from features.planning_handler import PlanningHandler
 
         self.handlers = {
             "fun": FunHandler(self),
@@ -1116,6 +1143,8 @@ class MessageMonitor:
             "birthdays": BirthdayHandler(self),
             "quotes": QuoteHandler(self),
             "memory": MemoryHandler(self),
+            "planning": PlanningHandler(self),
+            "workflow": WorkflowHandler(self),
         }
 
 
@@ -1282,6 +1311,14 @@ class SelfbotClient(discord.Client):
 
     async def on_ready(self):
         """Called when bot is ready"""
+        if getattr(self, '_client_closing', False):
+            return
+        previous = getattr(self, '_failed_monitor', None)
+        if previous is not None:
+            await previous.close()
+            if getattr(previous, 'shutdown_receipt', {}).get('status', 'closed') != 'closed':
+                raise RuntimeError('previous_initialization_cleanup_pending')
+            self._failed_monitor = None
         # Discord may emit READY again after a reconnect.  Keep the existing
         # monitor, console, and reminder task instead of creating duplicate
         # background workers or resetting the uptime clock.
@@ -1314,6 +1351,8 @@ class SelfbotClient(discord.Client):
             rate_limiter=self.rate_limiter,
             response_generator=self.response_gen,
         )
+        self._process_memory_owner = getattr(monitor, 'user_memory', None)
+        reminder_checker = None
         try:
             await monitor.setup()
 
@@ -1321,10 +1360,17 @@ class SelfbotClient(discord.Client):
             reminder_checker = self._create_reminder_checker(monitor)
             if reminder_checker:
                 await reminder_checker.setup()
-        except Exception:
+        except BaseException:
             # setup() may already have started monitor-owned background tasks.
             # Cancel them before leaving the components unpublished for retry.
-            await monitor.close()
+            self._failed_monitor = monitor
+            try:
+                await monitor.close()
+                if reminder_checker is not None and hasattr(reminder_checker, 'close_storage'):
+                    from utils.storage_contract import store_worker
+                    await store_worker(reminder_checker.close_storage)
+            except Exception:
+                print('[BOT] Initialization cleanup remains incomplete')
             raise
 
         # Publish fully initialized components only. A failed first READY can
@@ -1350,6 +1396,10 @@ class SelfbotClient(discord.Client):
             return
 
         healthy, message = await self.hermes.check_health()
+        if self.monitor is not None:
+            record_probe = getattr(self.monitor, "record_provider_health_check", None)
+            if callable(record_probe):
+                record_probe(healthy)
         if healthy:
             print(f"[BOT] AI connector: {message}")
         else:
@@ -1359,12 +1409,11 @@ class SelfbotClient(discord.Client):
     def _create_reminder_checker(self, monitor=None):
         """Create a ReminderChecker wired to the bot's channels."""
         from cal_system.reminder_checker import ReminderChecker
-        from cal_system.calendar_manager import CalendarManager
-        from cal_system.reminder_manager import ReminderManager
-
         selected_monitor = monitor if monitor is not None else self.monitor
-        calendar = selected_monitor.calendar if selected_monitor else CalendarManager()
-        reminders = ReminderManager()
+        if selected_monitor is None:
+            raise RuntimeError("Reminder checker requires an initialized monitor")
+        calendar = selected_monitor.calendar
+        reminders = selected_monitor.reminders
 
         def get_channel(channel_id: int):
             return self.get_channel(channel_id)
@@ -1372,7 +1421,11 @@ class SelfbotClient(discord.Client):
         return ReminderChecker(
             calendar_manager=calendar,
             reminder_manager=reminders,
+            health_callback=getattr(selected_monitor, 'record_scheduler_iteration', None),
             get_channel_func=get_channel,
+            outbound_sender=monitor_sender(selected_monitor) if hasattr(selected_monitor, "rate_limiter") else None,
+            user_memory=getattr(selected_monitor, 'user_memory', None),
+            daily_digest=getattr(selected_monitor, 'daily_digest', None),
         )
 
     def _setup_signal_handlers(self):
@@ -1389,7 +1442,7 @@ class SelfbotClient(discord.Client):
 
     async def on_message(self, message):
         """Called when a message is received"""
-        if self.monitor:
+        if not getattr(self, '_client_closing', False) and self.monitor:
             await self.monitor.handle_message(message)
 
     async def on_disconnect(self):
@@ -1400,46 +1453,40 @@ class SelfbotClient(discord.Client):
         """Called when session is resumed"""
         print("[BOT] Session resumed")
 
-    async def close(self):
-        if self.monitor and hasattr(self.monitor, "close"):
-            try:
-                await self.monitor.close()
-            except Exception as e:
-                print(f"[BOT] Error stopping monitor tasks: {e}")
-
-        if self.reminder_checker:
-            try:
-                self.reminder_checker.stop()
-            except Exception as e:
-                print(f"[BOT] Error stopping reminder checker: {e}")
-
-        if self.reminder_checker_task and not self.reminder_checker_task.done():
-            self.reminder_checker_task.cancel()
-            try:
-                await self.reminder_checker_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self.reminder_checker_task = None
-
-        if self.console_task and not self.console_task.done():
-            self.console_task.cancel()
-            try:
-                await self.console_task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self.console_task = None
-
-        if self.console_server:
-            try:
-                await self.console_server.stop()
-                print("[BOT] Web console stopped")
-            except Exception as e:
-                print(f"[BOT] Error stopping console: {e}")
-            finally:
-                self.console_server = None
-        await super().close()
+    async def close(self, deadline=None):
+        from utils.resource_shutdown import OwnedResources
+        self._client_closing = True
+        if not hasattr(self, '_close_scope'):
+            scope = self._close_scope = OwnedResources()
+            scope.add('discord-transport', super().close)
+            checker = getattr(self, 'reminder_checker', None)
+            if checker is not None and hasattr(checker, 'close_storage'):
+                scope.add('checker-store', checker.close_storage)
+            monitor = getattr(self, 'monitor', None) or getattr(self, '_failed_monitor', None)
+            if monitor is not None:
+                async def close_monitor():
+                    await monitor.close()
+                    if getattr(monitor, 'shutdown_receipt', {}).get('status', 'closed') != 'closed':
+                        raise RuntimeError('monitor_cleanup_incomplete')
+                scope.add('monitor', close_monitor)
+            async def close_checker_work():
+                if checker is not None:
+                    checker.stop()
+                tasks = [task for task in (getattr(self, 'reminder_checker_task', None),
+                                          getattr(self, 'console_task', None)) if task is not None]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            scope.add('checker-work', close_checker_work)
+            if getattr(self, 'console_server', None) is not None:
+                scope.add('console-connections', self.console_server.stop)
+        try:
+            await self._close_scope.close(deadline if deadline is not None else time.monotonic() + 10)
+        finally:
+            self.shutdown_receipt = self._close_scope.receipt()
+        if self.shutdown_receipt['status'] != 'closed':
+            raise RuntimeError('client_cleanup_incomplete')
 
     def get_uptime(self):
         """Get bot uptime"""

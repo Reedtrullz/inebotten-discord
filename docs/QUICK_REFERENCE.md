@@ -11,11 +11,15 @@ Inebotten er mention-gated: hun ser og svarer bare på meldinger der hun er eksp
 ### Starte Botten
 
 ```bash
-# 1. Kjør interaktivt oppsett (anbefalt)
-python3 setup.py
+# 1. Klargjør virtuelt miljø én gang; detaljer i docs/SETUP.md
+python3 -m venv .venv312
+.venv312/bin/python -m pip install -r requirements.txt
 
-# 2. Start botten
-python3 scripts/run_both.py
+# 2. Kjør interaktivt oppsett
+.venv312/bin/python setup.py
+
+# 3. Start botten
+.venv312/bin/python scripts/run_both.py
 ```
 
 ### Web Console

@@ -8,9 +8,19 @@ import json
 import asyncio
 import aiohttp
 import os
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any
 from utils.logger import LoggerMixin
+from ai.result_schema import (
+    AIResult,
+    BoundedAdmission,
+    MAX_AI_PROMPT_CHARS,
+    MAX_AI_TEXT_CHARS,
+    parse_retry_after,
+    read_provider_json,
+)
+from core.request_context import RequestContext
 
 
 class OpenRouterConnector(LoggerMixin):
@@ -46,6 +56,8 @@ class OpenRouterConnector(LoggerMixin):
         self.request_count = 0
         self.error_count = 0
         self.last_error = None
+        self.provider = "openrouter"
+        self._reply_admission = BoundedAdmission()
         
         # Load system prompt
         self.default_system_prompt = self._load_system_prompt()
@@ -67,6 +79,8 @@ class OpenRouterConnector(LoggerMixin):
             return "Du er en hjelpsom norsk assistent som svarer på norsk."
 
     async def _get_session(self):
+        if getattr(self, '_closed', False):
+            raise RuntimeError('connector_closed')
         """
         Get or create aiohttp session with proper timeout configuration
         """
@@ -92,6 +106,10 @@ class OpenRouterConnector(LoggerMixin):
         """
         Close the HTTP session
         """
+        self._closed = True
+        admission = getattr(self, '_reply_admission', None)
+        if admission is not None:
+            await admission.close()
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
@@ -101,7 +119,7 @@ class OpenRouterConnector(LoggerMixin):
         endpoint: str,
         method: str = "POST",
         payload: Optional[Dict[str, Any]] = None
-    ) -> tuple[bool, Any]:
+    ) -> AIResult:
         """
         Make API request with comprehensive error handling
         
@@ -111,7 +129,7 @@ class OpenRouterConnector(LoggerMixin):
             payload: Request payload
             
         Returns:
-            (success, response_data or error_message)
+            A validated provider outcome.
         """
         try:
             session = await self._get_session()
@@ -119,42 +137,44 @@ class OpenRouterConnector(LoggerMixin):
             
             if method.upper() == "POST":
                 async with session.post(url, json=payload) as response:
-                    return await self._handle_response(response)
+                    return await self._handle_response(response, expect_text=method.upper() == "POST")
             else:
                 async with session.get(url) as response:
-                    return await self._handle_response(response)
+                    return await self._handle_response(response, expect_text=False)
                     
         except asyncio.TimeoutError:
             self.error_count += 1
             self.last_error = "Request timeout"
             self.logger.error(f"Request timed out after 60s")
-            return False, "Request timeout (60s)"
+            return AIResult("retryable", None, self.provider, self.model)
             
         except aiohttp.ClientConnectorError as e:
             self.error_count += 1
             self.last_error = f"Connection error: {type(e).__name__}"
             self.logger.error(f"Network error: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"Cannot connect to OpenRouter: {type(e).__name__}"
+            return AIResult("unavailable", None, self.provider, self.model)
             
         except aiohttp.ClientError as e:
             self.error_count += 1
             self.last_error = f"Client error: {type(e).__name__}"
             self.logger.error(f"HTTP client error: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"HTTP error: {type(e).__name__}"
+            return AIResult("retryable", None, self.provider, self.model)
             
         except json.JSONDecodeError as e:
             self.error_count += 1
             self.last_error = f"JSON decode error: {str(e)[:100]}"
             self.logger.error(f"Invalid JSON response: {str(e)[:100]}")
-            return False, "Invalid response format"
+            return AIResult("unavailable", None, self.provider, self.model)
             
         except Exception as e:
             self.error_count += 1
             self.last_error = f"Unexpected error: {type(e).__name__}"
             self.logger.error(f"Unexpected error: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"Request error: {type(e).__name__}"
+            return AIResult("unavailable", None, self.provider, self.model)
 
-    async def _handle_response(self, response: aiohttp.ClientResponse) -> tuple[bool, Any]:
+    async def _handle_response(
+        self, response: aiohttp.ClientResponse, *, expect_text: bool = True
+    ) -> AIResult:
         """
         Handle HTTP response with proper error handling
         
@@ -162,46 +182,65 @@ class OpenRouterConnector(LoggerMixin):
             response: The aiohttp response object
             
         Returns:
-            (success, response_data or error_message)
+            A validated provider outcome.
         """
         self.logger.debug(f"Response status: {response.status}")
         
         if response.status == 200:
             try:
-                data = await response.json()
-                self.logger.debug(f"Response data: {str(data)[:150]}...")
-                return True, data
-            except json.JSONDecodeError as e:
-                text = await response.text()
-                self.logger.error(f"Response parse error: {e}")
-                return True, text
-                
+                data = await read_provider_json(response)
+                if not expect_text:
+                    return AIResult("success", "API reachable", self.provider, self.model)
+                content = None
+                if isinstance(data, dict):
+                    choices = data.get("choices")
+                    if isinstance(choices, list) and choices:
+                        choice = choices[0]
+                        if isinstance(choice, dict):
+                            message = choice.get("message")
+                            if isinstance(message, dict):
+                                content = message.get("content")
+                if isinstance(content, str) and content.strip() and len(content) <= MAX_AI_TEXT_CHARS:
+                    return AIResult("success", content, self.provider, self.model)
+                self.last_error = "Invalid or oversized response text"
+                return AIResult("unavailable", None, self.provider, self.model)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                self.last_error = "Invalid or oversized provider envelope"
+                return AIResult("unavailable", None, self.provider, self.model)
+
         elif response.status == 401:
             self.error_count += 1
             self.last_error = "Unauthorized - Invalid API key"
             self.logger.error("Unauthorized: Invalid API key")
-            return False, "Invalid API key"
+            return AIResult("auth_error", None, self.provider, self.model)
+
+        elif response.status == 403:
+            self.error_count += 1
+            self.last_error = "Provider authorization denied"
+            return AIResult("auth_error", None, self.provider, self.model)
             
         elif response.status == 429:
-            retry_after = int(response.headers.get('Retry-After', 60))
+            retry_after = parse_retry_after(
+                response.headers.get("Retry-After", 60), default=60.0
+            )
             self.error_count += 1
             self.last_error = f"Rate limited (retry after {retry_after}s)"
             self.logger.warning(f"Rate limited, retry after {retry_after}s")
-            return False, f"Rate limited (retry after {retry_after}s)"
+            return AIResult("busy", None, self.provider, self.model, retry_after_s=retry_after)
             
         elif response.status >= 500:
             self.error_count += 1
             self.last_error = f"Server error {response.status}"
             error_text = await response.text()
             self.logger.error(f"Server error {response.status}: {error_text[:100]}")
-            return False, f"Server error (status {response.status})"
+            return AIResult("retryable", None, self.provider, self.model)
             
         else:
             self.error_count += 1
             self.last_error = f"HTTP {response.status}"
             error_text = await response.text()
             self.logger.error(f"HTTP error {response.status}: {error_text[:100]}")
-            return False, f"API error (status {response.status})"
+            return AIResult("unavailable", None, self.provider, self.model)
 
     async def check_health(self):
         """
@@ -210,13 +249,80 @@ class OpenRouterConnector(LoggerMixin):
         """
         try:
             # Try to get available models as a health check
-            success, result = await self._make_request("models", method="GET")
-            if success:
+            result = await self._make_request("models", method="GET")
+            if result.status == "success":
                 return True, f"API reachable (using model: {self.model})"
             else:
-                return False, result
+                return False, result.legacy_tuple()[1]
         except Exception as e:
             return False, f"Health check error: {type(e).__name__}"
+
+    async def generate_reply(
+        self,
+        context: RequestContext,
+        prompt: str,
+        *,
+        deadline: float,
+    ) -> AIResult:
+        """Generate one response before an absolute monotonic deadline."""
+        return await self._generate_reply(
+            context, prompt, deadline=deadline, temperature=None, max_tokens=None
+        )
+
+    async def _generate_reply(
+        self,
+        context: RequestContext,
+        prompt: str,
+        *,
+        deadline: float,
+        temperature: float | None,
+        max_tokens: int | None,
+        system_prompt: str | None = None,
+        is_mention: bool = True,
+        author_name: str | None = None,
+    ) -> AIResult:
+        if not isinstance(prompt, str) or len(prompt) > MAX_AI_PROMPT_CHARS:
+            return AIResult("unavailable", None, self.provider, self.model)
+
+        speaker = f" with {author_name}" if author_name else ""
+        locale = "Norwegian" if context.locale in {"no", "nb", "nn"} else context.locale
+        context_prompt = (
+            f"Respond in {locale} in {context.channel_kind} channel{speaker}"
+            f"{' (mentioned you)' if is_mention else ''}."
+        )
+        selected_prompt = system_prompt or self.default_system_prompt
+        if self.model.startswith("google/gemma"):
+            messages = [{
+                "role": "user",
+                "content": (
+                    f"{selected_prompt}\n\n{context_prompt}\n\nUser message:\n{prompt}"
+                ),
+            }]
+        else:
+            messages = []
+            if selected_prompt:
+                messages.append({"role": "system", "content": selected_prompt})
+            messages.append({"role": "system", "content": context_prompt})
+            messages.append({"role": "user", "content": prompt})
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature if temperature is None else temperature,
+            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
+        }
+
+        async def request():
+            self.request_count += 1
+            return await self._make_request(
+                "chat/completions", method="POST", payload=payload
+            )
+
+        return await self._reply_admission.run(
+            request,
+            deadline=deadline,
+            provider=self.provider,
+            model=self.model,
+        )
 
     async def generate_response(
         self,
@@ -243,61 +349,27 @@ class OpenRouterConnector(LoggerMixin):
         Returns:
             (success, response_text or error_message)
         """
-        # Add context about the conversation
-        context = f"User {author_name} in {channel_type} channel"
-        if is_mention:
-            context += " (mentioned you)"
-
-        prompt = system_prompt or self.default_system_prompt
-        context_prompt = f"Context: {context}. Respond in Norwegian."
-
-        # Google Gemma models on OpenRouter reject system/developer instructions.
-        if self.model.startswith("google/gemma"):
-            messages = [{
-                "role": "user",
-                "content": (
-                    f"{prompt}\n\n{context_prompt}\n\n"
-                    f"User message:\n{message_content}"
-                )
-            }]
-        else:
-            messages = []
-            if prompt:
-                messages.append({"role": "system", "content": prompt})
-            messages.append({"role": "system", "content": context_prompt})
-            messages.append({"role": "user", "content": message_content})
-
-        # Build request payload
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
-        }
-
-        try:
-            self.request_count += 1
-            self.logger.info(f"Sending request to OpenRouter (model: {self.model})")
-
-            success, result = await self._make_request("chat/completions", method="POST", payload=payload)
-            
-            if success and isinstance(result, dict):
-                # Extract response from OpenAI-compatible format
-                if "choices" in result and len(result["choices"]) > 0:
-                    response_text = result["choices"][0]["message"]["content"]
-                    self.logger.info(f"Received response: {response_text[:80]}...")
-                    return True, response_text
-                else:
-                    self.logger.error("No choices in response")
-                    return False, "No response generated"
-            else:
-                return success, result
-
-        except Exception as e:
-            self.error_count += 1
-            self.last_error = str(e)
-            self.logger.error(f"Unexpected error in generate_response: {type(e).__name__}: {str(e)[:100]}")
-            return False, f"Request error: {type(e).__name__}"
+        channel_kinds = {"DM": "dm", "GROUP_DM": "group_dm", "GUILD_TEXT": "guild"}
+        context = RequestContext(
+            request_id="legacy",
+            user_id=str(author_name),
+            channel_id="legacy",
+            guild_id=None,
+            locale="no",
+            channel_kind=channel_kinds.get(str(channel_type).upper(), "unknown"),
+        )
+        prompt = str(message_content)
+        result = await self._generate_reply(
+            context,
+            prompt,
+            deadline=time.monotonic() + 60,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            is_mention=is_mention,
+            author_name=str(author_name),
+        )
+        return result.legacy_tuple()
 
     async def generate_calendar_response(self, query: str, author_name: str) -> tuple[bool, str]:
         """

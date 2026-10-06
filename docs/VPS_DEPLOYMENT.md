@@ -1,192 +1,91 @@
-# Legacy VPS-oppsett og auto-oppdatering
+# Deploy-profiler og kode-tilbakerulling
 
-Denne guiden beskriver det eldre webhook/systemd-oppsettet. Det nåværende
-anbefalte deploy-løpet er Ansible-modellen i [`deploy/README.md`](../deploy/README.md),
-med repo checkout på `/opt/apps/inebotten-discord`, persistent `data/`, host-Caddy
-mot `127.0.0.1:8081`, og container-commit-verifikasjon etter deploy.
+Repositoryet beskriver disse profilene. Dette er en kildeinventering, ikke en
+bekreftelse på hvilken tjeneste som kjører på en bestemt maskin:
 
-Bruk denne filen kun hvis du vedlikeholder eller rydder opp i det gamle
-webhook-oppsettet.
+| Profil | Definisjon | Inngang / vedvarende data |
+| --- | --- | --- |
+| Lokal Python / launchd | `core/selfbot_runner.py`, prosjektets launchd-oppsett | Konsoll konfigurert lokalt; `HERMES_HOME` |
+| `compose` | `docker-compose.yml` | Konsoll kun `127.0.0.1:8080`; `./data` som Hermes-rot |
+| `compose-host-caddy` | `deploy/ansible-playbook.yml` | Konsoll kun `127.0.0.1:8081`; eksisterende host-proxy; samme datamappe |
+| Eldre webhook / systemd | `scripts/deploy/` | Beholder installerte innganger; bruker samme deploy-kontrakt |
+| macOS / Windows | `mac_app/`, `windows_app/` | Egen release- og launcher-kontrakt; ingen Docker-tilbakerulling |
 
-Flyten er slik:
+Bundlet Caddy er en uttrykkelig opt-in Compose-profil. Deploy-verktøyet aktiverer
+bare `inebotten`, og endrer ikke andre containere, proxyer eller brannmurregler.
+En gammel container uten verifiserbare bildeetiketter, riktig Compose-eier og
+riktig datamontasje krever en separat gjennomgang før overgang. Den fjernes ikke
+som en innledende deploy-operasjon.
 
-1. GitHub mottar en push til `master`.
-2. GitHub kaller webhooken på VPS-en.
-3. VPS-en kjører `inebotten-update.service`.
-4. Oppdateringstjenesten henter `origin/master`, hard-resetter checkouten, bygger Docker på nytt og starter containeren på nytt.
-5. En systemd-timer på 5 minutter sjekker også GitHub som fallback.
+## Kontrakt
 
-## Serveroppsett
+`python3 scripts/inebotten_deploy.py --image sha256:…` kontrollerer et eksisterende
+bilde uten å aktivere det. `--build` bygger først et privat, midlertidig
+`git archive` av en ren, fullstendig committet kilde. Ignorerte `.env`, data,
+virtuelle miljøer og lokale eksportfiler følger ikke med. Python 3.12 eller nyere,
+Docker og Compose **2.24.4 eller nyere** (`!override`) kreves. Se [Docker sin merge-kontrakt](https://docs.docker.com/reference/compose-file/merge/) og [HEALTHCHECK](https://docs.docker.com/reference/dockerfile/#healthcheck).
 
-Anbefalte stier:
+Bildeetikettene og `.deployment/deployment.json` binder full 40-tegns revisjon,
+Docker **image ID** (`sha256:`), konfigurasjonsskjema 1 og lesbart dataskjema 0–4.
+Image ID er en lokal innholdsdigest, ikke en registry distribution digest.
+Skjema 0 betyr eldre dokumenter som fortsatt kan leses; ingen automatisert
+migrering eller flytting av gamle delte/private scopes utføres av deploy-verktøyet.
+Kalender og påminnelser skriver skjema 2 når nye forekomstdata lagres. Et tidligere
+bilde som bare støtter skjema 1 kan da ikke startes som kode-tilbakerulling;
+tjenesten beholdes stoppet og krever gjennomgått gjenoppretting.
 
-```bash
-/opt/apps/inebotten-discord     # Nåværende Git-checkout
-/opt/inebotten-discord          # Eldre Git-checkout brukt av webhook-flowen
-/opt/inebotten-autoupdate       # Webhook-lytter
-/usr/local/sbin/inebotten-update
-/etc/inebotten-webhook.env      # Webhook-secret og innstillinger
-/var/log/inebotten-autoupdate.log
-```
+Preflight avviser skitten kilde, mindre enn 30 GiB fri plass, opptatt port uten
+verifisert eksisterende tjeneste, feil revisjon, utrygge filer/montasjer,
+inkompatible dataskjemaer og manglende tidligere bildebevis. Bare de fem eide
+lagrene inspiseres; innhold, tokenfiler, logger og OAuth-filer rapporteres ikke.
+Konfigurasjonen roteres ikke. En lokal, midlertidig innholdsdigest oppdager endringer under deploy; ingen konfigurasjonsverdier eller digest skrives i rapporten. Den eksisterende `.env` må være en vanlig fil,
+og data-roten må være forhåndsprovisjonert for UID 10001. Eksisterende private
+filer får ikke rekursiv `chown`.
 
-Kjøringsdata skal ligge utenfor Git:
+En første installasjon må velges med `--first-install`, uten tidligere container
+eller eide datalagere. Opprett en ny tom datarot med passende eierskap eksplisitt;
+bruk ikke dette valget til å omgå gjennomgang av et eksisterende datasett.
 
-```bash
-/opt/apps/inebotten-discord/.env
-/opt/apps/inebotten-discord/data/
-```
+## Aktivering og kode-tilbakerulling
 
-## Første Oppsett
+`--apply` er den uttrykkelige aktiveringen. Før containeren stoppes, beholdes det
+forrige immutable bildet med en digestbundet `inebotten-rollback:`-tagg og en
+privat manifestfil. Deretter stoppes den eide tjenesten, schema-kompatibilitet
+kontrolleres igjen, og bare det nye bildet startes. Ingen bildepruning utføres.
 
-```bash
-sudo apt update
-sudo apt install -y git docker.io docker-compose-plugin python3 python3-pip python3-full openssl
+En vellykket deploy krever både nøyaktig container-image ID og `/health` med
+`status=healthy`, full forventet `revision` og aggregert `readiness=ready`.
+Dette inkluderer de påkrevde delsystemene, ikke bare at HTTP-porten svarer.
+Probe og oppstart har tidsfrister. Docker HEALTHCHECK bruker samme offentlige,
+minimale kontrakt; autentiserte diagnosefelt og persondata eksponeres ikke.
 
-# Sett opp eierskap (viktig for setup.py)
-sudo git clone https://github.com/Reedtrullz/inebotten-discord.git /opt/apps/inebotten-discord
-sudo chown -R $USER:$USER /opt/apps/inebotten-discord
-cd /opt/apps/inebotten-discord
+Ved feil stoppes kandidaten før ny schema-kontroll. Hvis det gamle bildet fortsatt
+kan lese dataene, startes det igjen og må bestå sin egen eksakte readiness-sjekk.
+Deploy-kommandoen returnerer likevel feil og skriver `rolled_back`, ikke suksess.
+Hvis data er korrupte/utrygge eller et nyere schema er skrevet, holdes kandidaten
+stoppet med `rollback_blocked_data`. Begge kodebildene og eksisterende data
+beholdes for gjennomgang. Endret konfigurasjon under løpet blokkerer aktivering eller rollback med en egen feilkode. Tjenestens tidligere konfigurasjon kan ikke rekonstrueres
+fra et image; kompatibel, uendret konfigurasjon er en forutsetning for kode-rollback.
 
-# Installer avhengigheter i et virtuelt miljø hvis du skal kjøre verktøy direkte på hosten
-python3 -m venv .venv312
-. .venv312/bin/activate
-pip install -r requirements.txt
+Kode-rollback endrer **ingen** lagringsbytes og er ikke en data-restore. Andre
+skrivere må være stoppet under vedlikeholdet; deploy-låsen serialiserer bare
+samarbeidende deploy-operatører. Data-restore og flerlagermigrering krever separat
+quiescence, et konsistent I35-bundle, validering og eksplisitt destinasjonsgjennomgang
+beskrevet i backup-dokumentasjonen. `--apply` er ikke godkjenning av data-restore.
 
-# Kjør setup wizard
-python3 setup.py
+## Før en faktisk deploy
 
-# Start med Docker
-sudo docker compose up -d --build
-```
+Denne endringen er verifisert med disposable Git-repositorier, inert Docker-adapter,
+fixture-store-checksummer, shell/YAML-kontroller og lokale tester. Den bekrefter
+ikke live Docker, produksjonskonti eller en faktisk server-tilbakerulling.
 
-Verifiser:
+Før et separat autorisert live-løp: bekreft aktuell tjeneste, backup-resultat,
+ledig disk, alle containerporter, eksisterende rollback-image og uendret kompatibel
+konfigurasjon/data. Inspiser SSH-innstillinger med `ssh -G Racknerd-Deploy`;
+bruk deploy-brukeren og identitetssperrene `IdentitiesOnly=yes`, `IdentityAgent=none`.
+Ikke aktiver root-SSH. En grønn lokal test erstatter ikke et vellykket, ferskt
+backup-resultat eller etterfølgende revisjons- og synlig UI-verifikasjon.
 
-```bash
-sudo docker compose ps
-sudo docker logs -f inebotten-bot
-```
-
-Web console er tilgjengelig på det konfigurerte domenet (f.eks. `https://bot.reidar.tech`). API-nøkkelen skrives til Docker-loggen ved oppstart.
-
-## Installer Auto-Update
-
-Fra repo-checkoutet på serveren:
-
-```bash
-cd /opt/apps/inebotten-discord
-sudo WEBHOOK_PORT=9000 ./scripts/deploy/install-autoupdate.sh
-```
-
-Installasjonsskriptet skriver ut:
-
-```text
-Webhook URL: http://<server-ip>:9000/github-webhook
-Webhook secret: <generated-secret>
-```
-
-Hold secreten privat. Den lagres på serveren i `/etc/inebotten-webhook.env`.
-
-## GitHub-webhook
-
-I GitHub:
-
-1. Åpne `Settings -> Webhooks -> Add webhook`.
-2. Sett **Payload URL** til `http://<server-ip>:9000/github-webhook`.
-3. Sett **Content type** til `application/json`.
-4. Sett **Secret** til hemmeligheten fra installasjonsskriptet.
-5. Velg **Just the push event**.
-6. Slå på **Active**.
-
-GitHub skal få `pong` for ping-eventen. Push til `master` skal få `202 update queued`.
-
-## Drift
-
-Sjekk tjenester:
-
-```bash
-sudo systemctl status inebotten-webhook.service --no-pager
-sudo systemctl status inebotten-update.timer --no-pager
-sudo systemctl list-timers inebotten-update.timer --no-pager
-```
-
-Kjør en oppdatering manuelt:
-
-```bash
-sudo systemctl start inebotten-update.service
-```
-
-Les oppdateringsloggen:
-
-```bash
-sudo tail -f /var/log/inebotten-autoupdate.log
-```
-
-Sjekk webhook-helsen:
-
-```bash
-curl http://127.0.0.1:9000/health
-```
-
-Start botten på nytt:
-
-```bash
-cd /opt/apps/inebotten-discord
-sudo docker compose up -d --build
-```
-
-Hvis du har endret `Dockerfile` (f.eks. lagt til systempakker som `git`) og Docker bruker den gamle cachede imaget, bruk `--no-cache`:
-
-```bash
-cd /opt/apps/inebotten-discord
-sudo docker compose build --no-cache
-sudo docker compose up -d
-```
-
-## Sikkerhetsnotater
-
-- Ikke commit `.env`, Discord-tokens, webhook-secrets eller `data/`.
-- Bruk GitHub-webhook-secret. Usignerte webhook-kall blir avvist.
-- Oppdateringstjenesten bruker med vilje `git reset --hard origin/master`; ikke behold manuelle kodeendringer på VPS-en.
-- I nåværende Ansible-flow verifiseres `/app/commit_hash.txt` i containeren etter deploy. Hvis den ikke matcher checkout-commit, skal deployen regnes som mislykket.
-- Behold varige kjøringsdata i `data/`, som mountes inn i Docker-containeren.
-- Hvis en brannmur er aktiv, åpne bare webhook-porten du trenger, vanligvis `9000/tcp`.
-
-## Feilsøking
-
-| Problem | Sjekk |
-|---------|-------|
-| GitHub-webhooken returnerer 403 | Secret matcher ikke, eller `X-Hub-Signature-256` mangler |
-| GitHub-webhooken timeouter | Brannmur, port eller `inebotten-webhook.service` |
-| Push deployer ikke | `sudo journalctl -u inebotten-webhook.service -n 100 --no-pager` |
-| Timeren kjører ikke | `sudo systemctl list-timers inebotten-update.timer --no-pager` |
-| Docker-bygg feiler | `sudo tail -100 /var/log/inebotten-autoupdate.log` |
-| Botten starter og avslutter | `sudo docker logs --tail=200 inebotten-bot` |
-| Botten viser "Playing unknown" | `docker compose build --no-cache` (mangler `git` i imaget) |
-| Botten viser gammel commit | Oppdater installert updater og kjør `inebotten-update.service`, se under |
-
-### Botten viser gammel commit
-
-Hvis GitHub har ny commit, men Discord-statusen fortsatt viser en gammel hash,
-kan checkouten ha blitt oppdatert mens Docker-rebuild/restart feilet. Da vil en
-gammel updater kunne stoppe med "Already up to date" uten å reparere containeren.
-
-Kjør på VPS-en:
-
-```bash
-cd /opt/apps/inebotten-discord
-git fetch origin master
-git reset --hard origin/master
-sudo install -m 0755 scripts/deploy/inebotten-update /usr/local/sbin/inebotten-update
-sudo systemctl start inebotten-update.service
-sudo tail -100 /var/log/inebotten-autoupdate.log
-sudo docker exec inebotten-bot cat /app/commit_hash.txt
-```
-
-For å oppdatere både updater, webhook og timer uten å rotere eksisterende
-webhook-secret, kan installereren kjøres på nytt:
-
-```bash
-cd /opt/apps/inebotten-discord
-sudo ./scripts/deploy/install-autoupdate.sh
-sudo systemctl start inebotten-update.service
-```
+Ansible og den eldre updateren stopper på kildefeil. Updateren bruker bare
+fast-forward, aldri hard reset, og deler samme readiness/rollback-verktøy.
+Webhook-installasjon, secret-rotasjon og tjenesteaktivering er egne operatørhandlinger.

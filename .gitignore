@@ -101,3 +101,9 @@ webhook-secret*
 .codex-ssh/inebotten_vps_codex.pub
 commit_hash.txt
 .venv312/
+
+# Bounded offline test and execution artifacts
+.superpowers/
+
+# Private local deployment receipts and bounded build context
+.deployment/

@@ -47,6 +47,18 @@ class PollManagerEditDeleteTests(unittest.TestCase):
         success, result = self.pm.edit_poll(
             "123", poll["id"], "111", "Alice", question="New Q?", options=["X", "Y", "Z"]
         )
+        self.assertFalse(success)
+        self.assertIn("confirmation", result.lower())
+        preview = self.pm.preview_poll_edit(
+            "123",
+            poll["id"],
+            {"question": "New Q?", "options": ["X", "Y", "Z"]},
+            "111",
+            "Alice",
+        )
+        success, result = self.pm.apply_poll_edit(
+            "123", poll["id"], "111", preview["token"], confirm_reset=True
+        )
         self.assertTrue(success)
         self.assertEqual(result["question"], "New Q?")
         self.assertEqual([o["text"] for o in result["options"]], ["X", "Y", "Z"])

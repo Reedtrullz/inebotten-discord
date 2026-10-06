@@ -10,6 +10,41 @@ import pytest
 from ai import hermes_bridge_server as bridge
 
 
+@pytest.mark.asyncio
+async def test_bridge_shutdown_has_windows_signal_fallback_and_awaits_cleanup(monkeypatch):
+    import signal
+    from unittest.mock import AsyncMock
+    server=type('FixtureServer',(),{})()
+    server.closed=False
+    server.close=lambda:setattr(server,'closed',True)
+    server.wait_closed=AsyncMock()
+    backend=type('FixtureBackend',(),{'handle_request':None,'cleanup':AsyncMock()})()
+    monkeypatch.setattr(bridge,'HermesBridgeServer',lambda:backend)
+    monkeypatch.setattr(bridge.asyncio,'start_server',AsyncMock(return_value=server))
+    loop=asyncio.get_running_loop()
+    def unsupported(*args):raise NotImplementedError('Windows fixture')
+    monkeypatch.setattr(loop,'add_signal_handler',unsupported)
+    installed={}
+    old={signal.SIGINT:object(),signal.SIGTERM:object()}
+    monkeypatch.setattr(bridge.signal,'getsignal',lambda sig:old[sig])
+    monkeypatch.setattr(bridge.signal,'signal',lambda sig,fn:installed.__setitem__(sig,fn))
+    task=asyncio.create_task(bridge.main())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if callable(installed.get(signal.SIGTERM)):break
+    try:
+        assert callable(installed.get(signal.SIGTERM))
+        installed[signal.SIGTERM](signal.SIGTERM,None)
+        await asyncio.wait_for(task,.5)
+        assert server.closed
+        server.wait_closed.assert_awaited_once()
+        backend.cleanup.assert_awaited_once()
+        assert installed==old
+    finally:
+        if not task.done():task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+
+
 async def _request(port: int, request: bytes) -> bytes:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(request)

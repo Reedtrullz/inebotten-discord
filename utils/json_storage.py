@@ -48,6 +48,8 @@ def write_json_atomic(path: str | Path, data: Any, *, indent: int | None = 2) ->
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=indent)
+            handle.flush()
+            os.fsync(handle.fileno())
         mode = json_path.stat().st_mode & 0o777 if json_path.exists() else 0o600
         os.chmod(temp_path, mode)
         os.replace(temp_path, json_path)

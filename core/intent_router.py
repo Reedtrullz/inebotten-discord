@@ -51,6 +51,9 @@ class BotIntent(Enum):
     CALENDAR_SEARCH = "calendar_search"
     CALENDAR_CLEAR = "calendar_clear"
     CALENDAR_ITEM = "calendar_item"
+    CALENDAR_EXCHANGE = "calendar_exchange"
+    PLANNING = "planning"
+    WORKFLOW = "workflow"
     POLL_CREATE = "poll_create"
     POLL_VOTE = "poll_vote"
     POLL_EDIT = "poll_edit"
@@ -107,6 +110,29 @@ class IntentRouter:
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
         content_lower = content.lower().strip()
 
+        workflow=self._route_workflow(content.strip())
+        if workflow is not None:
+            return IntentResult(BotIntent.WORKFLOW,1.0,{'workflow':workflow},'explicit_workflow')
+
+        planning=self._route_planning(content.strip())
+        if planning is not None:
+            return IntentResult(BotIntent.PLANNING,1.0,{'planning':planning},'explicit_group_planning')
+
+        # Preserve opaque token case. Exchange syntax is explicit and anchored;
+        # ordinary prose about files never becomes a calendar mutation.
+        match = re.fullmatch(r'(?:kalender )?bekreft ics ([A-Za-z0-9_-]{24})', content.strip(), re.I)
+        if match:
+            return IntentResult(BotIntent.CALENDAR_EXCHANGE,1.0,
+                {'exchange':{'action':'apply','token':match.group(1)}},'reviewed_ics_confirmation')
+        match = re.fullmatch(r'kalender eksporter ics (alle|[A-Za-z0-9_-]{1,128}(?:,[A-Za-z0-9_-]{1,128})*)',content.strip(),re.I)
+        if match:
+            ids = None if match.group(1).lower()=='alle' else match.group(1).split(',')
+            return IntentResult(BotIntent.CALENDAR_EXCHANGE,1.0,
+                {'exchange':{'action':'export','item_ids':ids}},'explicit_ics_export')
+        if re.fullmatch(r'kalender importer ics',content.strip(),re.I):
+            return IntentResult(BotIntent.CALENDAR_EXCHANGE,1.0,
+                {'exchange':{'action':'import'}},'explicit_ics_import')
+
         # Explicit operational/help/calendar commands first.
         if self._has_calendar_context(content_lower) and has_any_keyword(content_lower, ["hjelp", "help", "guide"]):
             return IntentResult(BotIntent.CALENDAR_HELP, 0.99, reason="calendar_help_keyword")
@@ -142,6 +168,9 @@ class IntentRouter:
             code = code_match.group(1) if code_match else None
             return IntentResult(BotIntent.CALENDAR_AUTH, 0.99, {"auth_code": code}, "calendar_auth_keyword")
 
+        confirmation_command = re.sub(r'<@!?\d+>', '', content_lower).replace('@inebotten', '').strip()
+        if re.fullmatch(r'(?:bekreft|confirm|angre|undo) kalender [a-z0-9_-]{20,}', confirmation_command):
+            return IntentResult(BotIntent.CALENDAR_CLEAR, 0.99, {}, 'calendar_mutation_confirmation')
         calendar_command = self._route_calendar_command(content_lower, guild_id)
         if calendar_command:
             return calendar_command
@@ -153,8 +182,49 @@ class IntentRouter:
         if calendar_item and calendar_item.confidence >= 0.94:
             return calendar_item
 
+        if re.fullmatch(
+            r"(?:poll results?|poll resultater|resultater poll|"
+            r"resultater avstemning|vis resultater(?: for)? "
+            r"(?:poll|avstemning)|avstemning resultater)",
+            re.sub(r"<@!?\d+>", "", content_lower).replace("@inebotten", "").strip(),
+        ):
+            return IntentResult(
+                BotIntent.POLL_LIST,
+                0.96,
+                {"history": True},
+                "poll_results_command",
+            )
+
         if has_any_keyword(content_lower, ("polls", "avstemninger", "active polls", "vis poll", "vis avstemning", "list poll", "poll liste", "poll list", "avstemning liste")) and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_LIST, 0.95, {}, "poll_list_keyword")
+
+        poll_command = re.sub(r"<@!?\d+>", "", content_lower).replace("@inebotten", "").strip()
+        poll_ref = self._parse_poll_reference(content_lower)
+        confirmation = re.fullmatch(
+            r"bekreft poll endring ([a-f0-9]{32}) reset", poll_command
+        )
+        if confirmation or (
+            has_any_keyword(content_lower, POLL_EDIT_KEYWORDS)
+            and self._has_active_poll(guild_id)
+        ):
+            poll_edit = dict(poll_ref)
+            if confirmation:
+                poll_edit = {
+                    "confirm_token": confirmation.group(1),
+                    "confirm_reset": True,
+                }
+            else:
+                poll_edit["changes"] = self._parse_poll_edit_changes(content)
+            return IntentResult(
+                BotIntent.POLL_EDIT,
+                0.95,
+                {"poll_edit": poll_edit},
+                "poll_edit_keyword",
+            )
+        if has_any_keyword(content_lower, POLL_DELETE_KEYWORDS) and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_DELETE, 0.95, {"poll_delete": poll_ref}, "poll_delete_keyword")
+        if has_any_keyword(content_lower, POLL_CLOSE_KEYWORDS) and self._has_active_poll(guild_id):
+            return IntentResult(BotIntent.POLL_CLOSE, 0.95, {"poll_close": poll_ref}, "poll_close_keyword")
 
         poll_cmd = self.monitor.parse_poll_command(content)
         if poll_cmd:
@@ -164,13 +234,6 @@ class IntentRouter:
         if vote and self._has_active_poll(guild_id):
             return IntentResult(BotIntent.POLL_VOTE, 0.95, {"vote": vote}, "active_poll_vote")
 
-        poll_ref = self._parse_poll_reference(content_lower)
-        if has_any_keyword(content_lower, POLL_EDIT_KEYWORDS) and self._has_active_poll(guild_id):
-            return IntentResult(BotIntent.POLL_EDIT, 0.95, {"poll_edit": poll_ref}, "poll_edit_keyword")
-        if has_any_keyword(content_lower, POLL_DELETE_KEYWORDS) and self._has_active_poll(guild_id):
-            return IntentResult(BotIntent.POLL_DELETE, 0.95, {"poll_delete": poll_ref}, "poll_delete_keyword")
-        if has_any_keyword(content_lower, POLL_CLOSE_KEYWORDS) and self._has_active_poll(guild_id):
-            return IntentResult(BotIntent.POLL_CLOSE, 0.95, {"poll_close": poll_ref}, "poll_close_keyword")
 
         countdown_result = self.monitor.countdown.parse_countdown_query(content)
         if countdown_result:
@@ -242,10 +305,63 @@ class IntentRouter:
 
         return IntentResult(BotIntent.AI_CHAT, 0.5, reason="fallback")
 
+    def preview_route(self, text, actor):
+        """Return an inert diagnostic through this same router and catalogue."""
+        from core.command_registry import preview_route
+        return preview_route(self, text, actor)
+
+    @staticmethod
+    def _route_workflow(content):
+        match=re.fullmatch(r'oppskrift ny (forbered|forfalt) budsjett ([1-9][0-9]{0,2})',content,re.I)
+        if match:return {'action':'create','template_id':{'forbered':'prep_task','forfalt':'due_digest'}[match.group(1).lower()],'budget':int(match.group(2))}
+        if content.lower()=='oppskrift vis':return {'action':'list'}
+        match=re.fullmatch(r'oppskrift (på|pause|historikk) ([a-f0-9]{32})',content,re.I)
+        if match:
+            if match.group(1).lower()=='historikk':return {'action':'history','recipe_id':match.group(2).lower()}
+            return {'action':'enabled','recipe_id':match.group(2).lower(),'enabled':match.group(1).lower()=='på'}
+        match=re.fullmatch(r'oppskrift vurder ([a-f0-9]{32}) ((?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}))',content,re.I)
+        if match:return {'action':'preview','recipe_id':match.group(1).lower(),'item_id':match.group(2).lower()}
+        match=re.fullmatch(r'oppskrift bekreft ([A-Za-z0-9_-]{24})',content,re.I)
+        if match:return {'action':'apply','token':match.group(1)}
+        if re.match(r'^oppskrift (?:hjelp|ny|vis|på|pause|historikk|vurder|bekreft)\b',content,re.I):return {'action':'help'}
+        return None
+
+    @staticmethod
+    def _route_planning(content):
+        match=re.fullmatch(r'planlegg ([^|\r\n]{1,200})\s*\|\s*([^|\r\n]{1,500})\s*\|\s*([0-9]{1,4})',content,re.I)
+        if match:
+            title=match.group(1).strip(); candidates=[value.strip() for value in match.group(2).split('/')]
+            watchlist=re.fullmatch(r'film #([1-9][0-9]?)',title,re.I)
+            return {'action':'create','title':title,'candidates':candidates,'duration':int(match.group(3)),
+                'watchlist_index':int(watchlist.group(1)) if watchlist else None}
+        match=re.fullmatch(r'plan (vis|avbryt) ([a-f0-9]{32})',content,re.I)
+        if match:return {'action':'view' if match.group(1).lower()=='vis' else 'cancel','session_id':match.group(2).lower()}
+        match=re.fullmatch(r'plan stem ([a-f0-9]{32}) ([1-9]|10)',content,re.I)
+        if match:return {'action':'vote','session_id':match.group(1).lower(),'selection':int(match.group(2))}
+        match=re.fullmatch(r'plan (vurder|velg) ([a-f0-9]{32})(?: ([1-9]|10))?( varsle her)?',content,re.I)
+        if match and (match.group(1).lower()=='vurder' and match.group(3) is None or match.group(1).lower()=='velg' and match.group(3)):
+            return {'action':'preview','session_id':match.group(2).lower(),
+                'selection':int(match.group(3)) if match.group(3) else None,'notify':bool(match.group(4))}
+        match=re.fullmatch(r'plan bekreft ([a-f0-9]{32}) ([A-Za-z0-9_-]{24})',content,re.I)
+        if match:return {'action':'apply','session_id':match.group(1).lower(),'token':match.group(2)}
+        match=re.fullmatch(r'plan rsvp ([a-f0-9]{32}) (ja|nei|kanskje)(?: synlighet (meg|arrangør|gruppe))?',content,re.I)
+        if match:return {'action':'rsvp','session_id':match.group(1).lower(),
+            'response':{'ja':'yes','nei':'no','kanskje':'maybe'}[match.group(2).lower()],
+            'visibility':{'meg':'self','arrangør':'organizer','gruppe':'group'}[(match.group(3) or 'arrangør').lower()]}
+        if re.match(r'^planlegg\b|^plan (?:hjelp|vis|stem|velg|vurder|bekreft|rsvp|avbryt)\b',content,re.I):
+            return {'action':'help'}
+        return None
+
     def _route_calendar_command(self, content_lower: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
+        if re.fullmatch(r'(?:synk konflikt (?:påminnelse )?[a-f0-9]{32} (?:lokal|google)|bekreft synk (?:påminnelse )?[a-f0-9]{32})', content_lower.strip()):
+            return IntentResult(BotIntent.CALENDAR_SYNC, 1.0, reason='reviewed_sync_choice')
         if not self._has_calendar_context(content_lower):
             # Special case for "synk" / "sync" which can be used without "kalender"
             if not has_any_keyword(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
+                skip_target = self._extract_calendar_mutation_target(content_lower, ("hopp over", "skipp"))
+                if skip_target and self._target_looks_like_calendar_item(skip_target, guild_id):
+                    return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.94,
+                        {"target": skip_target, "operation": "skip"}, "calendar_occurrence_skip_title_match")
                 delete_target = self._extract_calendar_mutation_target(content_lower, DELETE_KEYWORDS)
                 if delete_target and self._target_looks_like_calendar_item(delete_target, guild_id):
                     return IntentResult(
@@ -273,6 +389,8 @@ class IntentRouter:
             return IntentResult(BotIntent.CALENDAR_CLEAR, 0.98, reason="calendar_clear_keyword")
         if has_any_keyword(content_lower, DELETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_DELETE, 0.98, reason="calendar_delete_keyword")
+        if re.search(r'\b(?:hopp over|skipp)\b', content_lower):
+            return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_occurrence_skip")
         if has_any_keyword(content_lower, COMPLETE_KEYWORDS):
             return IntentResult(BotIntent.CALENDAR_COMPLETE, 0.98, reason="calendar_complete_keyword")
         if has_any_keyword(content_lower, EDIT_KEYWORDS):
@@ -403,6 +521,52 @@ class IntentRouter:
         cleaned = cleaned.replace("@inebotten", "").strip()
         lower = re.sub(r"\s+", " ", cleaned.lower()).strip(" .!?")
 
+        if lower == 'varsler status':
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'notification_view'}}, 'notification_status')
+
+        notification = None
+        if lower in ('varsler på', 'varsler av'):
+            notification = {'enabled': lower.endswith('på')}
+        zone = re.fullmatch(r'varsler tidssone ([A-Za-z_+-]+(?:/[A-Za-z_+-]+){0,2})', cleaned, flags=re.IGNORECASE)
+        if zone:
+            notification = {'timezone': zone[1]}
+        leads = re.fullmatch(r'varsler forvarsel ([0-9]{1,4}(?:,[0-9]{1,4}){0,7}) minutter', lower)
+        if leads:
+            notification = {'lead_minutes': [int(v) for v in leads[1].split(',')]}
+        quiet = re.fullmatch(r'varsler stille ([0-9]{2}:[0-9]{2})-([0-9]{2}:[0-9]{2})', lower)
+        if quiet:
+            notification = {'quiet_start': quiet[1], 'quiet_end': quiet[2]}
+        if lower == 'varsler stille av':
+            notification = {'quiet_start': None, 'quiet_end': None}
+        morning = re.fullmatch(r'varsler morgen ([0-9]{2}:[0-9]{2}|av)', lower)
+        if morning:
+            notification = {'morning_time': None if morning[1] == 'av' else morning[1]}
+        cards = re.fullmatch(r'varsler kort ([a-zæøå]+(?:,[a-zæøå]+){0,7})', lower)
+        if cards:
+            aliases = {'dato': 'date', 'kalender': 'calendar', 'vær': 'weather', 'bursdager': 'birthdays',
+                       'marked': 'market', 'nordlys': 'aurora', 'vaktliste': 'watchlist', 'oppskrifter':'workflow'}
+            notification = {'card_ids': [aliases.get(v, v) for v in cards[1].split(',')]}
+        if notification is not None:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'notification', 'changes': notification}}, 'explicit_notification_control')
+        snooze = re.fullmatch(r'slumre #([a-z0-9_-]{1,100}) ([0-9]{1,4}) minutter', lower)
+        if snooze:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'snooze', 'item_id': snooze[1], 'minutes': int(snooze[2])}}, 'explicit_snooze')
+
+        changes = None
+        if lower in ('minne læring på', 'minne læring av'):
+            changes = {'learning_enabled': lower.endswith('på')}
+        elif lower in ('minne private fakta på', 'minne private fakta av'):
+            changes = {'private_facts_enabled': lower.endswith('på')}
+        elif lower in ('minne del med lokal', 'minne del med openrouter', 'minne del med ingen', 'minne del med lokal og openrouter'):
+            value = 'begge' if lower.endswith('lokal og openrouter') else lower.split()[-1]
+            changes = {'allowed_provider_ids': {'lokal': ['hermes'], 'openrouter': ['openrouter'], 'ingen': [], 'begge': ['hermes', 'openrouter']}[value]}
+        elif re.fullmatch(r'minne behold tema (?:[0-9]{1,3} dager|ubegrenset)', lower):
+            changes = {'topic_retention_days': None if lower.endswith('ubegrenset') else int(lower.split()[3])}
+        if changes is not None:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'policy', 'changes': changes}}, 'explicit_memory_control')
+        locality = re.fullmatch(r'minne kommune (oslo|trondheim)', lower)
+        if locality:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'school_locality', 'value': locality[1]}}, 'explicit_memory_locality')
         delete_commands = {"slett minnet mitt", "slett brukerminne", "glem meg"}
         confirmed_delete_commands = {
             "slett minnet mitt bekreft",
@@ -423,7 +587,7 @@ class IntentRouter:
             return IntentResult(
                 BotIntent.MEMORY_EXPORT,
                 0.99,
-                {"memory": {"action": "export"}},
+                {"memory": {"action": "export", **({'private': True} if lower.endswith(' privat') else {})}},
                 "memory_export_keyword",
             )
         if any(phrase in lower for phrase in ("vis minnet mitt", "mitt minne", "brukerminne", "hva husker du om meg")):
@@ -575,6 +739,16 @@ class IntentRouter:
 
         if parsed:
             parsed = self._resolve_calendar_followup(content, parsed, guild_id)
+            if parsed.get('recurrence'):
+                parsed = dict(parsed)
+                count = re.search(r'\b(?:for|i)\s+(\d+)\s+(?:ganger|forekomster)\b|\b(\d+)\s+forekomster\b',
+                    content, re.IGNORECASE)
+                if count:
+                    parsed['end_count'] = int(count.group(1) or count.group(2))
+                end_date = re.search(r'\b(?:fram til|frem til|til)\s+(\d{1,2}[./]\d{1,2}[./]\d{4}|\d{4}-\d{2}-\d{2})\b',
+                    content, re.IGNORECASE)
+                if end_date:
+                    parsed['end_date'] = end_date.group(1)
             
             # Boost confidence for strong matches
             confidence = 0.86
@@ -710,6 +884,29 @@ class IntentRouter:
             result["target"] = "siste"
             return result
         return result
+
+    @staticmethod
+    def _parse_poll_edit_changes(content: str) -> Dict[str, Any]:
+        """Parse explicit poll edit fields; never infer them from prose."""
+        changes: Dict[str, Any] = {}
+        question = re.search(
+            r"(?:spørsmål|question|tittel)\s*:\s*(.+?)"
+            r"(?=\s+(?:valg|options)\s*:|$)",
+            content, re.IGNORECASE,
+        )
+        if question:
+            changes["question"] = question.group(1).strip()
+        options = re.search(
+            r"(?:valg|options)\s*:\s*(.+)$", content, re.IGNORECASE
+        )
+        if options:
+            changes["options"] = [
+                part.strip() for part in options.group(1).split("/")
+            ]
+        rename = re.search(r"(?:etikett|label)\s+([a-f0-9]{32})\s*:\s*(.+)$", content, re.IGNORECASE)
+        if rename:
+            changes['option_labels'] = {rename.group(1): rename.group(2).strip()}
+        return changes
 
     def _looks_contextual_enough_for_search(self, content_lower: str, search_info: Dict[str, str]) -> bool:
         if search_info.get("type") == "news":

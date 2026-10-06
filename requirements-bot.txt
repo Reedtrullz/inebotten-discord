@@ -1,0 +1,12 @@
+# Optional bot-only runtime. Install only in a dedicated environment because
+# discord.py-self and discord.py both provide the top-level `discord` package.
+discord.py==2.7.1
+aiohttp==3.14.3
+icalendar==7.3.0
+requests==2.34.2
+cryptography==50.0.2
+simpleeval==1.0.8
+
+# Keep contract/domain fixtures runnable from the hash-locked bot profile.
+pytest==9.1.1
+pytest-asyncio==1.4.0

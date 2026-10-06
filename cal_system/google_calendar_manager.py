@@ -9,10 +9,14 @@ import os
 import sys
 import subprocess
 import warnings
+import copy
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from cal_system.event_schema import EventTime
 from utils.json_storage import write_json_atomic
 
 try:
@@ -39,6 +43,58 @@ if str(SKILL_PATH) not in sys.path:
     sys.path.insert(0, str(SKILL_PATH))
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+
+@dataclass(frozen=True)
+class EventLookup:
+    """A remote lookup's evidence, never an implicit permission to delete."""
+
+    status: Literal["live", "cancelled", "missing", "unavailable"]
+    event: dict | None = None
+    retry_after_s: float | None = None
+    reason_code: str = "unknown"
+
+    @classmethod
+    def from_event(cls, event_id: str, event: object) -> "EventLookup":
+        if not isinstance(event, dict) or event.get("id") != event_id:
+            return cls("unavailable", reason_code="malformed_response")
+        if event.get("status") == "cancelled":
+            return cls("cancelled", event, reason_code="cancelled")
+        start = event.get("start")
+        if (event.get("status", "confirmed") not in ("confirmed", "tentative")
+                or not isinstance(start, dict)
+                or not (start.get("date") or start.get("dateTime"))):
+            return cls("unavailable", reason_code="malformed_response")
+        return cls("live", event, reason_code="ok")
+
+    @classmethod
+    def from_error(cls, error: Exception) -> "EventLookup":
+        # Only the structured Google HTTP exception can establish deletion.
+        from googleapiclient.errors import HttpError
+        if not isinstance(error, HttpError):
+            return cls("unavailable", reason_code="transport_error")
+        reason = "http_error"
+        try:
+            body = json.loads(error.content)
+            reason = body["error"]["errors"][0]["reason"]
+            if not isinstance(reason, str):
+                reason = "http_error"
+        except (ValueError, KeyError, IndexError, TypeError):
+            pass
+        retry = None
+        raw_retry = error.resp.get("retry-after")
+        if raw_retry:
+            try:
+                retry = max(0.0, float(raw_retry))
+            except (ValueError, TypeError):
+                try:
+                    retry = max(0.0, (parsedate_to_datetime(raw_retry) - datetime.now(timezone.utc)).total_seconds())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+        # This adapter only issues events.get, never sync-token or delete calls.
+        # Google's 404 is ambiguous; even an accessible list is not event proof.
+        status = "missing" if error.resp.status == 410 and reason == "deleted" else "unavailable"
+        return cls(status, retry_after_s=retry, reason_code=reason)
 
 
 def get_hermes_home() -> Path:
@@ -341,6 +397,7 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
+        service = None
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
@@ -360,52 +417,149 @@ class GoogleCalendarManager:
 
             items = []
             page_token = None
+            pages = 0
             while True:
+                pages += 1
+                if pages > 16:
+                    raise ValueError("remote_list_limit")
                 events_result = service.events().list(
                     calendarId=self.calendar_id,
                     timeMin=now.isoformat(),
                     timeMax=end.isoformat(),
                     maxResults=2500,
                     singleEvents=True,
+                    showDeleted=True,
                     orderBy="startTime",
                     pageToken=page_token,
                 ).execute()
-                items.extend(events_result.get("items", []))
+                batch = events_result.get("items", [])
+                if not isinstance(batch, list) or len(items) + len(batch) > 4096:
+                    raise ValueError("remote_list_limit")
+                items.extend(batch)
                 page_token = events_result.get("nextPageToken")
                 if not page_token:
                     break
+            masters = []
+            master_ids = list(dict.fromkeys(event.get('recurringEventId') for event in items
+                if isinstance(event, dict) and isinstance(event.get('recurringEventId'), str)))
+            if len(master_ids) > 256:
+                raise ValueError("recurring_master_limit")
+            for master_id in master_ids:
+                try:
+                    master = service.events().get(calendarId=self.calendar_id, eventId=master_id).execute()
+                    if isinstance(master, dict) and master.get('id') == master_id:
+                        masters.append(master)
+                except Exception:
+                    # Keep expanded rows so the importer can preserve them as an opaque series.
+                    continue
+            items.extend(master for master in masters if not any(row.get('id') == master.get('id') for row in items))
             return items
 
         except Exception as e:
-            print(f"[GCAL] Error listing events: {e}")
+            print("[GCAL] Google-listing utilgjengelig; lokale data er bevart.")
             return None
+        finally:
+            if service is not None:
+                try:
+                    service.close()
+                except Exception:
+                    pass
 
     def get_event(self, event_id):
-        """Fetch a single event by ID; returns None if missing or unavailable."""
-        if not self.enabled:
-            return None
+        """Compatibility reader; reconciliation must use get_event_outcome."""
+        return self.get_event_outcome(event_id).event
 
+    def get_event_outcome(self, event_id: str) -> EventLookup:
+        if not self.enabled:
+            return EventLookup("unavailable", reason_code="not_configured")
+        service = None
         try:
             from google.oauth2.credentials import Credentials
             from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
 
-            creds = Credentials.from_authorized_user_file(
-                str(self._token_path()), SCOPES
-            )
+            creds = Credentials.from_authorized_user_file(str(self._token_path()), SCOPES)
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
                 self._save_credentials(creds)
-
             service = build("calendar", "v3", credentials=creds)
-            return (
-                service.events()
-                .get(calendarId=self.calendar_id, eventId=event_id)
-                .execute()
-            )
-        except Exception as e:
-            print(f"[GCAL] Error fetching event {event_id}: {e}")
-            return None
+            event = service.events().get(calendarId=self.calendar_id, eventId=event_id).execute()
+            return EventLookup.from_event(event_id, event)
+        except Exception as error:
+            return EventLookup.from_error(error)
+        finally:
+            if service is not None:
+                try:
+                    service.close()
+                except Exception:
+                    pass
+
+    def apply_sync_operation(self, operation):
+        """Typed direct API adapter; call only through the bounded thread worker."""
+        from cal_system.sync_outbox import RemoteMutation
+        service = None
+        if not self.enabled:
+            return RemoteMutation('auth_error', reason_code='integration_disabled')
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            from google.auth.transport.requests import Request
+            creds = Credentials.from_authorized_user_file(str(self._token_path()), SCOPES)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                self._save_credentials(creds)
+            if not creds.valid:
+                return RemoteMutation('auth_error', reason_code='credentials_invalid')
+            service = build('calendar', 'v3', credentials=creds)
+            if operation.kind == 'create':
+                body = copy.deepcopy(operation.payload)
+                body['id'] = operation.remote_id
+                request = service.events().insert(calendarId=self.calendar_id, body=body)
+            else:
+                if not operation.remote_version:
+                    return RemoteMutation('conflict', reason_code='remote_version_required')
+                if operation.kind == 'delete':
+                    request = service.events().delete(calendarId=self.calendar_id, eventId=operation.remote_id)
+                else:
+                    request = service.events().patch(calendarId=self.calendar_id,
+                        eventId=operation.remote_id, body=copy.deepcopy(operation.payload))
+                request.headers['If-Match'] = operation.remote_version
+            result = request.execute(num_retries=0)
+            return RemoteMutation('acknowledged', result if operation.kind != 'delete' else None)
+        except ImportError:
+            return RemoteMutation('rejected', reason_code='optional_google_dependency_missing')
+        except Exception as error:
+            status = getattr(getattr(error, 'resp', None), 'status', None)
+            content = getattr(error, 'content', b'')
+            reasons = set()
+            if isinstance(content, (str, bytes)) and len(content) <= 16384:
+                try:
+                    details = json.loads(content).get('error', {}).get('errors', [])
+                    reasons = {detail.get('reason') for detail in details if isinstance(detail, dict)}
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            if status == 429 or status == 403 and reasons & {'rateLimitExceeded', 'userRateLimitExceeded'}:
+                headers = getattr(error, 'resp', {})
+                try:
+                    delay = float(headers.get('retry-after', 5))
+                    import math
+                    delay = min(3600, max(0, delay)) if math.isfinite(delay) else 5
+                except (TypeError, ValueError):
+                    delay = 5
+                return RemoteMutation('retryable', reason_code='rate_limited', retry_after_s=delay)
+            if status in (409, 412):
+                return RemoteMutation('conflict', reason_code='remote_conflict')
+            if status in (401, 403):
+                return RemoteMutation('auth_error', reason_code='authorization_required')
+            if status == 400:
+                return RemoteMutation('rejected', reason_code='invalid_request')
+            return RemoteMutation('unknown', reason_code='remote_acceptance_uncertain')
+        finally:
+            if service is not None:
+                try:
+                    service.close()
+                except Exception:
+                    pass  # Cleanup cannot replace confirmed mutation evidence.
 
     def create_event(
         self,
@@ -419,6 +573,7 @@ class GoogleCalendarManager:
         rrule_day=None,
         discord_user_id=None,
         discord_username=None,
+        all_day=False, event_timezone="Europe/Oslo",
     ):
         """
         Create a new event in Google Calendar
@@ -426,7 +581,7 @@ class GoogleCalendarManager:
         Args:
             title: Event title/summary
             start_time: ISO 8601 datetime string (with timezone)
-            end_time: ISO 8601 datetime string (optional, defaults to 1 hour after start)
+            end_time: explicit ISO 8601 end; timed duration is never inferred
             description: Optional event description
             location: Optional location string
             attendees: Optional comma-separated list of email addresses
@@ -439,15 +594,9 @@ class GoogleCalendarManager:
         if not self.enabled:
             return None
 
-        # Calculate end time if not provided (default 1 hour duration)
+        # Timed events require a deliberate duration/end. Date-only means all day.
         if end_time is None:
-            try:
-                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                end_dt = start_dt + timedelta(hours=1)
-                end_time = end_dt.isoformat()
-            except Exception as e:
-                print(f"[CALENDAR] GCal datetime parse error: {e}")
-                return None
+            return None
 
         # Build recurrence rule if specified
         rrule = None
@@ -464,11 +613,12 @@ class GoogleCalendarManager:
             rrule=rrule,
             discord_user_id=discord_user_id,
             discord_username=discord_username,
+            all_day=all_day, event_timezone=event_timezone,
         )
 
     def _create_event_api(
         self, title, start_time, end_time, description=None, location=None, rrule=None,
-        discord_user_id=None, discord_username=None
+        discord_user_id=None, discord_username=None, all_day=False, event_timezone="Europe/Oslo"
     ):
         """
         Create an event using direct Google Calendar API (handles both recurring and non-recurring)
@@ -504,8 +654,8 @@ class GoogleCalendarManager:
             # Build event body
             event_body = {
                 "summary": title,
-                "start": {"dateTime": start_time, "timeZone": "Europe/Oslo"},
-                "end": {"dateTime": end_time, "timeZone": "Europe/Oslo"},
+                "start": {"date": start_time} if all_day else {"dateTime": start_time, "timeZone": event_timezone},
+                "end": {"date": end_time} if all_day else {"dateTime": end_time, "timeZone": event_timezone},
             }
 
             if description:
@@ -589,15 +739,10 @@ class GoogleCalendarManager:
             return "RRULE:FREQ=YEARLY"
         return None
 
-    def _local_event_times(self, date_str, time_str=None):
-        day, month, year = date_str.split(".")
-        hour, minute = (time_str or "12:00").split(":")
-        local_tz = ZoneInfo("Europe/Oslo")
-        start_dt = datetime(
-            int(year), int(month), int(day), int(hour), int(minute), tzinfo=local_tz
-        )
-        end_dt = start_dt + timedelta(hours=1)
-        return start_dt.isoformat(), end_dt.isoformat()
+    def _local_event_times(self, date_str, time_str=None, *, duration_minutes=None, timezone='Europe/Oslo', fold=None):
+        value = EventTime.from_item({'date': date_str, 'time': time_str,
+                                    'duration_minutes': duration_minutes, 'timezone': timezone, 'fold': fold})
+        return value.google_times()
 
     def update_event(
         self,
@@ -609,6 +754,7 @@ class GoogleCalendarManager:
         time_str=None,
         recurrence=None,
         rrule_day=None,
+        event_time=None,
     ):
         """
         Update an event in Google Calendar
@@ -648,9 +794,15 @@ class GoogleCalendarManager:
                 event["description"] = description
 
             if date_str:
-                start_iso, end_iso = self._local_event_times(date_str, time_str)
-                event["start"] = {"dateTime": start_iso, "timeZone": "Europe/Oslo"}
-                event["end"] = {"dateTime": end_iso, "timeZone": "Europe/Oslo"}
+                previous = EventTime.from_google(event)
+                if event_time is None:
+                    event_time = {'date': date_str, 'time': time_str, 'timezone': previous.timezone,
+                                  'duration_minutes': previous.duration_minutes, 'fold': previous.fold}
+                value = EventTime.from_item(event_time)
+                if not value.all_day and value.duration_minutes is None and previous.duration_minutes is not None:
+                    from dataclasses import replace
+                    value = replace(value, duration_minutes=previous.duration_minutes)
+                event['start'], event['end'] = value.google_times()
 
             if recurrence is not None:
                 rrule = self._build_rrule(recurrence, rrule_day)
@@ -684,37 +836,16 @@ class GoogleCalendarManager:
             return None
 
         try:
-            # Parse date and time
-            date_str = event_data.get("date", "")  # DD.MM.YYYY
-            time_str = event_data.get("time") or "12:00"  # HH:MM
-
-            # Parse date
-            day, month, year = date_str.split(".")
-            hour, minute = time_str.split(":")
-
-            # Create datetime in local timezone (assume Europe/Oslo for Norway)
-            from zoneinfo import ZoneInfo
-
-            local_tz = ZoneInfo("Europe/Oslo")
-
-            start_dt = datetime(
-                int(year), int(month), int(day), int(hour), int(minute), tzinfo=local_tz
-            )
-            end_dt = start_dt + timedelta(hours=1)
-
-            # Convert to ISO format with timezone
-            start_iso = start_dt.isoformat()
-            end_iso = end_dt.isoformat()
-
+            value = EventTime.from_item(event_data)
+            start, end = value.google_times()
             return self.create_event(
                 title=event_data.get("title", "Untitled"),
-                start_time=start_iso,
-                end_time=end_iso,
+                start_time=start.get('date') or start.get('dateTime'),
+                end_time=end.get('date') or end.get('dateTime'),
+                all_day=value.all_day, event_timezone=value.timezone,
                 description=event_data.get("description", ""),
-                recurrence=event_data.get("recurrence"),
-                rrule_day=event_data.get("rrule_day"),
-                discord_user_id=event_data.get("user_id"),
-                discord_username=event_data.get("username"),
+                recurrence=event_data.get("recurrence"), rrule_day=event_data.get("rrule_day"),
+                discord_user_id=event_data.get("user_id"), discord_username=event_data.get("username"),
             )
 
         except Exception as e:

@@ -5,7 +5,27 @@ Supports both Norwegian (no) and English (en)
 """
 
 import re
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Callable, Mapping
 from datetime import datetime
+
+@dataclass(frozen=True)
+class TranslationView:
+    current_lang: str
+    default_lang: str
+    translations: Mapping[str, Mapping[str, str]]
+    detect_language: Callable[[str], str]
+
+    def get(self, key, lang=None, **kwargs):
+        selected = lang if lang in ("no", "en") else self.current_lang
+        values = self.translations.get(key, {})
+        translation = values.get(selected) or values.get(self.default_lang) or key
+        return translation.format(**kwargs) if kwargs else translation
+
+    def t(self, key, lang=None, **kwargs):
+        return self.get(key, lang, **kwargs)
+
 
 class Localization:
     """
@@ -17,6 +37,8 @@ class Localization:
         self.current_lang = default_lang
         self.setup_translations()
         self.setup_language_patterns()
+        frozen = MappingProxyType({key: MappingProxyType(dict(values)) for key, values in self.translations.items()})
+        self._views = {lang: TranslationView(lang, self.default_lang, frozen, self.detect_language) for lang in ("no", "en")}
     
     def setup_translations(self):
         """Setup all translations"""
@@ -526,6 +548,9 @@ class Localization:
             return translation.format(**kwargs) if kwargs else translation
         return key
     
+    def for_language(self, locale: str) -> TranslationView:
+        return self._views.get(locale, self._views[self.default_lang])
+
     def set_language(self, lang):
         """Set current language"""
         if lang in ['no', 'en']:
@@ -553,12 +578,9 @@ def detect_language(text):
 
 
 def t(key, lang=None, **kwargs):
-    """Translate a key"""
+    """Translate without changing a shared singleton's language."""
     loc = get_localization()
     if lang:
-        old_lang = loc.current_lang
-        loc.set_language(lang)
-        result = loc.get(key, **kwargs)
-        loc.set_language(old_lang)
-        return result
-    return loc.get(key, **kwargs)
+        return loc.for_language(lang).get(key, **kwargs)
+    from core.request_context import request_localization
+    return request_localization(loc).get(key, **kwargs)
