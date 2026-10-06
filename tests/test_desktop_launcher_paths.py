@@ -11,6 +11,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_frozen_worker_ca_setup_precedes_clients_and_preserves_explicit_trust(monkeypatch):
+    import os
+    import ssl
+    import certifi
+    from utils import launcher_entrypoints as entry
+
+    monkeypatch.setattr(entry.sys, 'frozen', True, raising=False)
+    monkeypatch.delenv('SSL_CERT_FILE', raising=False)
+    entry.configure_frozen_tls()
+    assert os.environ['SSL_CERT_FILE'] == certifi.where()
+    context = ssl.create_default_context()
+    assert context.get_ca_certs()
+    assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+    monkeypatch.setenv('SSL_CERT_FILE', '/synthetic/explicit-ca.pem')
+    entry.configure_frozen_tls()
+    assert os.environ['SSL_CERT_FILE'] == '/synthetic/explicit-ca.pem'
+    monkeypatch.setattr(entry.sys, 'frozen', False)
+    monkeypatch.delenv('SSL_CERT_FILE')
+    entry.configure_frozen_tls()
+    assert 'SSL_CERT_FILE' not in os.environ
+
+
 def _install_tkinter_stub(monkeypatch):
     tk = types.ModuleType("tkinter")
     ttk = types.ModuleType("tkinter.ttk")
