@@ -38,7 +38,8 @@ class OpenRouterConnector(LoggerMixin):
         model: str = "google/gemma-4-31b-it:free",
         temperature: float = 0.7,
         max_tokens: int = 600,
-        base_url: str = "https://openrouter.ai/api/v1"
+        base_url: str = "https://openrouter.ai/api/v1",
+        reasoning_enabled: bool | None = None,
     ):
         """
         Initialize OpenRouter connector
@@ -55,6 +56,9 @@ class OpenRouterConnector(LoggerMixin):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.base_url = base_url.rstrip("/")
+        if reasoning_enabled is not None and not isinstance(reasoning_enabled, bool):
+            raise ValueError('reasoning_enabled must be a boolean or None')
+        self.reasoning_enabled = reasoning_enabled
         self.session = None
         self.request_count = 0
         self.error_count = 0
@@ -324,6 +328,8 @@ class OpenRouterConnector(LoggerMixin):
             "temperature": self.temperature if temperature is None else temperature,
             "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
         }
+        if self.reasoning_enabled is not None:
+            payload["reasoning"] = {"enabled": self.reasoning_enabled}
 
         async def request():
             self.request_count += 1
@@ -440,5 +446,6 @@ def create_openrouter_connector(config) -> OpenRouterConnector:
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
-        base_url=base_url
+        base_url=base_url,
+        reasoning_enabled=getattr(config, 'OPENROUTER_REASONING_ENABLED', None),
     )

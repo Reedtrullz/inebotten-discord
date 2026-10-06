@@ -30,6 +30,13 @@ an explanation still contained substantial Norwegian errors. It remains
 unsuitable for promotion on that evidence. Choose a currently available,
 verified free provider route and repeat acceptance before production activation.
 
+For models supporting optional reasoning, `OPENROUTER_REASONING_ENABLED=false`
+can request an answer without spending the reply budget on reasoning. Omit this
+setting to preserve provider defaults. The configured token limit, deadline and
+empty-answer refusal remain unchanged. Check the model's current reasoning
+capabilities; some models require reasoning. See [OpenRouter's reasoning
+documentation](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
 The same trial exposed a second responder: the VPS `inebotten-bot` container
 used the same selfbot identity and its older code produced the misleading empty
 DM calendar reply alongside the candidate's correct refusal. It was stopped
