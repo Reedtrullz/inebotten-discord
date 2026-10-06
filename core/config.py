@@ -48,6 +48,10 @@ class Config:
         self.OPENROUTER_TEMPERATURE = float(os.getenv('OPENROUTER_TEMPERATURE', '0.7'))
         self.OPENROUTER_MAX_TOKENS = int(os.getenv('OPENROUTER_MAX_TOKENS', '600'))
         self.OPENROUTER_BASE_URL = os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1')
+        reasoning = os.getenv('OPENROUTER_REASONING_ENABLED')
+        if reasoning is not None and reasoning.lower() not in {'true', 'false'}:
+            raise ValueError('OPENROUTER_REASONING_ENABLED must be true or false')
+        self.OPENROUTER_REASONING_ENABLED = None if reasoning is None else reasoning.lower() == 'true'
         
         # Google Calendar Configuration
         self.GCAL_ENABLED = os.getenv('GCAL_ENABLED', 'False').lower() == 'true'
