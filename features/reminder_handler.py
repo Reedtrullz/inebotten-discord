@@ -177,6 +177,12 @@ class ReminderHandler(BaseHandler):
                 message,
                 f"✅ **Påminnelse lagt til!**\n{data['text']}{due}",
             )
+            if not data.get("due_date"):
+                await self.send_response(
+                    message,
+                    "🔔 Jeg fant ingen dato eller klokkeslett, så sender jeg ikke automatisk. "
+                    "Bruk f.eks. `om 2 minutter` eller `20.06`."
+                )
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:

@@ -109,6 +109,7 @@ class PollsHandler(BaseHandler):
                 if isinstance(vote, dict)
                 else int(vote)
             )
+            poll_ref = vote.get("poll_ref") if isinstance(vote, dict) else None
 
             # Get active polls
             active_polls = self.poll.get_active_polls(guild_id)
@@ -116,12 +117,27 @@ class PollsHandler(BaseHandler):
             if not active_polls:
                 response_text = self.loc.t("no_active_polls") + " 📊"
             elif len(active_polls) > 1:
-                lines = [
-                    "📊 Det er flere aktive avstemninger. Bruk `@inebotten polls` og stem med en tydelig avstemning først."
-                ]
-                for i, poll in enumerate(active_polls, 1):
-                    lines.append(f"{i}. {poll.get('question', '?')}")
-                response_text = "\n".join(lines)
+                poll_id = self._resolve_poll_id(guild_id, poll_ref)
+                if poll_id is None:
+                    lines = [
+                        "📊 Det er flere aktive avstemninger. Stem med `@inebotten stem [avstemning] [tall]`, f.eks. `@inebotten stem 3 1`."
+                    ]
+                    for i, p in enumerate(active_polls, 1):
+                        lines.append(f"{i}. {p.get('question', '?')}")
+                    await self.send_response(message, "\n".join(lines))
+                    return
+                poll = next(p for p in active_polls if p["id"] == poll_id)
+                success, msg = self.poll.vote(
+                    guild_id,
+                    poll["id"],
+                    option_index,
+                    message.author.id,
+                    message.author.name,
+                )
+                if success:
+                    response_text = self.loc.t("vote_registered", num=option_index)
+                else:
+                    response_text = self.loc.t("vote_error", error=self._poll_error(msg))
             else:
                 # Vote on the most recent poll
                 poll = active_polls[-1]
