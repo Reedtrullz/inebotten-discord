@@ -292,7 +292,7 @@ def _macos_notary_profile():
 
 def _codesign_authority(bundle):
     completed = subprocess.run(
-        ['/usr/bin/codesign', '-dv', str(bundle)],
+        ['/usr/bin/codesign', '-dvv', str(bundle)],
         check=False, capture_output=True, text=True, timeout=120,
     )
     return completed.stderr + completed.stdout
