@@ -333,6 +333,19 @@ class ConsoleServer:
                 return bool(verifier.verify_headers(headers))
         return False
 
+    async def _is_authenticated_async(self, headers: dict[str, str]) -> bool:
+        api_key = headers.get("x-api-key")
+        if self._valid_api_key(api_key):
+            return True
+        cookies = self._parse_cookies(headers.get("cookie"))
+        if self.store.validate_session(cookies.get("console_session"), self._session_binding_hash()):
+            return True
+        if self.auth_mode == "cloudflare_access":
+            verifier = self.cloudflare_access_verifier
+            if verifier is not None and hasattr(verifier, "verify_headers"):
+                return bool(await asyncio.to_thread(verifier.verify_headers, headers))
+        return False
+
     def _valid_api_key(self, submitted: str | None) -> bool:
         expected = "" if self.api_key is None else str(self.api_key)
         if not submitted or not expected:
@@ -786,7 +799,7 @@ class ConsoleServer:
             auth_exempt = path in ("/health", "/demo", "/commands")
             if self.auth_mode == "api_key" and path == "/api/login":
                 auth_exempt = True
-            authenticated = auth_exempt or self._is_authenticated(headers)
+            authenticated = auth_exempt or await self._is_authenticated_async(headers)
 
             if not authenticated and path in ("/", "/login"):
                 if self.auth_mode == "cloudflare_access":

@@ -1,7 +1,14 @@
 import base64
 import json
+import threading
+import time
+
+import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+import web_console.cloudflare_access as cf_module
+from web_console.cloudflare_access import CloudflareAccessError, CloudflareAccessVerifier
 
 from web_console.cloudflare_access import CloudflareAccessVerifier
 
@@ -104,3 +111,139 @@ def test_cloudflare_access_verifier_rejects_invalid_signature():
     token = _make_token(other_private_key, _payload())
 
     assert verifier.verify_headers({"cf-access-jwt-assertion": token}) is False
+
+
+def test_unknown_kid_refresh_failure_serves_stale_then_fails_closed():
+    private_key, jwks = _make_key_and_jwks()
+    clock = {"now": 1_700_000_000.0}
+    verifier = CloudflareAccessVerifier(
+        team_domain="https://example.cloudflareaccess.com",
+        audiences=["console-aud"],
+        allowed_emails=["reidar@example.com"],
+        certs_fetcher=lambda _url: jwks,
+        now=lambda: clock["now"],
+    )
+    token = _make_token(private_key, _payload())
+
+    assert verifier.verify_headers({"cf-access-jwt-assertion": token}) is True
+
+    def _fail(_url: str) -> dict[str, object]:
+        raise CloudflareAccessError("provider unavailable")
+
+    verifier._certs_fetcher = _fail
+    clock["now"] += 2.0
+    unknown_key, _ = _make_key_and_jwks()
+    unknown_token = _make_token(unknown_key, _payload())
+
+    assert verifier.verify_headers({"cf-access-jwt-assertion": unknown_token}) is False
+
+    clock["now"] += cf_module.MAX_CERTS_STALENESS_SECONDS + 10.0
+
+    assert verifier.verify_headers({"cf-access-jwt-assertion": unknown_token}) is False
+
+    with pytest.raises(CloudflareAccessError):
+        verifier._load_certs(refresh=True)
+
+
+def test_repeated_unknown_kid_produces_one_refresh():
+    private_key, jwks = _make_key_and_jwks()
+    fetch_count = {"value": 0}
+    fetch_lock = threading.Lock()
+
+    def _counting_fetch(_url: str) -> dict[str, object]:
+        with fetch_lock:
+            fetch_count["value"] += 1
+        time.sleep(0.05)
+        return jwks
+
+    verifier = CloudflareAccessVerifier(
+        team_domain="https://example.cloudflareaccess.com",
+        audiences=["console-aud"],
+        allowed_emails=["reidar@example.com"],
+        certs_fetcher=_counting_fetch,
+        now=lambda: 1_700_000_000,
+    )
+    unknown_key, _ = _make_key_and_jwks()
+    token = _make_token(unknown_key, _payload())
+    barrier = threading.Barrier(5)
+    results: list[bool] = []
+
+    def _verify() -> None:
+        barrier.wait()
+        results.append(verifier.verify_headers({"cf-access-jwt-assertion": token}))
+
+    threads = [threading.Thread(target=_verify) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert all(result is False for result in results)
+    assert fetch_count["value"] == 1
+
+
+class _FakeCertRaw:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self, size: int, decode_content: bool = True) -> bytes:
+        return self._payload[:size]
+
+
+class _FakeCertResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.raw = _FakeCertRaw(payload)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_oversized_cert_response_is_rejected_without_cache(monkeypatch):
+    payload = b"x" * (cf_module.CERTS_REFRESH_MAX_BYTES + 1)
+    monkeypatch.setattr(
+        cf_module.requests,
+        "get",
+        lambda *_args, **_kwargs: _FakeCertResponse(payload),
+    )
+    verifier = CloudflareAccessVerifier(
+        team_domain="https://example.cloudflareaccess.com",
+        audiences=["console-aud"],
+        allowed_emails=["reidar@example.com"],
+        now=lambda: 1_700_000_000,
+    )
+
+    with pytest.raises(CloudflareAccessError) as excinfo:
+        verifier._load_certs(refresh=True)
+
+    assert "too large" in str(excinfo.value.__cause__)
+    assert verifier._cached_certs is None
+
+
+def test_malformed_cert_response_is_rejected_then_valid_refresh_succeeds():
+    private_key, jwks = _make_key_and_jwks()
+    responses: list[dict[str, object] | Exception] = [
+        CloudflareAccessError("bad payload"),
+        jwks,
+    ]
+
+    def _fetch(_url: str) -> dict[str, object]:
+        result = responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    verifier = CloudflareAccessVerifier(
+        team_domain="https://example.cloudflareaccess.com",
+        audiences=["console-aud"],
+        allowed_emails=["reidar@example.com"],
+        certs_fetcher=_fetch,
+        now=lambda: 1_700_000_000,
+    )
+    token = _make_token(private_key, _payload())
+
+    assert verifier.verify_headers({"cf-access-jwt-assertion": token}) is False
+    assert verifier.verify_headers({"cf-access-jwt-assertion": token}) is True
+    assert verifier._cached_certs == jwks

@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import time
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +15,10 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 logger = logging.getLogger(__name__)
+
+CERTS_REFRESH_TIMEOUT_SECONDS = 5.0
+CERTS_REFRESH_MAX_BYTES = 1024 * 1024
+MAX_CERTS_STALENESS_SECONDS = 24 * 3600
 
 
 class CloudflareAccessError(ValueError):
@@ -44,6 +49,7 @@ class CloudflareAccessVerifier:
         self._now = now or time.time
         self._cached_certs: dict[str, Any] | None = None
         self._cached_at = 0.0
+        self._refresh_lock = threading.Lock()
 
     @property
     def configured(self) -> bool:
@@ -146,23 +152,43 @@ class CloudflareAccessVerifier:
         ):
             return self._cached_certs
 
-        url = f"{self.team_domain}/cdn-cgi/access/certs"
-        try:
-            certs = self._certs_fetcher(url)
-        except Exception as exc:
-            if self._cached_certs is not None:
-                return self._cached_certs
-            raise CloudflareAccessError("could not fetch Cloudflare Access certs") from exc
-        if not isinstance(certs, dict):
-            raise CloudflareAccessError("invalid Cloudflare Access cert response")
-        self._cached_certs = certs
-        self._cached_at = now
-        return certs
+        with self._refresh_lock:
+            now = self._now()
+            cached = self._cached_certs
+            if cached is not None:
+                age = now - self._cached_at
+                if age < self.cache_ttl_seconds and (not refresh or age < 1.0):
+                    return cached
+            url = f"{self.team_domain}/cdn-cgi/access/certs"
+            try:
+                certs = self._certs_fetcher(url)
+            except Exception as exc:
+                if cached is not None and now - self._cached_at < MAX_CERTS_STALENESS_SECONDS:
+                    return cached
+                if cached is not None:
+                    raise CloudflareAccessError("cached Cloudflare Access certs exceeded max staleness") from exc
+                raise CloudflareAccessError("could not fetch Cloudflare Access certs") from exc
+            if not isinstance(certs, dict):
+                raise CloudflareAccessError("invalid Cloudflare Access cert response")
+            if not isinstance(certs.get("keys"), list):
+                raise CloudflareAccessError("invalid Cloudflare Access cert response")
+            self._cached_certs = certs
+            self._cached_at = now
+            return certs
 
     def _fetch_certs(self, url: str) -> dict[str, Any]:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=CERTS_REFRESH_TIMEOUT_SECONDS, stream=True)
         response.raise_for_status()
-        data = response.json()
+        try:
+            raw = response.raw.read(CERTS_REFRESH_MAX_BYTES + 1, decode_content=True)
+        finally:
+            response.close()
+        if len(raw) > CERTS_REFRESH_MAX_BYTES:
+            raise CloudflareAccessError("Cloudflare Access cert response too large")
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CloudflareAccessError("invalid cert response") from exc
         if not isinstance(data, dict):
             raise CloudflareAccessError("invalid cert response")
         return data
