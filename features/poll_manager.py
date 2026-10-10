@@ -197,6 +197,43 @@ class PollManager:
             return poll if self._planning_allowed(poll) else None
         return None
 
+    @writable_store
+    def set_message_id(self, guild_id, poll_id, message_id):
+        guild_key = str(guild_id)
+        poll = self.polls.get(guild_key, {}).get(poll_id)
+        if poll is None:
+            return False
+        previous = copy.deepcopy(poll)
+        poll["message_id"] = str(message_id)
+        poll["revision"] = poll.get("revision", 0) + 1
+        if not self._persist_or_restore(guild_key, poll_id, previous):
+            return False
+        return True
+
+    def find_by_message(self, guild_id, message_id):
+        guild_key = str(guild_id)
+        message_key = str(message_id)
+        for poll in self.polls.get(guild_key, {}).values():
+            if poll.get("message_id") == message_key:
+                return poll if self._planning_allowed(poll) else None
+        return None
+
+    @writable_store
+    def withdraw_vote(self, guild_id, poll_id, option_num, user_id):
+        guild_key = str(guild_id)
+        poll = self.polls.get(guild_key, {}).get(poll_id)
+        if poll is None or poll["status"] != "active" or self._is_expired(poll):
+            return False
+        option = poll["options"][option_num - 1]
+        if str(user_id) not in option["votes"]:
+            return False
+        previous = copy.deepcopy(poll)
+        option["votes"].remove(str(user_id))
+        poll["revision"] = poll.get("revision", 0) + 1
+        if not self._persist_or_restore(guild_key, poll_id, previous):
+            return False
+        return True
+
     def _planning_allowed(self, poll):
         metadata = poll.get('_planning')
         if metadata is None:

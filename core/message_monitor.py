@@ -536,6 +536,55 @@ class MessageMonitor:
         finally:
             self._active_requests.discard(task)
 
+    async def handle_reaction_vote(self, payload):
+        if getattr(self, '_closing', False) or payload is None:
+            return
+        guild_id = getattr(payload, 'guild_id', None)
+        if guild_id is None:
+            return
+        bot_user = getattr(self.client, 'user', None)
+        bot_id = getattr(bot_user, 'id', None)
+        if bot_id is not None and str(payload.user_id) == str(bot_id):
+            return
+        poll = self.poll.find_by_message(guild_id, payload.message_id)
+        if poll is None:
+            return
+        option_num = next(
+            (index + 1 for index, option in enumerate(poll['options'])
+             if option['emoji'] == str(payload.emoji)),
+            None,
+        )
+        if option_num is None:
+            return
+        config = getattr(self.client, 'config', None)
+        actor = RequestContext(
+            request_id=f'reaction:{payload.message_id}:{payload.user_id}',
+            user_id=str(payload.user_id),
+            channel_id=str(payload.channel_id),
+            guild_id=str(guild_id),
+            locale='no',
+            channel_kind='guild',
+        )
+        decision = invocation_decision(
+            actor,
+            mode=getattr(config, 'INVOCATION_MODE', 'legacy'),
+            allowed_users=getattr(config, 'ALLOWED_USERS', ()),
+            allowed_channels=getattr(config, 'ALLOWED_CHANNELS', ()),
+        )
+        if not decision.allowed:
+            return
+        if getattr(payload, 'event_type', 'REACTION_ADD') == 'REACTION_REMOVE':
+            self.poll.withdraw_vote(
+                poll['guild_id'], poll['id'], option_num, str(payload.user_id),
+            )
+        else:
+            success, error = self.poll.vote(
+                poll['guild_id'], poll['id'], option_num,
+                str(payload.user_id), f'user:{payload.user_id}',
+            )
+            if not success and error not in ('Poll has expired',):
+                print(f"[MONITOR] Reaction vote rejected: {error}")
+
     async def _handle_message(self, message):
         """Process an incoming message"""
         # Skip own messages
@@ -1444,6 +1493,14 @@ class SelfbotClient(discord.Client):
         """Called when a message is received"""
         if not getattr(self, '_client_closing', False) and self.monitor:
             await self.monitor.handle_message(message)
+
+    async def on_raw_reaction_add(self, payload):
+        if self.monitor:
+            await self.monitor.handle_reaction_vote(payload)
+
+    async def on_raw_reaction_remove(self, payload):
+        if self.monitor:
+            await self.monitor.handle_reaction_vote(payload)
 
     async def on_disconnect(self):
         """Called when disconnected"""

@@ -85,7 +85,17 @@ class PollsHandler(BaseHandler):
             )
 
             response_text = self.poll.format_poll(poll, lang)
-            await self.send_response(message, response_text)
+            sent = await self.send_response(message, response_text)
+            if sent is not None:
+                try:
+                    self.poll.set_message_id(guild_id, poll["id"], sent.id)
+                except Exception as e:
+                    self.log(f"Could not link poll to message: {e}")
+                for option in poll["options"]:
+                    try:
+                        await sent.add_reaction(option["emoji"])
+                    except Exception as e:
+                        self.log(f"Could not add poll reaction: {e}")
 
         except PollStorageError:
             await self.send_response(message, "❌ Kunne ikke lagre avstemningen; ingen opprettelse er bekreftet.")
