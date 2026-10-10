@@ -38,10 +38,42 @@ def _production_monitor_factory(client):
     from ai.connector_factory import create_ai_connector
     from ai.response_generator import create_response_generator
     from core.message_monitor import MessageMonitor
+    from core.outbound_sender import monitor_sender
     from core.rate_limiter import create_rate_limiter
 
     config = client.config
-    return MessageMonitor(
+
+    class ProductionMonitor(MessageMonitor):
+        reminder_checker = None
+
+        async def setup(self):
+            from cal_system.reminder_checker import ReminderChecker
+            from utils.storage_contract import store_worker
+
+            await super().setup()
+            checker = ReminderChecker(
+                calendar_manager=self.calendar,
+                reminder_manager=self.reminders,
+                health_callback=getattr(self, "record_scheduler_iteration", None),
+                get_channel_func=self.client.get_channel,
+                outbound_sender=monitor_sender(self),
+                user_memory=self.user_memory,
+                daily_digest=self.daily_digest,
+            )
+            try:
+                await checker.setup()
+            except BaseException:
+                try:
+                    await self.close()
+                finally:
+                    await store_worker(checker.close_storage)
+                raise
+            self.reminder_checker = checker
+            self._owned_resources.add("checker-store", checker.close_storage)
+            self._track_background_task(checker.start(), "reminder-checker")
+            print("[BOT] Calendar reminder checker started")
+
+    return ProductionMonitor(
         client,
         hermes_connector=create_ai_connector(config),
         rate_limiter=create_rate_limiter(config),
