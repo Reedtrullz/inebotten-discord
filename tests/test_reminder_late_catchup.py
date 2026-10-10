@@ -81,3 +81,38 @@ async def test_older_than_catchup_window_stays_silent(tmp_path):
     await checker.check_event_now()
 
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_reminder_created_inside_warning_window_skips_30min_ping(tmp_path):
+    reminder = {
+        "id": "rem_fresh", "text": "snart",
+        "due_date": _oslo_due(-25), "channel_id": "123",
+        "user_id": "7", "scope_id": "shared",
+        "created_at": FIXED_NOW.isoformat(),
+    }
+    sent = []
+    checker = _checker(tmp_path, sent, {"123": [reminder]})
+    await checker.setup()
+
+    await checker.check_upcoming_30min()
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_reminder_created_before_warning_window_gets_30min_ping(tmp_path):
+    reminder = {
+        "id": "rem_aged", "text": "snart",
+        "due_date": _oslo_due(-25), "channel_id": "123",
+        "user_id": "7", "scope_id": "shared",
+        "created_at": (FIXED_NOW - timedelta(minutes=40)).isoformat(),
+    }
+    sent = []
+    checker = _checker(tmp_path, sent, {"123": [reminder]})
+    await checker.setup()
+
+    await checker.check_upcoming_30min()
+
+    assert len(sent) == 1
+    assert "30 minutter" in sent[0]

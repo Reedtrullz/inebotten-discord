@@ -230,6 +230,15 @@ class ReminderChecker:
 
     # ---- 30-min warning ----
 
+    def _created_inside_warning_window(self, item, now):
+        try:
+            created = datetime.fromisoformat(str(item.get('created_at')))
+        except (TypeError, ValueError):
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=ZoneInfo("Europe/Oslo"))
+        return created >= now - timedelta(minutes=30)
+
     async def check_upcoming_30min(self):
         """Check calendar items & reminders due within 30 minutes, ping creator in channel"""
         now = self.clock.now()
@@ -243,6 +252,8 @@ class ReminderChecker:
                         continue
                     item = self._current_occurrence_item(item)
                     if item is None:
+                        continue
+                    if self._created_inside_warning_window(item, now):
                         continue
                     try:
                         item_date = self._parse_item_datetime(item)
@@ -267,6 +278,8 @@ class ReminderChecker:
                         continue
                     reminder = self._current_occurrence_item(reminder)
                     if reminder is None:
+                        continue
+                    if self._created_inside_warning_window(reminder, now):
                         continue
                     if reminder.get('scope_id') is None:
                         reminder['scope_id'] = bucket_scope
