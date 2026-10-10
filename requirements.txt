@@ -9,6 +9,6 @@ urllib3>=2.7.0
 python-dateutil>=2.9.0.post0
 icalendar>=7.3.0,<8
 simpleeval>=1.0.7
-python-dotenv>=1.2.2
+python-dotenv>=1.2.4
 keyring>=24.0.0
 cryptography>=47.0.0
