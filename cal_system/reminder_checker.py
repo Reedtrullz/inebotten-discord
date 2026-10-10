@@ -56,9 +56,12 @@ def project_current_occurrence(item):
             EventTime.from_item(result).validate_local()
         elif result.get('due_date'):
             try:
-                datetime.strptime(result['due_date'], '%d.%m.%Y')
+                datetime.strptime(result['due_date'], '%d.%m.%Y %H:%M')
             except ValueError:
-                datetime.strptime(result['due_date'], '%d.%m')
+                try:
+                    datetime.strptime(result['due_date'], '%d.%m.%Y')
+                except ValueError:
+                    datetime.strptime(result['due_date'], '%d.%m')
         return result
     except (AttributeError, KeyError, OverflowError, TypeError, ValueError):
         return None

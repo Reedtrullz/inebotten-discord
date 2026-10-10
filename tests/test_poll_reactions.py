@@ -90,6 +90,23 @@ class PollReactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("555", poll["options"][0]["votes"])
         self.assertIn("555", poll["options"][1]["votes"])
 
+    async def test_reaction_vote_edits_poll_post(self):
+        self.manager.set_message_id("123", self.poll["id"], 999, 777)
+        edits = []
+
+        class FakeMessage:
+            async def edit(self, content):
+                edits.append(content)
+
+        class FakeChannel:
+            async def fetch_message(self, message_id):
+                return FakeMessage()
+
+        monitor = _bare_monitor(self.manager)
+        monitor.client.get_channel = lambda channel_id: FakeChannel()
+        await monitor.handle_reaction_vote(_payload())
+        self.assertIn("Totalt: 1", edits[0])
+
 
 if __name__ == "__main__":
     unittest.main()

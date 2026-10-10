@@ -21,6 +21,12 @@ class PollsHandler(BaseHandler):
         super().__init__(monitor)
         self.poll = monitor.poll
 
+    async def _refresh_poll_post(self, poll):
+        try:
+            await self.monitor.refresh_poll_post(poll)
+        except Exception as e:
+            self.log(f"Could not refresh poll post: {e}")
+
     async def handle_poll_list(self, message) -> None:
         """
         Handle listing active polls.
@@ -88,7 +94,7 @@ class PollsHandler(BaseHandler):
             sent = await self.send_response(message, response_text)
             if sent is not None:
                 try:
-                    self.poll.set_message_id(guild_id, poll["id"], sent.id)
+                    self.poll.set_message_id(guild_id, poll["id"], sent.id, sent.channel.id)
                 except Exception as e:
                     self.log(f"Could not link poll to message: {e}")
                 for option in poll["options"]:
@@ -145,6 +151,9 @@ class PollsHandler(BaseHandler):
                     message.author.name,
                 )
                 if success:
+                    fresh = self.poll.get_poll(guild_id, poll["id"])
+                    if fresh is not None:
+                        await self._refresh_poll_post(fresh)
                     response_text = self.loc.t("vote_registered", num=option_index)
                 else:
                     response_text = self.loc.t("vote_error", error=self._poll_error(msg))
@@ -160,6 +169,9 @@ class PollsHandler(BaseHandler):
                 )
 
                 if success:
+                    fresh = self.poll.get_poll(guild_id, poll["id"])
+                    if fresh is not None:
+                        await self._refresh_poll_post(fresh)
                     response_text = self.loc.t("vote_registered", num=option_index)
                 else:
                     response_text = self.loc.t("vote_error", error=self._poll_error(msg))

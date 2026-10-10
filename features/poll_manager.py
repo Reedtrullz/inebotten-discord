@@ -198,13 +198,15 @@ class PollManager:
         return None
 
     @writable_store
-    def set_message_id(self, guild_id, poll_id, message_id):
+    def set_message_id(self, guild_id, poll_id, message_id, channel_id=None):
         guild_key = str(guild_id)
         poll = self.polls.get(guild_key, {}).get(poll_id)
         if poll is None:
             return False
         previous = copy.deepcopy(poll)
         poll["message_id"] = str(message_id)
+        if channel_id is not None:
+            poll["channel_id"] = str(channel_id)
         poll["revision"] = poll.get("revision", 0) + 1
         if not self._persist_or_restore(guild_key, poll_id, previous):
             return False
