@@ -6,6 +6,7 @@ icalendar==7.3.0
 requests==2.34.2
 cryptography==50.0.2
 simpleeval==1.0.8
+python-dotenv==1.2.4
 
 # Keep contract/domain fixtures runnable from the hash-locked bot profile.
 pytest==9.1.1
