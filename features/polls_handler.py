@@ -60,7 +60,9 @@ class PollsHandler(BaseHandler):
                 lines = [self.loc.t("poll_list_title")]
                 lines.append("")
                 for i, poll in enumerate(active_polls, start=1):
-                    lines.append(self.loc.t("poll_list_item", num=i, question=poll.get("question", "?")))
+                    votes = sum(len(opt["votes"]) for opt in poll["options"])
+                    vote_word = "stemme" if votes == 1 else "stemmer"
+                    lines.append(f"{i}. {poll.get('question', '?')} ({votes} {vote_word})")
                 lines.append("")
                 lines.append(self.loc.t("poll_list_hint"))
                 response_text = "\n".join(lines)
@@ -139,7 +141,9 @@ class PollsHandler(BaseHandler):
                         "📊 Det er flere aktive avstemninger. Stem med `@inebotten stem [avstemning] [tall]`, f.eks. `@inebotten stem 3 1`."
                     ]
                     for i, p in enumerate(active_polls, 1):
-                        lines.append(f"{i}. {p.get('question', '?')}")
+                        votes = sum(len(opt["votes"]) for opt in p["options"])
+                        vote_word = "stemme" if votes == 1 else "stemmer"
+                        lines.append(f"{i}. {p.get('question', '?')} ({votes} {vote_word})")
                     await self.send_response(message, "\n".join(lines))
                     return
                 poll = next(p for p in active_polls if p["id"] == poll_id)

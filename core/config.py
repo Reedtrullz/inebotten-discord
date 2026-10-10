@@ -168,7 +168,8 @@ class Config:
         if errors:
             raise ValueError('; '.join(error['field'] + ': ' + error['reason'] for error in errors))
 
-        has_token = bool(self.DISCORD_TOKEN)
+        bot_token = os.getenv('BOT_DISCORD_TOKEN', '').strip()
+        has_token = bool(self.DISCORD_TOKEN) or bool(bot_token)
         
         if not has_token:
             print("[CONFIG] WARNING: No Discord credentials configured!")
