@@ -93,9 +93,22 @@ class MultiPollVoteTests(unittest.IsolatedAsyncioTestCase):
             assert votes == 0
             assert "flere aktive" in handler.sent[-1]
 
+            assert "(0 stemmer)" in handler.sent[-1]
+
+    async def test_poll_list_shows_vote_counts(self):
+        with TemporaryDirectory() as tmp:
+            manager, handler, message = self._handler(tmp)
+            poll = manager.create_poll("123", "Foerste?", ["Ja", "Nei"], "T")
+            manager.vote("123", poll["id"], 1, "7", "Tester")
+            await handler.handle_poll_list(message)
+            assert "1. Foerste? (1 stemme)" in handler.sent[-1]
+
     def test_parse_vote_shapes(self):
         assert parse_vote("@inebotten stem 3 1") == {"option_index": 1, "poll_ref": 3}
         assert parse_vote("3") == 3
+        assert parse_vote("@inebotten 3 1") == {"option_index": 1, "poll_ref": 3}
+        assert parse_vote("@inebotten 3 0") is None
+        assert parse_vote("@inebotten 3 99") is None
 
 
 if __name__ == "__main__":

@@ -702,6 +702,13 @@ def parse_vote(message_content):
             return {"option_index": option_index, "poll_ref": poll_ref}
         return None
 
+    bare_multi = re.fullmatch(r"(\d{1,2})\s+(\d{1,2})", content)
+    if bare_multi:
+        poll_ref, option_index = int(bare_multi.group(1)), int(bare_multi.group(2))
+        if 1 <= option_index <= 10:
+            return {"option_index": option_index, "poll_ref": poll_ref}
+        return None
+
     # Check if it's just a number
     if content.isdigit():
         num = int(content)

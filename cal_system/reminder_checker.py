@@ -289,7 +289,7 @@ class ReminderChecker:
     async def check_event_now(self):
         """Check for events happening NOW and send notifications"""
         now = self.clock.now()
-        one_minute_ago = now - timedelta(minutes=1)
+        one_minute_ago = now - timedelta(minutes=30)
         one_minute_ahead = now + timedelta(minutes=1)
 
         # Check calendar items
