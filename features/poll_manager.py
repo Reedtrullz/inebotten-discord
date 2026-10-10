@@ -527,8 +527,6 @@ class PollManager:
             bar = "█" * bar_length + "░" * (10 - bar_length)
 
             lines.append(f"{option['emoji']} {option['text']}")
-            if option.get("id"):
-                lines.append(f"   Valg-ID: `{option['id']}`")
             lines.append(f"   {bar} {votes} {vote_label} ({percentage:.0f}%)")
             lines.append("")
 
@@ -649,14 +647,21 @@ def parse_poll_command(message_content):
 
 def parse_vote(message_content):
     """
-    Parse a vote
+    Parse a vote: bare digit, or "stem <poll> <option>" for disambiguation.
 
-    Returns option number (1-indexed) or None
+    Returns option number (1-indexed), or dict with option_index and poll_ref.
     """
     content = message_content.lower()
 
     # Remove @inebotten
     content = re.sub(r"@inebotten\s*", "", content).strip()
+
+    multi = re.fullmatch(r"stem\s+(\d{1,2})\s+(\d{1,2})", content)
+    if multi:
+        poll_ref, option_index = int(multi.group(1)), int(multi.group(2))
+        if 1 <= option_index <= 10:
+            return {"option_index": option_index, "poll_ref": poll_ref}
+        return None
 
     # Check if it's just a number
     if content.isdigit():

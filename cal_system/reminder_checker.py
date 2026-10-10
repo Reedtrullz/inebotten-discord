@@ -604,8 +604,12 @@ class ReminderChecker:
             return None
 
     def _parse_due_date(self, due_str):
-        """Parse DD.MM.YYYY or DD.MM into a datetime"""
+        """Parse DD.MM.YYYY HH:MM, DD.MM.YYYY or DD.MM into a datetime"""
         oslo_tz = ZoneInfo("Europe/Oslo")
+        try:
+            return datetime.strptime(due_str, "%d.%m.%Y %H:%M").replace(tzinfo=oslo_tz)
+        except ValueError:
+            pass
         try:
             dt = datetime.strptime(due_str, "%d.%m.%Y").replace(
                 hour=9, minute=0, tzinfo=oslo_tz

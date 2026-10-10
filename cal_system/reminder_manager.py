@@ -7,6 +7,7 @@ Tracks reminders that can be marked as completed
 import re
 import uuid
 import copy
+from zoneinfo import ZoneInfo
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -705,18 +706,28 @@ def parse_reminder_command(message_content):
                 if text.lower().startswith(prefix + " "):
                     text = text[len(prefix) :].strip()
 
-            # Check for due date in text (DD.MM)
-            date_match = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", text)
             due_date = None
-            if date_match:
-                day, month, year = date_match.groups()
-                if year:
-                    due_date = f"{day}.{month}.{year}"
-                else:
-                    due_date = f"{day}.{month}"
-                # Remove date from text
-                text = text[: date_match.start()] + text[date_match.end() :]
-                text = text.strip(" -–—")
+            rel_match = re.search(
+                r"\bom\s+(\d{1,3})\s*(minutter|min|timer|t|dager|dag)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if rel_match:
+                amount = int(rel_match.group(1))
+                seconds = amount * {
+                    "minutter": 60, "min": 60, "timer": 3600, "t": 3600,
+                    "dager": 86400, "dag": 86400,
+                }[rel_match.group(2).lower()]
+                due_dt = datetime.now(ZoneInfo("Europe/Oslo")) + timedelta(seconds=seconds)
+                due_date = due_dt.strftime("%d.%m.%Y %H:%M")
+                text = text[: rel_match.start()] + text[rel_match.end():]
+            else:
+                date_match = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", text)
+                if date_match:
+                    day, month, year = date_match.groups()
+                    due_date = f"{day}.{month}.{year}" if year else f"{day}.{month}"
+                    text = text[: date_match.start()] + text[date_match.end():]
+            text = text.strip(" -–—")
 
             if text and len(text) > 2:
                 return {"action": "add", "text": text, "due_date": due_date}

@@ -319,8 +319,8 @@ class Localization:
                 'en': '{num}. {question}'
             },
             'poll_list_hint': {
-                'no': 'Bruk "@inebotten stem [nummer]" for å stemme',
-                'en': 'Use "@inebotten vote [number]" to vote'
+                'no': 'Stem med tall (1-N); ved flere avstemninger: "@inebotten stem [avstemning] [tall]"',
+                'en': 'Vote with numbers (1-N); with multiple polls: "@inebotten vote [poll] [number]"'
             },
             'poll_no_permission': {
                 'no': '🚫 Du har ikke tilgang til å gjøre dette.',
