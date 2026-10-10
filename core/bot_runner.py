@@ -77,6 +77,7 @@ class BotRunner:
         intents = discord.Intents.none()
         intents.guilds = True
         intents.messages = True
+        intents.reactions = True
         # Message content remains disabled; Discord supplies mentioned-message
         # content without this privileged intent.
         client = discord.Client(intents=intents)
@@ -93,6 +94,14 @@ class BotRunner:
         @client.event
         async def on_message(message):
             await transport.handle_message(message)
+
+        @client.event
+        async def on_raw_reaction_add(payload):
+            await transport.monitor.handle_reaction_vote(payload)
+
+        @client.event
+        async def on_raw_reaction_remove(payload):
+            await transport.monitor.handle_reaction_vote(payload)
 
         return cls(config, client, transport)
 
