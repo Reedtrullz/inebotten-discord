@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+from zoneinfo import ZoneInfo
 from cal_system.reminder_manager import parse_reminder_command
 from features.poll_manager import PollManager, parse_vote
 from features.polls_handler import PollsHandler
@@ -22,27 +23,34 @@ def _parse_due(value):
     return datetime.strptime(value, "%d.%m.%Y %H:%M")
 
 
+def _now_oslo():
+    return datetime.now(ZoneInfo("Europe/Oslo")).replace(tzinfo=None)
+
+
 class RelativeReminderTests(unittest.TestCase):
     def test_om_minutter_becomes_concrete_due_date(self):
         parsed = parse_reminder_command("påminnelse teste om 2 minutter")
-        assert parsed["action"] == "add"
-        assert "teste" in parsed["text"]
-        delta = _parse_due(parsed["due_date"]) - datetime.now()
+        assert parsed is not None and parsed["action"] == "add"
+        text, due = parsed["text"], parsed["due_date"]
+        assert isinstance(text, str) and isinstance(due, str)
+        assert "teste" in text
+        delta = _parse_due(due) - _now_oslo()
         assert timedelta(0) < delta <= timedelta(minutes=3)
 
     def test_om_timer_and_dager(self):
         for phrase, min_seconds in (("om 3 timer", 170 * 60), ("om 2 dager", 47 * 3600)):
             parsed = parse_reminder_command(f"påminnelse teste {phrase}")
-            delta = _parse_due(parsed["due_date"]) - datetime.now()
+            assert parsed is not None and isinstance(parsed["due_date"], str)
+            delta = _parse_due(parsed["due_date"]) - _now_oslo()
             assert delta >= timedelta(seconds=min_seconds)
 
     def test_legacy_date_still_works(self):
         parsed = parse_reminder_command("påminnelse ring legen 20.06")
-        assert parsed["due_date"] == "20.06"
+        assert parsed is not None and parsed["due_date"] == "20.06"
 
     def test_no_time_still_parses_as_add(self):
         parsed = parse_reminder_command("påminnelse ring legen")
-        assert parsed["action"] == "add" and parsed["due_date"] is None
+        assert parsed is not None and parsed["action"] == "add" and parsed["due_date"] is None
 
 
 class MultiPollVoteTests(unittest.IsolatedAsyncioTestCase):
