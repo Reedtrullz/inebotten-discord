@@ -680,7 +680,7 @@ class IntentRouter:
                 payload["reminder"]["number"] = int(number)
             return IntentResult(BotIntent.REMINDER_COMPLETE, 0.98, payload, "reminder_complete_keyword")
 
-        if lower.strip().isdigit() and self._has_active_reminders(guild_id):
+        if lower.strip().isdigit() and self._has_active_reminders(guild_id) and not self._has_active_poll(guild_id):
             return IntentResult(
                 BotIntent.REMINDER_COMPLETE,
                 0.94,
