@@ -27,6 +27,19 @@ def test_every_intent_has_one_typed_binding_and_copy_safe_metadata():
         assert all(example.replace('|', r'\|') in doc for example in spec.examples)
 
 
+def test_poll_vote_accepts_disambiguated_dict_vote():
+    payload = {'vote': {'option_index': 2, 'poll_ref': 3}}
+    validated = validate_payload(BotIntent.POLL_VOTE, payload)
+    assert validated['vote'] == {'option_index': 2, 'poll_ref': 3}
+
+
+def test_poll_vote_rejects_invalid_dict_vote():
+    with pytest.raises(Exception):
+        validate_payload(BotIntent.POLL_VOTE, {'vote': {'option_index': 0}})
+    with pytest.raises(Exception):
+        validate_payload(BotIntent.POLL_VOTE, {'vote': {'option_index': 1, 'bogus': True}})
+
+
 @pytest.mark.parametrize('intent,payload', [
     (BotIntent.POLL_VOTE, {'vote': 0}),
     (BotIntent.POLL_VOTE, {'vote': '1'}),

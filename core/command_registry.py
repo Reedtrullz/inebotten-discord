@@ -82,8 +82,17 @@ def _validator(intent, argument):
             raise ValueError('missing_payload_field')
         if argument not in ('', '*', 'vote', 'city') and not isinstance(payload[argument], dict):
             raise ValueError('invalid_command_fields')
-        if argument == 'vote' and (type(payload['vote']) is not int or not 1 <= payload['vote'] <= 10):
-            raise ValueError('invalid_vote')
+        if argument == 'vote':
+            vote_payload = payload['vote']
+            if isinstance(vote_payload, dict):
+                poll_ref = vote_payload.get('poll_ref')
+                if (set(vote_payload) - {'option_index', 'poll_ref'}
+                        or type(vote_payload.get('option_index')) is not int
+                        or not 1 <= vote_payload['option_index'] <= 10
+                        or poll_ref is not None and (type(poll_ref) is not int or not 1 <= poll_ref <= 99)):
+                    raise ValueError('invalid_vote')
+            elif type(vote_payload) is not int or not 1 <= vote_payload <= 10:
+                raise ValueError('invalid_vote')
         if argument == 'city' and not _nonblank(payload['city']):
             raise ValueError('invalid_city')
         if argument == 'calendar_item' and not _nonblank(payload[argument].get('title')):
