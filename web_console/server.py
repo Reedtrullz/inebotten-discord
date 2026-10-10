@@ -368,6 +368,20 @@ class ConsoleServer:
         credential = self._calendar_credential(headers)
         if credential is None:
             return False, "unauthorized"
+        if credential != "session":
+            return True, None
+        if not self.trusted_origin or headers.get("origin", "") != self.trusted_origin:
+            return False, "trusted_origin_required"
+        session = self._parse_cookies(headers.get("cookie")).get("console_session", "")
+        supplied = headers.get("x-csrf-token", "")
+        if not session or not hmac.compare_digest(supplied, self._csrf_token(session)):
+            return False, "csrf_failed"
+        return True, None
+
+    def _browser_write_allowed(self, headers: dict[str, str], body_bytes: bytes = b"") -> tuple[bool, str | None]:
+        credential = self._calendar_credential(headers)
+        if credential is None:
+            return False, "unauthorized"
         if credential == "api_key":
             return True, None
         if credential != "session":
@@ -375,7 +389,7 @@ class ConsoleServer:
         if not self.trusted_origin or headers.get("origin", "") != self.trusted_origin:
             return False, "trusted_origin_required"
         session = self._parse_cookies(headers.get("cookie")).get("console_session", "")
-        supplied = headers.get("x-csrf-token", "")
+        supplied = headers.get("x-csrf-token", "") or self._parse_form_body(body_bytes).get("csrf_token", "")
         if not session or not hmac.compare_digest(supplied, self._csrf_token(session)):
             return False, "csrf_failed"
         return True, None
@@ -868,6 +882,10 @@ class ConsoleServer:
                 return
 
             if method == "POST" and path == "/api/setup/settings":
+                allowed, denial = self._browser_write_allowed(headers)
+                if not allowed:
+                    await self._send_response(writer, 401 if denial == "unauthorized" else 403, {"error": denial})
+                    return
                 from core.config_schema import settings_path, update_settings, validate_settings
 
                 if "application/json" not in headers.get("content-type", "").lower():
@@ -899,6 +917,10 @@ class ConsoleServer:
                 return
 
             if method == "POST" and path == "/api/gcal/credentials":
+                allowed, denial = self._browser_write_allowed(headers, body_bytes)
+                if not allowed:
+                    await self._send_response(writer, 401 if denial == "unauthorized" else 403, {"error": denial})
+                    return
                 from cal_system.google_calendar_manager import (
                     get_google_credentials_status,
                     save_google_client_credentials,
@@ -932,6 +954,10 @@ class ConsoleServer:
                 return
 
             if method == "POST" and path == "/api/logout":
+                allowed, denial = self._browser_write_allowed(headers)
+                if not allowed:
+                    await self._send_response(writer, 401 if denial == "unauthorized" else 403, {"error": denial})
+                    return
                 cookies = self._parse_cookies(headers.get("cookie"))
                 self.store.delete_session(cookies.get("console_session"))
                 await self._send_response(

@@ -720,7 +720,16 @@ async def test_logout_expires_session_cookie():
     try:
         login = await request("/api/login", method="POST", body=b"api_key=test-key-123")
         token = extract_cookie(login, "console_session")
-        logout = await request("/api/logout", method="POST", cookie=f"console_session={token}")
+        server.trusted_origin = "http://127.0.0.1:2"
+        logout = await request(
+            "/api/logout",
+            method="POST",
+            cookie=f"console_session={token}",
+            extra_headers=[
+                "Origin: http://127.0.0.1:2",
+                f"X-CSRF-Token: {server._csrf_token(token)}",
+            ],
+        )
         assert b"302" in logout
         assert b"Location: /login" in logout
         assert b"Max-Age=0" in logout
@@ -1001,5 +1010,64 @@ async def test_setup_settings_rejects_email_password_without_echoing_values(tmp_
         assert b"400" in response
         assert email.encode() not in response
         assert password.encode() not in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_browser_write_boundary_requires_origin_and_csrf(tmp_path, monkeypatch):
+    hermes = tmp_path / "hermes"
+    env_path = hermes / "discord" / ".env"
+    env_path.parent.mkdir(parents=True)
+    env_path.write_text("DISCORD_USER_TOKEN=existing-synthetic-token\n", encoding="utf-8")
+    env_path.chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes))
+    server, task = await start_server()
+    try:
+        login = await request("/api/login", method="POST", body=b"api_key=test-key-123")
+        token = extract_cookie(login, "console_session")
+        cookie = f"console_session={token}"
+        csrf = server._csrf_token(token)
+
+        async def post_settings(origin=None, token_header=None):
+            headers = ["Content-Type: application/json"]
+            if origin is not None:
+                headers.append(f"Origin: {origin}")
+            if token_header is not None:
+                headers.append(f"X-CSRF-Token: {token_header}")
+            return await request(
+                "/api/setup/settings",
+                method="POST",
+                cookie=cookie,
+                body=b'{"settings": {"ALLOWED_USERS": "12345"}}',
+                extra_headers=headers,
+            )
+
+        no_context = await post_settings()
+        assert b"403" in no_context
+        assert b"trusted_origin_required" in no_context
+
+        same_site = await post_settings(origin="http://127.0.0.1:1", token_header=csrf)
+        assert b"403" in same_site
+        assert b"trusted_origin_required" in same_site
+
+        server.trusted_origin = "http://127.0.0.1:2"
+        bad_csrf = await post_settings(origin="http://127.0.0.1:2", token_header="wrong-token")
+        assert b"403" in bad_csrf
+        assert b"csrf_failed" in bad_csrf
+
+        good = await post_settings(origin="http://127.0.0.1:2", token_header=csrf)
+        assert b"200" in good
+
+        assert b"403" in await request("/api/gcal/credentials", method="POST", cookie=cookie, body=b"credentials_json=")
+        assert b"403" in await request("/api/logout", method="POST", cookie=cookie)
+
+        api_key_write = await request(
+            "/api/setup/settings",
+            method="POST",
+            api_key=API_KEY,
+            body=b'{"settings": {"ALLOWED_USERS": "67890"}}',
+            extra_headers=["Content-Type: application/json"],
+        )
+        assert b"200" in api_key_write
     finally:
         await stop_server(server, task)

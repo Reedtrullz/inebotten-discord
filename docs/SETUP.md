@@ -17,7 +17,7 @@ When `HERMES_HOME` is set to a non-empty path, it is authoritative: setup reads 
 
 The shared writer creates a same-directory temporary file with mode `0600` before writing, flushes it, and atomically replaces `.env`. On POSIX systems the settings directory is created with mode `0700`. If setup is interrupted before replacement, the previous `.env` remains intact; run setup again to complete the update. If interruption leaves a hidden `.env.*.tmp` file, stop setup and the bot before removing only that temporary file. A failure while writing reports a generic message and never prints submitted credentials.
 
-The web console accepts settings updates at authenticated `POST /api/setup/settings`. Existing API-key, browser-session, and configured Cloudflare Access authentication checks apply. Invalid settings return field/reason errors without submitted values.
+The web console accepts settings updates at authenticated `POST /api/setup/settings`. Existing API-key, browser-session, and configured Cloudflare Access authentication checks apply. Browser sessions must send the same trusted-origin and session-bound CSRF token used for calendar writes (header or form field); explicit `X-API-Key` clients are exempt, and Cloudflare Access browser writes additionally require a configured trusted origin. Invalid settings return field/reason errors without submitted values.
 
 For offline checks, use the isolated runner with a Python 3.12 environment:
 
