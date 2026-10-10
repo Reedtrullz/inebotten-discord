@@ -32,7 +32,7 @@ class Config:
         
         # AI Provider Selection
         # Options: "lm_studio" (default) or "openrouter"
-        self.AI_PROVIDER = os.getenv('AI_PROVIDER', 'lm_studio')
+        self.AI_PROVIDER = os.getenv('AI_PROVIDER', 'openrouter')
         
         # LM Studio Configuration (default)
         self.HERMES_API_URL = os.getenv('HERMES_API_URL', 'http://127.0.0.1:3000/api/chat')
