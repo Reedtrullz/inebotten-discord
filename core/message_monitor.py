@@ -573,8 +573,10 @@ class MessageMonitor:
         )
         if not decision.allowed:
             return
+        if not poll.get('channel_id'):
+            self.poll.set_message_id(poll['guild_id'], poll['id'], payload.message_id, payload.channel_id)
         if getattr(payload, 'event_type', 'REACTION_ADD') == 'REACTION_REMOVE':
-            self.poll.withdraw_vote(
+            changed = self.poll.withdraw_vote(
                 poll['guild_id'], poll['id'], option_num, str(payload.user_id),
             )
         else:
@@ -584,6 +586,26 @@ class MessageMonitor:
             )
             if not success and error not in ('Poll has expired',):
                 print(f"[MONITOR] Reaction vote rejected: {error}")
+            changed = success
+        if changed:
+            fresh = self.poll.get_poll(poll['guild_id'], poll['id'])
+            if fresh is not None:
+                await self.refresh_poll_post(fresh)
+
+    async def refresh_poll_post(self, poll):
+        if not poll.get('message_id'):
+            return
+        get_channel = getattr(self.client, 'get_channel', None)
+        if get_channel is None:
+            return
+        try:
+            channel = get_channel(int(poll.get('channel_id') or 0))
+            if channel is None:
+                return
+            message = await channel.fetch_message(int(poll['message_id']))
+            await message.edit(content=self.poll.format_poll(poll))
+        except Exception as error:
+            print(f"[MONITOR] Poll update failed: {error}")
 
     async def _handle_message(self, message):
         """Process an incoming message"""
