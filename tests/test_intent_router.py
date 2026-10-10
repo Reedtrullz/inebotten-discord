@@ -166,6 +166,16 @@ class IntentRouterTests(unittest.TestCase):
         self.assertEqual(self.route("1", active_polls=False).intent, BotIntent.AI_CHAT)
         self.assertEqual(self.route("1", active_polls=True).intent, BotIntent.POLL_VOTE)
 
+    def test_bare_digit_votes_when_poll_and_reminders_are_both_active(self):
+        result = self.route("1", active_polls=True, active_reminders=True)
+
+        self.assertEqual(result.intent, BotIntent.POLL_VOTE)
+
+    def test_bare_digit_completes_reminder_when_no_poll_is_active(self):
+        result = self.route("1", active_polls=False, active_reminders=True)
+
+        self.assertEqual(result.intent, BotIntent.REMINDER_COMPLETE)
+
     def test_poll_list_routes_when_active_polls_exist(self):
         result = self.route("polls", active_polls=True)
         self.assertEqual(result.intent, BotIntent.POLL_LIST)
