@@ -837,6 +837,7 @@ def render_gcal_auth_page(
   {error_html}
 
   <form method="POST" action="/api/gcal/credentials" class="form-stack setup-form">
+    <input type="hidden" name="csrf_token" value="{escape(status.get("csrf_token") or "")}">
     <div class="field-stack">
       <label for="credentials_json">OAuth Client ID JSON</label>
       <textarea
