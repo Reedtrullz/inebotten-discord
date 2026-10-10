@@ -2,6 +2,7 @@ import asyncio
 from contextvars import ContextVar
 import json
 import os
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import quote_plus
@@ -33,6 +34,16 @@ class FakeCloudflareAccessVerifier:
 
     def verify_headers(self, headers: dict[str, str]) -> bool:
         return headers.get("cf-access-jwt-assertion") == "valid-cloudflare-token"
+
+
+class _StallingCloudflareAccessVerifier:
+    configured = True
+
+    def verify_headers(self, headers: dict[str, str]) -> bool:
+        if headers.get("cf-access-jwt-assertion") == "stall":
+            time.sleep(1.5)
+            return False
+        return False
 
 
 async def start_server(monitor: object | None = None, *, secure_cookies: bool | None = None) -> tuple[ConsoleServer, asyncio.Task[None]]:
@@ -154,6 +165,29 @@ async def test_cloudflare_access_header_authenticates_when_enabled():
         )
         assert b"200" in response
         assert b'"status":' in response
+    finally:
+        await stop_server(server, task)
+
+
+async def test_stalled_cloudflare_verify_keeps_health_responsive():
+    server = ConsoleServer(
+        host=HOST,
+        port=PORT,
+        api_key=API_KEY,
+        auth_mode="cloudflare_access",
+        cloudflare_access_verifier=_StallingCloudflareAccessVerifier(),
+    )
+    task = asyncio.create_task(server.start())
+    await task
+    _test_port.set(server.actual_port)
+    try:
+        started = time.monotonic()
+        health = await request("/health")
+        elapsed = time.monotonic() - started
+
+        assert b"200" in health
+        assert elapsed < 0.5
+        assert b"401" in await request("/api/status", extra_headers=["Cf-Access-Jwt-Assertion: stall"])
     finally:
         await stop_server(server, task)
 
