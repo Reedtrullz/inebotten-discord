@@ -92,6 +92,8 @@ class Config:
         self.ALLOWED_CHANNELS = [int(c.strip()) for c in os.getenv('ALLOWED_CHANNELS', '1178146867540930601').split(',') if c.strip()]
         self.CALENDAR_OWNER_NAME = os.getenv('CALENDAR_OWNER_NAME', 'ᚱᛊᛊᚦ')
         
+        # consumed by the bot transport isolation gate, not this process
+        self.BOT_DATA_HOME = os.getenv('BOT_DATA_HOME', '').strip()
         self.INVOCATION_MODE = os.getenv('INVOCATION_MODE', 'legacy')
         self.CALENDAR_MODE = os.getenv('CALENDAR_MODE', 'legacy_shared')
         self.CALENDAR_OWNER_ID = os.getenv('CALENDAR_OWNER_ID', '').strip()
