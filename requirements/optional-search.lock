@@ -574,9 +574,9 @@ soupsieve==2.10 \
     --hash=sha256:49e9380d7d2905463583bafe285e818c7366a9ed7b3aee221c1ac79c905d8bc0 \
     --hash=sha256:8596eb8967d744174820280fa62b4542a2e955bfaccca73ed8a13c6eb8e9b502
     # via beautifulsoup4
-tavily-python==0.8.4 \
-    --hash=sha256:1cbbb6d59ff22e3655586a1c8a1edf28d6abfa29d14da71dcd2922955da2033f \
-    --hash=sha256:8031fd435e1c9580b7846044f456fc1d14b9c42b715740b3f0643a6e483abf83
+tavily-python==0.8.5 \
+    --hash=sha256:1795965c3ffe5654856244d637daa816a4ee947aca57d0588b731c69e75e71fe \
+    --hash=sha256:f8d2880f5aa67cf3ee2eb1f7c9336ea50dc331eb1e406688391badb0140599a7
     # via -r requirements/optional-search.in
 tiktoken==0.14.0 \
     --hash=sha256:087538c080e5ff421abd3a0785ed63c5111d06af98e6cd0d374dbe5969147ca3 \
