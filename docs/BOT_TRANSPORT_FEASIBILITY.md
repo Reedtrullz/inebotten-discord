@@ -62,3 +62,21 @@ Offline acceptance covers environment separation (including ambiguous `DISCORD_T
 Before calling this a supported deployment, an owner must provide an explicitly approved test bot and test guild. Then verify the bot's application identity and configured role permissions, mentioned-message content without Message Content intent, allowlisted invocation, calendar scope owner/collaborator decisions, reminder due delivery and restart ownership, poll ownership/votes, and remote-send receipt/error behavior. No private data or existing account migration is part of that gate.
 
 Parent integration verification: 17 contract tests and 108 shared calendar/access/time/mutation/reminder/poll/sender tests passed in a fresh hash-installed bot environment; `pip check` passed and the current PyPI advisory query reported zero findings. The ordinary selfbot profile runs the common contracts and visibly skips the two tests that require the competing bot distribution. The bot CI job installs its own lock in a separate job; that remote job has not run on this candidate.
+
+## Production composition and deployment
+
+`scripts/run_bot.py` composes the production stack: it requires `HERMES_HOME` and `BOT_DATA_HOME` to name the same absolute private directory (never the default `~/.hermes` selfbot home), loads the explicit application configuration through `core.config` with the standard allowlist validation, and hands `BotRunner.create` a monitor factory that builds the real `MessageMonitor` with the production rate limiter, AI connector, and response generator. Credentials still come only from `BOT_DISCORD_TOKEN` in the process environment; `DISCORD_USER_TOKEN` or `DISCORD_TOKEN` anywhere in that environment fails closed. The selfbot runner has no bot mode and no default route into this entrypoint.
+
+Deploy the bot transport in its own Python 3.12 environment installed from `requirements/bot.lock`, with `HERMES_HOME` and `BOT_DATA_HOME` pointed at a fresh `0700` directory, `BOT_DISCORD_TOKEN` supplied by the secret manager, `INVOCATION_MODE=allowlist`, and explicit `ALLOWED_USERS` / `ALLOWED_CHANNELS` values, then run `python scripts/run_bot.py`.
+
+### Test-guild acceptance checklist
+
+1. Application identity and roles: the test application is created, the bot is invited to the approved test guild with the guild-message scope, and the bot appears as a distinct application identity (not the user account).
+2. Mention dispatch without privileged intents: a mention in an allowed channel reaches the monitor and receives a response while the Message Content intent remains disabled in the developer portal.
+3. Invocation allowlist: a mention from a non-allowed user or in a non-allowed channel is refused; an allowed user in an allowed channel is answered.
+4. Calendar scope: calendar list/search works for the configured owner, and collaborator operations in an approved-group calendar behaves per the access policy.
+5. Reminders: a due reminder fires in-channel, and a restart of the process reloads and still delivers it.
+6. Polls: a poll created by an allowed user records votes and preserves ownership and counters across edits and restarts.
+7. Send receipts: outbound replies report delivered status with message IDs, and a failed delivery is reported as unknown/failed rather than silent success.
+
+Each item is owner-observed on the approved test guild; none of them is satisfied by the offline test suite or CI.
