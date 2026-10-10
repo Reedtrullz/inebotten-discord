@@ -102,6 +102,88 @@ class ReleaseContractTests(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 build_desktop._verify_macos_archive(archive, scratch / 'tampered')
 
+    def test_signing_helpers_gate_on_explicit_environment_and_identity(self):
+        from scripts import build_desktop
+
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            bundle = scratch / 'Inebotten.app'
+            executable = bundle / 'Contents' / 'MacOS' / 'Inebotten'
+            executable.parent.mkdir(parents=True)
+            shutil.copyfile('/usr/bin/true', executable)
+            executable.chmod(0o755)
+
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('MACOS_SIGNING_IDENTITY', None)
+                os.environ.pop('MACOS_NOTARY_PROFILE', None)
+                self.assertIsNone(build_desktop._macos_signing_identity())
+                self.assertIsNone(build_desktop._macos_notary_profile())
+
+            with patch.dict(os.environ, {'MACOS_SIGNING_IDENTITY': 'Developer ID Application: TEST'}):
+                self.assertEqual(build_desktop._macos_signing_identity(), 'Developer ID Application: TEST')
+
+    def test_signing_refuses_non_developer_id_identity(self):
+        from scripts import build_desktop
+
+        class FakeCompleted:
+            def __init__(self):
+                self.stderr = ''
+                self.stdout = ''
+                self.returncode = 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            bundle = scratch / 'Inebotten.app'
+            executable = bundle / 'Contents' / 'MacOS' / 'Inebotten'
+            executable.parent.mkdir(parents=True)
+            shutil.copyfile('/usr/bin/true', executable)
+            executable.chmod(0o755)
+
+            def fake_run(command, **_kwargs):
+                completed = FakeCompleted()
+                if '-dv' in command:
+                    completed.stderr = 'Authority=Apple Development: TEST'
+                return completed
+
+            with patch.object(build_desktop.subprocess, 'run', side_effect=fake_run):
+                with self.assertRaisesRegex(RuntimeError, 'Developer ID Application'):
+                    build_desktop._sign_macos_bundle(bundle, 'Apple Development: TEST')
+
+    def test_signing_and_notarization_commands_are_bounded_and_stapled(self):
+        from scripts import build_desktop
+
+        class FakeCompleted:
+            returncode = 0
+
+            def __init__(self):
+                self.stderr = ''
+                self.stdout = ''
+
+        commands = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(list(command))
+            return FakeCompleted()
+
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            bundle = scratch / 'Inebotten.app'
+            bundle.mkdir()
+            with patch.object(build_desktop.subprocess, 'run', side_effect=fake_run), \
+                    patch.object(build_desktop, '_verify_macos_bundle') as verify, \
+                    patch.object(build_desktop, '_codesign_authority',
+                                 return_value='Authority=Developer ID Application: TEST'):
+                build_desktop._sign_macos_bundle(bundle, 'Developer ID Application: TEST')
+                build_desktop._notarize_macos_bundle(bundle, scratch, 'notary-profile')
+
+            verify.assert_called_with(bundle)
+            flat = [' '.join(command) for command in commands]
+            self.assertTrue(any('--options runtime' in line and '--timestamp' in line for line in flat))
+            self.assertTrue(any('notarytool' in line and '--keychain-profile notary-profile' in line and '--wait' in line for line in flat))
+            self.assertTrue(any('stapler staple' in line for line in flat))
+            self.assertTrue(any('stapler validate' in line for line in flat))
+            self.assertTrue(any('ditto' in line and 'notarize.zip' in line for line in flat))
+
     def test_same_lock_survives_platform_checkout_endings_but_changed_pin_does_not(self):
         contract = _load_release_contract()
         raw = (ROOT / contract.DESKTOP_LOCK).read_bytes().replace(b'\r\n', b'\n')
@@ -615,7 +697,7 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(release.count("gh release create"), 1)
         self.assertIn("uses: ./.github/workflows/ci.yml", release)
         self.assertIn("uses: ./.github/workflows/build-desktop-apps.yml", release)
-        self.assertIn("needs: [ci, build_desktop]", release)
+        self.assertIn("needs: [ci, build_desktop, verify_macos_signing]", release)
         self.assertNotIn("gh release create", desktop)
         self.assertNotIn("action-gh-release", desktop)
         self.assertNotIn("contents: write", desktop)

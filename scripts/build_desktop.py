@@ -28,6 +28,8 @@ from scripts import release_contract
 BUILD_TIMEOUT_SECONDS = 20 * 60
 SMOKE_TIMEOUT_SECONDS = 90
 GIT_TIMEOUT_SECONDS = 20
+NOTARIZE_TIMEOUT_SECONDS = 900
+
 _LAUNCHERS = {
     "macos": Path("mac_app/launcher.py"),
     "windows": Path("windows_app/launcher.py"),
@@ -280,6 +282,55 @@ def _verify_macos_archive(archive_path: Path, extracted_dir: Path) -> None:
     _verify_macos_bundle(extracted_dir / f'{release_contract.APP_NAME}.app')
 
 
+def _macos_signing_identity():
+    return os.environ.get('MACOS_SIGNING_IDENTITY', '').strip() or None
+
+
+def _macos_notary_profile():
+    return os.environ.get('MACOS_NOTARY_PROFILE', '').strip() or None
+
+
+def _codesign_authority(bundle):
+    completed = subprocess.run(
+        ['/usr/bin/codesign', '-dv', str(bundle)],
+        check=False, capture_output=True, text=True, timeout=120,
+    )
+    return completed.stderr + completed.stdout
+
+
+def _sign_macos_bundle(bundle, identity):
+    subprocess.run(
+        ['/usr/bin/codesign', '--force', '--options', 'runtime', '--timestamp',
+         '--sign', identity, '--deep', str(bundle)],
+        check=True, capture_output=True, text=True, timeout=600,
+    )
+    _verify_macos_bundle(bundle)
+    if 'Developer ID Application' not in _codesign_authority(bundle):
+        raise RuntimeError('codesign did not produce a Developer ID Application signature')
+
+
+def _notarize_macos_bundle(bundle, scratch, profile):
+    archive = scratch / 'notarize.zip'
+    subprocess.run(
+        ['/usr/bin/ditto', '-c', '-k', '--keepParent', str(bundle), str(archive)],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    subprocess.run(
+        ['/usr/bin/xcrun', 'notarytool', 'submit', str(archive),
+         '--keychain-profile', profile, '--wait'],
+        check=True, capture_output=True, text=True, timeout=NOTARIZE_TIMEOUT_SECONDS,
+    )
+    subprocess.run(
+        ['/usr/bin/xcrun', 'stapler', 'staple', str(bundle)],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+    _verify_macos_bundle(bundle)
+    subprocess.run(
+        ['/usr/bin/xcrun', 'stapler', 'validate', str(bundle)],
+        check=True, capture_output=True, text=True, timeout=300,
+    )
+
+
 def _write_zip_entry_for_symlink(archive: zipfile.ZipFile, path: Path, relative: Path) -> None:
     info = zipfile.ZipInfo(relative.as_posix())
     info.create_system = 3
@@ -526,6 +577,12 @@ def build_desktop(
             bundle = dist_dir / f"{release_contract.APP_NAME}.app"
             executable = bundle / "Contents" / "MacOS" / release_contract.APP_NAME
             _finalize_macos_bundle(bundle, version)
+            signing_identity = _macos_signing_identity()
+            if signing_identity:
+                _sign_macos_bundle(bundle, signing_identity)
+                notary_profile = _macos_notary_profile()
+                if notary_profile:
+                    _notarize_macos_bundle(bundle, scratch, notary_profile)
         else:
             bundle = dist_dir / release_contract.APP_NAME
             executable = bundle / f"{release_contract.APP_NAME}.exe"

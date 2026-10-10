@@ -107,12 +107,58 @@ jobs:
           fi
           "$PYTHON" scripts/check_desktop_lifecycle.py
 
+      - name: Resolve macOS signing inputs
+        id: codesigning_id
+        if: matrix.platform == 'macos'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_API_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+        run: |
+          if [[ -n "$APPLE_CERTIFICATE_P12" ]]; then
+            echo 'identity=Developer ID Application' >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$APPLE_CERTIFICATE_P12" && -n "$APPLE_NOTARY_KEY_ID" && -n "$APPLE_NOTARY_ISSUER_ID" && -n "$APPLE_NOTARY_API_KEY" ]]; then
+            echo 'profile=inebotten-notary' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import the Developer ID certificate
+        if: matrix.platform == 'macos' && steps.codesigning_id.outputs.identity != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          p12_path="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$p12_path"
+          keychain_path="$RUNNER_TEMP/build.keychain-db"
+          keychain_password="$RUNNER_TEMP/keychain-password"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$p12_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          security list-keychain -d user -s "$keychain_path"
+          rm "$p12_path"
+
+      - name: Store the notarytool credentials
+        if: matrix.platform == 'macos' && steps.codesigning_id.outputs.profile != ''
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_API_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+        run: |
+          key_path="$RUNNER_TEMP/notary-api-key.p8"
+          printf '%s\n' "$APPLE_NOTARY_API_KEY" > "$key_path"
+          xcrun notarytool store-credentials inebotten-notary --key "$key_path" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID"
+
       - name: Build and smoke the selected platform artifact
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
           RELEASE_REF: ${{ inputs.ref || github.ref }}
           RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+          MACOS_SIGNING_IDENTITY: ${{ steps.codesigning_id.outputs.identity || '' }}
+          MACOS_NOTARY_PROFILE: ${{ steps.codesigning_id.outputs.profile || '' }}
         run: |
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             PYTHON=.superpowers/desktop-env/Scripts/python.exe

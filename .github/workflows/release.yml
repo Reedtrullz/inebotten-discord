@@ -22,12 +22,36 @@ jobs:
     uses: ./.github/workflows/build-desktop-apps.yml
     with:
       ref: ${{ github.ref }}
+    secrets: inherit
     permissions:
       contents: read
 
+  verify_macos_signing:
+    name: Verify macOS Developer ID signing and notarization
+    needs: build_desktop
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+    steps:
+      - name: Download the macOS release artifact
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macos
+          path: artifacts/macos
+
+      - name: Verify Developer ID signature and notarization staple
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        run: |
+          unzip -q artifacts/macos/Inebotten-macos.zip -d artifacts/macos/extracted
+          bundle=$(find artifacts/macos/extracted -type d -name '*.app' | head -n 1)
+          codesign --verify --deep --strict --verbose=2 "$bundle"
+          stapler validate "$bundle"
+
   publish:
     name: Verify artifacts and publish release
-    needs: [ci, build_desktop]
+    needs: [ci, build_desktop, verify_macos_signing]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
