@@ -171,6 +171,52 @@ async def test_api_key_is_explicit_path_and_cookie_alone_cannot_bypass_it(worksp
     assert status == 200
 
 
+@pytest.mark.parametrize("origin", [None, "https://attacker.invalid", ORIGIN])
+@pytest.mark.parametrize("path", ["preview", "apply"])
+async def test_cloudflare_calendar_is_read_only_on_http_write_routes(workspace, monkeypatch, origin, path):
+    server, manager, _ = workspace
+    payload = {"operation": "complete", "item_id": manager.items[SCOPE][0]["id"],
+               "revision": manager._storage.revision}
+    status, preview = await http_request(server, "/api/calendar/preview", method="POST",
+                                        body=payload, api_key=API_KEY)
+    assert status == 200
+    monkeypatch.setattr(server, "auth_mode", "cloudflare_access")
+    monkeypatch.setattr(server, "cloudflare_access_verifier", SimpleNamespace(
+        verify_headers=lambda headers: headers.get("cf-access-jwt-assertion") == "verified-test-token"))
+    headers = ["Cf-Access-Jwt-Assertion: verified-test-token"]
+    if origin is not None:
+        headers.append(f"Origin: {origin}")
+    status, agenda = await http_request(server, "/api/calendar/items", headers=headers)
+    assert status == 200 and agenda["read_only"] is True
+    before = manager.storage_path.read_bytes()
+    revision = manager._storage.revision
+    body = payload if path == "preview" else {"token": preview["token"]}
+    status, result = await http_request(server, f"/api/calendar/{path}", method="POST",
+                                      body=body, headers=headers)
+    assert status == 403 and result["error"] == "browser_writes_require_console_session"
+    assert manager.storage_path.read_bytes() == before
+    assert manager._storage.revision == revision
+    status, result = await http_request(server, "/api/calendar/apply", method="POST",
+                                      body={"token": preview["token"]}, api_key=API_KEY)
+    assert status == 200 and result["operation"] == "complete"
+
+
+async def test_browser_session_can_apply_calendar_preview(workspace):
+    server, manager, _ = workspace
+    session = server.store.create_session(600, server._session_binding_hash())
+    headers = [f"Origin: {ORIGIN}", f"X-CSRF-Token: {server._csrf_token(session)}"]
+    cookie = f"console_session={session}"
+    body = {"operation": "complete", "item_id": manager.items[SCOPE][0]["id"],
+            "revision": manager._storage.revision}
+    status, preview = await http_request(server, "/api/calendar/preview", method="POST",
+                                        body=body, cookie=cookie, headers=headers)
+    assert status == 200
+    status, result = await http_request(server, "/api/calendar/apply", method="POST",
+                                      body={"token": preview["token"]}, cookie=cookie, headers=headers)
+    assert status == 200 and result["operation"] == "complete"
+    assert manager.items[SCOPE][0]["completed"] is True
+
+
 async def test_apply_reauthorizes_after_access_is_revoked(workspace):
     server, manager, _ = workspace
     status, preview = await http_request(server, "/api/calendar/preview", method="POST", api_key=API_KEY,

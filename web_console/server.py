@@ -378,18 +378,7 @@ class ConsoleServer:
         return None
 
     def _calendar_write_allowed(self, headers: dict[str, str]) -> tuple[bool, str | None]:
-        credential = self._calendar_credential(headers)
-        if credential is None:
-            return False, "unauthorized"
-        if credential != "session":
-            return True, None
-        if not self.trusted_origin or headers.get("origin", "") != self.trusted_origin:
-            return False, "trusted_origin_required"
-        session = self._parse_cookies(headers.get("cookie")).get("console_session", "")
-        supplied = headers.get("x-csrf-token", "")
-        if not session or not hmac.compare_digest(supplied, self._csrf_token(session)):
-            return False, "csrf_failed"
-        return True, None
+        return self._browser_write_allowed(headers)
 
     def _browser_write_allowed(self, headers: dict[str, str], body_bytes: bytes = b"") -> tuple[bool, str | None]:
         credential = self._calendar_credential(headers)

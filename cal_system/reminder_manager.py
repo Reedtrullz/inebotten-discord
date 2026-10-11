@@ -21,6 +21,10 @@ from core.access_policy import AccessPolicy
 from core.request_context import current_request
 
 
+class ReminderEditError(ValueError):
+    pass
+
+
 class ReminderManager(SyncOwnerMixin):
     """
     Manages reminders that users can mark as completed
@@ -315,7 +319,7 @@ class ReminderManager(SyncOwnerMixin):
 
         # Non-recurring reminder - mark as completed
         target_reminder["completed"] = True
-        target_reminder["completed_at"] = datetime.now().isoformat()
+        target_reminder["completed_at"] = self.clock.now().isoformat()
         self._queue_sync(target_reminder, 'update', guild_key)
         self._save_reminders()
         return True, target_reminder["text"], None
@@ -425,6 +429,15 @@ class ReminderManager(SyncOwnerMixin):
 
         return active
 
+    def _completion_time(self, reminder):
+        try:
+            value = datetime.fromisoformat(reminder.get('completed_at'))
+        except (TypeError, ValueError):
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=ZoneInfo('Europe/Oslo'))
+        return value.astimezone(ZoneInfo('UTC'))
+
     @writable_store
     def get_completed_reminders(self, guild_id, days=7):
         """
@@ -432,13 +445,13 @@ class ReminderManager(SyncOwnerMixin):
         """
         guild_key, scope = self._scope_bucket(guild_id, 'read')
 
-        cutoff = datetime.now() - timedelta(days=days)
+        cutoff = self.clock.now('UTC') - timedelta(days=days)
 
         completed = []
         for r in self._records_in_scope(guild_key, scope):
             if r["completed"] and r.get("completed_at") and not r.get('_mutation_deleted'):
-                completed_at = datetime.fromisoformat(r["completed_at"])
-                if completed_at >= cutoff:
+                completed_at = self._completion_time(r)
+                if completed_at is not None and completed_at >= cutoff:
                     completed.append(r)
 
         return completed
@@ -497,15 +510,17 @@ class ReminderManager(SyncOwnerMixin):
         if guild_key not in self.reminders:
             return
 
-        cutoff = datetime.now() - timedelta(days=days)
+        cutoff = self.clock.now('UTC') - timedelta(days=days)
 
         kept = []
         for reminder in self.reminders[guild_key]:
             if not self._record_in_scope(reminder, scope):
                 kept.append(reminder)
                 continue
-            if (not reminder['completed'] or reminder.get('completed_at')
-                    and datetime.fromisoformat(reminder['completed_at']) >= cutoff):
+            completed_at = self._completion_time(reminder)
+            unresolved = reminder.get('_local_sync_pending') or reminder.get('delete_pending') or any(
+                operation['state'] != 'synced' for operation in reminder.get('sync_operations', []))
+            if not reminder['completed'] or completed_at is None or completed_at >= cutoff or unresolved:
                 kept.append(reminder)
         self.reminders[guild_key] = kept
 
@@ -543,13 +558,54 @@ class ReminderManager(SyncOwnerMixin):
             raise ValueError(f"Ugyldig påminnelse-nummer: {index}")
 
         target = active[idx]
-
+        candidate = copy.deepcopy(target)
         if title is not None:
-            target["text"] = title
+            candidate["text"] = title
         if date is not None:
-            target["due_date"] = date
+            candidate["due_date"] = date
         if recurrence is not None:
-            target["recurrence"] = recurrence
+            candidate["recurrence"] = recurrence
+        if any(candidate.get(key) != target.get(key) for key in ('due_date', 'recurrence')):
+            try:
+                previous = self._ensure_series(copy.deepcopy(target)) if target.get('recurrence') else None
+                index = target.get('series_next_index', 0)
+                if previous:
+                    current = occurrence_at(previous, index)
+                    if current is None:
+                        raise ValueError('recurrence_has_no_pending_occurrence')
+                    if any(Occurrence.from_document(saved).original_start >= current.original_start
+                           for saved in target.get('occurrences', {}).values()):
+                        raise ReminderEditError('Fremtidige unntak må gjennomgås før gjentakelsen endres.')
+                    if len(candidate.get('series_history', [])) >= 64:
+                        raise ReminderEditError('Historikken er full; gjentakelsen er ikke endret.')
+                    candidate.setdefault('series_history', []).append({
+                        'series': previous.to_document(), 'through_index': index - 1, 'scope': 'future'})
+                if candidate.get('recurrence'):
+                    anchor = EventTime('task', self._recurrence_date(candidate['due_date']), None, 'Europe/Oslo', True)
+                    rule = {'frequency': candidate['recurrence']}
+                    weekday = candidate.get('rrule_day') or candidate.get('recurrence_day')
+                    if weekday and candidate['recurrence'] in ('weekly', 'biweekly'):
+                        rule['weekday'] = weekday
+                    else:
+                        candidate.pop('rrule_day', None)
+                        candidate.pop('recurrence_day', None)
+                    series = Series(candidate['id'], anchor, rule,
+                        previous.end_count if previous else candidate.get('recurrence_end_count'),
+                        previous.end_date if previous else self._coerce_recurrence_end_date(candidate.get('recurrence_end_date')),
+                        index)
+                    candidate['series'] = series.to_document()
+                    candidate['series_next_index'] = index
+                    candidate.setdefault('occurrences', {})
+                elif previous:
+                    candidate.pop('series', None)
+                    candidate['recurrence_end_count'] = previous.end_count
+                    candidate['recurrence_end_date'] = previous.end_date.isoformat() if previous.end_date else None
+            except ReminderEditError:
+                raise
+            except (TypeError, ValueError, KeyError) as error:
+                raise ReminderEditError('Gjentakende påminnelser må ha en gyldig dato uten klokkeslett og en støttet gjentakelse.') from error
+        target.clear()
+        target.update(candidate)
         self._queue_sync(target, 'update', guild_key)
         if target.get('gcal_event_id') and (date is not None or recurrence is not None):
             target['sync_blocked'] = 'explicit_event_time_required'
