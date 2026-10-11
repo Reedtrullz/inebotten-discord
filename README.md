@@ -1,7 +1,7 @@
 # Inebotten Discord Bot
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.12+-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/python-3.12-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/discord-selfbot-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord selfbot">
   <img src="https://img.shields.io/badge/AI-LM%20Studio%20%7C%20OpenRouter-green?style=for-the-badge&logo=openai&logoColor=white" alt="AI">
   <img src="https://img.shields.io/badge/plattform-macOS%20%7C%20Windows-lightgrey?style=for-the-badge&logo=apple&logoColor=white" alt="Plattform">
@@ -53,13 +53,13 @@ macOS kan vise en Gatekeeper-advarsel fordi appen ikke er notarized. Høyreklikk
 git clone https://github.com/Reedtrullz/inebotten-discord.git
 cd inebotten-discord
 
-python3 -m venv .venv312
-.venv312/bin/python -m pip install -r requirements.txt
+python3.12 -m venv .venv312
+.venv312/bin/python -m pip install --require-hashes -r requirements/prod.lock
 .venv312/bin/python setup.py
 .venv312/bin/python scripts/run_both.py
 ```
 
-På Windows bruker du `.venv312\Scripts\python.exe` i stedet for `.venv312/bin/python`. Oppsett, konfigurasjonsstier, tokenbasert autentisering og sikker gjenoppretting er dokumentert i [docs/SETUP.md](docs/SETUP.md).
+Bruk Python 3.12. På Windows oppretter du miljøet med `py -3.12 -m venv .venv312` og bruker `.venv312\Scripts\python.exe` i stedet for `.venv312/bin/python`. Oppsett, konfigurasjonsstier, tokenbasert autentisering og sikker gjenoppretting er dokumentert i [docs/SETUP.md](docs/SETUP.md). Velg Google-, søke- og andre valgfrie profiler fra [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md); bot-adapteren krever et separat miljø.
 
 ### Docker/VPS
 
@@ -187,18 +187,18 @@ inebotten-discord/
 ## Utvikling og test
 
 ```bash
-.venv312/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
-.venv312/bin/python -m pytest -q
+.venv312/bin/python -m pip install --require-hashes -r requirements/dev.lock
+.venv312/bin/python scripts/run_offline_tests.py -- -q
 ```
 
 Nyttige måltester:
 
 ```bash
-.venv312/bin/python -m pytest tests/test_intent_router.py -q
-.venv312/bin/python -m pytest tests/test_message_monitor_routing.py -q
-.venv312/bin/python -m pytest tests/test_false_positives.py -q
-.venv312/bin/python -m pytest tests/test_action_schema.py -q
-.venv312/bin/python -m pytest tests/test_comprehensive.py -q
+.venv312/bin/python scripts/run_offline_tests.py -- tests/test_intent_router.py -q
+.venv312/bin/python scripts/run_offline_tests.py -- tests/test_message_monitor_routing.py -q
+.venv312/bin/python scripts/run_offline_tests.py -- tests/test_false_positives.py -q
+.venv312/bin/python scripts/run_offline_tests.py -- tests/test_action_schema.py -q
+.venv312/bin/python scripts/run_offline_tests.py -- tests/test_comprehensive.py -q
 ```
 
 ## Sikkerhet
