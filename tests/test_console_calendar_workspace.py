@@ -129,6 +129,43 @@ async def test_edit_and_delete_use_domain_preview_and_stale_revision_conflicts(w
     assert manager.items[SCOPE][0].get("_mutation_deleted") is True
 
 
+@pytest.mark.parametrize(("all_day", "time"), [(True, None), (False, "13:45")])
+async def test_browser_form_edit_preserves_explicit_all_day_semantics(workspace, all_day, time):
+    server, manager, _ = workspace
+    item = manager.items[SCOPE][0]
+    original = manager.storage_path.read_bytes()
+    session = server.store.create_session(600, server._session_binding_hash())
+    headers = (f"Origin: {ORIGIN}", f"X-CSRF-Token: {server._csrf_token(session)}")
+    status, preview = await http_request(server, "/api/calendar/preview", method="POST",
+        cookie=f"console_session={session}", headers=headers,
+        body={"operation": "edit", "item_id": item["id"], "revision": manager._storage.revision,
+              "changes": {"title": "Browser edit", "date": "13.10.2026", "time": time,
+                          "kind": "event", "description": "Changed in browser",
+                          "timezone": "Europe/Oslo", "all_day": all_day}})
+    assert status == 200, preview
+    assert manager.storage_path.read_bytes() == original
+    after = preview["effects"][0]["after"]
+    assert after["all_day"] is all_day and after["time"] == time
+    status, result = await http_request(server, "/api/calendar/apply", method="POST",
+        cookie=f"console_session={session}", headers=headers, body={"token": preview["token"]})
+    assert status == 200 and result["applied_count"] == 1
+    status, agenda = await http_request(server, "/api/calendar/items", cookie=f"console_session={session}")
+    assert status == 200
+    assert agenda["items"][0]["title"] == "Browser edit"
+    assert agenda["items"][0]["all_day"] is all_day
+    assert agenda["items"][0]["time"] == time
+
+
+async def test_browser_edit_rejects_non_boolean_all_day_without_writing(workspace):
+    server, manager, _ = workspace
+    original = manager.storage_path.read_bytes()
+    status, result = await http_request(server, "/api/calendar/preview", method="POST", api_key=API_KEY,
+        body={"operation": "edit", "item_id": manager.items[SCOPE][0]["id"],
+              "revision": manager._storage.revision, "changes": {"all_day": "false"}})
+    assert status == 400 and result["error"] == "all_day_must_be_boolean"
+    assert manager.storage_path.read_bytes() == original
+
+
 async def test_forged_actor_scope_extra_keys_and_bad_json_are_rejected(workspace):
     server, manager, _ = workspace
     status, body = await http_request(server, "/api/calendar/preview", method="POST", api_key=API_KEY,
@@ -310,6 +347,16 @@ def test_calendar_workspace_browser_create_preview_apply_and_empty_filter(page, 
         appointment = page.locator("[data-calendar-agenda] article").filter(has=page.get_by_role("heading", name="Browser appointment", exact=True))
         appointment.locator("summary").click()
         assert appointment.get_by_text("Behold denne beskrivelsen æøå", exact=True).is_visible()
+        appointment.locator('[data-calendar-action="edit"]').click()
+        page.locator('[data-calendar-form] input[name="title"]').fill("Edited appointment")
+        page.locator('[data-calendar-form] button[type="submit"]').click()
+        page.locator("[data-calendar-preview]:not([hidden])").wait_for()
+        assert appointment.get_by_role("heading", name="Browser appointment", exact=True).is_visible()
+        page.locator("[data-calendar-apply]").click()
+        page.locator("[data-calendar-agenda]").get_by_role("heading", name="Edited appointment", exact=True).wait_for()
+        stored = next(item for item in manager.items[scope] if item["title"] == "Edited appointment")
+        assert stored["all_day"] is True and stored["time"] is None
+        assert stored["description"] == "Behold denne beskrivelsen æøå"
         page.locator("[data-calendar-filter]").fill("does not exist")
         assert page.locator("[data-calendar-agenda]").get_by_text("Ingen treff på filteret.").is_visible()
     finally:
