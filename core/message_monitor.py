@@ -17,6 +17,7 @@ import subprocess
 import sys
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+from weakref import WeakValueDictionary
 
 import discord
 
@@ -250,6 +251,7 @@ class MessageMonitor:
 
         # Tracking - use deque with maxlen for automatic dedup cleanup
         self.processed_messages = deque(maxlen=1000)
+        self._poll_refresh_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = WeakValueDictionary()
         self.mention_count = 0
         self.response_count = 0
         self.error_count = 0
@@ -593,19 +595,32 @@ class MessageMonitor:
                 await self.refresh_poll_post(fresh)
 
     async def refresh_poll_post(self, poll):
-        if not poll.get('message_id'):
-            return
         get_channel = getattr(self.client, 'get_channel', None)
         if get_channel is None:
             return
+        if not hasattr(self, '_poll_refresh_locks'):
+            self._poll_refresh_locks = WeakValueDictionary()
+        key = (str(poll['guild_id']), str(poll['id']))
+        lock = self._poll_refresh_locks.setdefault(key, asyncio.Lock())
         try:
-            channel = get_channel(int(poll.get('channel_id') or 0))
-            if channel is None:
-                return
-            message = await channel.fetch_message(int(poll['message_id']))
-            await message.edit(content=self.poll.format_poll(poll))
+            async with asyncio.timeout(10), lock:
+                current = self.poll.get_poll(*key)
+                if current is None or not current.get('message_id'):
+                    return
+                channel = get_channel(int(current.get('channel_id') or 0))
+                if channel is None:
+                    return
+                message = await channel.fetch_message(int(current['message_id']))
+                latest = self.poll.get_poll(*key)
+                if latest is None or (
+                    latest.get('message_id'), latest.get('channel_id')
+                ) != (current.get('message_id'), current.get('channel_id')):
+                    return
+                await message.edit(content=self.poll.format_poll(latest))
         except Exception as error:
             print(f"[MONITOR] Poll update failed: {error}")
+        finally:
+            del lock
 
     async def _handle_message(self, message):
         """Process an incoming message"""
