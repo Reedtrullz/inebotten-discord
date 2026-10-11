@@ -115,4 +115,48 @@ async def test_reminder_created_before_warning_window_gets_30min_ping(tmp_path):
     await checker.check_upcoming_30min()
 
     assert len(sent) == 1
-    assert "30 minutter" in sent[0]
+    assert "25 minutter" in sent[0]
+
+
+@pytest.mark.parametrize('kind', ['reminder', 'calendar'])
+@pytest.mark.asyncio
+async def test_created_40_minutes_before_due_warns_at_30_minutes(tmp_path, kind):
+    due = (FIXED_NOW + timedelta(minutes=30)).astimezone(ZoneInfo('Europe/Oslo'))
+    item = {'id': 'advance', 'text': 'Meeting', 'title': 'Meeting',
+            'due_date': due.strftime('%d.%m.%Y %H:%M'), 'date': due.strftime('%d.%m.%Y'),
+            'time': due.strftime('%H:%M'), 'channel_id': '123', 'user_id': '7',
+            'created_at': (FIXED_NOW - timedelta(minutes=10)).isoformat()}
+    sent = []
+    checker = _checker(tmp_path, sent, {'123': [item]} if kind == 'reminder' else {})
+    if kind == 'calendar':
+        checker.calendar = SimpleNamespace(items={'shared': [item]}, access_policy=None)
+    await checker.check_upcoming_30min()
+    await checker.check_upcoming_30min()
+    assert len(sent) == 1 and '30 minutter' in sent[0]
+
+
+@pytest.mark.parametrize('created', [
+    '2026-10-11T00:05:00', '2026-10-10T22:05:00+00:00',
+    '2026-10-11T00:05:00+02:00',
+])
+@pytest.mark.asyncio
+async def test_warning_uses_due_boundary_and_actual_remaining_minutes(tmp_path, created):
+    reminder = {'id': 'late-scan', 'text': 'Meeting', 'due_date': _oslo_due(-9),
+                'created_at': created, 'channel_id': '123', 'user_id': '7'}
+    sent = []
+    checker = _checker(tmp_path, sent, {'123': [reminder]})
+    await checker.check_upcoming_30min()
+    assert len(sent) == 1 and '9 minutter' in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_created_on_warning_boundary_skips_lead_but_delivers_due_once(tmp_path):
+    reminder = {'id': 'boundary', 'text': 'Meeting', 'due_date': _oslo_due(0),
+                'created_at': (FIXED_NOW - timedelta(minutes=30)).isoformat(),
+                'channel_id': '123', 'user_id': '7'}
+    sent = []
+    checker = _checker(tmp_path, sent, {'123': [reminder]})
+    await checker.check_upcoming_30min()
+    await checker.check_event_now()
+    await checker.check_event_now()
+    assert len(sent) == 1 and 'Nå:' in sent[0]

@@ -13,6 +13,7 @@ Tracks sent reminders in a JSON file to avoid duplicate pings.
 """
 
 import copy
+import math
 import time
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -230,14 +231,14 @@ class ReminderChecker:
 
     # ---- 30-min warning ----
 
-    def _created_inside_warning_window(self, item, now):
+    def _created_inside_warning_window(self, item, due):
         try:
             created = datetime.fromisoformat(str(item.get('created_at')))
         except (TypeError, ValueError):
             return False
         if created.tzinfo is None:
             created = created.replace(tzinfo=ZoneInfo("Europe/Oslo"))
-        return created >= now - timedelta(minutes=30)
+        return created >= due - timedelta(minutes=30)
 
     async def check_upcoming_30min(self):
         """Check calendar items & reminders due within 30 minutes, ping creator in channel"""
@@ -253,19 +254,21 @@ class ReminderChecker:
                     item = self._current_occurrence_item(item)
                     if item is None:
                         continue
-                    if self._created_inside_warning_window(item, now):
-                        continue
                     try:
                         item_date = self._parse_item_datetime(item)
                     except (ValueError, TypeError):
                         continue
                     if item_date is None:
                         continue
+                    if self._created_inside_warning_window(item, item_date):
+                        continue
                     # Already happened or exactly in the 30-min window
-                    if now <= item_date <= thirty_min:
+                    if now < item_date <= thirty_min:
                         if self._has_been_sent(self._delivery_identity(item), "30min"):
                             continue
-                        await self._send_item_reminder(item, "30min", "30 minutter")
+                        minutes = math.ceil((item_date - now).total_seconds() / 60)
+                        label = f"{minutes} minutt" if minutes == 1 else f"{minutes} minutter"
+                        await self._send_item_reminder(item, "30min", label)
 
         # Check reminders from ReminderManager
         if self.reminders:
@@ -279,8 +282,6 @@ class ReminderChecker:
                     reminder = self._current_occurrence_item(reminder)
                     if reminder is None:
                         continue
-                    if self._created_inside_warning_window(reminder, now):
-                        continue
                     if reminder.get('scope_id') is None:
                         reminder['scope_id'] = bucket_scope
                     due = reminder.get("due_date")
@@ -292,10 +293,14 @@ class ReminderChecker:
                         continue
                     if reminder_dt is None:
                         continue
-                    if now <= reminder_dt <= thirty_min:
+                    if self._created_inside_warning_window(reminder, reminder_dt):
+                        continue
+                    if now < reminder_dt <= thirty_min:
                         if self._has_been_sent(self._delivery_identity(reminder), "30min"):
                             continue
-                        await self._send_reminder_remind(reminder, "30min", "30 minutter")
+                        minutes = math.ceil((reminder_dt - now).total_seconds() / 60)
+                        label = f"{minutes} minutt" if minutes == 1 else f"{minutes} minutter"
+                        await self._send_reminder_remind(reminder, "30min", label)
 
     # ---- Event happening NOW ----
 
