@@ -10,7 +10,7 @@ Commands:
 import re
 from typing import Dict, Optional, Tuple
 
-from cal_system.reminder_manager import parse_reminder_command
+from cal_system.reminder_manager import ReminderEditError, parse_reminder_command
 from features.base_handler import BaseHandler
 from utils.storage_contract import StorageMutationError
 from datetime import timedelta
@@ -110,6 +110,9 @@ class ReminderHandler(BaseHandler):
                     break
 
             if field:
+                if field == 'recurrence':
+                    patterns = getattr(getattr(self.monitor, 'nlp_parser', None), 'recurrence_patterns', {})
+                    value = patterns.get(value.casefold(), value)
                 return index, {field: value}
 
         if remaining:
@@ -280,6 +283,8 @@ class ReminderHandler(BaseHandler):
                 message, self.loc.t("reminder_edit_success", title=updated["text"])
             )
 
+        except ReminderEditError as error:
+            await self.send_response(message, f'❌ {error}')
         except ValueError:
             index = self.extract_number(message.content)
             await self.send_response(
