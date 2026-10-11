@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -19,10 +21,10 @@ def _oslo_due(minutes_ago):
     return due.strftime("%d.%m.%Y %H:%M")
 
 
-def _checker(tmp_path, sent, reminders):
+def _checker(tmp_path, sent, reminders, *, message=None):
     async def send(text, **kwargs):
         sent.append(text)
-        return SimpleNamespace(id="m1")
+        return message if message is not None else SimpleNamespace(id="m1")
 
     checker = ReminderChecker(
         storage_path=tmp_path / "log.json",
@@ -31,6 +33,51 @@ def _checker(tmp_path, sent, reminders):
     )
     checker.reminders = SimpleNamespace(reminders=reminders, access_policy=None)
     return checker
+
+
+@pytest.mark.parametrize('kind', ['reminder', 'calendar'])
+@pytest.mark.asyncio
+async def test_now_notification_waits_until_due_then_sends_once(tmp_path, kind):
+    due = FIXED_NOW.astimezone(ZoneInfo('Europe/Oslo'))
+    item = {'id': 'deadline', 'text': 'Meeting', 'title': 'Meeting',
+            'due_date': due.strftime('%d.%m.%Y %H:%M'), 'date': due.strftime('%d.%m.%Y'),
+            'time': due.strftime('%H:%M'), 'channel_id': '123', 'user_id': '7'}
+    sent = []
+    checker = _checker(tmp_path, sent, {'123': [item]} if kind == 'reminder' else {})
+    if kind == 'calendar':
+        checker.calendar = SimpleNamespace(items={'shared': [item]}, access_policy=None)
+    current = [FIXED_NOW - timedelta(seconds=40)]
+    checker.clock = Clock(wall=lambda: current[0], monotonic=lambda: 1)
+    await checker.setup()
+    await checker.check_event_now()
+    assert sent == []
+    current[0] = FIXED_NOW
+    await checker.check_event_now()
+    await checker.check_event_now()
+    assert len(sent) == 1 and 'nå:' in sent[0].casefold()
+
+
+@pytest.mark.asyncio
+async def test_due_delivery_receipt_does_not_copy_live_gateway_message(tmp_path):
+    message = SimpleNamespace(id='m1', gateway_future=asyncio.get_running_loop().create_future())
+    reminder = {'id': 'live-message', 'text': 'Meeting', 'due_date': _oslo_due(0),
+                'channel_id': '123', 'user_id': '7'}
+    sent = []
+    checker = _checker(tmp_path, sent, {'123': [reminder]}, message=message)
+    await checker.setup()
+    await checker.check_event_now()
+    await checker.check_event_now()
+    assert len(sent) == 1 and checker.stats['now_sent'] == 1
+    saved = json.loads((tmp_path / 'log.json').read_text())['document']
+    assert saved['deliveries']['live-message:now']['message_id'] == 'm1'
+    assert saved['deliveries']['live-message:now']['status'] == 'delivered'
+    assert 'live-message:now' in saved['reminders_sent']
+    checker.close_storage()
+    restarted = _checker(tmp_path, sent, {'123': [reminder]}, message=message)
+    await restarted.setup()
+    await restarted.check_event_now()
+    assert len(sent) == 1
+    restarted.close_storage()
 
 
 @pytest.mark.asyncio

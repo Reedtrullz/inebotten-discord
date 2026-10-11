@@ -17,6 +17,7 @@ import math
 import time
 import asyncio
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from cal_system.event_schema import EventTime, Clock
 from pathlib import Path
 
@@ -183,7 +184,7 @@ class ReminderChecker:
             result = await self.outbound.send(str(channel_id) if channel_id else '', message,
                                              delivery_key=f"{delivery_key}:{self.sent_log['deliveries'][delivery_key]['updated_at']}", deadline=deadline or time.monotonic()+10,
                                              **({'_can_dispatch': can_dispatch} if can_dispatch is not None else {}))
-            return result
+            return replace(result, message=None)
         except asyncio.CancelledError as error:
             result = getattr(error, 'delivery_result', result)
             raise
@@ -308,7 +309,6 @@ class ReminderChecker:
         """Check for events happening NOW and send notifications"""
         now = self.clock.now()
         one_minute_ago = now - timedelta(minutes=30)
-        one_minute_ahead = now + timedelta(minutes=1)
 
         # Check calendar items
         if self.calendar:
@@ -325,8 +325,7 @@ class ReminderChecker:
                         continue
                     if item_date is None:
                         continue
-                    # Check if event is happening NOW (within 1 minute window)
-                    if one_minute_ago <= item_date <= one_minute_ahead:
+                    if one_minute_ago <= item_date <= now:
                         if self._has_been_sent(self._delivery_identity(item), "now"):
                             continue
                         await self._send_item_reminder(item, "now", "nå")
@@ -354,7 +353,7 @@ class ReminderChecker:
                         continue
                     if reminder_dt is None:
                         continue
-                    if one_minute_ago <= reminder_dt <= one_minute_ahead:
+                    if one_minute_ago <= reminder_dt <= now:
                         if self._has_been_sent(self._delivery_identity(reminder), "now"):
                             continue
                         await self._send_reminder_remind(reminder, "now", "nå")
