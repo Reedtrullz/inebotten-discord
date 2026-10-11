@@ -975,7 +975,9 @@ class CalendarManager(SyncOwnerMixin):
                 return AwaitableDict(item)
         raise ValueError('Fant ikke kalenderoppføringen')
 
-    def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None):
+    def _apply_item_updates(self, item, title=None, date=None, time=None, recurrence=None, description=None, duration_minutes=None, kind=None, timezone=None, fold=None, all_day=None):
+        if all_day is not None and type(all_day) is not bool:
+            raise ValueError('all_day_must_be_boolean')
         if title is not None:
             item["title"] = title
         if date is not None:
@@ -983,6 +985,10 @@ class CalendarManager(SyncOwnerMixin):
         if time is not None:
             item["time"] = time or None
             item['all_day'] = not bool(time)
+        if all_day is not None:
+            item['all_day'] = all_day
+            if all_day:
+                item['time'] = None
         if date is not None or time is not None:
             item['fold'] = None
         for key, value in (('duration_minutes', duration_minutes), ('kind', kind), ('timezone', timezone), ('fold', fold)):
