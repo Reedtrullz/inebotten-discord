@@ -485,7 +485,7 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
             _metric_tile("Oppgaver", task_count, metric="calendar.tasks"),
         ]
     )
-    return f"""<section class="card span-4" id="calendar">
+    return f"""<section class="card span-12" id="calendar">
   <div class="card-header">
     <div><h3>Kalender</h3><p class="muted">Neste hendelser og oppgaver.</p></div>
     <span class="badge badge-neutral">{escape(str(event_count))} hendelser</span>
@@ -507,6 +507,9 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
           <label>Tittel<input name="title" maxlength="200" required></label>
           <label>Dato<input name="date" type="date" required></label>
           <label>Tid<input name="time" type="time"></label>
+          <label>Tidssone<input name="timezone" value="Europe/Oslo" maxlength="100" required></label>
+          <label>Ved dobbel tid i sommertid<select name="fold"><option value="">Velg ved behov</option><option value="0">Første forekomst</option><option value="1">Andre forekomst</option></select></label>
+          <label data-calendar-recurrence-scope hidden>Endre gjentakelse<select name="edit_scope"><option value="">Velg omfang</option><option value="this">Denne forekomsten</option><option value="future">Denne og fremtidige</option><option value="series">Hele serien</option></select></label>
           <label>Type<select name="kind"><option value="event">Hendelse</option><option value="task">Oppgave</option></select></label>
           <label>Varighet i minutter<input name="duration_minutes" type="number" min="1" max="10080"></label>
           <label>Beskrivelse<textarea name="description" maxlength="4000" rows="3"></textarea></label>

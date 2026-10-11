@@ -585,6 +585,7 @@ class MessageMonitor:
             success, error = self.poll.vote(
                 poll['guild_id'], poll['id'], option_num,
                 str(payload.user_id), f'user:{payload.user_id}',
+                reaction=True,
             )
             if not success and error not in ('Poll has expired',):
                 print(f"[MONITOR] Reaction vote rejected: {error}")

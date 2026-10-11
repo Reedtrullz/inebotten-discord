@@ -214,6 +214,7 @@ def parse_quote_command(message_content):
     Returns:
         dict with action and text, or None
     """
+    message_content = re.sub(r'<@!?\d+>|@inebotten', '', message_content, flags=re.I).strip()
     content_lower = message_content.lower()
 
     # Detect language
@@ -235,7 +236,7 @@ def parse_quote_command(message_content):
     ]
 
     all_save_phrases = save_phrases_no + save_phrases_en
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in all_save_phrases):
+    if any(re.match(rf'{re.escape(phrase)}\b', content_lower) for phrase in all_save_phrases):
         # Extract text after the command
         text = message_content
         for phrase in all_save_phrases + ["@inebotten"]:
@@ -254,7 +255,7 @@ def parse_quote_command(message_content):
     get_words_en = ["quote", "random quote", "show quote"]
 
     all_get_words = get_words_no + get_words_en
-    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in all_get_words):
+    if any(re.match(rf'{re.escape(word)}(?:\s|[.!?]|$)', content_lower) for word in all_get_words):
         return {"action": "get", "lang": lang}
 
     return None

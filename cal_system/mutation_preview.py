@@ -32,6 +32,12 @@ def validate_calendar_document(document):
         return False
     for items in document.values():
         for item in items:
+            if 'series_content' in item:
+                content = item['series_content']
+                if (not isinstance(content, dict) or set(content) != {'title', 'description'}
+                    or not isinstance(content['title'], str)
+                    or content['description'] is not None and not isinstance(content['description'], str)):
+                    return False
             if 'series' in item:
                 try:
                     series = Series.from_document(item['series'])
@@ -53,7 +59,7 @@ def validate_calendar_document(document):
                             return False
                 except (ValueError, TypeError, KeyError, AttributeError):
                     return False
-            elif any(key in item for key in ('series_next_index', 'occurrences', 'series_history')):
+            elif any(key in item for key in ('series_next_index', 'occurrences', 'series_history', 'series_content')):
                 return False
             remote_instances = item.get('google_instances')
             if remote_instances is not None and (not isinstance(remote_instances, list) or len(remote_instances) > 512

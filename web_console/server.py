@@ -438,7 +438,7 @@ class ConsoleServer:
                 sync = item.get("sync_operations", [])
                 items.append({key: item.get(key) for key in (
                     "id", "title", "description", "date", "time", "kind", "all_day", "timezone",
-                    "duration_minutes", "completed", "recurrence", "sync_blocked")}
+                    "duration_minutes", "completed", "recurrence", "sync_blocked", "fold")}
                     | {"pending_sync": bool(item.get("_local_sync_pending")),
                        "sync_state": next((op.get("state") for op in reversed(sync) if op.get("state") != "synced"), "synced"),
                        "conflicts": [{"operation_id": op.get("operation_id"), "reason_code": op.get("reason_code")}
@@ -460,6 +460,19 @@ class ConsoleServer:
             result["csrf_token"] = self._csrf_token(session)
         return result
 
+    @staticmethod
+    def _validate_calendar_changes(changes):
+        if 'title' in changes and (not isinstance(changes['title'], str) or not changes['title'].strip() or len(changes['title']) > 200):
+            raise ValueError('invalid_title')
+        if 'duration_minutes' in changes and (type(changes['duration_minutes']) is not int or not 1 <= changes['duration_minutes'] <= 10080):
+            raise ValueError('invalid_duration')
+        if 'time' in changes and changes['time'] is not None and not isinstance(changes['time'], str):
+            raise ValueError('invalid_time')
+        if 'timezone' in changes and (not isinstance(changes['timezone'], str) or len(changes['timezone']) > 80):
+            raise ValueError('invalid_timezone')
+        if 'description' in changes and (not isinstance(changes['description'], str) or len(changes['description']) > 4000):
+            raise ValueError('invalid_description')
+
     def _calendar_preview(self, actor: RequestContext, payload: dict) -> dict:
         allowed = {"operation", "item_id", "revision", "changes", "choice", "operation_id"}
         if set(payload) - allowed or type(payload.get("revision")) is not int:
@@ -474,24 +487,15 @@ class ConsoleServer:
             if set(payload) != {"operation", "revision", "changes"}:
                 raise ValueError("invalid_payload")
             changes = payload.get("changes")
-            fields = {"title", "description", "date", "time", "kind", "timezone", "all_day", "duration_minutes"}
+            fields = {"title", "description", "date", "time", "kind", "timezone", "all_day", "duration_minutes", "fold"}
             if not isinstance(changes, dict) or set(changes) - fields or not {"title", "date"} <= set(changes):
                 raise ValueError("invalid_create")
-            if not isinstance(changes["title"], str) or not changes["title"].strip() or len(changes["title"]) > 200:
-                raise ValueError("invalid_title")
-            if "all_day" in changes and type(changes["all_day"]) is not bool:
-                raise ValueError("invalid_all_day")
-            if "duration_minutes" in changes and (type(changes["duration_minutes"]) is not int or not 1 <= changes["duration_minutes"] <= 10080):
-                raise ValueError("invalid_duration")
-            if "time" in changes and changes["time"] is not None and not isinstance(changes["time"], str):
-                raise ValueError("invalid_time")
-            if "timezone" in changes and (not isinstance(changes["timezone"], str) or len(changes["timezone"]) > 80):
-                raise ValueError("invalid_timezone")
-            if "description" in changes and (not isinstance(changes["description"], str) or len(changes["description"]) > 4000):
-                raise ValueError("invalid_description")
+            self._validate_calendar_changes(changes)
+            if 'all_day' in changes and type(changes['all_day']) is not bool:
+                raise ValueError('invalid_all_day')
             time_input = {"date": changes["date"], "time": changes.get("time"),
                 "kind": changes.get("kind", "event"), "timezone": changes.get("timezone", "Europe/Oslo")}
-            for key in ("all_day", "duration_minutes"):
+            for key in ("all_day", "duration_minutes", "fold"):
                 if key in changes:
                     time_input[key] = changes[key]
             value = EventTime.from_item(time_input).validate_local()
@@ -519,9 +523,14 @@ class ConsoleServer:
                 raise ValueError("invalid_item_id")
             if operation == "edit":
                 changes = payload["changes"]
-                allowed_changes = {"title", "description", "date", "time", "kind", "timezone", "all_day", "duration_minutes"}
+                allowed_changes = {"title", "description", "date", "time", "kind", "timezone", "all_day", "duration_minutes", "edit_scope", "fold"}
                 if not isinstance(changes, dict) or not changes or set(changes) - allowed_changes:
                     raise ValueError("invalid_changes")
+                if 'edit_scope' in changes and changes['edit_scope'] not in ('this', 'future', 'series'):
+                    raise ValueError('recurrence_edit_scope_required')
+                if 'duration_minutes' in changes and changes['duration_minutes'] is None:
+                    raise ValueError('duration_required')
+                self._validate_calendar_changes(changes)
             if payload["revision"] != manager._storage.revision:
                 raise ValueError("revision_changed")
             preview = manager.preview_mutation(actor, scope, [item_id], operation, payload["revision"], changes=payload.get("changes"))
@@ -554,7 +563,7 @@ class ConsoleServer:
                     item = manager.add_item(None, actor.user_id, "Console", values["title"].strip(), values["date"],
                         values.get("time"), kind=values.get("kind", "event"), timezone=values.get("timezone", "Europe/Oslo"),
                         all_day=values.get("all_day"), duration_minutes=values.get("duration_minutes"), channel_id=actor.channel_id,
-                        description=values.get("description", ""))
+                        description=values.get("description", ""), fold=values.get("fold"))
             return {"ok": True, "operation": "create", "revision": manager._storage.revision, "item": dict(item)}
         if token in manager._sync_conflicts:
             result = await manager.apply_sync_conflict(actor, token, deadline=time.monotonic() + 10)
@@ -1012,7 +1021,7 @@ class ConsoleServer:
                     public_health,
                 )
             elif path == "/":
-                data = await StateCollector(self.monitor).collect_all()
+                data = await StateCollector(self.monitor).collect_all(actor=self._console_actor())
                 html = render_dashboard(data)
                 await self._send_response(writer, 200, html, content_type="text/html; charset=utf-8")
             elif path == "/gcal-auth":
@@ -1038,11 +1047,11 @@ class ConsoleServer:
                 )
                 await self._send_response(writer, 200, bridge)
             elif path == "/api/calendar":
-                await self._send_response(writer, 200, collect_calendar_data(self.monitor))
+                await self._send_response(writer, 200, collect_calendar_data(self.monitor, actor=self._console_actor()))
             elif path == "/api/calendar/items":
                 await self._send_response(writer, 200, self._calendar_items_response(self._calendar_credential(headers), headers))
             elif path == "/api/polls":
-                await self._send_response(writer, 200, collect_poll_data(self.monitor))
+                await self._send_response(writer, 200, collect_poll_data(self.monitor, actor=self._console_actor()))
             elif path == "/api/rate-limits":
                 await self._send_response(writer, 200, collect_rate_limits(self.monitor))
             elif path == "/api/intents":

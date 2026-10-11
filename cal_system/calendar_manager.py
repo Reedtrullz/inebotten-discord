@@ -225,7 +225,8 @@ class CalendarManager(SyncOwnerMixin):
         effect_ids[item['id']] = occurrence.occurrence_id
         effect_scopes[item['id']] = edit_scope
         if edit_scope == 'this':
-            allowed = {'title', 'date', 'time', 'description', 'duration_minutes', 'kind', 'timezone', 'fold'}
+            item.setdefault('series_content', {key: item.get(key) for key in ('title', 'description')})
+            allowed = {'title', 'date', 'time', 'description', 'duration_minutes', 'kind', 'timezone', 'fold', 'all_day'}
             if set(changes) - allowed:
                 raise ValueError('unsupported_this_occurrence_edit')
             saved = self._occurrence_records(item).get(occurrence.occurrence_id)
@@ -236,12 +237,17 @@ class CalendarManager(SyncOwnerMixin):
                 if key == 'date':
                     value = self._normalize_date_format(value)
                 override[key] = value
+            if 'time' in changes:
+                override['time'] = changes['time'] or None
+                override['all_day'] = not bool(changes['time'])
+            if changes.get('all_day') is True:
+                override['time'] = None
             updated = self._save_occurrence(item, occurrence, state='planned', override=override)
             self._apply_occurrence_pointer(item, updated)
             if item.get('gcal_event_id') or item.get('sync_operations'):
                 item['sync_blocked'] = 'google_occurrence_scope_requires_remote_review'
         else:
-            scheduling_change = any(key in changes for key in ('date', 'time', 'recurrence', 'timezone', 'kind', 'duration_minutes', 'fold'))
+            scheduling_change = any(key in changes for key in ('date', 'time', 'recurrence', 'timezone', 'kind', 'duration_minutes', 'fold', 'all_day'))
             if scheduling_change or 'end_count' in changes or 'end_date' in changes:
                 # A new schedule cannot silently redefine an already reviewed
                 # pending exception. Keep its original identity and bytes.
@@ -254,7 +260,7 @@ class CalendarManager(SyncOwnerMixin):
                 item['sync_blocked'] = 'google_recurrence_scope_requires_remote_review'
             previous = series.to_document()
             self._apply_item_updates(item, **{key: value for key, value in changes.items()
-                if key in {'title', 'date', 'time', 'recurrence', 'description', 'duration_minutes', 'kind', 'timezone', 'fold'}})
+                if key in {'title', 'date', 'time', 'recurrence', 'description', 'duration_minutes', 'kind', 'timezone', 'fold', 'all_day'}})
             if scheduling_change or edit_scope == 'future':
                 anchor = (EventTime.from_item(item).validate_local() if scheduling_change
                           else replace(series.anchor_time, local_date=occurrence.original_start.date()))
@@ -980,6 +986,8 @@ class CalendarManager(SyncOwnerMixin):
             raise ValueError('all_day_must_be_boolean')
         if title is not None:
             item["title"] = title
+            if 'series_content' in item:
+                item['series_content']['title'] = title
         if date is not None:
             item["date"] = self._normalize_date_format(date)
         if time is not None:
@@ -1000,6 +1008,8 @@ class CalendarManager(SyncOwnerMixin):
             item.pop("_recurrence_readonly", None)
         if description is not None:
             item["description"] = description
+            if 'series_content' in item:
+                item['series_content']['description'] = description
         event_time = EventTime.from_item(item).validate_local()
         item.update(event_time.fields())
 
@@ -1150,6 +1160,14 @@ class CalendarManager(SyncOwnerMixin):
     def _apply_occurrence_pointer(item, occurrence):
         local = occurrence.original_start
         value = occurrence.override or {}
+        anchor = item.get('series', {}).get('anchor_time', {})
+        for key in ('kind', 'timezone', 'time', 'all_day', 'duration_minutes', 'fold'):
+            if key in anchor:
+                item[key] = anchor[key]
+        item.update(item.get('series_content', {}))
+        for key in ('title', 'description', 'kind', 'all_day'):
+            if key in value:
+                item[key] = value[key]
         date_value = value.get('date')
         time_value = value.get('time')
         if date_value:
@@ -1160,7 +1178,7 @@ class CalendarManager(SyncOwnerMixin):
             item['time'] = time_value or None
         else:
             item['time'] = item.get('series', {}).get('anchor_time', {}).get('time')
-        item['fold'] = value.get('fold')
+        item['fold'] = value.get('fold', anchor.get('fold'))
         if 'timezone' in value:
             item['timezone'] = value['timezone']
         if 'duration_minutes' in value:

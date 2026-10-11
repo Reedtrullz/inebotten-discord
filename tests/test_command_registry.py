@@ -161,9 +161,24 @@ async def test_help_delivers_all_catalogue_pages_and_no_handwritten_parallel_lis
     from unittest.mock import AsyncMock
     handler = HelpHandler.__new__(HelpHandler)
     handler.send_response = AsyncMock()
-    message = object()
+    message = SimpleNamespace(content='hjelp')
     await handler.handle_help(message)
     assert tuple(c.args[1] for c in handler.send_response.await_args_list) == command_help_pages()
+
+
+@pytest.mark.asyncio
+async def test_task_help_keeps_examples_copyable_and_topic_specific():
+    from features.help_handler import HelpHandler
+    from unittest.mock import AsyncMock
+    handler = HelpHandler.__new__(HelpHandler)
+    handler.send_response = AsyncMock()
+    await handler.handle_help(SimpleNamespace(content='@inebotten hjelp poll'))
+    text = '\n'.join(call.args[1] for call in handler.send_response.await_args_list)
+    assert '`@inebotten poll Middag? / Pizza / Burger`' in text
+    assert 'påminnelse kjøp melk' not in text
+    from features.poll_manager import parse_poll_command
+    parsed = parse_poll_command('poll Middag? / Pizza / Burger')
+    assert parsed is not None and parsed['options'] == ['Pizza', 'Burger']
 
 
 @pytest.mark.asyncio
@@ -204,7 +219,7 @@ async def test_help_stops_after_failed_delivery():
     from unittest.mock import AsyncMock
     handler = HelpHandler.__new__(HelpHandler)
     handler.send_response = AsyncMock(return_value=None)
-    await handler.handle_help(object())
+    await handler.handle_help(SimpleNamespace(content='hjelp'))
     assert handler.send_response.await_count == 1
 
 

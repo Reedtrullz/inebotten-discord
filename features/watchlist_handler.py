@@ -10,6 +10,7 @@ Commands:
 """
 
 from typing import Dict, Any
+import re
 
 from features.base_handler import BaseHandler
 from features.watchlist_manager import parse_watchlist_command
@@ -46,10 +47,17 @@ class WatchlistHandler(BaseHandler):
                     response_text = self.loc.t("no_suggestions", lang)
 
             elif watchlist_cmd["action"] == "status":
+                records = self.watchlist.get_watchlist(guild_id)
+                page = re.search(r'\bside (\d+)\b', message.content, re.I)
+                page_number = max(1, int(page.group(1))) if page else 1
                 response_text = self.watchlist.format_watchlist_status(
                     lang,
                     guild_id=guild_id,
+                    page=page_number,
                 )
+                if await self.send_response(message, response_text) is not None:
+                    self.remember_list(message, records, range((page_number - 1) * 10 + 1, min(len(records), page_number * 10) + 1))
+                return
 
             elif watchlist_cmd["action"] == "add":
                 response_text = await self._handle_add(message, lang)
@@ -63,12 +71,14 @@ class WatchlistHandler(BaseHandler):
             else:
                 response_text = self.loc.t("watchlist_help", lang)
 
-            await self.send_response(message, response_text)
+            if response_text is not None:
+                await self.send_response(message, response_text)
 
         except Exception as e:
             self.log(f"Error handling watchlist: {e}")
+            await self.send_response(message, str(e) if isinstance(e, ValueError) else 'Endringen kunne ikke lagres. Vis watchlista og kontroller status før du prøver igjen.')
 
-    async def handle_watchlist_remove(self, message, payload) -> str:
+    async def handle_watchlist_remove(self, message, payload) -> str | None:
         lang = payload.get("lang", self.loc.current_lang)
         guild_id = self.get_guild_id(message)
         index = payload.get("index")
@@ -78,13 +88,13 @@ class WatchlistHandler(BaseHandler):
             if parsed.get("action") == "remove":
                 index = parsed.get("index")
 
-        if index is None:
-            return self.loc.t("watchlist_help", lang)
-
         try:
+            index = await self.reviewed_delete(message, self.watchlist.get_watchlist(guild_id), index, 'watchlist', 'title')
+            if index is None:
+                return None
             item = self.watchlist.remove_from_watchlist(index, guild_id=guild_id)
-        except ValueError:
-            return "❌ Fant ikke noe med det nummeret." if lang == "no" else "❌ Could not find an item with that number."
+        except ValueError as error:
+            return f'{error} Bruk `@inebotten watchlist`.'
 
         if item:
             title = item["title"]
@@ -140,6 +150,7 @@ class WatchlistHandler(BaseHandler):
 
         title = title.strip() if title else None
 
+        self.displayed_index(message, self.watchlist.get_watchlist(guild_id), index)
         item = self.watchlist.edit_watchlist_entry(
             index, title=title, type=content_type, genre=genre, comment=comment, guild_id=guild_id
         )

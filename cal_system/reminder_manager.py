@@ -25,6 +25,23 @@ class ReminderEditError(ValueError):
     pass
 
 
+def validate_deadline(value, clock=None):
+    if value is None or value == '':
+        return None
+    if not isinstance(value, str):
+        raise ValueError('invalid_deadline')
+    match = re.fullmatch(r'(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?(?:\s+(\d{1,2}:\d{2}))?', value.strip())
+    if not match:
+        raise ValueError('invalid_deadline')
+    day, month, year, local_time = match.groups()
+    year = year or str((clock or Clock()).now().year)
+    day_value = date(int(year), int(month), int(day))
+    fields = {'kind': 'task', 'date': day_value.strftime('%d.%m.%Y'), 'time': local_time,
+              'timezone': 'Europe/Oslo', 'all_day': local_time is None}
+    result = EventTime.from_item(fields).validate_local()
+    return result.local_date.strftime('%d.%m.%Y') + (f' {result.fields()["time"]}' if local_time else '')
+
+
 class ReminderManager(SyncOwnerMixin):
     """
     Manages reminders that users can mark as completed
@@ -205,6 +222,9 @@ class ReminderManager(SyncOwnerMixin):
         Returns:
             reminder_id
         """
+        due_date = validate_deadline(due_date, self.clock)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('reminder_text_required')
         guild_key, _ = self._scope_bucket(guild_id, 'write')
         reminder_id = f"rem_{guild_id}_{uuid.uuid4().hex}"
 
@@ -456,7 +476,7 @@ class ReminderManager(SyncOwnerMixin):
 
         return completed
 
-    def format_reminders_list(self, guild_id, show_completed=False):
+    def format_reminders_list(self, guild_id, show_completed=False, *, page=1):
         """Format reminders for display"""
         active = self.get_active_reminders(guild_id)
 
@@ -466,7 +486,8 @@ class ReminderManager(SyncOwnerMixin):
         lines = []
 
         if active:
-            for i, r in enumerate(active[:8], 1):  # Show max 8
+            offset = (max(1, page) - 1) * 8
+            for i, r in enumerate(active[offset:offset + 8], offset + 1):
                 checkbox = "⬜"
                 due = f" (frist: {r['due_date']})" if r.get("due_date") else ""
 
@@ -487,18 +508,23 @@ class ReminderManager(SyncOwnerMixin):
                             f" 🔄 {recurrence_labels.get(r['recurrence'], '')}"
                         )
 
-                lines.append(f"{checkbox} **{i}.** {r['text']}{due}{recurrence_str}")
+                text = r['text'] if len(r['text']) <= 100 else r['text'][:99] + '…'
+                row = f"{checkbox} **{i}.** {text}{due}{recurrence_str}"
+                lines.append(row)
 
                 # Show GCal link if available
-                if r.get("gcal_link"):
+                if r.get("gcal_link") and len(row) + len(r['gcal_link']) + 40 <= 180:
                     lines.append(f"   🔗 [Åpne i Google Calendar]({r['gcal_link']})")
+            lines.append(f'{len(active)} aktive · side {page}/{max(1, (len(active) + 7) // 8)}. '
+                f'Neste: `@inebotten påminnelser side {page + 1}`. Søk: `@inebotten søk påminnelse [tekst]`. Vis listen før endring eller sletting.')
 
         if show_completed:
             completed = self.get_completed_reminders(guild_id, days=3)
             if completed:
                 lines.append("\n✅ **Fullført nylig:**")
                 for r in completed[:5]:
-                    lines.append(f"✓ ~~{r['text']}~~")
+                    text = r['text'] if len(r['text']) <= 60 else r['text'][:59] + '…'
+                    lines.append(f"✓ ~~{text}~~")
 
         return "\n".join(lines) if lines else None
 
@@ -536,7 +562,7 @@ class ReminderManager(SyncOwnerMixin):
             index: 1-based index in the active reminders list
             title: New reminder text (maps to 'text' field)
             date: New due date (maps to 'due_date' field)
-            time: Not applied — reminders do not store a separate time field
+            time: New clock time in the existing deadline
             recurrence: New recurrence type
 
         Returns:
@@ -562,7 +588,16 @@ class ReminderManager(SyncOwnerMixin):
         if title is not None:
             candidate["text"] = title
         if date is not None:
-            candidate["due_date"] = date
+            previous_time = (target.get('due_date') or '').split(' ')[1:]
+            candidate["due_date"] = date + (' ' + previous_time[0] if previous_time and ' ' not in date else '') if date else None
+        if time is not None:
+            if not candidate.get('due_date'):
+                raise ReminderEditError('Sett en dato før du setter klokkeslett.')
+            candidate['due_date'] = candidate['due_date'].split(' ')[0] + (f' {time}' if time else '')
+        try:
+            candidate['due_date'] = validate_deadline(candidate.get('due_date'), self.clock)
+        except ValueError as error:
+            raise ReminderEditError('Ugyldig dato eller klokkeslett. Bruk DD.MM.ÅÅÅÅ og HH:MM; velg et entydig tidspunkt ved sommertid.') from error
         if recurrence is not None:
             candidate["recurrence"] = recurrence
         if any(candidate.get(key) != target.get(key) for key in ('due_date', 'recurrence')):
@@ -676,6 +711,7 @@ class ReminderManager(SyncOwnerMixin):
     def format_search_results(self, guild_id, query, lang="no"):
         """Format reminder search results for Discord."""
         matches = self.search_reminders(guild_id, query)
+        query = query if len(query) <= 100 else query[:99] + '…'
         if not matches:
             return (
                 f"🔎 Fant ingen påminnelser som matcher **{query}**."
@@ -692,12 +728,14 @@ class ReminderManager(SyncOwnerMixin):
         for i, reminder in enumerate(matches[:10], 1):
             status = "✅" if reminder.get("completed") else "⬜"
             due = f" (frist: {reminder['due_date']})" if reminder.get("due_date") else ""
-            lines.append(f"{status} **{i}.** {reminder.get('text', '')}{due}")
+            text = reminder.get('text', '')
+            text = text if len(text) <= 100 else text[:99] + '…'
+            lines.append(f"{status} **#{reminder['id']}** {text}{due}")
 
         if len(matches) > 10:
             more = len(matches) - 10
             lines.append(f"\n… og {more} til." if lang == "no" else f"\n… and {more} more.")
-
+        lines.append('Bruk `@inebotten påminnelser` og riktig side for å velge nummer før endring eller fullføring.')
         return "\n".join(lines)
 
 
@@ -731,7 +769,7 @@ def parse_reminder_command(message_content):
     list_names = r"(?:påminnelser|gjøremål|reminders|todos|huskeliste)"
     if re.fullmatch(
         polite_prefix + r"(?:(?:vis|list(?: opp)?|show)\s+(?:(?:mine|alle|my|all)\s+)?)?"
-        + list_names + r"[.!?]?", content_lower
+        + list_names + r"(?:\s+side\s+\d+)?[.!?]?", content_lower
     ):
         return {"action": "list"}
 
@@ -783,6 +821,10 @@ def parse_reminder_command(message_content):
                     day, month, year = date_match.groups()
                     due_date = f"{day}.{month}.{year}" if year else f"{day}.{month}"
                     text = text[: date_match.start()] + text[date_match.end():]
+                    time_match = re.search(r'\b(?:(?:kl\.?|klokken|at)\s*)?(\d{1,2}:\d{2})\b', text, re.I)
+                    if time_match:
+                        due_date += ' ' + time_match.group(1)
+                        text = text[:time_match.start()] + text[time_match.end():]
             text = text.strip(" -–—")
 
             if text and len(text) > 2:

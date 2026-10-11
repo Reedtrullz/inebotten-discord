@@ -31,7 +31,7 @@ def test_two_this_edits_keep_previous_move_and_original_identity(tmp_path):
         edit(calendar, actor, item_id, edit_scope='this', title='Ny tittel')
         item = calendar.items['shared'][0]
         exception = next(iter(item['occurrences'].values()))
-        assert exception['override'] == {'date':'05.01.2027','time':'11:00','title':'Ny tittel'}
+        assert exception['override'] == {'date':'05.01.2027','time':'11:00','title':'Ny tittel', 'all_day': False}
         assert exception['original_start'].startswith('2027-01-04T09:00')
         assert item['date'] == '05.01.2027' and item['time'] == '11:00'
         with request_scope(actor):

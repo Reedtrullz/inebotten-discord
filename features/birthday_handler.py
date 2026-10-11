@@ -46,6 +46,9 @@ class BirthdayHandler(BaseHandler):
             await self.send_response(message, response_text)
 
         except ValueError as exc:
+            if 'tvetydig' in str(exc):
+                await self.send_response(message, f'{exc} Bruk `@inebotten bursdager`, deretter `@inebotten endre bursdag #bruker-ID DD.MM.ÅÅÅÅ`.')
+                return
             if "Ugyldig bursdagsdato" in str(exc):
                 await self.send_response(message, f"❌ {exc}")
                 return

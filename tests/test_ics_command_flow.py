@@ -27,7 +27,8 @@ def message(content,attachments=()):
 
 
 def test_anchored_routing_keeps_token_case_and_rejects_prose():
-    router=IntentRouter(SimpleNamespace())
+    from tests.test_intent_router import DummyMonitor
+    router=IntentRouter(DummyMonitor())
     token='AbCdEfGhIjKlMnOpQrStUvWx'
     result=router.route('bekreft ics '+token)
     assert result.intent==BotIntent.CALENDAR_EXCHANGE
@@ -35,7 +36,7 @@ def test_anchored_routing_keeps_token_case_and_rejects_prose():
     result=router.route('kalender eksporter ics alle')
     assert result.intent==BotIntent.CALENDAR_EXCHANGE and result.payload['exchange']['item_ids'] is None
     assert router.route('kalender importer ics').intent==BotIntent.CALENDAR_EXCHANGE
-    assert router.route('Jeg lurer på om kalender kan importer ics').intent!=BotIntent.CALENDAR_EXCHANGE
+    assert router.route('Jeg lurer på om kalender kan importer ics').intent==BotIntent.AI_CHAT
     with pytest.raises(ValueError):validate_payload(BotIntent.CALENDAR_EXCHANGE,{'exchange':{'action':'import','user_id':'8'}})
 
 

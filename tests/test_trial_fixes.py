@@ -17,6 +17,7 @@ class RecordingPollsHandler(PollsHandler):
 
     async def send_response(self, message, content, mention_author=None):
         self.sent.append(content)
+        return SimpleNamespace(id=1234)
 
 
 def _parse_due(value):
@@ -67,6 +68,7 @@ class MultiPollVoteTests(unittest.IsolatedAsyncioTestCase):
         )
         handler = RecordingPollsHandler(monitor)
         message = SimpleNamespace(
+            content='@inebotten polls',
             guild=SimpleNamespace(id=123),
             channel=SimpleNamespace(id=456),
             author=SimpleNamespace(id=7, name="Tester"),
@@ -78,6 +80,8 @@ class MultiPollVoteTests(unittest.IsolatedAsyncioTestCase):
             manager, handler, message = self._handler(tmp)
             for q in ("Foerste?", "Andre?", "Tredje?"):
                 manager.create_poll("123", q, ["Ja", "Nei"], "T")
+            await handler.handle_poll_list(message)
+            message.content = '@inebotten stem 3 1'
             await handler.handle_vote(message, {"option_index": 1, "poll_ref": 3})
             poll = manager.get_active_polls("123")[2]
             assert len(poll["options"][0]["votes"]) == 1
