@@ -29,6 +29,13 @@ def validate_poll_document(document):
                         or not isinstance(poll.get('options'), list) or not 1 <= len(poll['options']) <= 10):
                     return False
                 datetime.fromisoformat(poll['expires_at'])
+                reactions = poll.get('reaction_choices', {})
+                if (not isinstance(reactions, dict) or len(reactions) > 10000
+                        or any(not isinstance(user, str) or not isinstance(choices, list)
+                               or len(choices) > len(poll['options']) or len(set(choices)) != len(choices)
+                               or any(type(choice) is not int or not 1 <= choice <= len(poll['options']) for choice in choices)
+                               for user, choices in reactions.items())):
+                    return False
                 if any(not isinstance(option, dict) or not isinstance(option.get('text'), str)
                        or not isinstance(option.get('votes'), list)
                        or any(not isinstance(voter, str) for voter in option['votes'])
@@ -169,7 +176,12 @@ class PollManager:
         Returns:
             poll_id
         """
-        poll = self._new_poll_record(guild_id, question, options, created_by, created_by_id)
+        if (not isinstance(question, str) or not question.strip() or len(question) > 200
+                or not isinstance(options, list) or not 2 <= len(options) <= 10
+                or any(not isinstance(label, str) or not label.strip() or len(label) > 150 for label in options)
+                or len({label.strip().casefold() for label in options}) != len(options)):
+            raise ValueError('Use a question and 2–10 distinct, nonempty options')
+        poll = self._new_poll_record(guild_id, question.strip(), [label.strip() for label in options], created_by, created_by_id)
         poll_id = poll['id']
 
         guild_key = str(guild_id)
@@ -226,11 +238,24 @@ class PollManager:
         poll = self.polls.get(guild_key, {}).get(poll_id)
         if poll is None or poll["status"] != "active" or self._is_expired(poll):
             return False
-        option = poll["options"][option_num - 1]
-        if str(user_id) not in option["votes"]:
+        if type(option_num) is not int or not 1 <= option_num <= len(poll['options']) or not self._planning_allowed(poll):
             return False
         previous = copy.deepcopy(poll)
-        option["votes"].remove(str(user_id))
+        user = str(user_id)
+        choices = poll.get('reaction_choices', {}).get(user, [])
+        if user in poll.get('reaction_choices', {}) and not choices:
+            return False
+        current = next((i + 1 for i, option in enumerate(poll['options']) if user in option['votes']), None)
+        if option_num not in choices and current != option_num:
+            return False
+        if option_num in choices:
+            choices.remove(option_num)
+        if not choices:
+            poll.get('reaction_choices', {}).pop(user, None)
+        if current == option_num:
+            poll['options'][option_num - 1]['votes'].remove(user)
+            if choices:
+                poll['options'][choices[-1] - 1]['votes'].append(user)
         poll["revision"] = poll.get("revision", 0) + 1
         if not self._persist_or_restore(guild_key, poll_id, previous):
             return False
@@ -433,6 +458,8 @@ class PollManager:
 
         previous = copy.deepcopy(poll)
         proposed = copy.deepcopy(preview["changes"])
+        if preview['effect'] == 'reset_votes':
+            proposed.pop('reaction_choices', None)
         proposed["revision"] = poll.get("revision", 0) + 1
         self.polls[str(guild_id)][poll_id] = proposed
         if not self._persist_or_restore(str(guild_id), poll_id, previous):
@@ -469,7 +496,7 @@ class PollManager:
         return True, "Poll deleted"
 
     @writable_store
-    def vote(self, guild_id, poll_id, option_num, user_id, username):
+    def vote(self, guild_id, poll_id, option_num, user_id, username, *, reaction=False):
         """
         Cast a vote
 
@@ -503,6 +530,19 @@ class PollManager:
             return False, "Poll scope is unavailable"
 
         previous = copy.deepcopy(poll)
+        user = str(user_id)
+        history = poll.setdefault('reaction_choices', {})
+        if reaction:
+            if user not in history and len(history) >= 10000:
+                return False, 'Reaction capacity reached'
+            choices = history.setdefault(user, [])
+            if option_num in choices:
+                choices.remove(option_num)
+            choices.append(option_num)
+        else:
+            if user not in history and len(history) >= 10000:
+                return False, 'Vote capacity reached'
+            history[user] = []
         # Remove previous vote from this user
         for opt in poll["options"]:
             if str(user_id) in opt["votes"]:
@@ -565,7 +605,8 @@ class PollManager:
             bar_length = int(percentage / 10)
             bar = "█" * bar_length + "░" * (10 - bar_length)
 
-            lines.append(f"{option['emoji']} {option['text']}")
+            label = option['text'] if len(option['text']) <= 80 else option['text'][:79] + '…'
+            lines.append(f"{option['emoji']} {label}")
             lines.append(f"   {bar} {votes} {vote_label} ({percentage:.0f}%)")
             lines.append("")
 
@@ -574,6 +615,7 @@ class PollManager:
             lines.append('🔒 Avstemningen er lukket eller utløpt; nye stemmer avvises.' if lang == 'no' else 'Closed or expired; new votes are refused.')
         else:
             lines.append(f"💡 {vote_hint} (1-{len(poll['options'])})")
+            lines.append(f'`@inebotten stem #{poll["id"]} 1` · Én stemme per person. Siste reaksjon teller; fjern den for å bruke forrige reaksjon. En tekststemme erstatter reaksjonsvalget.' if lang == 'no' else f'`@inebotten vote #{poll["id"]} 1` · One vote each. Latest reaction counts; removing it restores the previous reaction. A text vote replaces the reaction choice.')
 
         return "\n".join(lines)
 
@@ -627,8 +669,8 @@ def parse_poll_command(message_content):
     )
 
     # Check for poll keywords - must be more specific to avoid false positives
-    poll_triggers = ["avstemning", "poll", "lag poll", "create poll", "ny poll"]
-    is_explicit = any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in poll_triggers)
+    trigger = re.match(r'^(?:(?:kan du|please)\s+)?(?:(?:lag|create|ny)\s+)?(?:avstemning|poll)\b\s*', content, re.I)
+    is_explicit = trigger is not None
     
     # Also allow if it has multiple options separated by /
     slash_parts = content.split("/")
@@ -639,10 +681,12 @@ def parse_poll_command(message_content):
         else:
             # Implicit: require at least 3 parts (2 slashes) OR spaces around the single slash
             has_spaces = " / " in content or content.endswith(" /") or content.startswith("/ ")
-            has_options = len(slash_parts) >= 3 or has_spaces
+            has_options = slash_parts[0].strip().endswith('?') and (len(slash_parts) >= 3 or has_spaces)
     
     if not (is_explicit or has_options):
         return None
+    if trigger:
+        content = content[trigger.end():]
 
     # Use the full list for keyword removal
     poll_keywords = ["avstemning", "poll", "stemme", "vote", "avstemnning", "voting"]
@@ -676,6 +720,11 @@ def parse_poll_command(message_content):
         if len(options) >= 2:
             return {"question": question, "options": options, "lang": lang}
 
+    if '?' in content and re.search(r'\s+(?:eller|or)\s+', content, re.I):
+        options = [part.strip().rstrip('?').strip() for part in re.split(r'\s+(?:eller|or)\s+', content, flags=re.I)]
+        if len(options) >= 2 and all(options):
+            return {'question': content.strip(), 'options': options, 'lang': lang}
+
     # Simple yes/no if no options found
     if "?" in content:
         yes_no = ["Ja", "Nei"] if lang == "no" else ["Yes", "No"]
@@ -694,8 +743,14 @@ def parse_vote(message_content):
 
     # Remove @inebotten
     content = re.sub(r"@inebotten\s*", "", content).strip()
+    single = re.fullmatch(r'(?:stem|vote)\s+(10|[1-9])', content)
+    if single:
+        return int(single.group(1))
 
     multi = re.fullmatch(r"stem\s+(\d{1,2})\s+(\d{1,2})", content)
+    stable = re.fullmatch(r'(?:stem|vote)\s+#(poll_[A-Za-z0-9_-]{1,100})\s+(10|[1-9])', content)
+    if stable:
+        return {'poll_ref': stable.group(1), 'option_index': int(stable.group(2))}
     if multi:
         poll_ref, option_index = int(multi.group(1)), int(multi.group(2))
         if 1 <= option_index <= 10:

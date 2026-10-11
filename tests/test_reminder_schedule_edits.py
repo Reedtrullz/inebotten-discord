@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -90,10 +91,13 @@ async def test_handler_explains_invalid_timed_recurrence_without_success(reminde
 
     async def send(message, content: str, mention_author: bool = False):
         sent.append(content)
+        return SimpleNamespace(id=1)
 
-    handler.send_response = send
+    handler.send_response = AsyncMock(side_effect=send)
     message = SimpleNamespace(content='@inebotten endre påminnelse 1 gjentakelse: daglig',
-        guild=SimpleNamespace(id=123), channel=SimpleNamespace(id=456))
+        guild=SimpleNamespace(id=123), channel=SimpleNamespace(id=456), author=SimpleNamespace(id=7))
+    await handler.handle_reminder_list(message)
+    sent.clear()
     await handler.handle_reminder_edit(message)
     assert len(sent) == 1 and 'uten klokkeslett' in sent[0]
     assert reminders.get_active_reminders('123')[0]['recurrence'] is None
@@ -108,11 +112,12 @@ async def test_handler_normalizes_norwegian_recurrence_edits(reminders):
         nlp_parser=NaturalLanguageParser()))
 
     async def send(message, content: str, mention_author: bool = False):
-        pass
+        return SimpleNamespace(id=1)
 
-    handler.send_response = send
+    handler.send_response = AsyncMock(side_effect=send)
     message = SimpleNamespace(content='@inebotten endre påminnelse 1 gjentakelse: daglig',
-        guild=SimpleNamespace(id=123), channel=SimpleNamespace(id=456))
+        guild=SimpleNamespace(id=123), channel=SimpleNamespace(id=456), author=SimpleNamespace(id=7))
+    await handler.handle_reminder_list(message)
     await handler.handle_reminder_edit(message)
     assert reminders.complete_reminder('123', reminder_id=item_id)[2] == '05.01.2027'
 

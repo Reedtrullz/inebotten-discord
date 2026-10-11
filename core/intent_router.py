@@ -107,7 +107,14 @@ class IntentRouter:
         self.monitor = monitor
 
     def route(self, content: str, guild_id: Optional[int] = None) -> IntentResult:
+        content = re.sub(r'<@!?\d+>|@inebotten\b', '', content, flags=re.I).strip()
         content_lower = content.lower().strip()
+        confirmation = re.fullmatch(r'bekreft sletting (påminnelse|sitat|watchlist) [A-Za-z0-9_-]{24}', content.strip(), re.I)
+        if confirmation:
+            label = confirmation.group(1).lower()
+            if label == 'watchlist':
+                return IntentResult(BotIntent.WATCHLIST, 1.0, {'watchlist': {'action': 'remove'}}, 'reviewed_delete')
+            return IntentResult(BotIntent.REMINDER_DELETE if label == 'påminnelse' else BotIntent.QUOTE_DELETE, 1.0, {}, 'reviewed_delete')
 
         workflow=self._route_workflow(content.strip())
         if workflow is not None:
@@ -133,13 +140,13 @@ class IntentRouter:
                 {'exchange':{'action':'import'}},'explicit_ics_import')
 
         # Explicit operational/help/calendar commands first.
-        if self._has_calendar_context(content_lower) and has_any_keyword(content_lower, ["hjelp", "help", "guide"]):
+        if re.fullmatch(r'(?:kalender|calendar) (?:hjelp|help|guide)|(?:hjelp|help|guide) (?:kalender|calendar)', content_lower):
             return IntentResult(BotIntent.CALENDAR_HELP, 0.99, reason="calendar_help_keyword")
 
         if self._is_status_command(content_lower):
             return IntentResult(BotIntent.STATUS, 0.99, reason="status_keyword")
 
-        if has_any_keyword(content_lower, HELP_KEYWORDS):
+        if self._starts_command(content_lower, HELP_KEYWORDS):
             return IntentResult(BotIntent.HELP, 0.96, reason="help_keyword")
 
         if self._is_profile_command(content_lower):
@@ -149,9 +156,9 @@ class IntentRouter:
         if memory_command:
             return memory_command
 
-        if has_any_keyword(content_lower, REMINDER_EDIT_KEYWORDS):
+        if self._starts_command(content_lower, REMINDER_EDIT_KEYWORDS):
             return IntentResult(BotIntent.REMINDER_EDIT, 0.98, {}, "reminder_edit_keyword")
-        if has_any_keyword(content_lower, REMINDER_DELETE_KEYWORDS):
+        if self._starts_command(content_lower, REMINDER_DELETE_KEYWORDS):
             return IntentResult(BotIntent.REMINDER_DELETE, 0.98, {}, "reminder_delete_keyword")
 
         local_search = self._route_local_search_command(content)
@@ -162,7 +169,7 @@ class IntentRouter:
         if reminder_command:
             return reminder_command
 
-        if has_any_keyword(content_lower, GCAL_AUTH_KEYWORDS):
+        if self._starts_command(content_lower, GCAL_AUTH_KEYWORDS):
             code_match = re.search(r'(?:kode|code|auth)\s+([4/a-zA-Z0-9_\-]+)', content)
             code = code_match.group(1) if code_match else None
             return IntentResult(BotIntent.CALENDAR_AUTH, 0.99, {"auth_code": code}, "calendar_auth_keyword")
@@ -174,7 +181,7 @@ class IntentRouter:
         if calendar_command:
             return calendar_command
 
-        if has_any_keyword(content_lower, BIRTHDAY_EDIT_KEYWORDS):
+        if self._starts_command(content_lower, BIRTHDAY_EDIT_KEYWORDS):
             return IntentResult(BotIntent.BIRTHDAY_EDIT, 0.95, {}, "birthday_edit_keyword")
 
         calendar_item = self._route_calendar_item(content, guild_id)
@@ -184,7 +191,7 @@ class IntentRouter:
         if re.fullmatch(
             r"(?:poll results?|poll resultater|resultater poll|"
             r"resultater avstemning|vis resultater(?: for)? "
-            r"(?:poll|avstemning)|avstemning resultater)",
+            r"(?:poll|avstemning)|avstemning resultater)(?: side \d+)?",
             re.sub(r"<@!?\d+>", "", content_lower).replace("@inebotten", "").strip(),
         ):
             return IntentResult(
@@ -194,7 +201,7 @@ class IntentRouter:
                 "poll_results_command",
             )
 
-        if has_any_keyword(content_lower, ("polls", "avstemninger", "active polls", "vis poll", "vis avstemning", "list poll", "poll liste", "poll list", "avstemning liste")) and self._has_active_poll(guild_id):
+        if re.fullmatch(r'(?:polls|avstemninger|active polls|vis poll|vis avstemning|list poll|poll liste|poll list|avstemning liste)(?: side \d+)?[.!?]?', content_lower):
             return IntentResult(BotIntent.POLL_LIST, 0.95, {}, "poll_list_keyword")
 
         poll_command = re.sub(r"<@!?\d+>", "", content_lower).replace("@inebotten", "").strip()
@@ -203,8 +210,7 @@ class IntentRouter:
             r"bekreft poll endring ([a-f0-9]{32}) reset", poll_command
         )
         if confirmation or (
-            has_any_keyword(content_lower, POLL_EDIT_KEYWORDS)
-            and self._has_active_poll(guild_id)
+            self._starts_command(content_lower, POLL_EDIT_KEYWORDS)
         ):
             poll_edit = dict(poll_ref)
             if confirmation:
@@ -220,9 +226,9 @@ class IntentRouter:
                 {"poll_edit": poll_edit},
                 "poll_edit_keyword",
             )
-        if has_any_keyword(content_lower, POLL_DELETE_KEYWORDS) and self._has_active_poll(guild_id):
+        if self._starts_command(content_lower, POLL_DELETE_KEYWORDS):
             return IntentResult(BotIntent.POLL_DELETE, 0.95, {"poll_delete": poll_ref}, "poll_delete_keyword")
-        if has_any_keyword(content_lower, POLL_CLOSE_KEYWORDS) and self._has_active_poll(guild_id):
+        if self._starts_command(content_lower, POLL_CLOSE_KEYWORDS):
             return IntentResult(BotIntent.POLL_CLOSE, 0.95, {"poll_close": poll_ref}, "poll_close_keyword")
 
         poll_cmd = self.monitor.parse_poll_command(content)
@@ -230,7 +236,7 @@ class IntentRouter:
             return IntentResult(BotIntent.POLL_CREATE, 0.95, {"poll": poll_cmd}, "poll_parser")
 
         vote = self.monitor.parse_vote(content)
-        if vote and self._has_active_poll(guild_id):
+        if vote and (self._has_active_poll(guild_id) or re.match(r'^(?:stem|vote)\b', content_lower)):
             return IntentResult(BotIntent.POLL_VOTE, 0.95, {"vote": vote}, "active_poll_vote")
 
 
@@ -245,13 +251,13 @@ class IntentRouter:
         if has_any_keyword(content_lower, WORD_OF_DAY_KEYWORDS):
             return IntentResult(BotIntent.WORD_OF_DAY, 0.95, reason="word_of_day_keyword")
 
-        if has_any_keyword(content_lower, QUOTE_LIST_KEYWORDS):
+        if self._starts_command(content_lower, QUOTE_LIST_KEYWORDS):
             return IntentResult(BotIntent.QUOTE_LIST, 0.95, {}, "quote_list_keyword")
 
-        if has_any_keyword(content_lower, QUOTE_EDIT_KEYWORDS):
+        if self._starts_command(content_lower, QUOTE_EDIT_KEYWORDS):
             return IntentResult(BotIntent.QUOTE_EDIT, 0.95, {}, "quote_edit_keyword")
 
-        if has_any_keyword(content_lower, QUOTE_DELETE_KEYWORDS):
+        if self._starts_command(content_lower, QUOTE_DELETE_KEYWORDS):
             return IntentResult(BotIntent.QUOTE_DELETE, 0.95, {}, "quote_delete_keyword")
 
         quote_cmd = self.monitor.parse_quote_command(content)
@@ -351,9 +357,22 @@ class IntentRouter:
             return {'action':'help'}
         return None
 
+    @staticmethod
+    def _starts_command(content, keywords):
+        pattern = '|'.join(re.escape(k) for k in sorted(keywords, key=len, reverse=True))
+        return bool(re.match(rf'^(?:(?:kan du|kunne du|vennligst|please)\s+)?(?:{pattern})(?:\b|$)', content))
+
     def _route_calendar_command(self, content_lower: str, guild_id: Optional[int] = None) -> Optional[IntentResult]:
+        if re.match(r'^(?:endre|rediger|oppdater|slett|fjern|lukk) (?:poll|avstemning|sitat|watchlist|bursdag)\b', content_lower):
+            return None
+        if self._starts_command(content_lower, LIST_KEYWORDS) and not re.match(
+                r'^(?:(?:kan du|kunne du|vennligst|please)\s+)?(?:vis|liste|se|oversikt)(?:\s+(?:meg|min|mine|alle|over))*\s+(?:kalender(?:en)?|calendar|gcal|arrangementer|events|kommende)\b', content_lower):
+            return None
         if re.fullmatch(r'(?:synk konflikt (?:påminnelse )?[a-f0-9]{32} (?:lokal|google)|bekreft synk (?:påminnelse )?[a-f0-9]{32})', content_lower.strip()):
             return IntentResult(BotIntent.CALENDAR_SYNC, 1.0, reason='reviewed_sync_choice')
+        if not self._starts_command(content_lower, CALENDAR_KEYWORDS + SYNC_KEYWORDS + CLEAR_KEYWORDS
+                + DELETE_KEYWORDS + COMPLETE_KEYWORDS + EDIT_KEYWORDS + LIST_KEYWORDS + ('hopp over', 'skipp', 'kalenderen')):
+            return None
         if not self._has_calendar_context(content_lower):
             # Special case for "synk" / "sync" which can be used without "kalender"
             if not has_any_keyword(content_lower, SYNC_KEYWORDS + CLEAR_KEYWORDS):
@@ -675,7 +694,7 @@ class IntentRouter:
         )
         if reminder_complete_match:
             number = reminder_complete_match.group(1)
-            payload = {"reminder": {"action": "complete"}}
+            payload: Dict[str, Any] = {"reminder": {"action": "complete"}}
             if number:
                 payload["reminder"]["number"] = int(number)
             return IntentResult(BotIntent.REMINDER_COMPLETE, 0.98, payload, "reminder_complete_keyword")
@@ -688,8 +707,9 @@ class IntentRouter:
                 "active_reminder_numeric_complete",
             )
 
-        if re.match(r"^(?:ferdig|fullført|fullfør|done|complete|gjort)\s+\d+\s*$", lower) and self._has_active_reminders(guild_id):
-            number = int(re.search(r"\d+", lower).group(0))
+        complete_number = re.fullmatch(r'(?:ferdig|fullført|fullfør|done|complete|gjort)\s+(\d+)', lower)
+        if complete_number and self._has_active_reminders(guild_id):
+            number = int(complete_number.group(1))
             return IntentResult(
                 BotIntent.REMINDER_COMPLETE,
                 0.94,
@@ -859,6 +879,10 @@ class IntentRouter:
 
     def _parse_poll_reference(self, content_lower: str) -> Dict[str, Any]:
         result: Dict[str, Any] = {"target": None}
+        stable = re.search(r'(?:poll|avstemning)\s+#(poll_[A-Za-z0-9_-]{1,100})\b', content_lower)
+        if stable:
+            result['target'] = stable.group(1)
+            return result
         # Scoped extraction: number immediately after "poll" or "avstemning"
         number_match = re.search(r'(?:poll|avstemning)\s+(\d+)', content_lower)
         if number_match:

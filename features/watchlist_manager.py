@@ -354,7 +354,7 @@ class WatchlistManager:
 
         return "\n".join(lines)
 
-    def format_watchlist_status(self, lang="no", guild_id=None):
+    def format_watchlist_status(self, lang="no", guild_id=None, *, page=1):
         """Format watchlist status in specified language"""
         summary = self.get_watchlist_summary(guild_id)
 
@@ -387,12 +387,16 @@ class WatchlistManager:
         items = self.get_watchlist(guild_id)
         if items:
             lines.append("\n🔢 **Nummerert liste:**" if lang == "no" else "\n🔢 **Numbered list:**")
-            for index, item in enumerate(items[:10], 1):
+            offset = (max(1, page) - 1) * 10
+            for index, item in enumerate(items[offset:offset + 10], offset + 1):
                 item_type = "film" if item.get("type") == "movie" else "serie"
                 watched = "✓ " if item.get("watched") else ""
-                lines.append(f"{index}. {watched}{item.get('title', 'Uten tittel')} ({item_type})")
+                title = item.get('title', 'Uten tittel')
+                title = title if len(title) <= 140 else title[:139] + '…'
+                lines.append(f"{index}. {watched}{title} ({item_type})")
             if len(items) > 10:
                 lines.append(f"… og {len(items) - 10} til." if lang == "no" else f"… and {len(items) - 10} more.")
+            lines.append(f'Side {page}/{max(1, (len(items) + 9) // 10)} · `@inebotten watchlist side {page + 1}`. Vis listen før endring eller sletting.')
 
         total_unwatched = summary["movies_unwatched"] + summary["series_unwatched"]
 
@@ -413,6 +417,7 @@ def parse_watchlist_command(message_content):
     Returns:
         dict with action and data, or None
     """
+    message_content = re.sub(r'<@!?\d+>|@inebotten', '', message_content, flags=re.I).strip()
     content_lower = message_content.lower()
 
     def _extract_scoped_index(phrases):
@@ -487,22 +492,22 @@ def parse_watchlist_command(message_content):
 
     # Check for removing item (before generic status match)
     remove_phrases = ["fjern watchlist", "slett watchlist", "fjern fra watchlist"]
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in remove_phrases):
+    if any(re.match(rf'{re.escape(phrase)}\b', content_lower) for phrase in remove_phrases):
         return {"action": "remove", "index": _extract_scoped_index(remove_phrases), "lang": lang}
 
     # Check for editing item (before generic status match)
     edit_phrases = ["endre watchlist", "rediger watchlist"]
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in edit_phrases):
+    if any(re.match(rf'{re.escape(phrase)}\b', content_lower) for phrase in edit_phrases):
         return {"action": "edit", "index": _extract_scoped_index(edit_phrases), "lang": lang}
 
     # Check for adding item
     add_phrases = ["legg til", "add to watchlist", "husk å se"]
-    if any(re.search(rf'\b{re.escape(phrase)}\b', content_lower) for phrase in add_phrases):
+    if any(re.match(rf'{re.escape(phrase)}\b', content_lower) for phrase in add_phrases):
         return {"action": "add", "lang": lang}
 
     # Check for watchlist status
     status_keywords = ["watchlist", "watchlista", "hva har vi"]
-    if any(re.search(rf'\b{re.escape(word)}\b', content_lower) for word in status_keywords):
+    if any(re.match(rf'{re.escape(word)}\b', content_lower) for word in status_keywords):
         return {"action": "status", "lang": lang}
 
     return None

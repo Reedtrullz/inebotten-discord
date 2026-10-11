@@ -3,6 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any, Literal, overload
 
 import pytest
 
@@ -18,7 +19,55 @@ SCOPE = "private:424242"
 ORIGIN = "http://127.0.0.1"
 
 
-async def http_request(server, path, *, method="GET", body=None, api_key=None, cookie=None, headers=()):
+@pytest.mark.parametrize('edit_scope', ['this', 'future', 'series'])
+async def test_recurring_edit_accepts_explicit_scope_without_changing_zone(workspace, edit_scope):
+    server, manager, actor = workspace
+    with request_scope(actor):
+        item = manager.add_item(None, ACTOR, 'Console', 'Weekly', '13.10.2026', '11:00', recurrence='weekly', timezone='America/New_York')
+    status, preview = await http_request(server, '/api/calendar/preview', method='POST', api_key=API_KEY,
+        body={'operation': 'edit', 'revision': manager._storage.revision, 'item_id': item['id'],
+              'changes': {'title': 'Reviewed weekly', 'edit_scope': edit_scope}})
+    assert status == 200
+    status, result = await http_request(server, '/api/calendar/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+    assert status == 200
+    stored = next(i for i in manager.items[SCOPE] if i['id'] == item['id'])
+    assert stored['title'] == 'Reviewed weekly' and stored['timezone'] == 'America/New_York'
+    assert stored['time'] == '11:00'
+
+
+@pytest.mark.parametrize('fold', [0, 1])
+async def test_create_ambiguous_time_with_deliberate_fold(workspace, fold):
+    server, manager, _ = workspace
+    status, preview = await http_request(server, '/api/calendar/preview', method='POST', api_key=API_KEY,
+        body={'operation': 'create', 'revision': manager._storage.revision,
+              'changes': {'title': 'DST choice', 'date': '25.10.2026', 'time': '02:30', 'fold': fold}})
+    assert status == 200
+    status, result = await http_request(server, '/api/calendar/apply', method='POST', api_key=API_KEY,
+        body={'token': preview['token']})
+    assert status == 200 and result['item']['fold'] == fold
+
+
+@pytest.mark.parametrize('changes,reason', [({'title': ''}, 'invalid_title'),
+    ({'description': 'x' * 4001}, 'invalid_description'), ({'duration_minutes': True}, 'invalid_duration')])
+async def test_edit_validates_content_before_preview(workspace, changes, reason):
+    server, manager, _ = workspace
+    revision = manager._storage.revision
+    item = manager.items[SCOPE][0]
+    status, response = await http_request(server, '/api/calendar/preview', method='POST', api_key=API_KEY,
+        body={'operation': 'edit', 'revision': revision, 'item_id': item['id'], 'changes': changes})
+    assert status == 400 and response['error'] == reason
+    assert manager._storage.revision == revision and item['title'] == 'Seed event'
+
+
+@overload
+async def http_request(server, path, *, method="GET", body=None, api_key=None, cookie=None, headers=(), decode_json: Literal[False]) -> tuple[int, str]: ...
+
+
+@overload
+async def http_request(server, path, *, method="GET", body=None, api_key=None, cookie=None, headers=(), decode_json: Literal[True] = True) -> tuple[int, dict[str, Any]]: ...
+
+
+async def http_request(server, path, *, method="GET", body=None, api_key=None, cookie=None, headers=(), decode_json=True):
     reader, writer = await asyncio.open_connection("127.0.0.1", server.actual_port)
     parts = [f"{method} {path} HTTP/1.1", "Host: attacker.invalid", "Connection: close"]
     if api_key:
@@ -38,7 +87,7 @@ async def http_request(server, path, *, method="GET", body=None, api_key=None, c
     await writer.wait_closed()
     status = int(response.split(b" ", 2)[1])
     raw = response.split(b"\r\n\r\n", 1)[1]
-    return status, json.loads(raw) if raw else {}
+    return status, (json.loads(raw) if raw else {}) if decode_json else raw.decode()
 
 
 @pytest.fixture
@@ -80,6 +129,45 @@ async def test_unmapped_console_actor_disables_workspace_and_rejects_write(works
                                       body={"operation": "create", "revision": 1, "changes": {"title": "X", "date": "12.10.2026"}},
                                       api_key=API_KEY)
     assert status == 403 and body["error"] == "calendar_workspace_not_configured"
+
+
+async def test_poll_scope_protection_reaches_api_initial_html_and_revocation(workspace, tmp_path, monkeypatch):
+    from tests.test_group_planning import fixture, context, candidates
+    from web_console import state_collector
+    server, _, _ = workspace
+    planning, calendar, polls = fixture(tmp_path)
+    title = 'Restricted synthetic planning title'
+    planning.create(context(), 'group:approved', title, candidates())
+    monkeypatch.setattr(state_collector, 'hermes_discord_data_path', lambda name: polls.storage_path if name == 'polls.json' else tmp_path / name)
+    server.monitor = SimpleNamespace(calendar=calendar, poll=polls)
+    try:
+        for user, channel, visible in [('', '9', False), ('999', '9', False), ('8', 'wrong', False), ('8', '9', True), ('999', '9', False)]:
+            server.console_actor_user_id, server.console_actor_channel_id = user, channel
+            status, body = await http_request(server, '/api/polls', api_key=API_KEY)
+            assert status == 200 and body['active_polls'] == int(visible)
+            assert (title in json.dumps(body)) is visible
+            status, html = await http_request(server, '/', api_key=API_KEY, decode_json=False)
+            assert status == 200 and (title in html) is visible
+    finally:
+        calendar._storage.close()
+        polls.close_storage()
+
+
+async def test_this_occurrence_content_does_not_leak_to_next_occurrence(workspace):
+    server, manager, actor = workspace
+    with request_scope(actor):
+        item = manager.add_item(None, ACTOR, 'Console', 'Series title', '13.10.2026', '11:00', recurrence='weekly', timezone='America/New_York')
+    for operation, changes in [('edit', {'title': 'One occurrence', 'description': 'One description', 'edit_scope': 'this'}), ('complete', None)]:
+        payload = {'operation': operation, 'revision': manager._storage.revision, 'item_id': item['id']}
+        if changes:
+            payload['changes'] = changes
+        status, preview = await http_request(server, '/api/calendar/preview', method='POST', api_key=API_KEY, body=payload)
+        assert status == 200
+        status, _ = await http_request(server, '/api/calendar/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+        assert status == 200
+    stored = next(i for i in manager.items[SCOPE] if i['id'] == item['id'])
+    assert stored['title'] == 'Series title' and not stored.get('description')
+    assert stored['timezone'] == 'America/New_York' and stored['time'] == '11:00'
 
 
 async def test_create_preview_apply_is_actor_revision_and_replay_bound(workspace):

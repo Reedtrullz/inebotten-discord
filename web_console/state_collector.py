@@ -895,7 +895,7 @@ def collect_calendar_data(monitor: object | None = None, *, actor=None) -> dict[
     }
 
 
-def collect_poll_data(monitor: object | None = None) -> dict[str, Any]:
+def collect_poll_data(monitor: object | None = None, *, actor=None) -> dict[str, Any]:
     path = hermes_discord_data_path("polls.json")
     data = _read_json_file(path, {})
 
@@ -911,6 +911,16 @@ def collect_poll_data(monitor: object | None = None) -> dict[str, Any]:
                     continue
                 if poll.get("status") != "active" or PollManager._is_expired(poll):
                     continue
+                if poll.get('_planning') is not None:
+                    from core.request_context import request_scope
+                    manager = getattr(monitor, 'poll', None)
+                    if actor is None or manager is None:
+                        continue
+                    with request_scope(actor):
+                        live = manager.get_poll(poll.get('guild_id'), poll.get('id'))
+                    if live is None:
+                        continue
+                    poll = live
 
                 options = poll.get("options", [])
                 vote_count = 0
@@ -1183,14 +1193,14 @@ class StateCollector:
     def __init__(self, monitor: object | None = None):
         self.monitor = monitor
 
-    async def collect_all(self) -> dict[str, Any]:
+    async def collect_all(self, *, actor=None) -> dict[str, Any]:
         bridge = await collect_bridge_health(self.monitor)
         return {
             "status": collect_bot_status(self.monitor),
             "bridge": bridge,
             "readiness": await collect_provider_readiness(self.monitor, bridge_health=bridge),
-            "calendar": collect_calendar_data(self.monitor),
-            "polls": collect_poll_data(self.monitor),
+            "calendar": collect_calendar_data(self.monitor, actor=actor),
+            "polls": collect_poll_data(self.monitor, actor=actor),
             "rate_limits": collect_rate_limits(self.monitor),
             "intents": collect_intent_stats(self.monitor),
             "memory": collect_memory_stats(self.monitor),

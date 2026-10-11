@@ -245,11 +245,11 @@ class BirthdayManager:
         self._validate_birthday_date(day, month, year)
 
         name_lower = name.lower()
-        target_user_id = None
-        for user_id, data in self.birthdays[guild_key].items():
-            if data.get("username", "").lower() == name_lower:
-                target_user_id = user_id
-                break
+        matches = [user for user, data in self.birthdays[guild_key].items()
+                   if data.get('username', '').lower() == name_lower or user == name.lstrip('#')]
+        if len(matches) != 1:
+            raise ValueError('Navnet er tvetydig eller finnes ikke. Bruk #bruker-ID fra bursdagslisten.')
+        target_user_id = matches[0]
 
         if target_user_id is None:
             raise ValueError(f"Birthday for {name} not found")
@@ -466,7 +466,7 @@ class BirthdayManager:
         for user_id, data in sorted_birthdays:
             date_str = f"{data['day']}. {months[data['month']]}"
             year_str = f" ({data['year']})" if data.get("year") else ""
-            lines.append(f"• **{data['username']}**{year_str} - {date_str}")
+            lines.append(f"• **{data['username']}**{year_str} - {date_str} · #{user_id}")
 
         return "\n".join(lines)
 

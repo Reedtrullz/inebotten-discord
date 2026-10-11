@@ -75,15 +75,22 @@ class QuoteHandler(BaseHandler):
                 return
 
             lines = [self.loc.t("quote_list_title")]
-            for idx, q in enumerate(quotes, start=1):
+            page = re.search(r'\bside (\d+)\b', message.content, re.I)
+            offset = (max(1, int(page.group(1))) - 1) * 8 if page else 0
+            for idx, q in enumerate(quotes[offset:offset + 8], start=offset + 1):
                 text = q.get("text", "")
+                text = text if len(text) <= 140 else text[:139] + '…'
                 author = q.get("author", "Ukjent")
+                author = author if len(author) <= 40 else author[:39] + '…'
                 lines.append(f"{idx}. \"{text}\" — {author}")
 
-            await self.send_response(message, "\n".join(lines))
+            lines.append(f'{len(quotes)} sitater · side {offset // 8 + 1}/{max(1, (len(quotes) + 7) // 8)}. Bruk `@inebotten liste sitater side {offset // 8 + 2}` for neste side; vis listen før endring eller sletting.')
+            if await self.send_response(message, "\n".join(lines)) is not None:
+                self.remember_list(message, quotes, range(offset + 1, min(len(quotes), offset + 8) + 1))
 
         except Exception as e:
             self.log(f"Error listing quotes: {e}")
+            await self.send_response(message, 'Listen kunne ikke hentes. Prøv `@inebotten liste sitater` igjen.')
 
     async def handle_quote_edit(self, message, payload) -> None:
         """
@@ -119,10 +126,11 @@ class QuoteHandler(BaseHandler):
                 return
 
             try:
+                self.displayed_index(message, self.quote.list_quotes(guild_id), index)
                 success = self.quote.update_quote(guild_id, index, text=text, author=author)
-            except ValueError:
+            except ValueError as error:
                 await self.send_response(
-                    message, self.loc.t("quote_edit_not_found", num=index)
+                    message, f'{error} Bruk `@inebotten liste sitater`.'
                 )
                 return
 
@@ -137,6 +145,7 @@ class QuoteHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error editing quote: {e}")
+            await self.send_response(message, 'Endringen kunne ikke bekreftes. Vis `@inebotten liste sitater` og kontroller sitatet før du prøver igjen.')
 
     async def handle_quote_delete(self, message, payload) -> None:
         """
@@ -153,17 +162,14 @@ class QuoteHandler(BaseHandler):
             if index is None:
                 index = self.extract_number(message.content)
 
-            if index is None:
-                await self.send_response(
-                    message, self.loc.t("invalid_event_num")
-                )
-                return
-
             try:
+                index = await self.reviewed_delete(message, self.quote.list_quotes(guild_id), index, 'sitat', 'text')
+                if index is None:
+                    return
                 success = self.quote.delete_quote(guild_id, index)
-            except ValueError:
+            except ValueError as error:
                 await self.send_response(
-                    message, self.loc.t("quote_delete_not_found", num=index)
+                    message, f'{error} Bruk `@inebotten liste sitater`.'
                 )
                 return
 
@@ -178,3 +184,4 @@ class QuoteHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error deleting quote: {e}")
+            await self.send_response(message, 'Slettingen kunne ikke lagres. Vis listen og kontroller status før du prøver igjen.')

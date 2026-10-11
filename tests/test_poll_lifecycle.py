@@ -223,7 +223,7 @@ class PollResultsHandlerTests(unittest.IsolatedAsyncioTestCase):
             )
 
             await handler.handle_poll_edit(
-                message, {"target": 1, "changes": {"options": ["Pizza"]}}
+                message, {"target": poll['id'], "changes": {"options": ["Pizza"]}}
             )
             preview_text = handler.send_response.await_args.args[1]
             self.assertIn("nullstille stemmene", preview_text)

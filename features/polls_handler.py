@@ -36,6 +36,8 @@ class PollsHandler(BaseHandler):
         """
         try:
             guild_id = self.get_guild_id(message)
+            match = re.search(r'\bside (\d+)\b', message.content, re.I)
+            page = max(1, int(match.group(1))) if match else 1
             if self._is_results_command(message):
                 closed_polls = self.poll.get_closed_polls(guild_id)
                 if not closed_polls:
@@ -43,34 +45,38 @@ class PollsHandler(BaseHandler):
                         "Ingen lukkede avstemninger med resultater."
                     )
                 else:
-                    blocks = []
-                    for poll in closed_polls:
-                        blocks.append(
-                            "🔒 Lukket\n" + self.poll.format_poll(poll)
-                        )
-                    response_text = "\n\n".join(blocks)
+                    page = min(page, len(closed_polls))
+                    response_text = "🔒 Lukket\n" + self.poll.format_poll(closed_polls[page - 1])
+                    response_text += f'\n{len(closed_polls)} resultater · side {page}/{len(closed_polls)}. Neste: `@inebotten poll resultater side {page + 1}`.'
                 await self.send_response(message, response_text)
                 return
 
             active_polls = self.poll.get_active_polls(guild_id)
+            page = min(page, max(1, (len(active_polls) + 7) // 8))
+            offset = (page - 1) * 8
 
             if not active_polls:
                 response_text = self.loc.t("no_active_polls")
             else:
                 lines = [self.loc.t("poll_list_title")]
                 lines.append("")
-                for i, poll in enumerate(active_polls, start=1):
+                for i, poll in enumerate(active_polls[offset:offset + 8], start=offset + 1):
                     votes = sum(len(opt["votes"]) for opt in poll["options"])
                     vote_word = "stemme" if votes == 1 else "stemmer"
-                    lines.append(f"{i}. {poll.get('question', '?')} ({votes} {vote_word})")
+                    question = poll.get('question', '?')
+                    question = question if len(question) <= 100 else question[:99] + '…'
+                    lines.append(f"{i}. {question} ({votes} {vote_word}) · #{poll['id']}")
                 lines.append("")
                 lines.append(self.loc.t("poll_list_hint"))
+                lines.append(f'{len(active_polls)} aktive · side {page}/{max(1, (len(active_polls) + 7) // 8)}. Neste: `@inebotten polls side {page + 1}`.')
                 response_text = "\n".join(lines)
 
-            await self.send_response(message, response_text)
+            if await self.send_response(message, response_text) is not None:
+                self.remember_list(message, active_polls, range(offset + 1, min(len(active_polls), offset + 8) + 1))
 
         except Exception as e:
             self.log(f"Error listing polls: {e}")
+            await self.send_response(message, 'Listen kunne ikke hentes. Prøv `@inebotten polls` igjen.')
 
     async def handle_poll(self, message, poll_cmd: Dict[str, Any]) -> None:
         """
@@ -107,10 +113,13 @@ class PollsHandler(BaseHandler):
 
         except PollStorageError:
             await self.send_response(message, "❌ Kunne ikke lagre avstemningen; ingen opprettelse er bekreftet.")
+        except ValueError:
+            await self.send_response(message, 'Bruk et spørsmål og 2–10 ulike alternativer: `@inebotten poll Middag? / Pizza / Burger`. Ingen avstemning er opprettet.')
         except Exception as e:
             self.log(f"Error creating poll: {e}")
+            await self.send_response(message, 'Avstemningen kunne ikke publiseres. Se `@inebotten polls` før du prøver igjen; bruk tekstkommandoen for å stemme.')
 
-    async def handle_vote(self, message, vote: Dict[str, Any]) -> None:
+    async def handle_vote(self, message, vote: Dict[str, Any] | int) -> None:
         """
         Handle voting on polls.
 
@@ -128,6 +137,9 @@ class PollsHandler(BaseHandler):
                 else int(vote)
             )
             poll_ref = vote.get("poll_ref") if isinstance(vote, dict) else None
+            if poll_ref is not None and self._resolve_poll_id(guild_id, poll_ref, message) is None:
+                await self.send_response(message, self.loc.t('poll_not_found') + ' Bruk `@inebotten polls` for listen.')
+                return
 
             # Get active polls
             active_polls = self.poll.get_active_polls(guild_id)
@@ -135,16 +147,20 @@ class PollsHandler(BaseHandler):
             if not active_polls:
                 response_text = self.loc.t("no_active_polls") + " 📊"
             elif len(active_polls) > 1:
-                poll_id = self._resolve_poll_id(guild_id, poll_ref)
+                poll_id = self._resolve_poll_id(guild_id, poll_ref, message)
                 if poll_id is None:
                     lines = [
                         "📊 Det er flere aktive avstemninger. Stem med `@inebotten stem [avstemning] [tall]`, f.eks. `@inebotten stem 3 1`."
                     ]
-                    for i, p in enumerate(active_polls, 1):
+                    for i, p in enumerate(active_polls[:8], 1):
                         votes = sum(len(opt["votes"]) for opt in p["options"])
                         vote_word = "stemme" if votes == 1 else "stemmer"
-                        lines.append(f"{i}. {p.get('question', '?')} ({votes} {vote_word})")
-                    await self.send_response(message, "\n".join(lines))
+                        question = p.get('question', '?')
+                        question = question if len(question) <= 100 else question[:99] + '…'
+                        lines.append(f"{i}. {question} ({votes} {vote_word})")
+                    lines.append(f'{len(active_polls)} aktive. Alle sider: `@inebotten polls`.')
+                    if await self.send_response(message, "\n".join(lines)) is not None:
+                        self.remember_list(message, active_polls, range(1, min(len(active_polls), 8) + 1))
                     return
                 poll = next(p for p in active_polls if p["id"] == poll_id)
                 success, msg = self.poll.vote(
@@ -184,8 +200,9 @@ class PollsHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error handling vote: {e}")
+            await self.send_response(message, str(e) + ' Bruk `@inebotten polls`.' if isinstance(e, ValueError) else 'Stemmen kunne ikke bekreftes. Se `@inebotten polls` og kontroller resultatet før du prøver igjen.')
 
-    def _resolve_poll_id(self, guild_id, ref):
+    def _resolve_poll_id(self, guild_id, ref, message=None):
         """Resolve a poll reference to a poll_id. ref can be None, 'siste', or a 1-based index."""
         active_polls = self.poll.get_active_polls(guild_id)
         if not active_polls:
@@ -197,7 +214,11 @@ class PollsHandler(BaseHandler):
                 return active_polls[-1]["id"]
             return None
         if isinstance(ref, int) and 1 <= ref <= len(active_polls):
+            if message is not None:
+                self.displayed_index(message, active_polls, ref)
             return active_polls[ref - 1]["id"]
+        if isinstance(ref, str):
+            return next((poll['id'] for poll in active_polls if poll['id'] == ref.lstrip('#')), None)
         return None
 
     def _poll_target_response(self, guild_id, ref, action_label: str) -> str:
@@ -205,12 +226,15 @@ class PollsHandler(BaseHandler):
         if ref is None and len(active_polls) > 1:
             lines = [
                 (
-                    f"📊 Det er flere aktive avstemninger. Bruk nummer, f.eks. "
+                    f"📊 Det er flere aktive avstemninger. Vis `@inebotten polls` før du bruker nummer, f.eks. "
                     f"`@inebotten {action_label} poll 1`, eller skriv `siste`."
                 )
             ]
-            for i, poll in enumerate(active_polls, 1):
-                lines.append(f"{i}. {poll.get('question', '?')}")
+            for i, poll in enumerate(active_polls[:8], 1):
+                question = poll.get('question', '?')
+                question = question if len(question) <= 100 else question[:99] + '…'
+                lines.append(f"{i}. {question}")
+            lines.append(f'{len(active_polls)} aktive. Alle sider: `@inebotten polls`.')
             return "\n".join(lines)
         return self.loc.t("poll_not_found")
 
@@ -221,7 +245,7 @@ class PollsHandler(BaseHandler):
             re.fullmatch(
                 r"(?:poll results?|poll resultater|resultater poll|"
                 r"resultater avstemning|vis resultater(?: for)? "
-                r"(?:poll|avstemning)|avstemning resultater)",
+                r"(?:poll|avstemning)|avstemning resultater)(?: side \d+)?",
                 content.strip(), flags=re.IGNORECASE,
             )
         )
@@ -270,7 +294,7 @@ class PollsHandler(BaseHandler):
                 return
 
             target = payload.get("target")
-            poll_id = self._resolve_poll_id(guild_id, target)
+            poll_id = self._resolve_poll_id(guild_id, target, message)
             if poll_id is None:
                 await self.send_response(
                     message,
@@ -321,6 +345,7 @@ class PollsHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error editing poll: {e}")
+            await self.send_response(message, str(e) + ' Bruk `@inebotten polls`.' if isinstance(e, ValueError) else 'Endringen kunne ikke lagres. Se `@inebotten polls` før du prøver igjen.')
 
     async def handle_poll_delete(self, message, payload: Dict[str, Any]) -> None:
         """
@@ -333,7 +358,7 @@ class PollsHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
             target = payload.get("target")
-            poll_id = self._resolve_poll_id(guild_id, target)
+            poll_id = self._resolve_poll_id(guild_id, target, message)
             if poll_id is None:
                 await self.send_response(message, self._poll_target_response(guild_id, target, "slett"))
                 return
@@ -359,6 +384,7 @@ class PollsHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error deleting poll: {e}")
+            await self.send_response(message, str(e) + ' Bruk `@inebotten polls`.' if isinstance(e, ValueError) else 'Slettingen kunne ikke lagres. Se `@inebotten polls` før du prøver igjen.')
 
     async def handle_poll_close(self, message, payload: Dict[str, Any]) -> None:
         """
@@ -371,7 +397,7 @@ class PollsHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
             target = payload.get("target")
-            poll_id = self._resolve_poll_id(guild_id, target)
+            poll_id = self._resolve_poll_id(guild_id, target, message)
             if poll_id is None:
                 await self.send_response(message, self._poll_target_response(guild_id, target, "lukk"))
                 return
@@ -399,3 +425,4 @@ class PollsHandler(BaseHandler):
 
         except Exception as e:
             self.log(f"Error closing poll: {e}")
+            await self.send_response(message, str(e) + ' Bruk `@inebotten polls`.' if isinstance(e, ValueError) else 'Lukkingen kunne ikke lagres. Se `@inebotten polls` før du prøver igjen.')

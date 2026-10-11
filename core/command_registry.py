@@ -89,7 +89,8 @@ def _validator(intent, argument):
                 if (set(vote_payload) - {'option_index', 'poll_ref'}
                         or type(vote_payload.get('option_index')) is not int
                         or not 1 <= vote_payload['option_index'] <= 10
-                        or poll_ref is not None and (type(poll_ref) is not int or not 1 <= poll_ref <= 99)):
+                        or poll_ref is not None and not (type(poll_ref) is int and 1 <= poll_ref <= 99
+                            or isinstance(poll_ref, str) and re.fullmatch(r'poll_[A-Za-z0-9_-]{1,100}', poll_ref))):
                     raise ValueError('invalid_vote')
             elif type(vote_payload) is not int or not 1 <= vote_payload <= 10:
                 raise ValueError('invalid_vote')
@@ -231,10 +232,10 @@ COMMANDS = (
     _spec('reminder_edit', 'Endre påminnelse', 'endre påminnelse 1 tekst: Ny tekst', 'reminders.handle_reminder_edit', '*', 'write', 'calendar'),
     _spec('reminder_delete', 'Slett påminnelse', 'slett påminnelse 1', 'reminders.handle_reminder_delete', '*', 'write', 'calendar'),
     _spec('reminder_search', 'Søk i påminnelser', 'søk påminnelse handle', 'reminders.handle_reminder_search', '*', scope='calendar'),
-    _spec('reminder_create', 'Opprett påminnelse', 'påminnelse kjøp melk', 'reminders.handle_reminder_create', '*', 'write', 'calendar'),
+    _spec('reminder_create', 'Opprett påminnelse', 'påminnelse kjøp melk om 10 minutter', 'reminders.handle_reminder_create', '*', 'write', 'calendar'),
     _spec('reminder_list', 'Vis aktive påminnelser', 'vis påminnelser', 'reminders.handle_reminder_list', '*', scope='calendar'),
     _spec('reminder_complete', 'Fullfør påminnelse', 'ferdig påminnelse 1', 'reminders.handle_reminder_complete', '*', 'write', 'calendar'),
-    _spec('poll_create', 'Opprett avstemning', 'poll Pizza / Burger', 'polls.handle_poll', 'poll', 'write', 'channel'),
+    _spec('poll_create', 'Opprett avstemning', 'poll Middag? / Pizza / Burger', 'polls.handle_poll', 'poll', 'write', 'channel'),
     _spec('poll_vote', 'Stem i aktiv avstemning', '1', 'polls.handle_vote', 'vote', 'write', 'channel'),
     _spec('poll_edit', 'Rediger egen poll; bekreft stemmeresett', 'endre poll 1 spørsmål: Nytt spørsmål', 'polls.handle_poll_edit', 'poll_edit', 'write', 'poll_owner'),
     _spec('poll_delete', 'Slett egen avstemning', 'slett poll 1', 'polls.handle_poll_delete', 'poll_delete', 'write', 'poll_owner'),
@@ -245,7 +246,7 @@ COMMANDS = (
     _spec('word_of_day', 'Vis dagens ord', 'dagens ord', 'fun.handle_word_of_day'),
     _spec('quote', 'Hent eller lagre sitat', 'sitat', 'fun.handle_quote_command', 'quote', 'mixed', 'channel'),
     _spec('quote_list', 'Vis sitater', 'vis sitater', 'quotes.handle_quote_list', scope='channel'),
-    _spec('quote_edit', 'Endre eget sitat', 'endre sitat 1 Ny tekst', 'quotes.handle_quote_edit', '*', 'write', 'channel'),
+    _spec('quote_edit', 'Endre eget sitat', 'endre sitat 1 tekst: Ny tekst', 'quotes.handle_quote_edit', '*', 'write', 'channel'),
     _spec('quote_delete', 'Slett eget sitat', 'slett sitat 1', 'quotes.handle_quote_delete', '*', 'write', 'channel'),
     _spec('aurora', 'Vis nordlysvarsel med alder og kilde', 'nordlys', 'aurora.handle_aurora', mutation='provider'),
     _spec('school_holidays', 'Vis kildebelagt skolerute og dekning', 'skoleferie Trondheim 2026-2027', 'school_holidays.handle_school_holidays'),
@@ -325,13 +326,20 @@ def preview_route(router, text, actor):
                                 'actor_id': actor.user_id, 'authoritative_permission': False}}
 
 
-def command_help_pages(max_chars=1700):
+def command_help_pages(max_chars=1700, *, topic=None):
     if not 500 <= max_chars <= 1800:
         raise ValueError('invalid_help_page_size')
     header = '📖 **Kommandoer** — tagg Inebotten. Område, rettigheter og eventuelle bekreftelser sjekkes ved kjøring.\n'
     pages, lines = [], header
+    topics = {'poll': 'poll', 'avstemning': 'poll', 'påminnelse': 'reminder', 'påminnelser': 'reminder',
+              'sitat': 'quote', 'watchlist': 'watchlist', 'bursdag': 'birthday', 'kalender': 'calendar', 'minne': 'memory', 'varsler': 'memory'}
+    prefix = topics.get(topic)
+    if topic and prefix is None:
+        return ('Velg hjelp for `poll`, `påminnelse`, `sitat`, `watchlist`, `bursdag`, `kalender` eller `minne`, f.eks. `@inebotten hjelp poll`.',)
     for spec in COMMANDS:
-        line = '\n• `' + spec.examples[0] + '` — ' + spec.description
+        if prefix and not spec.intent.value.startswith(prefix):
+            continue
+        line = '\n• `@inebotten ' + spec.examples[0] + '` — ' + spec.description
         if len(lines + line) > max_chars:
             pages.append(lines)
             lines = header

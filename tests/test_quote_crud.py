@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from core.intent_router import BotIntent, IntentRouter
 from features.quote_handler import QuoteHandler
@@ -100,6 +101,13 @@ class DummyQuoteMonitor:
 
 
 class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def show_list(self, handler, message):
+        message.author = SimpleNamespace(id=7)
+        original = handler.send_response
+        handler.send_response = AsyncMock(return_value=SimpleNamespace(id=1))
+        await handler.handle_quote_list(message)
+        handler.send_response = original
+
     def make_manager(self) -> QuoteManager:
         tmp = TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -160,6 +168,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
+        await self.show_list(handler, message)
         await handler.handle_quote_edit(message, {})
 
         updated = manager.list_quotes("123")[0]
@@ -185,6 +194,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
+        await self.show_list(handler, message)
         await handler.handle_quote_edit(message, {})
 
         self.assertEqual(captured["content"], "calendar_edit_invalid")
@@ -208,6 +218,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
+        await self.show_list(handler, message)
         await handler.handle_quote_edit(message, {})
 
         updated = manager.list_quotes("123")[0]
@@ -233,6 +244,7 @@ class QuoteRoutingAndHandlerTests(unittest.IsolatedAsyncioTestCase):
             reply=reply,
         )
 
+        await self.show_list(handler, message)
         await handler.handle_quote_edit(message, {})
 
         updated = manager.list_quotes("123")[0]

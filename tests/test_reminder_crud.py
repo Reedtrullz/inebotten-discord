@@ -4,6 +4,7 @@
 # pyright: reportImplicitOverride=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnusedCallResult=false, reportUnusedVariable=false, reportAttributeAccessIssue=false
 
 import unittest
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -123,7 +124,7 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             client=SimpleNamespace(),
         )
         self.handler = ReminderHandler(self.monitor)
-        self.handler.send_response = AsyncMock(return_value=None)
+        self.handler.send_response = AsyncMock(return_value=SimpleNamespace(id=1))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -136,6 +137,8 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
+        await self.handler.handle_reminder_list(message)
+        self.handler.send_response.reset_mock()
         await self.handler.handle_reminder_edit(message)
 
         self.assertEqual(self.manager.reminders["123"][0]["text"], "Oppdatert tittel")
@@ -151,6 +154,14 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
+        await self.handler.handle_reminder_list(message)
+        self.handler.send_response.reset_mock()
+        await self.handler.handle_reminder_delete(message)
+        self.assertEqual(len(self.manager.reminders['123']), 1)
+        confirmation = re.search(r'`@inebotten (bekreft sletting påminnelse [A-Za-z0-9_-]+)`', self.handler.send_response.await_args.args[1])
+        assert confirmation is not None
+        message.content = confirmation.group(1)
+        self.handler.send_response.reset_mock()
         await self.handler.handle_reminder_delete(message)
 
         self.assertEqual(self.manager.reminders["123"], [])
@@ -172,7 +183,7 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handle_reminder_create_adds_reminder(self):
         message = SimpleNamespace(
-            content="@inebotten påminnelse Ring lege 20.06",
+            content="@inebotten påminnelse Ring lege 20.06.2099 kl 14:00",
             guild=SimpleNamespace(id=123),
             channel=SimpleNamespace(id=456),
             author=SimpleNamespace(id=7, name="Tester"),
@@ -205,6 +216,8 @@ class ReminderHandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=7, name="Tester"),
         )
 
+        await self.handler.handle_reminder_list(message)
+        self.handler.send_response.reset_mock()
         await self.handler.handle_reminder_complete(message)
 
         self.assertTrue(self.manager.reminders["123"][0]["completed"])

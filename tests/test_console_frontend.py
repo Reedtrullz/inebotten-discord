@@ -33,6 +33,97 @@ def test_login_page_renders(page: Any, console_server: ConsoleServer) -> None:
     assert "Logg inn" in page.content()
 
 
+def test_calendar_preview_invalidates_on_form_changes_and_shows_time(page: Any, console_server: ConsoleServer):
+    item = {'id': 'synthetic', 'title': 'Synthetic appointment', 'date': '12.10.2026', 'time': '09:30',
+            'kind': 'event', 'timezone': 'America/New_York', 'duration_minutes': 60, 'all_day': False}
+    state = {'enabled': True, 'write_available': True, 'read_only': False, 'scope_id': 'synthetic', 'revision': 1, 'items': [item]}
+    page.route('**/api/calendar/items', lambda route: route.fulfill(json=state))
+    page.route('**/api/calendar/preview', lambda route: route.fulfill(json={'token': 'synthetic-token', 'operation': 'edit',
+        'effects': [{'before': item, 'after': {**item, 'time': '14:00'}}]}))
+    _login(page, console_server)
+    page.locator('[data-calendar-action="edit"]').click()
+    page.locator('[name="time"]').fill('14:00')
+    page.locator('[data-calendar-form] [type="submit"]').click()
+    page.locator('[data-calendar-preview]:not([hidden])').wait_for()
+    preview = page.locator('[data-calendar-preview]').inner_text()
+    assert '09:30' in preview and '14:00' in preview and 'America/New_York' in preview
+    page.locator('[name="time"]').fill('16:00')
+    assert page.locator('[data-calendar-preview]').is_hidden()
+    assert page.evaluate('window.consoleApp.calendarWorkspace.pending') is None
+    assert 'Forhåndsvis på nytt' in page.locator('[data-calendar-status]').inner_text()
+    page.locator('[data-calendar-form] [type="submit"]').click()
+    page.locator('[data-calendar-preview]:not([hidden])').wait_for()
+    page.locator('[data-calendar-new]').click()
+    assert page.locator('[data-calendar-preview]').is_hidden()
+    assert page.locator('[name="item_id"]').input_value() == ''
+
+
+def test_calendar_card_has_room_and_contextual_keyboard_controls(page: Any, console_server: ConsoleServer):
+    item = {'id': 'synthetic', 'title': 'Synthetic appointment', 'date': '12.10.2026', 'kind': 'task'}
+    page.route('**/api/calendar/items', lambda route: route.fulfill(json={
+        'enabled': True, 'write_available': True, 'scope_id': 'synthetic', 'items': [item], 'revision': 1}))
+    _login(page, console_server)
+    page.set_viewport_size({'width': 1280, 'height': 720})
+    assert page.locator('#calendar').bounding_box()['width'] > 900
+    assert page.get_by_role('button', name='Rediger Synthetic appointment', exact=True).is_visible()
+    for width in (390, 640):
+        page.set_viewport_size({'width': width, 'height': 844})
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+
+
+def test_calendar_delayed_preview_and_failed_replacement_cannot_apply_old_intent(page: Any, console_server: ConsoleServer):
+    item = {'id': 'synthetic', 'title': 'Synthetic appointment', 'date': '12.10.2026', 'time': '09:30',
+            'kind': 'event', 'timezone': 'Europe/Oslo', 'all_day': False}
+    page.route('**/api/calendar/items', lambda route: route.fulfill(json={
+        'enabled': True, 'write_available': True, 'scope_id': 'synthetic', 'items': [item], 'revision': 1}))
+    held = []
+    page.route('**/api/calendar/preview', lambda route: held.append(route))
+    _login(page, console_server)
+    page.locator('[data-calendar-action="edit"]').click()
+    page.locator('[name="time"]').fill('14:00')
+    with page.expect_request('**/api/calendar/preview'):
+        page.locator('[data-calendar-form] [type="submit"]').click()
+    page.locator('[name="time"]').fill('16:00')
+    assert len(held) == 1
+    held.pop().fulfill(json={'token': 'old-token', 'operation': 'edit', 'effects': [{'before': item, 'after': item}]})
+    page.wait_for_function('window.consoleApp.calendarWorkspace.pending === null')
+    assert page.locator('[data-calendar-preview]').is_hidden()
+    with page.expect_request('**/api/calendar/preview'):
+        page.locator('[data-calendar-form] [type="submit"]').click()
+    held.pop().fulfill(json={'token': 'new-token', 'operation': 'edit', 'effects': [{'before': item, 'after': {**item, 'time': '16:00'}}]})
+    page.locator('[data-calendar-preview]:not([hidden])').wait_for()
+    page.evaluate("() => { window.consoleApp.requestCalendarPreview({operation: 'edit'}); }")
+    page.wait_for_function('window.consoleApp.calendarWorkspace.pending === null')
+    assert page.locator('[data-calendar-preview]').is_hidden()
+    held.pop().fulfill(status=400, json={'error': 'pending_occurrence_exceptions_require_review'})
+    page.locator('[data-calendar-status]').get_by_text('Fremtidige unntak', exact=False).wait_for()
+    assert page.locator('[data-calendar-preview]').is_hidden()
+
+
+def test_calendar_double_apply_sends_once_and_resets_editor(page: Any, console_server: ConsoleServer):
+    item = {'id': 'synthetic', 'title': 'Synthetic appointment', 'date': '12.10.2026', 'kind': 'event', 'all_day': True}
+    page.route('**/api/calendar/items', lambda route: route.fulfill(json={
+        'enabled': True, 'write_available': True, 'scope_id': 'synthetic', 'items': [item], 'revision': 1}))
+    page.route('**/api/calendar/preview', lambda route: route.fulfill(json={'token': 'token', 'operation': 'edit', 'effects': [{'before': item, 'after': {**item, 'title': 'Changed'}}]}))
+    held = []
+    page.route('**/api/calendar/apply', lambda route: held.append(route))
+    _login(page, console_server)
+    page.locator('[data-calendar-action="edit"]').click()
+    page.locator('[name="title"]').fill('Changed')
+    page.locator('[data-calendar-form] [type="submit"]').click()
+    page.locator('[data-calendar-preview]:not([hidden])').wait_for()
+    with page.expect_request('**/api/calendar/apply'):
+        page.evaluate('() => { window.consoleApp.applyCalendarPreview(); window.consoleApp.applyCalendarPreview(); }')
+    page.wait_for_function('window.consoleApp.calendarWorkspace.applying === true')
+    assert len(held) == 1
+    held[0].fulfill(json={'remote_pending': False})
+    page.locator('[data-calendar-status]').get_by_text('Endringen er lagret.', exact=False).wait_for()
+    assert page.locator('[name="item_id"]').input_value() == ''
+    assert page.locator('[name="title"]').input_value() == ''
+    assert page.locator('[data-calendar-preview]').is_hidden()
+    assert page.evaluate('window.consoleApp.calendarWorkspace.pending') is None
+
+
 def test_login_with_valid_key(page: Any, console_server: ConsoleServer) -> None:
     """Enter valid key, submit, verify redirect to dashboard."""
     page.goto(f"{_base_url(console_server)}/login")

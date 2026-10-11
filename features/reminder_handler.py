@@ -10,10 +10,11 @@ Commands:
 import re
 from typing import Dict, Optional, Tuple
 
-from cal_system.reminder_manager import ReminderEditError, parse_reminder_command
+from cal_system.reminder_manager import ReminderEditError, parse_reminder_command, validate_deadline
 from features.base_handler import BaseHandler
 from utils.storage_contract import StorageMutationError
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 class ReminderHandler(BaseHandler):
@@ -26,6 +27,9 @@ class ReminderHandler(BaseHandler):
         "text": "title",
         "dato": "date",
         "date": "date",
+        "tid": "time",
+        "time": "time",
+        "klokkeslett": "time",
         "gjentakelse": "recurrence",
         "recurrence": "recurrence",
         "gjenta": "recurrence",
@@ -105,7 +109,7 @@ class ReminderHandler(BaseHandler):
 
             field = None
             for nor_field, eng_field in self._EDIT_FIELD_MAP.items():
-                if nor_field in prefix:
+                if nor_field == prefix:
                     field = eng_field
                     break
 
@@ -114,6 +118,7 @@ class ReminderHandler(BaseHandler):
                     patterns = getattr(getattr(self.monitor, 'nlp_parser', None), 'recurrence_patterns', {})
                     value = patterns.get(value.casefold(), value)
                 return index, {field: value}
+            return index, {}
 
         if remaining:
             return index, {"title": remaining}
@@ -167,15 +172,25 @@ class ReminderHandler(BaseHandler):
                 )
                 return
 
+            deadline = validate_deadline(data.get('due_date'), self.reminders.clock)
+            if deadline:
+                due_value = deadline if ' ' in deadline else deadline + ' 09:00'
+                if self.reminders.clock.now() >= datetime.strptime(due_value, '%d.%m.%Y %H:%M').replace(tzinfo=ZoneInfo('Europe/Oslo')):
+                    await self.send_response(message, 'Fristen er i fortiden. Oppgi en fremtidig dato med år og klokkeslett; ingenting er lagret.')
+                    return
             reminder_id = self.reminders.add_reminder(
                 guild_id=guild_id,
                 user_id=message.author.id,
                 username=message.author.name,
                 text=data["text"],
-                due_date=data.get("due_date"),
+                due_date=deadline,
                 channel_id=getattr(getattr(message, "channel", None), "id", None),
             )
-            due = f"\n📅 Frist: {data['due_date']}" if data.get("due_date") else ""
+            due = f"\n📅 Frist: {deadline} (Europe/Oslo)" if deadline else ""
+            if deadline and ' ' not in deadline:
+                due += '\nDato uten tid: automatisk varsel kl. 09:00, med gjeldende varselinnstillinger.'
+            elif deadline:
+                due += '\nAutomatisk varsel følger dine varselinnstillinger. Se `@inebotten varsler status`.'
             await self.send_response(
                 message,
                 f"✅ **Påminnelse lagt til!**\n{data['text']}{due}",
@@ -186,6 +201,8 @@ class ReminderHandler(BaseHandler):
                     "🔔 Jeg fant ingen dato eller klokkeslett, så sender jeg ikke automatisk. "
                     "Bruk f.eks. `om 2 minutter` eller `20.06`."
                 )
+        except ValueError:
+            await self.send_response(message, 'Ugyldig frist. Bruk DD.MM.ÅÅÅÅ kl HH:MM, med et entydig tidspunkt ved sommertid. Ingenting er lagret.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -196,9 +213,14 @@ class ReminderHandler(BaseHandler):
         """Handle listing active reminders."""
         try:
             guild_id = self.get_guild_id(message)
-            reminders_text = self.reminders.format_reminders_list(guild_id, show_completed=True)
+            records = self.reminders.get_active_reminders(guild_id)
+            page = re.search(r'\bside (\d+)\b', message.content, re.I)
+            page_number = max(1, int(page.group(1))) if page else 1
+            reminders_text = self.reminders.format_reminders_list(guild_id, show_completed=True, page=page_number)
             if reminders_text:
-                await self.send_response(message, f"🔔 **Påminnelser:**\n{reminders_text}")
+                sent = await self.send_response(message, f"🔔 **Påminnelser:**\n{reminders_text}")
+                if sent is not None:
+                    self.remember_list(message, records, range((page_number - 1) * 8 + 1, min(len(records), page_number * 8) + 1))
             else:
                 await self.send_response(message, "📭 Ingen aktive påminnelser.")
         except StorageMutationError:
@@ -230,15 +252,19 @@ class ReminderHandler(BaseHandler):
             if index is None:
                 reminders_text = self.reminders.format_reminders_list(guild_id)
                 if reminders_text:
-                    await self.send_response(
+                    records = self.reminders.get_active_reminders(guild_id)
+                    sent = await self.send_response(
                         message,
                         f"📝 Hvilken påminnelse er ferdig?\n\n{reminders_text}\n\n"
                         "Bruk `@inebotten ferdig påminnelse [nummer]`.",
                     )
+                    if sent is not None:
+                        self.remember_list(message, records, range(1, min(len(records), 8) + 1))
                 else:
                     await self.send_response(message, "📭 Ingen aktive påminnelser.")
                 return
 
+            self.displayed_index(message, self.reminders.get_active_reminders(guild_id), index)
             success, text, next_date = self.reminders.complete_reminder(guild_id, reminder_num=index)
             if not success:
                 await self.send_response(
@@ -258,7 +284,7 @@ class ReminderHandler(BaseHandler):
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
             self.log(f"Error completing reminder: {e}")
-            await self.send_response(message, self.loc.t("error_generic"))
+            await self.send_response(message, str(e) if isinstance(e, ValueError) else self.loc.t("error_generic"))
 
     async def handle_reminder_edit(self, message, payload=None) -> None:
         """Handle editing a reminder by its list index."""
@@ -268,28 +294,26 @@ class ReminderHandler(BaseHandler):
 
             if index is None:
                 await self.send_response(
-                    message, self.loc.t("calendar_edit_invalid")
+                    message, 'Velg et nummer fra `@inebotten påminnelser`. Eksempel: `@inebotten endre påminnelse 1 tid: 14:00`.'
                 )
                 return
 
             if not kwargs:
                 await self.send_response(
-                    message, self.loc.t("calendar_edit_invalid")
+                    message, 'Bruk tittel:, dato: eller tid:. Eksempel: `@inebotten endre påminnelse 1 tid: 14:00`.'
                 )
                 return
 
+            self.displayed_index(message, self.reminders.get_active_reminders(guild_id), index)
             updated = self.reminders.edit_reminder(guild_id, index, **kwargs)
             await self.send_response(
-                message, self.loc.t("reminder_edit_success", title=updated["text"])
+                message, self.loc.t("reminder_edit_success", title=updated["text"]) + f'\nFrist: {updated.get("due_date") or "ingen automatisk varsling"} (Europe/Oslo). Bruk `@inebotten påminnelser` for ny liste.'
             )
 
         except ReminderEditError as error:
             await self.send_response(message, f'❌ {error}')
-        except ValueError:
-            index = self.extract_number(message.content)
-            await self.send_response(
-                message, self.loc.t("reminder_edit_not_found", num=index or "?")
-            )
+        except ValueError as error:
+            await self.send_response(message, f'{error} Bruk `@inebotten påminnelser`.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
@@ -301,25 +325,15 @@ class ReminderHandler(BaseHandler):
         try:
             guild_id = self.get_guild_id(message)
             index = self.extract_number(message.content)
-
+            index = await self.reviewed_delete(message, self.reminders.get_active_reminders(guild_id), index, 'påminnelse', 'text')
             if index is None:
-                await self.send_response(
-                    message,
-                    self.loc.t(
-                        "reminder_delete_not_found",
-                        num="?",
-                    ),
-                )
                 return
 
             self.reminders.delete_reminder_by_id(guild_id, index)
             await self.send_response(message, self.loc.t("reminder_delete_success"))
 
-        except ValueError:
-            index = self.extract_number(message.content)
-            await self.send_response(
-                message, self.loc.t("reminder_delete_not_found", num=index or "?")
-            )
+        except ValueError as error:
+            await self.send_response(message, f'{error} Bruk `@inebotten påminnelser`.')
         except StorageMutationError:
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except Exception as e:
