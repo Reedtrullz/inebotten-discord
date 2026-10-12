@@ -430,7 +430,7 @@ class ConsoleApp {
         this.invalidateTaskPreview(); form.elements.item_id && (form.elements.item_id.value = '');
         if (form.elements.options) form.elements.options.readOnly = false;
         if (form.matches('[data-reminder-form], [data-poll-form]')) form.closest('details').querySelector('summary').textContent = form.matches('[data-reminder-form]') ? 'Ny påminnelse' : 'Ny avstemning eller rediger spørsmål';
-        delete form.dataset.originalDeadline; delete form.dataset.displayDeadline;
+        delete form.dataset.originalDeadline; delete form.dataset.displayDeadline; delete form.dataset.originalRecurrence;
       });
       form.addEventListener('submit', event => {
         event.preventDefault(); const values = new FormData(form); let payload;
@@ -439,6 +439,7 @@ class ConsoleApp {
           payload = {domain:'reminder', operation:values.get('item_id') ? 'edit' : 'create',
             ...(values.get('item_id') ? {item_id:values.get('item_id')} : {}), changes:{text:values.get('text').trim(),
               due_date:values.get('item_id') && deadline === form.dataset.displayDeadline ? form.dataset.originalDeadline : date}};
+          if (values.get('recurrence') || form.dataset.originalRecurrence) payload.changes.recurrence = values.get('recurrence');
         } else if (form.matches('[data-poll-form]')) {
           payload = {domain:'poll', operation:values.get('item_id') ? 'edit' : 'create',
             ...(values.get('item_id') ? {item_id:values.get('item_id')} : {}), changes:{question:values.get('question').trim(),
@@ -483,6 +484,7 @@ class ConsoleApp {
           if (domain === 'reminder' && operation === 'edit') {
             this.invalidateTaskPreview(); const form = document.querySelector('[data-reminder-form]');
             form.elements.item_id.value = item.id; form.elements.text.value = item.text;
+            form.elements.recurrence.value = item.recurrence || ''; form.dataset.originalRecurrence = item.recurrence || '';
             const due = (item.due_date || '').split(' ');
             form.elements.deadline.value = due[0] ? `${this.calendarDateInput(due[0])}T${due[1] || '09:00'}` : '';
             form.dataset.originalDeadline = item.due_date || ''; form.dataset.displayDeadline = form.elements.deadline.value;
@@ -501,10 +503,11 @@ class ConsoleApp {
       (state.reminders || []).forEach(item => {
         const row = document.createElement('article'); row.className = 'calendar-agenda-item';
         const title = document.createElement('h3'); title.textContent = item.text;
-        const due = document.createElement('p'); due.textContent = `${item.completed ? 'Fullført' : item.overdue ? 'Forfalt' : 'Åpen'} · ${item.due_date || 'Ingen frist'}`;
+        const recurrenceLabels = {daily:'Hver dag',weekly:'Hver uke',biweekly:'Annenhver uke',monthly:'Hver måned',yearly:'Hvert år'};
+        const due = document.createElement('p'); due.textContent = `${item.completed ? 'Fullført' : item.overdue ? 'Forfalt' : 'Åpen'} · ${item.due_date || 'Ingen frist'}${item.recurrence ? ' · ' + recurrenceLabels[item.recurrence] : ''}`;
         const plan = document.createElement('p'); plan.textContent = item.plan?.message || '';
         const actions = document.createElement('div'); actions.className = 'calendar-item-actions';
-        ['edit','snooze','complete','delete'].forEach((op, n) => actions.append(button(['Rediger','Slumre 10 minutter','Fullfør','Slett'][n],item,'reminder',op)));
+        ['edit','snooze','complete','delete'].forEach((op, n) => actions.append(button(['Rediger','Slumre 10 minutter',item.recurrence ? 'Fullfør denne forekomsten' : 'Fullfør',item.recurrence ? 'Slett serien' : 'Slett'][n],item,'reminder',op)));
         row.append(title,due,plan,actions); list.append(row);
       });
       (state.polls || []).forEach(item => {
@@ -521,7 +524,7 @@ class ConsoleApp {
       form.elements.lead_minutes.value = (profile?.lead_minutes || [30,0]).join(',');
       ['quiet_start','quiet_end','overdue_minutes'].forEach(name => {form.elements[name].value = profile?.[name] ?? '';});
       form.elements.notification_timezone.value = profile?.timezone || 'Europe/Oslo';
-      document.querySelectorAll('[data-task-workspace] form input, [data-task-workspace] form textarea, [data-task-workspace] form button').forEach(el => {el.disabled = !state.write_available;});
+      document.querySelectorAll('[data-task-workspace] form input, [data-task-workspace] form select, [data-task-workspace] form textarea, [data-task-workspace] form button').forEach(el => {el.disabled = !state.write_available;});
       form.elements.enabled.disabled = !state.write_available || state.notification_available === false;
       document.querySelector('[data-notification-channel-status]').textContent = state.notification_available === false ? 'Du kan pause varsler her. Velg en godkjent kanal i privat konsolloppsett før du slår dem på.' : 'Varsler følger den godkjente kanalen for denne konsollen eller din eksisterende varselprofil.';
       document.querySelector('[data-task-cancel]').disabled = !state.write_available;
@@ -542,7 +545,9 @@ class ConsoleApp {
       this.tasks.pending = {...preview, domain:payload.domain};
       const labels = {text:'Tekst',question:'Spørsmål',due_date:'Frist',completed:'Fullført',status:'Status',options:'Alternativer',option_index:'Alternativ',enabled:'Varsler på',lead_minutes:'Forvarsel (minutter)',quiet_start:'Stille fra',quiet_end:'Stille til',overdue_minutes:'Etter frist (minutter)',timezone:'Tidssone',destination_id:'Kanal',scope_id:'Område',morning_time:'Morgen',card_ids:'Kort'};
       const operation = {create:'Opprett',edit:'Rediger',snooze:'Slumre 10 minutter',complete:'Fullfør',delete:'Slett',close:'Lukk',vote:'Stem'}[preview.operation];
-      const describe = value => Object.entries(value || {}).filter(([,v]) => v != null).map(([k,v]) => `${labels[k] || k}: ${typeof v === 'boolean' ? v ? 'ja' : 'nei' : Array.isArray(v) ? v.join(', ') : v === 'active' ? 'åpen' : v === 'closed' ? 'lukket' : v}`).join(' · ');
+      labels.recurrence = 'Gjentakelse';
+      const recurrenceValues = {daily:'Hver dag',weekly:'Hver uke',biweekly:'Annenhver uke',monthly:'Hver måned',yearly:'Hvert år','':'Ingen'};
+      const describe = value => Object.entries(value || {}).filter(([,v]) => v != null).map(([k,v]) => `${labels[k] || k}: ${k === 'recurrence' ? recurrenceValues[v] : typeof v === 'boolean' ? v ? 'ja' : 'nei' : Array.isArray(v) ? v.join(', ') : v === 'active' ? 'åpen' : v === 'closed' ? 'lukket' : v}`).join(' · ');
       document.querySelector('[data-task-preview-content]').textContent = `${operation} · Før: ${describe(preview.before) || 'Ny oppføring'} · Valgt endring: ${describe(preview.changes) || operation}`;
       document.querySelector('[data-task-preview]').hidden = false;
       document.querySelector('[data-task-apply]').disabled = false; document.querySelector('[data-task-apply]').focus();
@@ -583,6 +588,7 @@ class ConsoleApp {
       undo_expired: "Angre er utløpt. Hent gjøremålene på nytt.",
       invalid_title: "Skriv en tekst på 1–200 tegn.",
       invalid_deadline: "Kontroller fristen; velg en gyldig dato og tid.",
+      recurrence_requires_deadline: "Gjentakelse krever en frist. Velg dato og eventuelt klokkeslett.",
       notification_destination_required: "Velg en godkjent varselkanal i privat konsolloppsett før du slår varsler på.",
       task_owner_required: "Bare eieren kan redigere eller slette denne oppføringen.",
       recurrence_edit_scope_required: "Velg omfang for gjentakelsen før forhåndsvisning.",

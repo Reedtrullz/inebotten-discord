@@ -184,9 +184,13 @@ class ReminderHandler(BaseHandler):
                 username=message.author.name,
                 text=data["text"],
                 due_date=deadline,
+                recurrence=data.get('recurrence'),
                 channel_id=getattr(getattr(message, "channel", None), "id", None),
             )
             due = f"\n📅 Frist: {deadline} (Europe/Oslo)" if deadline else ""
+            if data.get('recurrence'):
+                labels = {'daily': 'hver dag', 'weekly': 'hver uke', 'biweekly': 'annenhver uke', 'monthly': 'hver måned', 'yearly': 'hvert år'}
+                due += f"\nGjentakelse: {labels[data['recurrence']]}. Fullføring går videre til neste forekomst."
             if deadline and ' ' not in deadline:
                 due += '\nDato uten tid: automatisk varsel kl. 09:00, med gjeldende varselinnstillinger.'
             elif deadline:

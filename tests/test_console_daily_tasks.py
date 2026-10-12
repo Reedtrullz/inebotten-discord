@@ -32,6 +32,45 @@ async def daily(workspace, tmp_path):
         memory._storage.close()
 
 
+async def test_console_creates_timed_recurrence_and_completes_only_current_occurrence(daily):
+    server, reminders, _, actor, _ = daily
+    status, data = await http_request(server, '/api/tasks', api_key=API_KEY)
+    payload = {'domain': 'reminder', 'operation': 'create', 'revision': data['revisions']['reminder'],
+        'changes': {'text': 'Weekly task', 'due_date': '18.10.2026 05:01', 'recurrence': 'weekly'}}
+    status, preview = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+    assert status == 200
+    status, _ = await http_request(server, '/api/tasks/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+    assert status == 200
+    with request_scope(actor):
+        item = next(r for r in reminders.get_active_reminders(None) if r['text'] == 'Weekly task')
+    status, data = await http_request(server, '/api/tasks', api_key=API_KEY)
+    payload = {'domain': 'reminder', 'operation': 'complete', 'revision': data['revisions']['reminder'], 'item_id': item['id']}
+    status, preview = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+    assert status == 200 and preview['before']['recurrence'] == 'weekly'
+    status, result = await http_request(server, '/api/tasks/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+    assert status == 200 and result['undo']['token']
+    status, data = await http_request(server, '/api/tasks', api_key=API_KEY)
+    row = next(r for r in data['reminders'] if r['id'] == item['id'])
+    assert not row['completed'] and row['due_date'] == '25.10.2026 05:01'
+    assert row['recurrence'] == 'weekly' and row['plan']['next_at'] == '2026-10-25T03:31:00+00:00'
+    status, _ = await http_request(server, '/api/tasks/undo', method='POST', api_key=API_KEY, body={'token': result['undo']['token']})
+    assert status == 200
+    with request_scope(actor):
+        restored = next(r for r in reminders.get_active_reminders(None) if r['id'] == item['id'])
+        assert restored['due_date'] == '18.10.2026 05:01' and restored['series_next_index'] == 0
+
+
+@pytest.mark.parametrize('changes', [{'text': 'Invalid', 'recurrence': 'weekly'},
+    {'text': 'Invalid', 'due_date': '18.10.2026 05:01', 'recurrence': 'nonsense'}])
+async def test_console_rejects_invalid_recurrence_before_writing(daily, changes):
+    server, reminders, _, _, _ = daily
+    before = reminders.storage_path.read_bytes()
+    status, data = await http_request(server, '/api/tasks', api_key=API_KEY)
+    payload = {'domain': 'reminder', 'operation': 'create', 'revision': data['revisions']['reminder'], 'changes': changes}
+    status, _ = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+    assert status == 400 and reminders.storage_path.read_bytes() == before
+
+
 async def test_daily_workspace_filters_private_records_and_voter_ids(daily):
     server, reminders, polls, actor, item_id = daily
     status, data = await http_request(server, '/api/tasks', api_key=API_KEY)

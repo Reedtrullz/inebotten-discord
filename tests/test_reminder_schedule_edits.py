@@ -50,7 +50,7 @@ def test_date_edit_reanchors_remaining_monthly_occurrences(reminders):
 
 
 @pytest.mark.parametrize('due, rule', [
-    ('11.10.2026 18:45', 'daily'), ('11.10.2026', 'nonsense'),
+    ('', 'daily'), ('11.10.2026', 'nonsense'),
 ])
 def test_invalid_recurrence_edit_preserves_committed_reminder(reminders, due, rule):
     reminders.add_reminder('123', '7', 'Owner', 'Task', due_date=due)
@@ -82,7 +82,7 @@ def test_pending_occurrence_exception_requires_review_before_schedule_change(rem
 
 
 @pytest.mark.asyncio
-async def test_handler_explains_invalid_timed_recurrence_without_success(reminders):
+async def test_handler_accepts_timed_recurrence_and_preserves_time(reminders):
     reminders.add_reminder('123', '7', 'Owner', 'Timed task', due_date='11.10.2026 18:45')
     sent = []
     handler = ReminderHandler(SimpleNamespace(reminders=reminders,
@@ -99,8 +99,10 @@ async def test_handler_explains_invalid_timed_recurrence_without_success(reminde
     await handler.handle_reminder_list(message)
     sent.clear()
     await handler.handle_reminder_edit(message)
-    assert len(sent) == 1 and 'uten klokkeslett' in sent[0]
-    assert reminders.get_active_reminders('123')[0]['recurrence'] is None
+    assert len(sent) == 1 and 'reminder_edit_success' in sent[0]
+    item = reminders.get_active_reminders('123')[0]
+    assert item['recurrence'] == 'daily'
+    assert reminders.complete_reminder('123', reminder_id=item['id'])[2] == '12.10.2026 18:45'
 
 
 @pytest.mark.asyncio
