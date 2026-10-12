@@ -330,8 +330,8 @@ def _render_overview_section(data: dict[str, Any]) -> str:
       <p>{escape(subline)}</p>
       <div class="status-strip">{hero_stats}</div>
       <div class="next-actions">
-        <a class="next-action" href="#logs"><strong>Les siste logger</strong><span>Se hva botten nettopp gjorde.</span></a>
-        <a class="next-action" href="#calendar"><strong>Sjekk køen</strong><span>Kalender, oppgaver og avstemninger.</span></a>
+        <a class="next-action" href="#today"><strong>Se mine gjøremål</strong><span>Påminnelser, varsler og avstemninger.</span></a>
+        <a class="next-action" href="#calendar"><strong>Åpne agenda</strong><span>Planlegg og rediger kalenderen.</span></a>
         <a class="next-action" href="#diagnostics"><strong>Åpne diagnostikk</strong><span>Bridge, intents og rate limits.</span></a>
       </div>
     </div>
@@ -459,6 +459,46 @@ def _render_readiness_section(data: dict[str, Any]) -> str:
 </article>"""
 
 
+def _render_today_section() -> str:
+    return '''<section class="card span-12" id="today" data-task-workspace>
+      <div class="card-header"><div><h2>I dag</h2><p class="muted">Mine påminnelser og avstemninger i valgt kanal. Kalenderen står under.</p></div>
+        <button class="btn btn-secondary" data-task-refresh type="button">Oppdater gjøremål</button></div>
+      <div class="card-body"><p role="status" aria-live="polite" data-task-status>Henter mine gjøremål …</p>
+        <div data-task-list></div>
+        <div class="calendar-workspace-grid">
+          <details data-reminder-editor><summary>Ny påminnelse</summary><form class="calendar-editor" data-reminder-form>
+            <input type="hidden" name="item_id"><label>Påminnelsestekst<input name="text" required maxlength="200"></label>
+            <label>Frist (Europe/Oslo)<input type="datetime-local" name="deadline"></label>
+            <p class="muted">Uten frist lagres en oppgave uten automatisk varsel.</p>
+            <button class="btn btn-primary" type="submit">Forhåndsvis påminnelse</button>
+            <button class="btn btn-secondary" type="reset">Ny påminnelse</button>
+          </form></details>
+          <details data-poll-editor><summary>Ny avstemning eller rediger spørsmål</summary><form class="calendar-editor" data-poll-form>
+            <input type="hidden" name="item_id">
+            <label>Spørsmål<input name="question" required maxlength="200"></label>
+            <label>Alternativer, ett per linje<textarea name="options" required rows="3"></textarea></label>
+            <p class="muted">Opprettes i konsollen; stem her. Ved redigering beholdes alternativene. Endringer her gjelder det lokale lageret; publiserte Discord-meldinger beholdes.</p>
+            <button class="btn btn-primary" type="submit">Forhåndsvis avstemning</button>
+            <button class="btn btn-secondary" type="reset">Ny avstemning</button>
+          </form></details>
+          <details><summary>Mine varselinnstillinger</summary><form class="calendar-editor" data-notification-form>
+            <p class="muted" data-notification-channel-status></p>
+            <label><input type="checkbox" name="enabled"> Varsler på i valgt kanal</label>
+            <label>Forvarsel i minutter (komma mellom)<input name="lead_minutes" value="30,0" required></label>
+            <label>Stille fra<input name="quiet_start" type="time"></label><label>Stille til<input name="quiet_end" type="time"></label>
+            <label>Tidssone for varsler<input name="notification_timezone" value="Europe/Oslo" required></label>
+            <label>Etterfrist, minutter (tomt betyr av)<input name="overdue_minutes" type="number" min="5" max="1440"></label>
+            <button class="btn btn-primary" type="submit">Forhåndsvis varselvalg</button>
+          </form></details>
+        </div>
+        <section class="calendar-preview" data-task-preview hidden><h3>Forhåndsvis endring</h3><p data-task-preview-content></p>
+          <button class="btn btn-primary" type="button" data-task-apply>Bruk endring</button>
+          <button class="btn btn-secondary" type="button" data-task-cancel>Avbryt</button></section>
+        <button class="btn btn-secondary" type="button" data-task-undo hidden>Angre siste lokale endring</button>
+        <p class="muted">Angre gjelder i fem minutter før neste endring eller omstart. Sendte meldinger beholdes.</p>
+      </div></section>'''
+
+
 def _render_calendar_section(data: dict[str, Any]) -> str:
     calendar = _section(data, "calendar")
     event_count = calendar.get("event_count", 0)
@@ -507,12 +547,14 @@ def _render_calendar_section(data: dict[str, Any]) -> str:
           <label>Tittel<input name="title" maxlength="200" required></label>
           <label>Dato<input name="date" type="date" required></label>
           <label>Tid<input name="time" type="time"></label>
-          <label>Tidssone<input name="timezone" value="Europe/Oslo" maxlength="100" required></label>
-          <label>Ved dobbel tid i sommertid<select name="fold"><option value="">Velg ved behov</option><option value="0">Første forekomst</option><option value="1">Andre forekomst</option></select></label>
+          <label data-calendar-fold hidden>Klokkeslettet forekommer to ganger. Velg hvilket<select name="fold"><option value="">Velg tidspunkt</option><option value="0">Før klokken stilles tilbake</option><option value="1">Etter klokken stilles tilbake</option></select></label>
           <label data-calendar-recurrence-scope hidden>Endre gjentakelse<select name="edit_scope"><option value="">Velg omfang</option><option value="this">Denne forekomsten</option><option value="future">Denne og fremtidige</option><option value="series">Hele serien</option></select></label>
+          <details data-calendar-advanced><summary>Avansert</summary>
+          <label>Tidssone<input name="timezone" value="Europe/Oslo" maxlength="100" required></label>
           <label>Type<select name="kind"><option value="event">Hendelse</option><option value="task">Oppgave</option></select></label>
           <label>Varighet i minutter<input name="duration_minutes" type="number" min="1" max="10080"></label>
           <label>Beskrivelse<textarea name="description" maxlength="4000" rows="3"></textarea></label>
+          </details>
           <div class="calendar-editor-actions"><button class="btn btn-primary" type="submit">Forhåndsvis</button>
             <button class="btn btn-secondary" type="button" data-calendar-new>Ny</button></div>
         </form>
@@ -775,6 +817,7 @@ def render_dashboard(data: dict[str, Any] | None, *, is_demo: bool = False) -> s
     main_content = "\n".join(
         [
             _render_overview_section(data),
+            _render_today_section(),
             _render_status_section(data),
             _render_calendar_section(data),
             _render_polls_section(data),

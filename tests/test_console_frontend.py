@@ -33,6 +33,79 @@ def test_login_page_renders(page: Any, console_server: ConsoleServer) -> None:
     assert "Logg inn" in page.content()
 
 
+def test_simple_calendar_editor_reveals_dst_choice_only_after_validation(page: Any, console_server: ConsoleServer):
+    page.route('**/api/calendar/items', lambda route: route.fulfill(json={'enabled': True, 'write_available': True, 'revision': 1, 'items': []}))
+    page.route('**/api/calendar/preview', lambda route: route.fulfill(status=400, json={'error': 'ambiguous_time'}))
+    _login(page, console_server)
+    form = page.locator('[data-calendar-form]')
+    assert not form.locator('[name="description"]').is_visible()
+    assert not form.locator('[name="fold"]').is_visible()
+    form.locator('[name="title"]').fill('Ambiguous appointment')
+    form.locator('[name="date"]').fill('2026-10-25')
+    form.locator('[name="time"]').fill('02:30')
+    form.locator('[type="submit"]').click()
+    form.locator('[name="fold"]').wait_for(state='visible')
+    assert form.locator('[name="title"]').input_value() == 'Ambiguous appointment'
+    assert form.locator('[name="time"]').input_value() == '02:30'
+
+
+def test_today_preview_cannot_apply_after_form_change_and_has_contextual_actions(page: Any, console_server: ConsoleServer):
+    state = {'write_available': True, 'revisions': {'reminder': 1, 'poll': 1, 'notification': 1},
+             'reminders': [{'id': 'owned', 'text': 'My task', 'due_date': '12.10.2026 10:00', 'completed': False,
+                            'plan': {'message': 'Varsler er pauset.'}}], 'polls': [], 'notification': None}
+    page.route('**/api/tasks', lambda route: route.fulfill(json=state))
+    page.route('**/api/tasks/preview', lambda route: route.fulfill(json={'token': 'proposal', 'operation': 'edit', 'before': {'text': 'My task'}, 'changes': {'text': 'Changed'}}))
+    _login(page, console_server)
+    page.get_by_role('button', name='Rediger My task', exact=True).click()
+    form = page.locator('[data-reminder-form]')
+    form.locator('[name="text"]').fill('Changed')
+    form.locator('[type="submit"]').click()
+    page.locator('[data-task-preview]').wait_for(state='visible')
+    assert 'My task' in page.locator('[data-task-preview]').inner_text()
+    form.locator('[name="text"]').fill('New intent')
+    assert page.locator('[data-task-preview]').is_hidden()
+    assert page.evaluate('window.consoleApp.tasks.pending') is None
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+
+
+def test_today_date_only_edit_and_double_apply_preserve_intent(page: Any, console_server: ConsoleServer):
+    state = {'write_available': True, 'revisions': {'reminder': 1}, 'polls': [], 'notification': None,
+             'reminders': [{'id': 'owned', 'text': 'Date only', 'due_date': '13.10.2026', 'completed': False,
+                            'plan': {'message': 'Ingen endring i frist.'}}]}
+    page.route('**/api/tasks', lambda route: route.fulfill(json=state))
+    page.route('**/api/tasks/preview', lambda route: route.fulfill(json={'token': 'proposal', 'operation': 'edit',
+        'before': {'text': 'Date only'}, 'changes': {'text': 'Changed'}}))
+    held = []
+    page.route('**/api/tasks/apply', lambda route: held.append(route))
+    _login(page, console_server)
+    assert page.locator('[data-task-undo]').is_hidden()
+    page.get_by_role('button', name='Rediger Date only', exact=True).click()
+    form = page.locator('[data-reminder-form]')
+    form.locator('[name="text"]').fill('Changed')
+    with page.expect_request('**/api/tasks/preview') as request:
+        form.locator('[type="submit"]').click()
+    assert request.value.post_data_json['changes']['due_date'] == '13.10.2026'
+    page.locator('[data-task-preview]').wait_for(state='visible')
+    with page.expect_request('**/api/tasks/apply'):
+        page.evaluate('() => { window.consoleApp.applyTask(); window.consoleApp.applyTask(); }')
+    page.wait_for_function('window.consoleApp.tasks.applying === true')
+    assert len(held) == 1
+    assert form.locator('[name="text"]').is_disabled()
+    held[0].fulfill(json={'ok': True, 'message': 'Lagret lokalt.', 'undo': {'token': 'undo-token'}})
+    page.locator('[data-task-status]').get_by_text('Lagret lokalt.', exact=True).wait_for()
+    assert form.locator('[name="text"]').is_enabled()
+    assert page.locator('[data-task-undo]').is_visible()
+    assert form.locator('[name="text"]').input_value() == ''
+    assert form.locator('[name="item_id"]').input_value() == ''
+    form.locator('[name="text"]').fill('Next task')
+    form.locator('[type="submit"]').click()
+    page.locator('[data-task-preview]').wait_for(state='visible')
+    assert page.locator('[data-task-cancel]').is_enabled()
+    page.locator('[data-task-cancel]').click()
+    assert page.locator('[data-task-preview]').is_hidden()
+
+
 def test_calendar_preview_invalidates_on_form_changes_and_shows_time(page: Any, console_server: ConsoleServer):
     item = {'id': 'synthetic', 'title': 'Synthetic appointment', 'date': '12.10.2026', 'time': '09:30',
             'kind': 'event', 'timezone': 'America/New_York', 'duration_minutes': 60, 'all_day': False}
@@ -55,7 +128,7 @@ def test_calendar_preview_invalidates_on_form_changes_and_shows_time(page: Any, 
     page.locator('[data-calendar-preview]:not([hidden])').wait_for()
     page.locator('[data-calendar-new]').click()
     assert page.locator('[data-calendar-preview]').is_hidden()
-    assert page.locator('[name="item_id"]').input_value() == ''
+    assert page.locator('[data-calendar-form] [name="item_id"]').input_value() == ''
 
 
 def test_calendar_card_has_room_and_contextual_keyboard_controls(page: Any, console_server: ConsoleServer):
@@ -118,7 +191,7 @@ def test_calendar_double_apply_sends_once_and_resets_editor(page: Any, console_s
     assert len(held) == 1
     held[0].fulfill(json={'remote_pending': False})
     page.locator('[data-calendar-status]').get_by_text('Endringen er lagret.', exact=False).wait_for()
-    assert page.locator('[name="item_id"]').input_value() == ''
+    assert page.locator('[data-calendar-form] [name="item_id"]').input_value() == ''
     assert page.locator('[name="title"]').input_value() == ''
     assert page.locator('[data-calendar-preview]').is_hidden()
     assert page.evaluate('window.consoleApp.calendarWorkspace.pending') is None

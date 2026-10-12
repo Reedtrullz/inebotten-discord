@@ -25,48 +25,7 @@ from zoneinfo import ZoneInfo
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 from utils.storage_contract import DocumentOwner, StorageMutationError, store_worker, writable_store
 from core.outbound_sender import OutboundSender, DeliveryResult
-
-
-def project_current_occurrence(item):
-    """Return the scheduler's current occurrence, or None when it is unsafe."""
-    if item.get('_recurrence_readonly'):
-        return None
-    recurring = bool(item.get('series') or item.get('recurrence'))
-    try:
-        result = copy.deepcopy(item)
-        if recurring:
-            from cal_system.recurrence import Occurrence, Series, occurrence_at, series_from_item
-            series = Series.from_document(item['series']) if item.get('series') else series_from_item(item)
-            occurrence = occurrence_at(series, item.get('series_next_index', 0))
-            if occurrence is None:
-                return None
-            saved = item.get('occurrences', {}).get(occurrence.occurrence_id)
-            if saved:
-                occurrence = Occurrence.from_document(saved)
-            if occurrence.state != 'planned':
-                return None
-            result['occurrence_id'] = occurrence.occurrence_id
-            result['series_id'] = occurrence.series_id
-            result['original_start'] = occurrence.original_start.isoformat()
-            if occurrence.override:
-                for key in ('date', 'time', 'timezone', 'duration_minutes', 'fold', 'all_day',
-                    'kind', 'title', 'description'):
-                    if key in occurrence.override:
-                        result[key] = occurrence.override[key]
-
-        if 'date' in result:
-            EventTime.from_item(result).validate_local()
-        elif result.get('due_date'):
-            try:
-                datetime.strptime(result['due_date'], '%d.%m.%Y %H:%M')
-            except ValueError:
-                try:
-                    datetime.strptime(result['due_date'], '%d.%m.%Y')
-                except ValueError:
-                    datetime.strptime(result['due_date'], '%d.%m')
-        return result
-    except (AttributeError, KeyError, OverflowError, TypeError, ValueError):
-        return None
+from cal_system.recurrence import project_current_occurrence
 
 
 class ReminderChecker:
@@ -330,7 +289,6 @@ class ReminderChecker:
                             continue
                         await self._send_item_reminder(item, "now", "nå")
 
-        # Check reminders
         if self.reminders:
             for guild_id, reminders_list in self.reminders.reminders.items():
                 bucket_scope = self._reminder_scope_for_bucket(guild_id)
@@ -385,34 +343,6 @@ class ReminderChecker:
                         if self._has_been_sent(self._delivery_identity(item), "passed"):
                             continue
                         await self._send_item_reminder(item, "passed", "akkurat nå")
-
-        # Check reminders
-        if self.reminders:
-            for guild_id, reminders_list in self.reminders.reminders.items():
-                bucket_scope = self._reminder_scope_for_bucket(guild_id)
-                if bucket_scope is None:
-                    continue
-                for reminder in reminders_list:
-                    if reminder.get("completed"):
-                        continue
-                    reminder = self._current_occurrence_item(reminder)
-                    if reminder is None:
-                        continue
-                    if reminder.get('scope_id') is None:
-                        reminder['scope_id'] = bucket_scope
-                    due = reminder.get("due_date")
-                    if not due:
-                        continue
-                    try:
-                        reminder_dt = self._parse_due_date(due)
-                    except Exception:
-                        continue
-                    if reminder_dt is None:
-                        continue
-                    if five_minutes_ago <= reminder_dt <= now:
-                        if self._has_been_sent(self._delivery_identity(reminder), "passed"):
-                            continue
-                        await self._send_reminder_remind(reminder, "passed", "akkurat nå")
 
     # ---- Morning digest at 09:00 ----
 
@@ -532,6 +462,8 @@ class ReminderChecker:
                     and ('workflow' not in selected.card_ids or (self.user_memory._storage.revision==wr
                         and (not self.calendar or self.calendar._storage.revision==cr)))
                     and (not policy or self.calendar.access_policy.authorize(audience, selected.scope_id, 'read').allowed))
+                stores = [getattr(self.calendar, '_storage', None), getattr(self.reminders, '_storage', None)]
+                revisions = [store.revision if store is not None else None for store in stores]
                 buckets = self._calendar_buckets() if self.calendar else {}
                 items = []
                 for bucket, values in buckets.items():
@@ -558,28 +490,56 @@ class ReminderChecker:
                                     current['scope_id'] = bucket_scope
                                 items.append(dict(current, _reminder=True))
                 for item in items:
+                    domain = int(bool(item.get('_reminder')))
+                    item_dispatch = lambda store=stores[domain], revision=revisions[domain], allowed=can_dispatch: (
+                        allowed() and (store is None or store.revision == revision))
                     start = self._parse_due_date(item['due_date']) if item.get('_reminder') and item.get('due_date') else self._parse_item_datetime(item)
                     if start is None:
                         continue
                     start = start.astimezone(timezone.utc)
                     occurrence = occurrence_identity(item)
-                    for lead in profile.lead_minutes:
+                    snoozes = self.user_memory.notification_snoozes(user_id, profile.scope_id)
+                    if any(s['item_id'] == item['id'] and s['occurrence_id'] == occurrence
+                        and now < after_quiet_hours(profile, datetime.fromisoformat(s['due_at'])) + timedelta(minutes=5) for s in snoozes):
+                        continue
+                    from cal_system.notification_preferences import delivery_schedule
+                    for kind, due in delivery_schedule(profile, start):
                         if time.monotonic() >= deadline:
                             return
-                        due = after_quiet_hours(profile, start - timedelta(minutes=lead))
-                        if due <= start and timedelta() <= now - due < timedelta(minutes=5):
+                        if timedelta() <= now - due < timedelta(minutes=5):
                             title = item.get('title', item.get('text', 'Påminnelse'))
-                            await self._deliver(profile.destination_id, f'🔔 {title} · valgt forvarsel: {lead} minutter.',
-                                f'profile:{profile.scope_id}:{user_id}:{occurrence}:lead:{lead}', can_dispatch=can_dispatch, deadline=deadline)
+                            wording = 'Fristen er passert' if kind == 'overdue' else 'Påminnelse'
+                            text = f'🔔 {wording}: {title}'
+                            if item.get('_reminder') and hasattr(self.reminders, '_scope_bucket'):
+                                from features.task_workspace import task_workspace
+                                try:
+                                    text += '\n' + task_workspace(self).reminder_actions(actor, item['id'])
+                                except (PermissionError, ValueError):
+                                    pass
+                            await self._deliver(profile.destination_id, text,
+                                f'profile:{profile.scope_id}:{user_id}:{occurrence}:{kind}', can_dispatch=item_dispatch, deadline=deadline)
                 indexed = {i['id']: i for i in items}
                 for snooze in self.user_memory.notification_snoozes(user_id, profile.scope_id):
                     item = indexed.get(snooze['item_id'])
                     if item is None or occurrence_identity(item) != snooze['occurrence_id']:
                         continue
+                    domain = int(bool(item.get('_reminder')))
+                    item_dispatch = lambda store=stores[domain], revision=revisions[domain], allowed=can_dispatch: (
+                        allowed() and (store is None or store.revision == revision))
                     due = after_quiet_hours(profile, datetime.fromisoformat(snooze['due_at']))
+                    if now - due >= timedelta(minutes=5):
+                        await self.user_memory.acknowledge_notification_snooze(user_id, snooze['key'], snooze['due_at'])
+                        continue
                     if timedelta() <= now - due < timedelta(minutes=5):
-                        result = await self._deliver(profile.destination_id, f"🔔 Slumret: {item.get('title', item.get('text', 'Påminnelse'))}",
-                            f"snooze:{user_id}:{snooze['key']}:{snooze['due_at']}", can_dispatch=can_dispatch, deadline=deadline)
+                        text = f"🔔 Slumret: {item.get('title', item.get('text', 'Påminnelse'))}"
+                        if item.get('_reminder') and hasattr(self.reminders, '_scope_bucket'):
+                            from features.task_workspace import task_workspace
+                            try:
+                                text += '\n' + task_workspace(self).reminder_actions(actor, item['id'])
+                            except (PermissionError, ValueError):
+                                pass
+                        result = await self._deliver(profile.destination_id, text,
+                            f"snooze:{user_id}:{snooze['key']}:{snooze['due_at']}", can_dispatch=item_dispatch, deadline=deadline)
                         if result.status == 'delivered':
                             await self.user_memory.acknowledge_notification_snooze(user_id, snooze['key'], snooze['due_at'])
                 if profile.morning_time is not None and self.daily_digest and profile.card_ids:
@@ -754,10 +714,23 @@ class ReminderChecker:
         else:
             message = f"⏰ **{reminder['text']}** - {label}"
 
+        if self.calendar is not None and hasattr(self.reminders, '_scope_bucket'):
+            from core.request_context import RequestContext
+            from features.task_workspace import task_workspace
+            bucket = next((key for key, rows in self.reminders.reminders.items() if any(r['id'] == reminder['id'] for r in rows)), None)
+            scope = self.calendar.access_policy.scopes[self.calendar.access_policy.default_scope]
+            actor = RequestContext('notification', str(reminder['user_id']), str(channel_id), bucket if bucket and bucket.isdecimal() else None, 'no', channel_kind='dm' if scope.kind == 'private_user' else 'guild')
+            try:
+                message += '\n' + task_workspace(self).reminder_actions(actor, reminder['id'])
+            except (PermissionError, ValueError):
+                pass
         identity = self._delivery_identity(reminder)
         if self._has_been_sent(identity, remind_type):
             return
-        result = await self._deliver(channel_id, message, f"{identity}:{remind_type}")
+        store = getattr(self.reminders, '_storage', None)
+        revision = store.revision if store is not None else None
+        result = await self._deliver(channel_id, message, f"{identity}:{remind_type}",
+            can_dispatch=lambda: self._legacy_allowed(reminder) and (store is None or store.revision == revision))
         if result.status != 'delivered':
             self.stats['errors'] += 1
             return

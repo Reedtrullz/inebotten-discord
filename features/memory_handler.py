@@ -39,16 +39,30 @@ class MemoryHandler(BaseHandler):
                 await self._handle_notification(message, payload['changes'])
             elif action == 'notification_view':
                 await self._handle_notification(message, None)
+            elif action in ('task_action', 'task_undo'):
+                from features.task_workspace import task_workspace
+                from core.request_context import current_request
+                actor = current_request()
+                if actor is None or actor.user_id != str(message.author.id) or actor.channel_id != str(message.channel.id):
+                    raise PermissionError('task_actor_required')
+                service = task_workspace(self.monitor)
+                result = service.undo(actor, payload['value']) if action == 'task_undo' else await service.reminder_action(actor, payload['value'], payload['operation'], payload['changes'])
+                hint = result.get('undo')
+                await self.send_response(message, '✅ ' + result['message'] + (f'\nAngre innen fem minutter: `@inebotten angre endring {hint["token"]}`.' if hint else ''))
             elif action == 'snooze':
                 await self.monitor.handlers['reminders'].handle_snooze(message, payload)
             else:
                 await self._handle_view(message)
-        except (StorageMutationError, OSError):
-            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
-        except ValueError:
-            await self.send_response(message, '❌ Ugyldig kontroll. Velg støttet provider, klokkeslett, kort eller minuttgrense (0–1440).')
         except PermissionError:
             await self.send_response(message, '❌ Dette kalenderområdet eller denne destinasjonen er ikke godkjent for deg.')
+        except (StorageMutationError, OSError):
+            await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
+        except ValueError as error:
+            if action in ('task_action', 'task_undo'):
+                reason = 'Oppføringen ble endret.' if str(error) in ('revision_changed', 'selection_changed') else 'Valget er utløpt eller ugyldig.'
+                await self.send_response(message, f'❌ {reason} Hent en ny liste eller kvittering før du prøver igjen.')
+            else:
+                await self.send_response(message, '❌ Ugyldig kontroll. Velg støttet provider, klokkeslett, kort eller minuttgrense (0–1440).')
 
     async def _handle_notification(self, message, changes):
         from cal_system.notification_preferences import NotificationProfile
@@ -69,9 +83,10 @@ class MemoryHandler(BaseHandler):
                 morning = f'{prior.morning_time:%H:%M}' if prior.morning_time else 'av'
                 await self.send_response(message, f'Egne varsler: {"på" if prior.enabled else "pauset"}; kanal {prior.destination_id}; '
                     f'forvarsel {list(prior.lead_minutes)} minutter; stille {quiet}; morgen {morning}; '
+                    f'etter frist {str(prior.overdue_minutes) + " minutter" if prior.overdue_minutes else "av"}; '
                     f'kort {", ".join(prior.card_ids) or "ingen"}; {prior.timezone}.')
             return
-        if set(changes) - {'enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'morning_time', 'timezone', 'card_ids'}:
+        if set(changes) - {'enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'morning_time', 'timezone', 'card_ids', 'overdue_minutes'}:
             raise ValueError('invalid_notification_changes')
         value = (prior or NotificationProfile(False, scope_id, actor.channel_id)).document()
         value.update(changes)

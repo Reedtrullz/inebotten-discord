@@ -814,8 +814,18 @@ class ConsoleServer:
                 await self._send_response(writer, 401, {"error": "Unauthorized"})
                 return
 
-            if path in ("/api/calendar/items", "/api/calendar/preview", "/api/calendar/apply"):
+            if path in ("/api/calendar/items", "/api/calendar/preview", "/api/calendar/apply", "/api/tasks", "/api/tasks/preview", "/api/tasks/apply", "/api/tasks/undo"):
                 credential = self._calendar_credential(headers)
+                if path == "/api/tasks" and method == "GET":
+                    from features.task_workspace import task_workspace
+                    try:
+                        result = task_workspace(self.monitor).items(self._console_actor())
+                        calendar_state = self._calendar_items_response(credential, headers)
+                        result.update({key: calendar_state.get(key) for key in ('write_available', 'csrf_token')})
+                        await self._send_response(writer, 200, result)
+                    except PermissionError as error:
+                        await self._send_response(writer, 403, {"error": str(error)})
+                    return
                 if path == "/api/calendar/items" and method == "GET":
                     await self._send_response(writer, 200, self._calendar_items_response(credential, headers))
                     return
@@ -823,6 +833,8 @@ class ConsoleServer:
                     await self._send_response(writer, 405, {"error": "Method not allowed"})
                     return
                 allowed, denial = self._calendar_write_allowed(headers)
+                if path.startswith('/api/tasks/') and headers.get('origin') and headers['origin'] != self.trusted_origin:
+                    allowed, denial = False, 'trusted_origin_required'
                 if not allowed:
                     await self._send_response(writer, 401 if denial == "unauthorized" else 403, {"error": denial})
                     return
@@ -834,7 +846,16 @@ class ConsoleServer:
                     actor = self._console_actor()
                     if actor is None:
                         raise PermissionError("calendar_workspace_not_configured")
-                    if path.endswith("/preview"):
+                    if path.startswith("/api/tasks/"):
+                        from features.task_workspace import task_workspace
+                        service = task_workspace(self.monitor)
+                        if path.endswith('/preview'):
+                            result = service.preview(actor, payload)
+                        else:
+                            if set(payload) != {'token'} or not isinstance(payload.get('token'), str) or len(payload['token']) > 128:
+                                raise ValueError('invalid_payload')
+                            result = service.undo(actor, payload['token']) if path.endswith('/undo') else await service.apply(actor, payload['token'])
+                    elif path.endswith("/preview"):
                         result = self._calendar_preview(actor, payload)
                     else:
                         result = await self._calendar_apply(actor, payload)
