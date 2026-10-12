@@ -425,6 +425,7 @@ def test_calendar_workspace_browser_create_preview_apply_and_empty_filter(page, 
         assert page.locator("[data-calendar-agenda] details[open]").count() == 1
         page.locator('[data-calendar-form] input[name="title"]').fill("Browser appointment")
         page.locator('[data-calendar-form] input[name="date"]').fill("2026-10-13")
+        page.locator('[data-calendar-advanced] summary').click()
         page.locator('[data-calendar-form] textarea[name="description"]').fill("Behold denne beskrivelsen æøå")
         page.locator('[data-calendar-form] button[type="submit"]').click()
         page.locator("[data-calendar-preview]:not([hidden])").wait_for()

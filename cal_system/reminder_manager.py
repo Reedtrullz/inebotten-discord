@@ -19,6 +19,7 @@ from cal_system.recurrence import Series, Occurrence, occurrence_at
 from cal_system.sync_outbox import SyncOwnerMixin, SyncOutbox, enqueue, SyncOperation, remote_completion
 from core.access_policy import AccessPolicy
 from core.request_context import current_request
+from utils.local_undo import reversible
 
 
 class ReminderEditError(ValueError):
@@ -267,6 +268,7 @@ class ReminderManager(SyncOwnerMixin):
         return reminder_id
 
     @writable_store
+    @reversible
     def complete_reminder(self, guild_id, reminder_num=None, reminder_id=None):
         """
         Mark a reminder as completed
@@ -486,6 +488,9 @@ class ReminderManager(SyncOwnerMixin):
         lines = []
 
         if active:
+            pages = max(1, (len(active) + 7) // 8)
+            if page > pages:
+                return f'Ingen påminnelser på side {page}. Bruk `@inebotten påminnelser side {pages}`.'
             offset = (max(1, page) - 1) * 8
             for i, r in enumerate(active[offset:offset + 8], offset + 1):
                 checkbox = "⬜"
@@ -515,8 +520,12 @@ class ReminderManager(SyncOwnerMixin):
                 # Show GCal link if available
                 if r.get("gcal_link") and len(row) + len(r['gcal_link']) + 40 <= 180:
                     lines.append(f"   🔗 [Åpne i Google Calendar]({r['gcal_link']})")
-            lines.append(f'{len(active)} aktive · side {page}/{max(1, (len(active) + 7) // 8)}. '
-                f'Neste: `@inebotten påminnelser side {page + 1}`. Søk: `@inebotten søk påminnelse [tekst]`. Vis listen før endring eller sletting.')
+            lines.append(f'{len(active)} aktive · side {page}/{pages}.')
+            if page > 1:
+                lines.append(f'Forrige: `@inebotten påminnelser side {page - 1}`.')
+            if page < pages:
+                lines.append(f'Neste: `@inebotten påminnelser side {page + 1}`.')
+            lines.append('Søk: `@inebotten søk påminnelse [tekst]`. Vis listen før endring eller sletting.')
 
         if show_completed:
             completed = self.get_completed_reminders(guild_id, days=3)
@@ -553,6 +562,7 @@ class ReminderManager(SyncOwnerMixin):
         self._save_reminders()
 
     @writable_store
+    @reversible
     def edit_reminder(self, guild_id, index, title=None, date=None, time=None, recurrence=None):
         """
         Edit an existing reminder by its 1-based index in active reminders.
@@ -649,6 +659,7 @@ class ReminderManager(SyncOwnerMixin):
         return target
 
     @writable_store
+    @reversible
     def delete_reminder_by_id(self, guild_id, index):
         """
         Delete a reminder by its 1-based index in active reminders.

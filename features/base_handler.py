@@ -45,6 +45,7 @@ to ensure consistent access to shared state like rate limiting and
         self.client = monitor.client
         self._shown_lists = {}
         self._delete_choices = {}
+        self._undo_notified = None
 
     def _list_actor(self, message):
         actor = current_request()
@@ -88,7 +89,7 @@ to ensure consistent access to shared state like rate limiting and
             self._delete_choices.pop(next(iter(self._delete_choices)))
         title = records[index - 1][title_key]
         title = title if len(title) <= 200 else title[:199] + '…'
-        sent = await self.send_response(message, f'Slett nummer {index}: **{title}**? Dette kan ikke angres her. '
+        sent = await self.send_response(message, f'Slett nummer {index}: **{title}**? '
             f'Bekreft innen fem minutter med `@inebotten bekreft sletting {label} {token}`. Ingenting er slettet ennå.')
         if sent is None:
             self._delete_choices.pop(token, None)
@@ -122,7 +123,20 @@ to ensure consistent access to shared state like rate limiting and
         Returns:
             The sent message object, or None if failed
         """
+        from utils.local_undo import undo_hint
+        actor = current_request()
+        notices = []
+        for manager in (getattr(self, 'reminders', None), getattr(self, 'poll', None)):
+            if manager is None:
+                continue
+            hint = undo_hint(manager, actor)
+            if hint and hint['token'] != getattr(self, '_undo_notified', None):
+                notices.append(f'Angre lokal endring innen fem minutter: `@inebotten angre endring {hint["token"]}`. Sendte meldinger beholdes.')
         result = await monitor_sender(self.monitor).reply(message, content, mention_author=mention_author)
+        if result.status == 'delivered' and notices:
+            notice = await monitor_sender(self.monitor).reply(message, '\n'.join(notices), mention_author=False)
+            if notice.status == 'delivered' and hint is not None:
+                self._undo_notified = hint['token']
         if result.status == 'delivered' and result.reason_code == 'remote_message':
             if hasattr(self.monitor, 'response_count'):
                 self.monitor.response_count += 1

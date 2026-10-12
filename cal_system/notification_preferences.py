@@ -23,6 +23,7 @@ class NotificationProfile:
     morning_time: time | None = None
     timezone: str = 'Europe/Oslo'
     card_ids: tuple[str, ...] = ('calendar',)
+    overdue_minutes: int | None = None
 
     def __post_init__(self):
         if type(self.enabled) is not bool or not isinstance(self.scope_id, str) or not 1 <= len(self.scope_id) <= 100:
@@ -40,12 +41,15 @@ class NotificationProfile:
         if (self.quiet_start is None) != (self.quiet_end is None) or self.quiet_start is not None and self.quiet_start == self.quiet_end:
             raise ValueError('invalid_quiet_hours')
         ZoneInfo(self.timezone)
+        if self.overdue_minutes is not None and (type(self.overdue_minutes) is not int or not 5 <= self.overdue_minutes <= 1440):
+            raise ValueError('invalid_overdue_minutes')
         object.__setattr__(self, 'lead_minutes', tuple(dict.fromkeys(self.lead_minutes)))
         object.__setattr__(self, 'card_ids', tuple(dict.fromkeys(self.card_ids)))
 
     def document(self):
         return {'enabled': self.enabled, 'scope_id': self.scope_id, 'destination_id': self.destination_id,
                 'lead_minutes': list(self.lead_minutes), 'card_ids': list(self.card_ids), 'timezone': self.timezone,
+                'overdue_minutes': self.overdue_minutes,
                 **{k: getattr(self, k).isoformat(timespec='minutes') if getattr(self, k) else None
                    for k in ('quiet_start', 'quiet_end', 'morning_time')}}
 
@@ -95,5 +99,13 @@ def next_delivery(profile, event_time, clock):
         raise ValueError('aware_event_required')
     now = clock.now('UTC')
     start = event_time.astimezone(timezone.utc)
-    choices = [after_quiet_hours(profile, start - timedelta(minutes=lead)) for lead in profile.lead_minutes]
-    return min((v for v in choices if now <= v <= start), default=None)
+    return min((due for _, due in delivery_schedule(profile, start) if now <= due), default=None)
+
+
+def delivery_schedule(profile, start):
+    if not profile.enabled or not profile.destination_id:
+        return []
+    choices = [(f'lead:{lead}', after_quiet_hours(profile, start - timedelta(minutes=lead))) for lead in profile.lead_minutes]
+    if profile.overdue_minutes is not None:
+        choices.append(('overdue', after_quiet_hours(profile, start + timedelta(minutes=profile.overdue_minutes))))
+    return list({due: (kind, due) for kind, due in reversed(choices)}.values())

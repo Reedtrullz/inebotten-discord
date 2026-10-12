@@ -41,7 +41,7 @@ class ReminderHandler(BaseHandler):
 
     async def handle_snooze(self, message, payload):
         from cal_system.notification_preferences import occurrence_identity
-        from cal_system.reminder_checker import project_current_occurrence
+        from cal_system.recurrence import project_current_occurrence
         from core.request_context import current_request
         actor = current_request()
         calendar = self.monitor.calendar
@@ -191,6 +191,17 @@ class ReminderHandler(BaseHandler):
                 due += '\nDato uten tid: automatisk varsel kl. 09:00, med gjeldende varselinnstillinger.'
             elif deadline:
                 due += '\nAutomatisk varsel følger dine varselinnstillinger. Se `@inebotten varsler status`.'
+            from features.task_workspace import reminder_plan, task_workspace
+            from core.request_context import current_request
+            actor = current_request()
+            if actor is not None and getattr(self.monitor, 'calendar', None) is not None:
+                service = task_workspace(self.monitor)
+                item = next(row for row in self.reminders.get_active_reminders(guild_id) if row['id'] == reminder_id)
+                try:
+                    due += '\n' + reminder_plan(item, getattr(self.monitor, 'user_memory', None), self.reminders.clock, service._scope(actor))['message']
+                    due += '\n' + service.reminder_actions(actor, reminder_id)
+                except (PermissionError, ValueError):
+                    due += '\nDirekte valg er ikke tilgjengelige her. Bruk påminnelseslisten.'
             await self.send_response(
                 message,
                 f"✅ **Påminnelse lagt til!**\n{data['text']}{due}",

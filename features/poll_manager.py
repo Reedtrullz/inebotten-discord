@@ -14,6 +14,7 @@ import random
 
 from utils.json_storage import hermes_discord_data_path, write_json_atomic
 from utils.storage_contract import DocumentOwner, writable_store
+from utils.local_undo import reversible
 
 
 def validate_poll_document(document):
@@ -216,7 +217,7 @@ class PollManager:
         if poll is None:
             return False
         previous = copy.deepcopy(poll)
-        poll["message_id"] = str(message_id)
+        poll["message_id"] = str(message_id) if message_id is not None else None
         if channel_id is not None:
             poll["channel_id"] = str(channel_id)
         poll["revision"] = poll.get("revision", 0) + 1
@@ -426,6 +427,7 @@ class PollManager:
         }
 
     @writable_store
+    @reversible
     def apply_poll_edit(
         self, guild_id, poll_id, actor_id, preview_token, confirm_reset=False,
         username=None,
@@ -468,6 +470,7 @@ class PollManager:
         return True, proposed
 
     @writable_store
+    @reversible
     def delete_poll(self, guild_id, poll_id, user_id, username=None):
         """
         Delete a poll.
@@ -620,6 +623,7 @@ class PollManager:
         return "\n".join(lines)
 
     @writable_store
+    @reversible
     def close_poll(self, guild_id, poll_id, user_id=None, username=None):
         """
         Close a poll. If user_id is provided, checks ownership.

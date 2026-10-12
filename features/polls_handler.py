@@ -47,7 +47,11 @@ class PollsHandler(BaseHandler):
                 else:
                     page = min(page, len(closed_polls))
                     response_text = "🔒 Lukket\n" + self.poll.format_poll(closed_polls[page - 1])
-                    response_text += f'\n{len(closed_polls)} resultater · side {page}/{len(closed_polls)}. Neste: `@inebotten poll resultater side {page + 1}`.'
+                    response_text += f'\n{len(closed_polls)} resultater · side {page}/{len(closed_polls)}.'
+                    if page > 1:
+                        response_text += f' Forrige: `@inebotten poll resultater side {page - 1}`.'
+                    if page < len(closed_polls):
+                        response_text += f' Neste: `@inebotten poll resultater side {page + 1}`.'
                 await self.send_response(message, response_text)
                 return
 
@@ -68,7 +72,12 @@ class PollsHandler(BaseHandler):
                     lines.append(f"{i}. {question} ({votes} {vote_word}) · #{poll['id']}")
                 lines.append("")
                 lines.append(self.loc.t("poll_list_hint"))
-                lines.append(f'{len(active_polls)} aktive · side {page}/{max(1, (len(active_polls) + 7) // 8)}. Neste: `@inebotten polls side {page + 1}`.')
+                pages = max(1, (len(active_polls) + 7) // 8)
+                lines.append(f'{len(active_polls)} aktive · side {page}/{pages}.')
+                if page > 1:
+                    lines.append(f'Forrige: `@inebotten polls side {page - 1}`.')
+                if page < pages:
+                    lines.append(f'Neste: `@inebotten polls side {page + 1}`.')
                 response_text = "\n".join(lines)
 
             if await self.send_response(message, response_text) is not None:

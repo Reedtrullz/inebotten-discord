@@ -13,6 +13,7 @@ class ConsoleApp {
     this.openSection = null;
     this.isDemo = document.body.classList.contains("demo-mode");
     this.calendarWorkspace = { state: null, selected: null, pending: null, csrf: null, generation: 0, loading: 0, applying: false };
+    this.tasks = { state: null, pending: null, generation: 0, applying: false, undo: null };
     this.pollingConfig = {
       "/api/status": { interval: 5000, lastFetch: 0 },
       "/api/bridge": { interval: 5000, lastFetch: 0 },
@@ -44,6 +45,7 @@ class ConsoleApp {
     this.bindModalButtons();
     this.initData();
     this.bindCalendarWorkspace();
+    this.bindTasks();
     this.updateShellStatus();
     if (!this.isDemo) {
       this.startPolling();
@@ -133,7 +135,10 @@ class ConsoleApp {
     form?.addEventListener("submit", (event) => { event.preventDefault(); this.previewCalendarForm(); });
     ["input", "change"].forEach((name) => form?.addEventListener(name, (event) => {
       this.invalidateCalendarPreview();
-      if (["date", "time", "timezone"].includes(event.target.name)) form.elements.fold.value = "";
+      if (["date", "time", "timezone"].includes(event.target.name)) {
+        form.elements.fold.value = "";
+        form.querySelector('[data-calendar-fold]').hidden = true;
+      }
     }));
     root.querySelector("[data-calendar-agenda]")?.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-calendar-action]");
@@ -290,6 +295,8 @@ class ConsoleApp {
     form.reset(); form.elements.item_id.value = ""; this.calendarWorkspace.selected = null;
     document.querySelector("[data-calendar-form-title]").textContent = "Ny oppføring";
     form.querySelector("[data-calendar-recurrence-scope]").hidden = true;
+    form.querySelector('[data-calendar-advanced]').open = false;
+    form.querySelector('[data-calendar-fold]').hidden = true;
     if (focus) form.elements.title.focus();
   }
 
@@ -303,6 +310,8 @@ class ConsoleApp {
     form.elements.description.value = item.description || "";
     form.elements.timezone.value = item.timezone || "Europe/Oslo";
     form.elements.fold.value = item.fold ?? "";
+    form.querySelector('[data-calendar-fold]').hidden = item.fold == null;
+    form.querySelector('[data-calendar-advanced]').open = !!(item.description || item.duration_minutes || item.timezone && item.timezone !== 'Europe/Oslo');
     form.elements.edit_scope.value = "";
     form.querySelector("[data-calendar-recurrence-scope]").hidden = !item.recurrence;
     this.calendarWorkspace.selected = item.id;
@@ -382,6 +391,10 @@ class ConsoleApp {
     } catch (error) {
       if (generation !== this.calendarWorkspace.generation) return;
       this.invalidateCalendarPreview();
+      if (error.message === 'ambiguous_time') {
+        document.querySelector('[data-calendar-fold]').hidden = false;
+        document.querySelector('[name="fold"]').focus();
+      }
       this.calendarStatus(this.calendarError(error), true);
     }
   }
@@ -406,6 +419,153 @@ class ConsoleApp {
     }
   }
 
+  bindTasks() {
+    const root = document.querySelector('[data-task-workspace]');
+    if (!root) return;
+    root.querySelector('[data-task-refresh]').addEventListener('click', () => this.loadTasks());
+    root.querySelectorAll('form').forEach(form => {
+      form.addEventListener('input', () => this.invalidateTaskPreview());
+      form.addEventListener('change', () => this.invalidateTaskPreview());
+      form.addEventListener('reset', () => {
+        this.invalidateTaskPreview(); form.elements.item_id && (form.elements.item_id.value = '');
+        if (form.elements.options) form.elements.options.readOnly = false;
+        if (form.matches('[data-reminder-form], [data-poll-form]')) form.closest('details').querySelector('summary').textContent = form.matches('[data-reminder-form]') ? 'Ny påminnelse' : 'Ny avstemning eller rediger spørsmål';
+        delete form.dataset.originalDeadline; delete form.dataset.displayDeadline;
+      });
+      form.addEventListener('submit', event => {
+        event.preventDefault(); const values = new FormData(form); let payload;
+        if (form.matches('[data-reminder-form]')) {
+          const deadline = values.get('deadline'); const date = deadline ? this.calendarDateDomain(deadline.slice(0, 10)) + ' ' + deadline.slice(11, 16) : '';
+          payload = {domain:'reminder', operation:values.get('item_id') ? 'edit' : 'create',
+            ...(values.get('item_id') ? {item_id:values.get('item_id')} : {}), changes:{text:values.get('text').trim(),
+              due_date:values.get('item_id') && deadline === form.dataset.displayDeadline ? form.dataset.originalDeadline : date}};
+        } else if (form.matches('[data-poll-form]')) {
+          payload = {domain:'poll', operation:values.get('item_id') ? 'edit' : 'create',
+            ...(values.get('item_id') ? {item_id:values.get('item_id')} : {}), changes:{question:values.get('question').trim(),
+              ...(!values.get('item_id') ? {options:values.get('options').split('\n').map(v => v.trim()).filter(Boolean)} : {})}};
+        } else {
+          payload = {domain:'notification', operation:'edit', changes:{enabled:values.has('enabled'),
+            lead_minutes:values.get('lead_minutes').split(',').filter(v => v.trim()).map(Number),
+            quiet_start:values.get('quiet_start') || null, quiet_end:values.get('quiet_end') || null,
+            timezone:values.get('notification_timezone').trim(), overdue_minutes:values.get('overdue_minutes') ? Number(values.get('overdue_minutes')) : null}};
+        }
+        this.previewTask(payload);
+      });
+    });
+    root.querySelector('[data-task-cancel]').addEventListener('click', () => this.invalidateTaskPreview());
+    root.querySelector('[data-task-apply]').addEventListener('click', () => this.applyTask());
+    root.querySelector('[data-task-undo]').addEventListener('click', () => this.applyTask(true));
+    this.loadTasks();
+  }
+
+  taskStatus(text) { document.querySelector('[data-task-status]').textContent = text; }
+
+  invalidateTaskPreview() {
+    this.tasks.generation += 1; this.tasks.pending = null;
+    document.querySelector('[data-task-preview]').hidden = true;
+  }
+
+  async loadTasks() {
+    if (this.isDemo) return this.taskStatus('Demo: gjøremål og endringer er deaktivert.');
+    if (this.tasks.applying) return;
+    this.invalidateTaskPreview(); const generation = this.tasks.generation;
+    try {
+      const state = await this.calendarRequest('/api/tasks');
+      if (generation !== this.tasks.generation) return;
+      this.tasks.state = state;
+      this.calendarWorkspace.csrf = state.csrf_token || this.calendarWorkspace.csrf;
+      const list = document.querySelector('[data-task-list]'); list.replaceChildren();
+      const button = (label, item, domain, operation, changes) => {
+        const control = document.createElement('button'); control.type = 'button'; control.className = 'btn btn-secondary';
+        control.textContent = label; control.setAttribute('aria-label', `${label} ${item.text || item.question}`);
+        control.disabled = !state.write_available || item.completed;
+        control.addEventListener('click', () => {
+          if (domain === 'reminder' && operation === 'edit') {
+            this.invalidateTaskPreview(); const form = document.querySelector('[data-reminder-form]');
+            form.elements.item_id.value = item.id; form.elements.text.value = item.text;
+            const due = (item.due_date || '').split(' ');
+            form.elements.deadline.value = due[0] ? `${this.calendarDateInput(due[0])}T${due[1] || '09:00'}` : '';
+            form.dataset.originalDeadline = item.due_date || ''; form.dataset.displayDeadline = form.elements.deadline.value;
+            document.querySelector('[data-reminder-editor] summary').textContent = 'Rediger påminnelse';
+            document.querySelector('[data-reminder-editor]').open = true; form.elements.text.focus();
+          } else if (domain === 'poll' && operation === 'edit') {
+            this.invalidateTaskPreview(); const form = document.querySelector('[data-poll-form]');
+            form.elements.item_id.value = item.id; form.elements.question.value = item.question;
+            form.elements.options.value = item.options.map(option => option.text).join('\n');
+            form.elements.options.readOnly = true;
+            document.querySelector('[data-poll-editor] summary').textContent = 'Rediger spørsmål';
+            document.querySelector('[data-poll-editor]').open = true; form.elements.question.focus();
+          } else this.previewTask({domain, operation, item_id:item.id, ...(changes ? {changes} : {})});
+        }); return control;
+      };
+      (state.reminders || []).forEach(item => {
+        const row = document.createElement('article'); row.className = 'calendar-agenda-item';
+        const title = document.createElement('h3'); title.textContent = item.text;
+        const due = document.createElement('p'); due.textContent = `${item.completed ? 'Fullført' : item.overdue ? 'Forfalt' : 'Åpen'} · ${item.due_date || 'Ingen frist'}`;
+        const plan = document.createElement('p'); plan.textContent = item.plan?.message || '';
+        const actions = document.createElement('div'); actions.className = 'calendar-item-actions';
+        ['edit','complete','delete'].forEach((op, n) => actions.append(button(['Rediger','Fullfør','Slett'][n],item,'reminder',op)));
+        row.append(title,due,plan,actions); list.append(row);
+      });
+      (state.polls || []).forEach(item => {
+        const row = document.createElement('article'); row.className = 'calendar-agenda-item';
+        const title = document.createElement('h3'); title.textContent = item.question; row.append(title);
+        item.options.forEach((option, n) => { const text = document.createElement('p'); text.textContent = `${option.text}: ${option.votes} ${option.votes === 1 ? 'stemme' : 'stemmer'}`; row.append(text, button(`Stem ${option.text}`, item, 'poll', 'vote', {option_index:n + 1})); });
+        if (item.message_url) {const link=document.createElement('a'); link.href=item.message_url; link.textContent='Åpne avstemningen i Discord'; row.append(link);}
+        if (item.owned) {const actions=document.createElement('div'); actions.className='calendar-item-actions'; actions.append(button('Rediger',item,'poll','edit'),button('Lukk',item,'poll','close'),button('Slett',item,'poll','delete')); row.append(actions);}
+        list.append(row);
+      });
+      if (!list.children.length) list.textContent = 'Ingen gjøremål ennå. Lag en påminnelse eller åpne agendaen.';
+      const form = document.querySelector('[data-notification-form]'); const profile = state.notification;
+      form.elements.enabled.checked = profile?.enabled ?? (state.notification_available !== false);
+      form.elements.lead_minutes.value = (profile?.lead_minutes || [30,0]).join(',');
+      ['quiet_start','quiet_end','overdue_minutes'].forEach(name => {form.elements[name].value = profile?.[name] ?? '';});
+      form.elements.notification_timezone.value = profile?.timezone || 'Europe/Oslo';
+      document.querySelectorAll('[data-task-workspace] form input, [data-task-workspace] form textarea, [data-task-workspace] form button').forEach(el => {el.disabled = !state.write_available;});
+      form.elements.enabled.disabled = !state.write_available || state.notification_available === false;
+      document.querySelector('[data-notification-channel-status]').textContent = state.notification_available === false ? 'Du kan pause varsler her. Velg en godkjent kanal i privat konsolloppsett før du slår dem på.' : 'Varsler følger den godkjente kanalen for denne konsollen eller din eksisterende varselprofil.';
+      document.querySelector('[data-task-cancel]').disabled = !state.write_available;
+      this.taskStatus(`Gjøremål oppdatert ${new Date().toLocaleTimeString('nb-NO')} · ${state.write_available ? 'endringer klare' : 'kun lesing'}`);
+    } catch (error) {
+      this.tasks.state = null;
+      document.querySelectorAll('[data-task-workspace] button:not([data-task-refresh])').forEach(el => {el.disabled = true;});
+      this.taskStatus('Gjøremål kunne ikke hentes. Kontroller tilgang og oppdater.');
+    }
+  }
+
+  async previewTask(payload) {
+    if (!this.tasks.state?.write_available || this.tasks.applying) return;
+    this.invalidateTaskPreview(); const generation = this.tasks.generation;
+    try {
+      const preview = await this.calendarRequest('/api/tasks/preview', {...payload, revision:this.tasks.state.revisions[payload.domain]});
+      if (generation !== this.tasks.generation) return;
+      this.tasks.pending = {...preview, domain:payload.domain};
+      const labels = {text:'Tekst',question:'Spørsmål',due_date:'Frist',completed:'Fullført',status:'Status',options:'Alternativer',option_index:'Alternativ',enabled:'Varsler på',lead_minutes:'Forvarsel (minutter)',quiet_start:'Stille fra',quiet_end:'Stille til',overdue_minutes:'Etter frist (minutter)',timezone:'Tidssone',destination_id:'Kanal',scope_id:'Område',morning_time:'Morgen',card_ids:'Kort'};
+      const operation = {create:'Opprett',edit:'Rediger',complete:'Fullfør',delete:'Slett',close:'Lukk',vote:'Stem'}[preview.operation];
+      const describe = value => Object.entries(value || {}).filter(([,v]) => v != null).map(([k,v]) => `${labels[k] || k}: ${typeof v === 'boolean' ? v ? 'ja' : 'nei' : Array.isArray(v) ? v.join(', ') : v === 'active' ? 'åpen' : v === 'closed' ? 'lukket' : v}`).join(' · ');
+      document.querySelector('[data-task-preview-content]').textContent = `${operation} · Før: ${describe(preview.before) || 'Ny oppføring'} · Valgt endring: ${describe(preview.changes) || operation}`;
+      document.querySelector('[data-task-preview]').hidden = false;
+      document.querySelector('[data-task-apply]').disabled = false; document.querySelector('[data-task-apply]').focus();
+    } catch(error) {if (generation === this.tasks.generation) this.taskStatus(this.calendarError(error));}
+  }
+
+  async applyTask(undo = false) {
+    const token = undo ? this.tasks.undo : this.tasks.pending?.token;
+    const submitted = this.tasks.pending;
+    if (!token || this.tasks.applying) return;
+    this.tasks.applying = true;
+    document.querySelectorAll('[data-task-workspace] input, [data-task-workspace] textarea, [data-task-workspace] button').forEach(el => {el.disabled = true;});
+    document.querySelector('[data-task-apply]').disabled = true; document.querySelector('[data-task-undo]').disabled = true;
+    try {
+      const result = await this.calendarRequest(undo ? '/api/tasks/undo' : '/api/tasks/apply', {token});
+      this.tasks.undo = result.undo?.token || null; this.tasks.applying = false;
+      if (!undo && ['create','edit'].includes(submitted?.operation) && ['reminder','poll'].includes(submitted.domain)) document.querySelector(submitted.domain === 'reminder' ? '[data-reminder-form]' : '[data-poll-form]').reset();
+      document.querySelector('[data-task-refresh]').disabled = false;
+      await this.loadTasks(); this.taskStatus(result.message);
+      document.querySelector('[data-task-undo]').hidden = !this.tasks.undo; document.querySelector('[data-task-undo]').disabled = false;
+    } catch(error) {this.tasks.applying=false; this.invalidateTaskPreview(); document.querySelector('[data-task-refresh]').disabled=false; this.taskStatus(this.calendarError(error));}
+  }
+
   invalidateCalendarPreview() {
     if (this.calendarWorkspace.pending) this.calendarStatus("Forhåndsvis på nytt før du lagrer endringen.");
     this.calendarWorkspace.generation += 1;
@@ -418,7 +578,13 @@ class ConsoleApp {
 
   calendarError(error) {
     const reasons = {
-      revision_changed: "Kalenderen ble endret. Oppdater og forhåndsvis på nytt.",
+      revision_changed: "Oppføringer ble endret. Oppdater og forhåndsvis på nytt.",
+      selection_changed: "Oppføringen ble endret. Oppdater og velg på nytt.",
+      undo_expired: "Angre er utløpt. Hent gjøremålene på nytt.",
+      invalid_title: "Skriv en tekst på 1–200 tegn.",
+      invalid_deadline: "Kontroller fristen; velg en gyldig dato og tid.",
+      notification_destination_required: "Velg en godkjent varselkanal i privat konsolloppsett før du slår varsler på.",
+      task_owner_required: "Bare eieren kan redigere eller slette denne oppføringen.",
       recurrence_edit_scope_required: "Velg omfang for gjentakelsen før forhåndsvisning.",
       pending_occurrence_exceptions_require_review: "Fremtidige unntak må gjennomgås før serien endres. Velg denne forekomsten eller behold tidsfeltene.",
       ambiguous_time: "Tidspunktet forekommer to ganger ved sommertid. Velg første eller andre forekomst.",

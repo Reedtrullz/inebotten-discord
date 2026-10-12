@@ -22,6 +22,45 @@ _DAY_NAMES = {
 }
 
 
+def project_current_occurrence(item):
+    if item.get('_recurrence_readonly'):
+        return None
+    recurring = bool(item.get('series') or item.get('recurrence'))
+    try:
+        result = deepcopy(item)
+        if recurring:
+            series = Series.from_document(item['series']) if item.get('series') else series_from_item(item)
+            occurrence = occurrence_at(series, item.get('series_next_index', 0))
+            if occurrence is None:
+                return None
+            saved = item.get('occurrences', {}).get(occurrence.occurrence_id)
+            if saved:
+                occurrence = Occurrence.from_document(saved)
+            if occurrence.state != 'planned':
+                return None
+            result['occurrence_id'] = occurrence.occurrence_id
+            result['series_id'] = occurrence.series_id
+            result['original_start'] = occurrence.original_start.isoformat()
+            if occurrence.override:
+                for key in ('date', 'time', 'timezone', 'duration_minutes', 'fold', 'all_day',
+                    'kind', 'title', 'description'):
+                    if key in occurrence.override:
+                        result[key] = occurrence.override[key]
+        if 'date' in result:
+            EventTime.from_item(result).validate_local()
+        elif result.get('due_date'):
+            try:
+                datetime.strptime(result['due_date'], '%d.%m.%Y %H:%M')
+            except ValueError:
+                try:
+                    datetime.strptime(result['due_date'], '%d.%m.%Y')
+                except ValueError:
+                    datetime.strptime(result['due_date'], '%d.%m')
+        return result
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class Series:
     series_id: str

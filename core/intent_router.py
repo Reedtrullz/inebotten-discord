@@ -539,10 +539,21 @@ class IntentRouter:
         cleaned = cleaned.replace("@inebotten", "").strip()
         lower = re.sub(r"\s+", " ", cleaned.lower()).strip(" .!?")
 
+        undo = re.fullmatch(r'angre endring ([A-Za-z0-9_-]{24})', cleaned, re.I)
+        if undo:
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'task_undo', 'value': undo[1]}}, 'explicit_local_undo')
+        action = re.fullmatch(r'(ferdig påminnelse|slumre|endre påminnelse) valg ([A-Za-z0-9_-]{12})(?: (tekst|dato): (.+))?', cleaned, re.I)
+        if action:
+            operation = {'ferdig påminnelse': 'complete', 'slumre': 'snooze', 'endre påminnelse': 'edit'}[action[1].lower()]
+            changes = {'text' if action[3].lower() == 'tekst' else 'due_date': action[4]} if action[3] else {}
+            return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'task_action', 'value': action[2], 'changes': changes, 'operation': operation}}, 'explicit_reminder_action')
         if lower == 'varsler status':
             return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'notification_view'}}, 'notification_status')
 
         notification = None
+        overdue = re.fullmatch(r'varsler etterfrist (av|[0-9]{1,4})', lower)
+        if overdue:
+            notification = {'overdue_minutes': None if overdue[1] == 'av' else int(overdue[1])}
         if lower in ('varsler på', 'varsler av'):
             notification = {'enabled': lower.endswith('på')}
         zone = re.fullmatch(r'varsler tidssone ([A-Za-z_+-]+(?:/[A-Za-z_+-]+){0,2})', cleaned, flags=re.IGNORECASE)

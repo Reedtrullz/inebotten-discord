@@ -1173,6 +1173,11 @@ pre {
 .calendar-editor label { display: grid; gap: .3rem; }
 .calendar-editor label[hidden] { display: none; }
 .calendar-editor input, .calendar-editor select, .calendar-editor textarea, [data-calendar-filter] { width: 100%; max-width: 100%; }
+.calendar-editor input[type=checkbox] { width: auto; }
+[data-task-workspace] { scroll-margin-top: 5.5rem; }
+[data-task-workspace] [hidden] { display: none; }
+[data-task-list] { display: grid; gap: .65rem; margin-bottom: 1rem; }
+[data-task-workspace] summary { cursor: pointer; }
 .calendar-preview { margin-top: .8rem; }
 .calendar-preview p { overflow-wrap: anywhere; }
 .calendar-preview[hidden] { display: none; }
