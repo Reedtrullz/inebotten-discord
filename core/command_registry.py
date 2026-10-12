@@ -194,7 +194,7 @@ def _validator(intent, argument):
                 size = 12 if fields['action'] == 'task_action' else 24
                 if not isinstance(fields.get('value'), str) or not re.fullmatch(rf'[A-Za-z0-9_-]{{{size}}}', fields['value']):
                     raise ValueError('invalid_task_token')
-                if fields['action'] == 'task_action' and (fields.get('operation') not in ('complete', 'snooze', 'edit')
+                if fields['action'] == 'task_action' and (fields.get('operation') not in ('complete', 'snooze', 'cancel_snooze', 'edit')
                     or not isinstance(fields.get('changes'), dict) or set(fields['changes']) - {'text', 'due_date'}):
                     raise ValueError('invalid_task_action')
             if fields['action'] == 'snooze' and (not _nonblank(fields.get('item_id')) or len(fields['item_id']) > 100
@@ -266,7 +266,7 @@ COMMANDS = (
     _spec('daily_digest', 'Vis dagens valgte oversikt', 'daglig oppsummering', 'daily_digest.handle_daily_digest', mutation='provider'),
     _spec('birthday_edit', 'Endre bursdagsoppføring', 'endre bursdag Ola 15.05', 'birthdays.handle_birthday_edit', '*', 'write', 'channel'),
     _spec('set_location', 'Lagre eget stedsvalg', 'jeg bor i Oslo', '_handle_set_location', 'city', 'write', 'self'),
-    _spec('memory_view', 'Vis minne og velg egne varsler', ('vis minnet mitt', 'minne læring på', 'minne del med ingen', 'minne private fakta av', 'minne behold tema 7 dager', 'minne kommune oslo', 'varsler på', 'varsler av', 'varsler status', 'varsler tidssone Europe/Oslo', 'varsler forvarsel 30,10,0 minutter', 'varsler stille 22:00-07:00', 'varsler etterfrist 30', 'varsler etterfrist av', 'varsler morgen 09:00', 'varsler kort kalender,vær', 'slumre #<ID> 10 minutter', 'ferdig påminnelse valg <token>', 'slumre valg <token>', 'endre påminnelse valg <token> tekst: ny tekst', 'angre endring <token>'), 'memory.handle_memory', 'memory', 'mixed', 'self'),
+    _spec('memory_view', 'Vis minne og velg egne varsler', ('vis minnet mitt', 'minne læring på', 'minne del med ingen', 'minne private fakta av', 'minne behold tema 7 dager', 'minne kommune oslo', 'varsler på', 'varsler av', 'varsler status', 'varsler tidssone Europe/Oslo', 'varsler forvarsel 30,10,0 minutter', 'varsler stille 22:00-07:00', 'varsler etterfrist 30', 'varsler etterfrist av', 'varsler morgen 09:00', 'varsler kort kalender,vær', 'slumre #<ID> 10 minutter', 'ferdig påminnelse valg <token>', 'slumre valg <token>', 'avbryt slumring valg <token>', 'endre påminnelse valg <token> tekst: ny tekst', 'angre endring <token>'), 'memory.handle_memory', 'memory', 'mixed', 'self'),
     _spec('memory_export', 'Eksporter eget minne privat som komplett JSON', ('eksporter minnet mitt', 'eksporter minnet mitt privat'), 'memory.handle_memory', 'memory', scope='self'),
     _spec('memory_delete', 'Bekreft lokal sletting av eget minne', 'slett minnet mitt bekreft', 'memory.handle_memory', 'memory', 'write', 'self'),
     _spec('search', 'Søk offentlig informasjon', 'søk på nett Oslo', '_registry_search', 'search', 'provider'),
@@ -342,7 +342,7 @@ def command_help_pages(max_chars=1700, *, topic=None):
         examples = next(spec.examples for spec in COMMANDS if spec.intent.value == 'memory_view')
         pages, lines = [], header
         for text in examples:
-            if not text.startswith(('varsler ', 'slumre ')):
+            if not text.startswith(('varsler ', 'slumre ', 'avbryt slumring ')):
                 continue
             line = f'\n• `@inebotten {text}`'
             if len(lines + line) > max_chars:

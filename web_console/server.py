@@ -854,7 +854,7 @@ class ConsoleServer:
                         else:
                             if set(payload) != {'token'} or not isinstance(payload.get('token'), str) or len(payload['token']) > 128:
                                 raise ValueError('invalid_payload')
-                            result = service.undo(actor, payload['token']) if path.endswith('/undo') else await service.apply(actor, payload['token'])
+                            result = await service.undo(actor, payload['token']) if path.endswith('/undo') else await service.apply(actor, payload['token'])
                     elif path.endswith("/preview"):
                         result = self._calendar_preview(actor, payload)
                     else:

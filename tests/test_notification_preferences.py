@@ -158,6 +158,40 @@ async def test_recurring_snooze_uses_scheduler_occurrence_and_is_delivered(tmp_p
     checker.close_storage(); reminders._storage.close(); calendar._storage.close(); memory._storage.close()
 
 
+async def test_cancelled_snooze_rechecks_pending_plan_before_transport(tmp_path):
+    from cal_system.calendar_manager import CalendarManager
+    from cal_system.notification_preferences import NotificationProfile, occurrence_identity
+    from cal_system.recurrence import project_current_occurrence
+    from cal_system.reminder_checker import ReminderChecker
+    from core.outbound_sender import DeliveryResult
+    now = {'value': datetime.fromisoformat('2027-01-01T08:00:00+00:00')}
+    clock = Clock(wall=lambda: now['value'])
+    memory = UserMemory(tmp_path / 'memory.json')
+    await memory.set_notification_profile('7', NotificationProfile(True, 'shared', '70', (0,)))
+    calendar = CalendarManager(storage_path=tmp_path / 'calendar.json', clock=clock)
+    item = calendar.add_item('shared', '7', 'Synthetic', 'Recurring', '01.01.2027', '09:00', recurrence='monthly')
+    current = project_current_occurrence(item)
+    assert current is not None
+    await memory.set_notification_snooze('7', 'shared', item['id'], occurrence_identity(current), datetime.fromisoformat('2027-01-01T08:10:00+00:00'))
+    async def cancel_before_transport(*args, **kwargs):
+        pending = memory.notification_snoozes('7', 'shared')[0]
+        assert kwargs['_can_dispatch']()
+        await memory.acknowledge_notification_snooze('7', pending['key'], pending['due_at'])
+        assert not kwargs['_can_dispatch']()
+        return DeliveryResult('dropped', reason_code='authorization_changed')
+    sender = SimpleNamespace(send=AsyncMock(side_effect=cancel_before_transport))
+    checker = ReminderChecker(calendar_manager=calendar, user_memory=memory, clock=clock,
+        get_channel_func=lambda _: SimpleNamespace(), outbound_sender=sender, storage_path=tmp_path / 'sent.json')
+    try:
+        await checker.setup()
+        now['value'] = datetime.fromisoformat('2027-01-01T08:10:00+00:00')
+        await checker.check_notification_profiles()
+        assert sender.send.await_count == 1 and memory.notification_snoozes('7', 'shared') == []
+        assert all(r['status'] == 'dropped' for r in checker.sent_log['deliveries'].values())
+    finally:
+        checker.close_storage(); calendar._storage.close(); memory._storage.close()
+
+
 @pytest.mark.asyncio
 async def test_recurring_snooze_refuses_unsupported_series(tmp_path):
     from cal_system.calendar_manager import CalendarManager
