@@ -8,7 +8,7 @@ from typing import Any
 from cal_system.notification_preferences import NotificationProfile, delivery_schedule, after_quiet_hours, occurrence_identity
 from cal_system.reminder_manager import validate_deadline
 from cal_system.event_schema import EventTime
-from cal_system.recurrence import project_current_occurrence
+from cal_system.recurrence import project_current_occurrence, SUPPORTED_FREQUENCIES
 from cal_system.mutation_preview import actor_key
 from core.request_context import request_scope
 from utils.local_undo import undo_change, undo_hint
@@ -164,13 +164,17 @@ class TaskWorkspace:
                     raise ValueError('notification_destination_required')
             return None, prior.document() if prior else None, NotificationProfile.from_document(document).document()
         if domain == 'reminder':
-            if operation not in ('create', 'edit', 'complete', 'delete', 'snooze') or set(changes) - {'text', 'due_date'}:
+            if operation not in ('create', 'edit', 'complete', 'delete', 'snooze') or set(changes) - {'text', 'due_date', 'recurrence'}:
                 raise ValueError('invalid_changes')
             if operation == 'create' or 'text' in changes:
                 if not isinstance(changes.get('text'), str) or not 1 <= len(changes['text'].strip()) <= 200:
                     raise ValueError('invalid_title')
             if 'due_date' in changes:
                 changes = dict(changes, due_date=validate_deadline(changes['due_date'], manager.clock))
+            if 'recurrence' in changes and (not isinstance(changes['recurrence'], str) or changes['recurrence'] not in SUPPORTED_FREQUENCIES | {''}):
+                raise ValueError('invalid_recurrence_frequency')
+            if operation == 'create' and changes.get('recurrence') and not changes.get('due_date'):
+                raise ValueError('recurrence_requires_deadline')
         elif domain == 'poll':
             if operation not in ('create', 'edit', 'close', 'delete', 'vote') or set(changes) - ({'option_index'} if operation == 'vote' else {'question', 'options'}):
                 raise ValueError('invalid_changes')
@@ -199,6 +203,8 @@ class TaskWorkspace:
                 raise ValueError('invalid_option')
         if item.get('_planning'):
             raise ValueError('use_planning_workflow')
+        if domain == 'reminder' and operation == 'edit' and changes.get('recurrence', item.get('recurrence')) and not changes.get('due_date', item.get('due_date')):
+            raise ValueError('recurrence_requires_deadline')
         return bucket, item, changes
 
     def preview(self, actor, payload) -> dict[str, Any]:
@@ -210,7 +216,7 @@ class TaskWorkspace:
         self.previews[token] = {'actor': actor_key(actor), 'payload': copy.deepcopy(payload), 'expires': now + 300}
         while len(self.previews) > 32:
             self.previews.pop(next(iter(self.previews)))
-        fields = ('enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'overdue_minutes', 'timezone') if payload['domain'] == 'notification' else ('text', 'question', 'due_date', 'completed', 'status')
+        fields = ('enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'overdue_minutes', 'timezone') if payload['domain'] == 'notification' else ('text', 'question', 'due_date', 'recurrence', 'completed', 'status')
         public = {k: item.get(k) for k in fields} if item else None
         return {'token': token, 'before': public, 'changes': changes, 'operation': payload['operation'], 'expires_in_seconds': 300}
 
@@ -238,7 +244,7 @@ class TaskWorkspace:
                     operation = payload['operation']
                     if payload['domain'] == 'reminder':
                         if operation == 'create':
-                            manager.add_reminder(bucket, actor.user_id, 'Console', changes['text'].strip(), changes.get('due_date'), channel_id=actor.channel_id)
+                            manager.add_reminder(bucket, actor.user_id, 'Console', changes['text'].strip(), changes.get('due_date'), recurrence=changes.get('recurrence') or None, channel_id=actor.channel_id)
                         else:
                             active = manager.get_active_reminders(bucket)
                             index = next(n for n, row in enumerate(active, 1) if row['id'] == item['id'])
@@ -247,7 +253,7 @@ class TaskWorkspace:
                                 if not success:
                                     raise ValueError('selection_changed')
                             elif operation == 'edit':
-                                manager.edit_reminder(bucket, index, title=changes.get('text'), date=(changes['due_date'] or '') if 'due_date' in changes else None)
+                                manager.edit_reminder(bucket, index, title=changes.get('text'), date=(changes['due_date'] or '') if 'due_date' in changes else None, recurrence=changes.get('recurrence'))
                             else:
                                 manager.delete_reminder_by_id(bucket, index)
                     else:

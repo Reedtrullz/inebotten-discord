@@ -469,6 +469,8 @@ def _render_today_section() -> str:
           <details data-reminder-editor><summary>Ny påminnelse</summary><form class="calendar-editor" data-reminder-form>
             <input type="hidden" name="item_id"><label>Påminnelsestekst<input name="text" required maxlength="200"></label>
             <label>Frist (Europe/Oslo)<input type="datetime-local" name="deadline"></label>
+            <label for="reminder-recurrence">Gjentakelse</label><select id="reminder-recurrence" name="recurrence"><option value="">Ingen</option><option value="daily">Hver dag</option><option value="weekly">Hver uke</option><option value="biweekly">Annenhver uke</option><option value="monthly">Hver måned</option><option value="yearly">Hvert år</option></select>
+            <p class="muted">Gjentakelse krever frist. Fullføring gjelder denne forekomsten; neste beholder klokkeslettet. Frist og gjentakelse endres for denne og fremtidige forekomster.</p>
             <p class="muted">Uten frist lagres en oppgave uten automatisk varsel.</p>
             <button class="btn btn-primary" type="submit">Forhåndsvis påminnelse</button>
             <button class="btn btn-secondary" type="reset">Ny påminnelse</button>

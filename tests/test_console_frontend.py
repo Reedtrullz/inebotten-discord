@@ -90,6 +90,26 @@ def test_today_snooze_previews_exact_owned_item_and_requires_apply(page: Any, co
     assert page.locator('[data-task-undo]').is_hidden()
 
 
+def test_today_recurring_reminder_form_preserves_rule_and_names_completion_scope(page: Any, console_server: ConsoleServer):
+    state = {'write_available': True, 'revisions': {'reminder': 7}, 'polls': [], 'notification': None,
+        'reminders': [{'id': 'owned', 'text': 'Weekly', 'due_date': '18.10.2026 05:01',
+            'recurrence': 'weekly', 'completed': False, 'plan': {'message': 'Next week'}}]}
+    page.route('**/api/tasks', lambda route: route.fulfill(json=state))
+    page.route('**/api/tasks/preview', lambda route: route.fulfill(json={'token': 'proposal', 'operation': 'edit',
+        'before': {'text': 'Weekly', 'recurrence': 'weekly'}, 'changes': {'text': 'Weekly edited', 'recurrence': 'weekly'}}))
+    _login(page, console_server)
+    assert page.get_by_role('button', name='Fullfør denne forekomsten Weekly', exact=True).is_visible()
+    page.get_by_role('button', name='Rediger Weekly', exact=True).click()
+    form = page.locator('[data-reminder-form]')
+    assert form.get_by_label('Gjentakelse', exact=True).input_value() == 'weekly'
+    form.locator('[name="text"]').fill('Weekly edited')
+    with page.expect_request('**/api/tasks/preview') as request:
+        form.locator('[type="submit"]').click()
+    assert request.value.post_data_json['changes'] == {'text': 'Weekly edited', 'due_date': '18.10.2026 05:01', 'recurrence': 'weekly'}
+    form.locator('[type="reset"]').click()
+    assert form.get_by_label('Gjentakelse', exact=True).input_value() == ''
+
+
 def test_today_date_only_edit_and_double_apply_preserve_intent(page: Any, console_server: ConsoleServer):
     state = {'write_available': True, 'revisions': {'reminder': 1}, 'polls': [], 'notification': None,
              'reminders': [{'id': 'owned', 'text': 'Date only', 'due_date': '13.10.2026', 'completed': False,

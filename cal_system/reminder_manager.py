@@ -224,6 +224,8 @@ class ReminderManager(SyncOwnerMixin):
             reminder_id
         """
         due_date = validate_deadline(due_date, self.clock)
+        if recurrence and not due_date:
+            raise ValueError('recurrence_requires_deadline')
         if not isinstance(text, str) or not text.strip():
             raise ValueError('reminder_text_required')
         guild_key, _ = self._scope_bucket(guild_id, 'write')
@@ -252,8 +254,7 @@ class ReminderManager(SyncOwnerMixin):
             "completed_by": None,
         }
         if recurrence and due_date:
-            anchor_date = self._recurrence_date(due_date)
-            anchor = EventTime('task', anchor_date, None, 'Europe/Oslo', True)
+            anchor = self._recurrence_anchor(due_date)
             rule = {'frequency': recurrence}
             if rrule_day or recurrence_day:
                 rule['weekday'] = rrule_day or recurrence_day
@@ -326,6 +327,8 @@ class ReminderManager(SyncOwnerMixin):
                 next_date = None
                 if next_occurrence:
                     next_date = next_occurrence[1].original_start.strftime('%d.%m.%Y')
+                    if not series.anchor_time.all_day:
+                        next_date += next_occurrence[1].original_start.strftime(' %H:%M')
                     target_reminder['due_date'] = next_date
                 else:
                     target_reminder['completed'] = True
@@ -359,16 +362,18 @@ class ReminderManager(SyncOwnerMixin):
         except ValueError:
             return datetime.strptime(value, '%d.%m.%Y').date()
 
-    def _recurrence_date(self, value):
-        try:
-            return datetime.strptime(value, '%d.%m.%Y').date()
-        except ValueError:
-            return datetime.strptime(value, '%d.%m').replace(year=self.clock.now().year).date()
+    def _recurrence_anchor(self, value):
+        deadline = validate_deadline(value, self.clock)
+        if deadline is None:
+            raise ValueError('recurrence_requires_deadline')
+        day, _, local_time = deadline.partition(' ')
+        return EventTime.from_item({'kind': 'task', 'date': day, 'time': local_time or None,
+            'timezone': 'Europe/Oslo', 'all_day': not bool(local_time)})
 
     def _ensure_series(self, item):
         if item.get('series'):
             return Series.from_document(item['series'])
-        anchor = EventTime('task', self._recurrence_date(item['due_date']), None, 'Europe/Oslo', True)
+        anchor = self._recurrence_anchor(item['due_date'])
         rule = {'frequency': item['recurrence']}
         if item.get('rrule_day') or item.get('recurrence_day'):
             rule['weekday'] = item.get('rrule_day') or item.get('recurrence_day')
@@ -626,7 +631,7 @@ class ReminderManager(SyncOwnerMixin):
                     candidate.setdefault('series_history', []).append({
                         'series': previous.to_document(), 'through_index': index - 1, 'scope': 'future'})
                 if candidate.get('recurrence'):
-                    anchor = EventTime('task', self._recurrence_date(candidate['due_date']), None, 'Europe/Oslo', True)
+                    anchor = self._recurrence_anchor(candidate['due_date'])
                     rule = {'frequency': candidate['recurrence']}
                     weekday = candidate.get('rrule_day') or candidate.get('recurrence_day')
                     if weekday and candidate['recurrence'] in ('weekly', 'biweekly'):
@@ -648,7 +653,7 @@ class ReminderManager(SyncOwnerMixin):
             except ReminderEditError:
                 raise
             except (TypeError, ValueError, KeyError) as error:
-                raise ReminderEditError('Gjentakende påminnelser må ha en gyldig dato uten klokkeslett og en støttet gjentakelse.') from error
+                raise ReminderEditError('Gjentakende påminnelser må ha en gyldig dato, eventuelt klokkeslett, og en støttet gjentakelse.') from error
         target.clear()
         target.update(candidate)
         self._queue_sync(target, 'update', guild_key)
@@ -838,8 +843,19 @@ def parse_reminder_command(message_content):
                         text = text[:time_match.start()] + text[time_match.end():]
             text = text.strip(" -–—")
 
+            from cal_system.natural_language_parser import NaturalLanguageParser
+            recurrence = None
+            for phrase, rule in sorted(NaturalLanguageParser().recurrence_patterns.items(), key=lambda row: len(row[0]), reverse=True):
+                match = re.search(rf'\s+{re.escape(phrase)}\s*$', text, re.I)
+                if match:
+                    recurrence = rule
+                    text = text[:match.start()].strip()
+                    break
+            text = re.sub(r'\s+', ' ', text)
+
             if text and len(text) > 2:
-                return {"action": "add", "text": text, "due_date": due_date}
+                return {"action": "add", "text": text, "due_date": due_date,
+                    **({'recurrence': recurrence} if recurrence else {})}
 
     return None
 
@@ -862,7 +878,7 @@ if __name__ == "__main__":
     print(manager.format_reminders_list("guild1"))
 
     print("\nCompleting reminder #1...")
-    success, text = manager.complete_reminder("guild1", reminder_num=1)
+    success, text, _ = manager.complete_reminder("guild1", reminder_num=1)
     print(f"Completed: {text}")
 
     print("\nActive reminders after completion:")
