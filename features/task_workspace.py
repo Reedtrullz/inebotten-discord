@@ -150,7 +150,7 @@ class TaskWorkspace:
         changes = payload.get('changes', {})
         if not isinstance(changes, dict):
             raise ValueError('invalid_changes')
-        if operation in ('complete', 'close', 'delete') and changes or operation == 'edit' and not changes:
+        if operation in ('complete', 'close', 'delete', 'snooze') and changes or operation == 'edit' and not changes:
             raise ValueError('invalid_changes')
         if domain == 'notification':
             if operation != 'edit' or set(changes) - {'enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'overdue_minutes', 'timezone'}:
@@ -164,7 +164,7 @@ class TaskWorkspace:
                     raise ValueError('notification_destination_required')
             return None, prior.document() if prior else None, NotificationProfile.from_document(document).document()
         if domain == 'reminder':
-            if operation not in ('create', 'edit', 'complete', 'delete') or set(changes) - {'text', 'due_date'}:
+            if operation not in ('create', 'edit', 'complete', 'delete', 'snooze') or set(changes) - {'text', 'due_date'}:
                 raise ValueError('invalid_changes')
             if operation == 'create' or 'text' in changes:
                 if not isinstance(changes.get('text'), str) or not 1 <= len(changes['text'].strip()) <= 200:
@@ -223,6 +223,11 @@ class TaskWorkspace:
         payload = entry['payload']
         manager = self._owner(payload['domain'])
         with request_scope(actor):
+            if payload['domain'] == 'reminder' and payload['operation'] == 'snooze':
+                _, item, _ = self._validate(actor, payload)
+                result = await self.reminder_action(actor, self.reminder_action_token(actor, item['id']), 'snooze')
+                self.previews.pop(token)
+                return result
             if payload['domain'] == 'notification':
                 async with manager._storage.async_transaction(write=True):
                     _, _, document = self._validate(actor, payload)
@@ -307,7 +312,10 @@ class TaskWorkspace:
             if projected is None:
                 raise ValueError('selection_changed')
             if self.monitor.user_memory.notification_profile(actor.user_id, self._scope(actor)) is None:
-                await self.monitor.user_memory.set_notification_profile(actor.user_id, NotificationProfile(True, self._scope(actor), actor.channel_id))
+                destination = actor.channel_id if actor.channel_id.isdecimal() else str(current.get('channel_id') or '')
+                if not destination.isdecimal():
+                    raise ValueError('notification_destination_required')
+                await self.monitor.user_memory.set_notification_profile(actor.user_id, NotificationProfile(True, self._scope(actor), destination))
             current = next((item for _, item in self._reminders(actor) if item['id'] == entry['item']['id']), None)
             if current is None or current != entry['item']:
                 raise ValueError('selection_changed')
