@@ -110,6 +110,30 @@ def test_today_recurring_reminder_form_preserves_rule_and_names_completion_scope
     assert form.get_by_label('Gjentakelse', exact=True).input_value() == ''
 
 
+def test_today_cancel_snooze_requires_preview_apply_and_offers_undo(page: Any, console_server: ConsoleServer):
+    state = {'write_available': True, 'revisions': {'reminder': 7}, 'polls': [], 'notification': None,
+        'reminders': [{'id': 'owned', 'text': 'Monthly', 'recurrence': 'monthly', 'snoozed': True, 'completed': False,
+            'plan': {'message': 'Snoozed until 10:10'}}, {'id': 'other', 'text': 'Not snoozed', 'completed': False}]}
+    page.route('**/api/tasks', lambda route: route.fulfill(json=state))
+    page.route('**/api/tasks/preview', lambda route: route.fulfill(json={'token': 'proposal', 'operation': 'cancel_snooze',
+        'before': {'text': 'Monthly', 'recurrence': 'monthly', 'snoozed_until': '12.10.2026 10:10'}, 'changes': {}}))
+    page.route('**/api/tasks/apply', lambda route: route.fulfill(json={'ok': True, 'message': 'Slumring avbrutt.', 'undo': {'token': 'undo-token'}}))
+    page.route('**/api/tasks/undo', lambda route: route.fulfill(json={'ok': True, 'message': 'Slumring gjenopprettet.'}))
+    _login(page, console_server)
+    assert page.get_by_role('button', name='Avbryt slumring Not snoozed', exact=True).count() == 0
+    with page.expect_request('**/api/tasks/preview') as request:
+        page.get_by_role('button', name='Avbryt slumring Monthly', exact=True).click()
+    assert request.value.post_data_json == {'domain': 'reminder', 'operation': 'cancel_snooze', 'revision': 7, 'item_id': 'owned'}
+    page.locator('[data-task-preview]').wait_for(state='visible')
+    assert 'Slumret til (Europe/Oslo): 12.10.2026 10:10' in page.locator('[data-task-preview]').inner_text()
+    page.get_by_role('button', name='Bruk endring', exact=True).click()
+    page.get_by_role('button', name='Angre siste lokale endring', exact=True).wait_for(state='visible')
+    with page.expect_request('**/api/tasks/undo') as request:
+        page.get_by_role('button', name='Angre siste lokale endring', exact=True).click()
+    assert request.value.post_data_json == {'token': 'undo-token'}
+    page.locator('[data-task-status]').get_by_text('Slumring gjenopprettet.', exact=True).wait_for()
+
+
 def test_today_date_only_edit_and_double_apply_preserve_intent(page: Any, console_server: ConsoleServer):
     state = {'write_available': True, 'revisions': {'reminder': 1}, 'polls': [], 'notification': None,
              'reminders': [{'id': 'owned', 'text': 'Date only', 'due_date': '13.10.2026', 'completed': False,

@@ -46,7 +46,7 @@ class MemoryHandler(BaseHandler):
                 if actor is None or actor.user_id != str(message.author.id) or actor.channel_id != str(message.channel.id):
                     raise PermissionError('task_actor_required')
                 service = task_workspace(self.monitor)
-                result = service.undo(actor, payload['value']) if action == 'task_undo' else await service.reminder_action(actor, payload['value'], payload['operation'], payload['changes'])
+                result = await service.undo(actor, payload['value']) if action == 'task_undo' else await service.reminder_action(actor, payload['value'], payload['operation'], payload['changes'])
                 hint = result.get('undo')
                 await self.send_response(message, '✅ ' + result['message'] + (f'\nAngre innen fem minutter: `@inebotten angre endring {hint["token"]}`.' if hint else ''))
             elif action == 'snooze':
@@ -59,7 +59,7 @@ class MemoryHandler(BaseHandler):
             await self.send_response(message, "❌ Kunne ikke lagre endringen lokalt. Kontroller status før du prøver igjen.")
         except ValueError as error:
             if action in ('task_action', 'task_undo'):
-                reason = 'Oppføringen ble endret.' if str(error) in ('revision_changed', 'selection_changed') else 'Valget er utløpt eller ugyldig.'
+                reason = 'Ingen ventende slumring; sendte varsler beholdes.' if str(error) == 'snooze_not_pending' else 'Oppføringen ble endret.' if str(error) in ('revision_changed', 'selection_changed') else 'Valget er utløpt eller ugyldig.'
                 await self.send_response(message, f'❌ {reason} Hent en ny liste eller kvittering før du prøver igjen.')
             else:
                 await self.send_response(message, '❌ Ugyldig kontroll. Velg støttet provider, klokkeslett, kort eller minuttgrense (0–1440).')

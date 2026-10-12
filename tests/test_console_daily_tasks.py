@@ -262,8 +262,96 @@ async def test_actions_and_undo_expire_and_recheck_revoked_scope(daily):
     assert undo is not None
     reminders._local_undo[undo['token']]['expires'] = 0
     with pytest.raises(ValueError, match='undo_expired'):
-        service.undo(actor, undo['token'])
+        await service.undo(actor, undo['token'])
     server.monitor.calendar.access_policy = AccessPolicy([ScopeRecord('private:999', 'private_user', owner_id='999')], default_scope='private:999')
     with pytest.raises(PermissionError):
         service.items(actor)
     assert reminders.reminders[SCOPE][0]['completed']
+
+
+@pytest.mark.parametrize('frequency', ['biweekly', 'monthly', 'yearly'])
+@pytest.mark.parametrize('surface', ['discord', 'console'])
+async def test_recurring_snooze_cancel_and_exact_undo(daily, frequency, surface):
+    import copy
+    from features.task_workspace import task_workspace
+    server, reminders, _, actor, item_id = daily
+    with request_scope(actor):
+        reminders.edit_reminder(None, 1, recurrence=frequency)
+    original = copy.deepcopy(reminders.reminders[SCOPE][0])
+    service = task_workspace(server.monitor)
+    async def action(operation):
+        if surface == 'discord':
+            return await service.reminder_action(actor, service.reminder_action_token(actor, item_id), operation)
+        payload = {'domain': 'reminder', 'operation': operation, 'revision': reminders._storage.revision, 'item_id': item_id}
+        status, preview = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+        assert status == 200
+        status, result = await http_request(server, '/api/tasks/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+        assert status == 200
+        return result
+    snoozed = await action('snooze')
+    memory = server.monitor.user_memory
+    plan = memory.notification_snoozes(ACTOR, SCOPE)
+    assert len(plan) == 1 and snoozed['undo']['token']
+    canceled = await action('cancel_snooze')
+    assert memory.notification_snoozes(ACTOR, SCOPE) == []
+    assert canceled['undo']['token'] and reminders.reminders[SCOPE][0] == original
+    restored = await service.undo(actor, canceled['undo']['token'])
+    assert restored['ok'] and memory.notification_snoozes(ACTOR, SCOPE) == plan
+    assert reminders.reminders[SCOPE][0] == original
+    snoozed = await action('snooze')
+    await service.undo(actor, snoozed['undo']['token'])
+    assert memory.notification_snoozes(ACTOR, SCOPE) == plan
+    await action('cancel_snooze')
+    with pytest.raises(ValueError, match='snooze_not_pending'):
+        await service.reminder_action(actor, service.reminder_action_token(actor, item_id), 'cancel_snooze')
+
+
+@pytest.mark.parametrize('change', ['actor', 'scope', 'reminder', 'memory', 'elapsed'])
+async def test_snooze_undo_refuses_stale_or_unsafe_restoration(daily, change):
+    from datetime import datetime, timedelta
+    from features.task_workspace import task_workspace
+    server, reminders, _, actor, item_id = daily
+    service = task_workspace(server.monitor)
+    await service.reminder_action(actor, service.reminder_action_token(actor, item_id), 'snooze')
+    pending = server.monitor.user_memory.notification_snoozes(ACTOR, SCOPE)[0]
+    result = await service.reminder_action(actor, service.reminder_action_token(actor, item_id), 'cancel_snooze')
+    if change == 'actor':
+        actor = RequestContext('other', '999', '123', None, 'no', 'dm')
+    elif change == 'scope':
+        from core.access_policy import AccessPolicy, ScopeRecord
+        server.monitor.calendar.access_policy = AccessPolicy([ScopeRecord('private:999', 'private_user', owner_id='999')], default_scope='private:999')
+    elif change == 'reminder':
+        with request_scope(actor):
+            reminders.complete_reminder(None, reminder_id=item_id)
+    elif change == 'memory':
+        await server.monitor.user_memory.get_user('999')
+    else:
+        from cal_system.event_schema import Clock
+        reminders.clock = Clock(wall=lambda: datetime.fromisoformat(pending['due_at']) + timedelta(seconds=1))
+    with pytest.raises((ValueError, PermissionError)):
+        await service.undo(actor, result['undo']['token'])
+    assert server.monitor.user_memory.notification_snoozes(ACTOR, SCOPE) == []
+
+
+async def test_cancel_preview_rechecks_replaced_snooze(daily):
+    from features.task_workspace import task_workspace
+    server, reminders, _, actor, item_id = daily
+    service = task_workspace(server.monitor)
+    token = service.reminder_action_token(actor, item_id)
+    await service.reminder_action(actor, token, 'snooze')
+    payload = {'domain': 'reminder', 'operation': 'cancel_snooze', 'revision': reminders._storage.revision, 'item_id': item_id}
+    preview = service.preview(actor, payload)
+    await service.reminder_action(actor, token, 'snooze')
+    pending = server.monitor.user_memory.notification_snoozes(ACTOR, SCOPE)
+    with pytest.raises(ValueError, match='revision_changed'):
+        await service.apply(actor, preview['token'])
+    assert server.monitor.user_memory.notification_snoozes(ACTOR, SCOPE) == pending
+
+
+async def test_cancel_without_snooze_does_not_enable_notifications(daily):
+    from features.task_workspace import task_workspace
+    server, _, _, actor, item_id = daily
+    service = task_workspace(server.monitor)
+    with pytest.raises(ValueError, match='snooze_not_pending'):
+        await service.reminder_action(actor, service.reminder_action_token(actor, item_id), 'cancel_snooze')
+    assert server.monitor.user_memory.notification_profile(ACTOR, SCOPE) is None

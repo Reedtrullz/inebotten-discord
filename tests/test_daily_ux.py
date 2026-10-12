@@ -9,6 +9,19 @@ from core.command_registry import command_help_pages
 from tests.test_reminder_late_catchup import _checker, _oslo_due
 
 
+@pytest.mark.parametrize('command,expected', [('avbryt slumring valg Abcdef123_-X', 'cancel_snooze'),
+    ('snakk om å avbryte slumring', None)])
+def test_snooze_cancellation_requires_explicit_bound_selection(command, expected):
+    from tests.test_intent_router import DummyMonitor
+    from core.intent_router import IntentRouter
+    from core.command_registry import validate_payload
+    route = IntentRouter(DummyMonitor()).route(command, 123)
+    if expected:
+        assert validate_payload(route.intent, route.payload)['memory']['operation'] == expected
+    else:
+        assert route.payload.get('memory', {}).get('operation') != 'cancel_snooze'
+
+
 async def test_due_reminder_has_one_alert_not_an_immediate_overdue_followup(tmp_path):
     sent = []
     item = {'id': 'one-alert', 'text': 'Synthetic', 'due_date': _oslo_due(0),

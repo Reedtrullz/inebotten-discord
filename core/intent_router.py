@@ -542,9 +542,9 @@ class IntentRouter:
         undo = re.fullmatch(r'angre endring ([A-Za-z0-9_-]{24})', cleaned, re.I)
         if undo:
             return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'task_undo', 'value': undo[1]}}, 'explicit_local_undo')
-        action = re.fullmatch(r'(ferdig påminnelse|slumre|endre påminnelse) valg ([A-Za-z0-9_-]{12})(?: (tekst|dato): (.+))?', cleaned, re.I)
+        action = re.fullmatch(r'(ferdig påminnelse|slumre|avbryt slumring|endre påminnelse) valg ([A-Za-z0-9_-]{12})(?: (tekst|dato): (.+))?', cleaned, re.I)
         if action:
-            operation = {'ferdig påminnelse': 'complete', 'slumre': 'snooze', 'endre påminnelse': 'edit'}[action[1].lower()]
+            operation = {'ferdig påminnelse': 'complete', 'slumre': 'snooze', 'avbryt slumring': 'cancel_snooze', 'endre påminnelse': 'edit'}[action[1].lower()]
             changes = {'text' if action[3].lower() == 'tekst' else 'due_date': action[4]} if action[3] else {}
             return IntentResult(BotIntent.MEMORY_VIEW, 1.0, {'memory': {'action': 'task_action', 'value': action[2], 'changes': changes, 'operation': operation}}, 'explicit_reminder_action')
         if lower == 'varsler status':

@@ -64,6 +64,20 @@ class TaskWorkspace:
         self.monitor = monitor
         self.previews = {}
         self.actions = {}
+        self.snooze_undo = {}
+
+    def _pending_snooze(self, actor, item):
+        memory = getattr(self.monitor, 'user_memory', None)
+        if memory is None:
+            return None
+        scope = self._scope(actor)
+        projected = project_current_occurrence(item)
+        profile = memory.notification_profile(actor.user_id, scope)
+        if projected is None or profile is None:
+            return None
+        return next((s for s in memory.notification_snoozes(actor.user_id, scope)
+            if s['item_id'] == item['id'] and s['occurrence_id'] == occurrence_identity(projected)
+            and after_quiet_hours(profile, datetime.fromisoformat(s['due_at'])) > self.monitor.reminders.clock.now('UTC')), None)
 
     def _scope(self, actor, operation='read'):
         calendar = getattr(self.monitor, 'calendar', None)
@@ -126,6 +140,7 @@ class TaskWorkspace:
                 due = EventTime.from_item({'kind': 'task', 'date': date, 'time': local_time or '09:00', 'timezone': 'Europe/Oslo'}).aware_start() if date else None
                 rows.append(dict({key: item.get(key) for key in ('id', 'text', 'due_date', 'completed', 'recurrence')},
                     overdue=bool(due and due < manager.clock.now('UTC')),
+                    snoozed=bool(not item.get('completed') and self._pending_snooze(actor, item)),
                     plan={'next_at': None, 'message': 'Fullført: ingen flere varsler.'} if item.get('completed') else reminder_plan(item, memory, manager.clock, scope)))
         rows.sort(key=lambda r: (r['completed'], r['plan'].get('next_at') or '9999', r['text']))
         polls = [{'id': poll['id'], 'question': poll['question'], 'status': poll['status'],
@@ -150,7 +165,7 @@ class TaskWorkspace:
         changes = payload.get('changes', {})
         if not isinstance(changes, dict):
             raise ValueError('invalid_changes')
-        if operation in ('complete', 'close', 'delete', 'snooze') and changes or operation == 'edit' and not changes:
+        if operation in ('complete', 'close', 'delete', 'snooze', 'cancel_snooze') and changes or operation == 'edit' and not changes:
             raise ValueError('invalid_changes')
         if domain == 'notification':
             if operation != 'edit' or set(changes) - {'enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'overdue_minutes', 'timezone'}:
@@ -164,7 +179,7 @@ class TaskWorkspace:
                     raise ValueError('notification_destination_required')
             return None, prior.document() if prior else None, NotificationProfile.from_document(document).document()
         if domain == 'reminder':
-            if operation not in ('create', 'edit', 'complete', 'delete', 'snooze') or set(changes) - {'text', 'due_date', 'recurrence'}:
+            if operation not in ('create', 'edit', 'complete', 'delete', 'snooze', 'cancel_snooze') or set(changes) - {'text', 'due_date', 'recurrence'}:
                 raise ValueError('invalid_changes')
             if operation == 'create' or 'text' in changes:
                 if not isinstance(changes.get('text'), str) or not 1 <= len(changes['text'].strip()) <= 200:
@@ -203,6 +218,8 @@ class TaskWorkspace:
                 raise ValueError('invalid_option')
         if item.get('_planning'):
             raise ValueError('use_planning_workflow')
+        if operation == 'cancel_snooze' and self._pending_snooze(actor, item) is None:
+            raise ValueError('snooze_not_pending')
         if domain == 'reminder' and operation == 'edit' and changes.get('recurrence', item.get('recurrence')) and not changes.get('due_date', item.get('due_date')):
             raise ValueError('recurrence_requires_deadline')
         return bucket, item, changes
@@ -214,10 +231,17 @@ class TaskWorkspace:
         self.previews = {k: v for k, v in self.previews.items() if v['expires'] > now}
         token = secrets.token_urlsafe(18)
         self.previews[token] = {'actor': actor_key(actor), 'payload': copy.deepcopy(payload), 'expires': now + 300}
+        if payload['operation'] in ('snooze', 'cancel_snooze'):
+            self.previews[token]['notification_revision'] = self.monitor.user_memory._storage.revision
         while len(self.previews) > 32:
             self.previews.pop(next(iter(self.previews)))
         fields = ('enabled', 'lead_minutes', 'quiet_start', 'quiet_end', 'overdue_minutes', 'timezone') if payload['domain'] == 'notification' else ('text', 'question', 'due_date', 'recurrence', 'completed', 'status')
         public = {k: item.get(k) for k in fields} if item else None
+        if payload['operation'] == 'cancel_snooze':
+            pending = self._pending_snooze(actor, item)
+            if public is None or pending is None:
+                raise ValueError('snooze_not_pending')
+            public['snoozed_until'] = datetime.fromisoformat(pending['due_at']).astimezone(ZoneInfo('Europe/Oslo')).strftime('%d.%m.%Y %H:%M')
         return {'token': token, 'before': public, 'changes': changes, 'operation': payload['operation'], 'expires_in_seconds': 300}
 
     async def apply(self, actor, token) -> dict[str, Any]:
@@ -229,9 +253,12 @@ class TaskWorkspace:
         payload = entry['payload']
         manager = self._owner(payload['domain'])
         with request_scope(actor):
-            if payload['domain'] == 'reminder' and payload['operation'] == 'snooze':
-                _, item, _ = self._validate(actor, payload)
-                result = await self.reminder_action(actor, self.reminder_action_token(actor, item['id']), 'snooze')
+            if payload['domain'] == 'reminder' and payload['operation'] in ('snooze', 'cancel_snooze'):
+                async with self.monitor.user_memory._storage.async_transaction(write=True):
+                    if self.monitor.user_memory._storage.revision != entry['notification_revision']:
+                        raise ValueError('revision_changed')
+                    _, item, _ = self._validate(actor, payload)
+                    result = await self.reminder_action(actor, self.reminder_action_token(actor, item['id']), payload['operation'])
                 self.previews.pop(token)
                 return result
             if payload['domain'] == 'notification':
@@ -273,8 +300,34 @@ class TaskWorkspace:
         self.previews.pop(token)
         return {'ok': True, 'undo': undo_hint(manager, actor), 'message': 'Lagret lokalt. Sendte Discord-meldinger beholdes.'}
 
-    def undo(self, actor, token):
+    async def undo(self, actor, token) -> dict[str, Any]:
         self._scope(actor, 'write')
+        if token in self.snooze_undo:
+            entry = self.snooze_undo[token]
+            if entry['expires'] <= time.monotonic():
+                raise ValueError('undo_expired')
+            if entry['actor'] != actor_key(actor):
+                raise PermissionError('undo_actor_mismatch')
+            memory = self.monitor.user_memory
+            async with memory._storage.async_transaction(write=True):
+                scope = self._scope(actor, 'write')
+                if memory._storage.revision != entry['revision'] or self.monitor.reminders._storage.revision != entry['reminder_revision']:
+                    raise ValueError('revision_changed')
+                item = next((r for _, r in self._reminders(actor) if r['id'] == entry['item']['id']), None)
+                profile = memory.notification_profile(actor.user_id, scope)
+                current = self._pending_snooze(actor, entry['item'])
+                if item is None or item != entry['item'] or profile != entry['profile'] or current != entry['after']:
+                    raise ValueError('selection_changed')
+                for value in (entry['before'], entry['after']):
+                    if value and after_quiet_hours(profile, datetime.fromisoformat(value['due_at'])) <= self.monitor.reminders.clock.now('UTC'):
+                        raise ValueError('snooze_not_pending')
+                if entry['before']:
+                    value = entry['before']
+                    await memory.set_notification_snooze(actor.user_id, scope, item['id'], value['occurrence_id'], datetime.fromisoformat(value['due_at']))
+                elif current:
+                    await memory.acknowledge_notification_snooze(actor.user_id, current['key'], current['due_at'])
+            self.snooze_undo.pop(token)
+            return {'ok': True, 'message': 'Slumring gjenopprettet. Sendte varsler beholdes.' if entry['before'] else 'Slumring angret. Vanlig varselplan fortsetter; sendte varsler beholdes.'}
         for domain in ('reminder', 'poll'):
             manager = getattr(self.monitor, 'reminders' if domain == 'reminder' else 'poll', None)
             if manager is None:
@@ -299,10 +352,13 @@ class TaskWorkspace:
         token = self.reminder_action_token(actor, item_id)
         return (f'Fullfør: `@inebotten ferdig påminnelse valg {token}`\n'
                 f'Slumre: `@inebotten slumre valg {token}` (10 minutter)\n'
+                f'Avbryt slumring: `@inebotten avbryt slumring valg {token}` (vanlig varselplan fortsetter)\n'
                 f'Rediger: `@inebotten endre påminnelse valg {token} tekst: ny tekst`\n'
                 'Valget gjelder denne oppføringen i opptil 24 timer og utløper ved endring eller omstart.')
 
     async def reminder_action(self, actor, token, operation, changes=None) -> dict[str, Any]:
+        if operation in ('snooze', 'cancel_snooze') and changes:
+            raise ValueError('invalid_changes')
         entry = self.actions.get(token)
         if not entry or entry['expires'] <= time.monotonic():
             raise ValueError('action_expired')
@@ -311,13 +367,15 @@ class TaskWorkspace:
         current = next((item for _, item in self._reminders(actor) if item['id'] == entry['item']['id']), None)
         if current is None or current != entry['item']:
             raise ValueError('selection_changed')
-        if operation == 'snooze':
+        if operation in ('snooze', 'cancel_snooze'):
             from cal_system.notification_preferences import occurrence_identity
             self._scope(actor, 'write')
             projected = project_current_occurrence(current)
             if projected is None:
                 raise ValueError('selection_changed')
             if self.monitor.user_memory.notification_profile(actor.user_id, self._scope(actor)) is None:
+                if operation == 'cancel_snooze':
+                    raise ValueError('snooze_not_pending')
                 destination = actor.channel_id if actor.channel_id.isdecimal() else str(current.get('channel_id') or '')
                 if not destination.isdecimal():
                     raise ValueError('notification_destination_required')
@@ -325,9 +383,31 @@ class TaskWorkspace:
             current = next((item for _, item in self._reminders(actor) if item['id'] == entry['item']['id']), None)
             if current is None or current != entry['item']:
                 raise ValueError('selection_changed')
-            await self.monitor.user_memory.set_notification_snooze(actor.user_id, self._scope(actor), current['id'],
-                occurrence_identity(projected), self.monitor.reminders.clock.now('UTC') + timedelta(minutes=10))
-            return {'ok': True, 'message': 'Slumret 10 minutter; stille timer gjelder fortsatt.'}
+            memory = self.monitor.user_memory
+            async with memory._storage.async_transaction(write=True):
+                scope = self._scope(actor, 'write')
+                current = next((item for _, item in self._reminders(actor) if item['id'] == entry['item']['id']), None)
+                if current is None or current != entry['item']:
+                    raise ValueError('selection_changed')
+                before = self._pending_snooze(actor, current)
+                revision = self.monitor.reminders._storage.revision
+                if operation == 'cancel_snooze':
+                    if before is None:
+                        raise ValueError('snooze_not_pending')
+                    await memory.acknowledge_notification_snooze(actor.user_id, before['key'], before['due_at'])
+                else:
+                    await memory.set_notification_snooze(actor.user_id, scope, current['id'],
+                        occurrence_identity(projected), self.monitor.reminders.clock.now('UTC') + timedelta(minutes=10))
+                after = self._pending_snooze(actor, current)
+                now = time.monotonic()
+                self.snooze_undo = {k: v for k, v in self.snooze_undo.items() if v['expires'] > now}
+                undo_token = secrets.token_urlsafe(18)
+                self.snooze_undo[undo_token] = {'actor': actor_key(actor), 'item': current, 'profile': memory.notification_profile(actor.user_id, scope),
+                    'before': before, 'after': after, 'revision': memory._storage.revision, 'reminder_revision': revision, 'expires': now + 300}
+                while len(self.snooze_undo) > 32:
+                    self.snooze_undo.pop(next(iter(self.snooze_undo)))
+            message = 'Slumret 10 minutter; stille timer gjelder fortsatt.' if operation == 'snooze' else 'Slumring avbrutt. Vanlig varselplan fortsetter; sendte varsler beholdes.'
+            return {'ok': True, 'message': message, 'undo': {'token': undo_token, 'expires_in_seconds': 300}}
         preview = self.preview(actor, {'domain': 'reminder', 'operation': operation,
             'item_id': current['id'], 'revision': self.monitor.reminders._storage.revision, 'changes': changes or {}})
         return await self.apply(actor, preview['token'])

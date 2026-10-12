@@ -524,8 +524,9 @@ class ReminderChecker:
                     if item is None or occurrence_identity(item) != snooze['occurrence_id']:
                         continue
                     domain = int(bool(item.get('_reminder')))
-                    item_dispatch = lambda store=stores[domain], revision=revisions[domain], allowed=can_dispatch: (
-                        allowed() and (store is None or store.revision == revision))
+                    item_dispatch = lambda store=stores[domain], revision=revisions[domain], allowed=can_dispatch, pending=snooze, owner=user_id, scope=profile.scope_id: (
+                        allowed() and (store is None or store.revision == revision)
+                        and pending in self.user_memory.notification_snoozes(owner, scope))
                     due = after_quiet_hours(profile, datetime.fromisoformat(snooze['due_at']))
                     if now - due >= timedelta(minutes=5):
                         await self.user_memory.acknowledge_notification_snooze(user_id, snooze['key'], snooze['due_at'])

@@ -508,6 +508,7 @@ class ConsoleApp {
         const plan = document.createElement('p'); plan.textContent = item.plan?.message || '';
         const actions = document.createElement('div'); actions.className = 'calendar-item-actions';
         ['edit','snooze','complete','delete'].forEach((op, n) => actions.append(button(['Rediger','Slumre 10 minutter',item.recurrence ? 'Fullfør denne forekomsten' : 'Fullfør',item.recurrence ? 'Slett serien' : 'Slett'][n],item,'reminder',op)));
+        if (item.snoozed) actions.append(button('Avbryt slumring',item,'reminder','cancel_snooze'));
         row.append(title,due,plan,actions); list.append(row);
       });
       (state.polls || []).forEach(item => {
@@ -544,7 +545,8 @@ class ConsoleApp {
       if (generation !== this.tasks.generation) return;
       this.tasks.pending = {...preview, domain:payload.domain};
       const labels = {text:'Tekst',question:'Spørsmål',due_date:'Frist',completed:'Fullført',status:'Status',options:'Alternativer',option_index:'Alternativ',enabled:'Varsler på',lead_minutes:'Forvarsel (minutter)',quiet_start:'Stille fra',quiet_end:'Stille til',overdue_minutes:'Etter frist (minutter)',timezone:'Tidssone',destination_id:'Kanal',scope_id:'Område',morning_time:'Morgen',card_ids:'Kort'};
-      const operation = {create:'Opprett',edit:'Rediger',snooze:'Slumre 10 minutter',complete:'Fullfør',delete:'Slett',close:'Lukk',vote:'Stem'}[preview.operation];
+      const operation = {create:'Opprett',edit:'Rediger',snooze:'Slumre 10 minutter',cancel_snooze:'Avbryt slumring (vanlig varselplan fortsetter)',complete:'Fullfør',delete:'Slett',close:'Lukk',vote:'Stem'}[preview.operation];
+      labels.snoozed_until = 'Slumret til (Europe/Oslo)';
       labels.recurrence = 'Gjentakelse';
       const recurrenceValues = {daily:'Hver dag',weekly:'Hver uke',biweekly:'Annenhver uke',monthly:'Hver måned',yearly:'Hvert år','':'Ingen'};
       const describe = value => Object.entries(value || {}).filter(([,v]) => v != null).map(([k,v]) => `${labels[k] || k}: ${k === 'recurrence' ? recurrenceValues[v] : typeof v === 'boolean' ? v ? 'ja' : 'nei' : Array.isArray(v) ? v.join(', ') : v === 'active' ? 'åpen' : v === 'closed' ? 'lukket' : v}`).join(' · ');
@@ -586,6 +588,7 @@ class ConsoleApp {
       revision_changed: "Oppføringer ble endret. Oppdater og forhåndsvis på nytt.",
       selection_changed: "Oppføringen ble endret. Oppdater og velg på nytt.",
       undo_expired: "Angre er utløpt. Hent gjøremålene på nytt.",
+      snooze_not_pending: "Ingen ventende slumring. Hent gjøremålene på nytt; sendte varsler beholdes.",
       invalid_title: "Skriv en tekst på 1–200 tegn.",
       invalid_deadline: "Kontroller fristen; velg en gyldig dato og tid.",
       recurrence_requires_deadline: "Gjentakelse krever en frist. Velg dato og eventuelt klokkeslett.",
