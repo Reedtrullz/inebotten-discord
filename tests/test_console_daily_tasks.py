@@ -77,6 +77,64 @@ async def test_daily_write_uses_existing_origin_and_auth_guards(daily):
     assert status == 401
 
 
+async def test_console_snooze_uses_existing_delivery_channel_and_keeps_reminder(daily):
+    from datetime import timedelta
+    server, reminders, _, _, item_id = daily
+    server.console_actor_channel_id = 'console'
+    original = dict(reminders.reminders[SCOPE][0])
+    before = reminders.clock.now('UTC')
+    payload = {'domain': 'reminder', 'operation': 'snooze', 'revision': reminders._storage.revision, 'item_id': item_id}
+    status, preview = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+    assert status == 200
+    status, result = await http_request(server, '/api/tasks/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+    assert status == 200 and result['ok']
+    assert reminders.reminders[SCOPE][0] == original
+    memory = server.monitor.user_memory
+    assert memory.notification_profile(ACTOR, SCOPE).destination_id == '123'
+    snoozes = memory.notification_snoozes(ACTOR, SCOPE)
+    assert len(snoozes) == 1 and snoozes[0]['item_id'] == item_id
+    from datetime import datetime
+    assert before + timedelta(minutes=10) <= datetime.fromisoformat(snoozes[0]['due_at']) <= reminders.clock.now('UTC') + timedelta(minutes=10)
+    status, data = await http_request(server, '/api/tasks', api_key=API_KEY)
+    assert status == 200 and data['reminders'][0]['plan']['next_at'] == snoozes[0]['due_at']
+
+
+async def test_console_snooze_rejects_changed_preview(daily):
+    server, reminders, _, actor, item_id = daily
+    payload = {'domain': 'reminder', 'operation': 'snooze', 'revision': reminders._storage.revision, 'item_id': item_id}
+    status, preview = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+    assert status == 200
+    with request_scope(actor):
+        reminders.complete_reminder(None, reminder_id=item_id)
+    status, result = await http_request(server, '/api/tasks/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+    assert status == 409 and result['error'] == 'revision_changed'
+    assert server.monitor.user_memory.notification_snoozes(ACTOR, SCOPE) == []
+
+
+@pytest.mark.parametrize('case', ['private_item', 'changes', 'no_destination'])
+async def test_console_snooze_cannot_change_private_data_or_use_unapproved_destination(daily, case):
+    server, reminders, _, actor, item_id = daily
+    server.console_actor_channel_id = 'console'
+    if case == 'private_item':
+        item_id = reminders.reminders[SCOPE][1]['id']
+    elif case == 'no_destination':
+        with request_scope(actor), reminders._storage.transaction(write=True):
+            reminders.reminders[SCOPE][0]['channel_id'] = 'console'
+            reminders._save_reminders()
+    payload = {'domain': 'reminder', 'operation': 'snooze', 'revision': reminders._storage.revision, 'item_id': item_id}
+    if case == 'changes':
+        payload['changes'] = {'text': 'Unexpected edit'}
+    status, preview = await http_request(server, '/api/tasks/preview', method='POST', api_key=API_KEY, body=payload)
+    if case == 'no_destination':
+        assert status == 200
+        status, result = await http_request(server, '/api/tasks/apply', method='POST', api_key=API_KEY, body={'token': preview['token']})
+        assert status == 400 and result['error'] == 'notification_destination_required'
+    else:
+        assert status == (403 if case == 'private_item' else 400)
+    assert server.monitor.user_memory.notification_profile(ACTOR, SCOPE) is None
+    assert server.monitor.user_memory.notification_snoozes(ACTOR, SCOPE) == []
+
+
 async def test_default_console_channel_keeps_own_tasks_visible_and_can_pause(daily):
     server, _, _, _, item_id = daily
     server.console_actor_channel_id = 'console'

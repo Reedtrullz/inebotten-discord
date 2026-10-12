@@ -69,6 +69,27 @@ def test_today_preview_cannot_apply_after_form_change_and_has_contextual_actions
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
 
 
+def test_today_snooze_previews_exact_owned_item_and_requires_apply(page: Any, console_server: ConsoleServer):
+    state = {'write_available': True, 'revisions': {'reminder': 7}, 'polls': [], 'notification': None,
+             'reminders': [{'id': 'owned', 'text': 'My task', 'completed': False, 'plan': {'message': 'Due soon'}},
+                           {'id': 'done', 'text': 'Completed task', 'completed': True, 'plan': {'message': 'Completed'}}]}
+    page.route('**/api/tasks', lambda route: route.fulfill(json=state))
+    page.route('**/api/tasks/preview', lambda route: route.fulfill(json={'token': 'snooze-proposal', 'operation': 'snooze', 'before': {'text': 'My task'}, 'changes': {}}))
+    page.route('**/api/tasks/apply', lambda route: route.fulfill(json={'ok': True, 'message': 'Slumret 10 minutter; stille timer gjelder fortsatt.'}))
+    _login(page, console_server)
+    assert page.get_by_role('button', name='Slumre 10 minutter Completed task', exact=True).is_disabled()
+    with page.expect_request('**/api/tasks/preview') as request:
+        page.get_by_role('button', name='Slumre 10 minutter My task', exact=True).click()
+    assert request.value.post_data_json == {'domain': 'reminder', 'operation': 'snooze', 'item_id': 'owned', 'revision': 7}
+    page.locator('[data-task-preview]').wait_for(state='visible')
+    assert 'Slumre 10 minutter' in page.locator('[data-task-preview]').inner_text()
+    with page.expect_request('**/api/tasks/apply') as request:
+        page.get_by_role('button', name='Bruk endring', exact=True).click()
+    assert request.value.post_data_json == {'token': 'snooze-proposal'}
+    page.locator('[data-task-status]').get_by_text('Slumret 10 minutter; stille timer gjelder fortsatt.', exact=True).wait_for()
+    assert page.locator('[data-task-undo]').is_hidden()
+
+
 def test_today_date_only_edit_and_double_apply_preserve_intent(page: Any, console_server: ConsoleServer):
     state = {'write_available': True, 'revisions': {'reminder': 1}, 'polls': [], 'notification': None,
              'reminders': [{'id': 'owned', 'text': 'Date only', 'due_date': '13.10.2026', 'completed': False,

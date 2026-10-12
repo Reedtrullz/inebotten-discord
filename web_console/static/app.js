@@ -504,7 +504,7 @@ class ConsoleApp {
         const due = document.createElement('p'); due.textContent = `${item.completed ? 'Fullført' : item.overdue ? 'Forfalt' : 'Åpen'} · ${item.due_date || 'Ingen frist'}`;
         const plan = document.createElement('p'); plan.textContent = item.plan?.message || '';
         const actions = document.createElement('div'); actions.className = 'calendar-item-actions';
-        ['edit','complete','delete'].forEach((op, n) => actions.append(button(['Rediger','Fullfør','Slett'][n],item,'reminder',op)));
+        ['edit','snooze','complete','delete'].forEach((op, n) => actions.append(button(['Rediger','Slumre 10 minutter','Fullfør','Slett'][n],item,'reminder',op)));
         row.append(title,due,plan,actions); list.append(row);
       });
       (state.polls || []).forEach(item => {
@@ -541,7 +541,7 @@ class ConsoleApp {
       if (generation !== this.tasks.generation) return;
       this.tasks.pending = {...preview, domain:payload.domain};
       const labels = {text:'Tekst',question:'Spørsmål',due_date:'Frist',completed:'Fullført',status:'Status',options:'Alternativer',option_index:'Alternativ',enabled:'Varsler på',lead_minutes:'Forvarsel (minutter)',quiet_start:'Stille fra',quiet_end:'Stille til',overdue_minutes:'Etter frist (minutter)',timezone:'Tidssone',destination_id:'Kanal',scope_id:'Område',morning_time:'Morgen',card_ids:'Kort'};
-      const operation = {create:'Opprett',edit:'Rediger',complete:'Fullfør',delete:'Slett',close:'Lukk',vote:'Stem'}[preview.operation];
+      const operation = {create:'Opprett',edit:'Rediger',snooze:'Slumre 10 minutter',complete:'Fullfør',delete:'Slett',close:'Lukk',vote:'Stem'}[preview.operation];
       const describe = value => Object.entries(value || {}).filter(([,v]) => v != null).map(([k,v]) => `${labels[k] || k}: ${typeof v === 'boolean' ? v ? 'ja' : 'nei' : Array.isArray(v) ? v.join(', ') : v === 'active' ? 'åpen' : v === 'closed' ? 'lukket' : v}`).join(' · ');
       document.querySelector('[data-task-preview-content]').textContent = `${operation} · Før: ${describe(preview.before) || 'Ny oppføring'} · Valgt endring: ${describe(preview.changes) || operation}`;
       document.querySelector('[data-task-preview]').hidden = false;
