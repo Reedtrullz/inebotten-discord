@@ -1,2 +1,2 @@
 # Browserbase integration package; page extraction remains explicitly unavailable.
-browserbase>=1.8.0
+browserbase>=1.20.0
