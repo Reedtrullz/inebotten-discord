@@ -310,6 +310,42 @@ async def test_health_no_auth():
         await stop_server(server, task)
 
 
+async def test_health_reuses_request_snapshot_and_observes_next_request_repair(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from web_console import state_collector
+
+    # Given a real corrupt store and an authored offline monitor.
+    path = tmp_path / 'birthdays.json'
+    path.write_text('{', encoding='utf-8')
+    monkeypatch.setattr(state_collector, 'hermes_discord_data_path', lambda name: tmp_path / name)
+    monkeypatch.setattr(state_collector, '_JSON_READ_ERRORS', {})
+    monitor = SimpleNamespace(client=SimpleNamespace(
+        user=SimpleNamespace(id=42), guilds=[], config=SimpleNamespace(AI_PROVIDER='openrouter')))
+    reads = []
+    original_open = Path.open
+
+    def track_open(target, *args, **kwargs):
+        if target == path and (args[0] if args else kwargs.get('mode', 'r')) == 'r':
+            reads.append(target)
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', track_open)
+    server, task = await start_server(monitor)
+    try:
+        # When health is requested before and after local repair.
+        corrupt = await request('/health')
+        path.write_text('{}', encoding='utf-8')
+        repaired = await request('/health')
+
+        # Then each response reads once and the second request sees the repair.
+        assert len(reads) == 2
+        assert json_body(corrupt)['status'] == 'degraded'
+        assert 'birthdays.json' not in repaired.decode()
+        assert state_collector._JSON_READ_ERRORS == {}
+    finally:
+        await stop_server(server, task)
+
+
 async def test_method_not_allowed():
     server, task = await start_server()
     try:

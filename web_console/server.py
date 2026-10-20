@@ -1019,6 +1019,7 @@ class ConsoleServer:
                 readiness = await collect_provider_readiness(
                     self.monitor,
                     bridge_health=health.get("bridge") if isinstance(health.get("bridge"), dict) else None,
+                    persistence=health.get("persistence"),
                 )
                 health_status = health.get("status", "starting")
                 if health_status == "starting":
