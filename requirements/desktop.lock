@@ -248,9 +248,9 @@ beautifulsoup4==4.15.0 \
     --hash=sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7 \
     --hash=sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9
     # via googlesearch-python
-browserbase==1.20.0 \
-    --hash=sha256:3014c01cb7d7edd94ebb9a2fda7e98ee235866ed879fdb2eaf907356e8c145a6 \
-    --hash=sha256:ab488d7f5555751afd0be83bfc86a8ea9470eba834e4f8722e296a01fde15278
+browserbase==1.21.0 \
+    --hash=sha256:b0dfbb858556c3019328c211fa319376388dcd00f22dac5e646b4a1e970e3ef5 \
+    --hash=sha256:b2b019d0acc0a5876eae58b4aeb3cf942736e4e3da46571356d612f4504d537e
     # via -r requirements/optional-browser.in
 certifi==2026.7.22 \
     --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
