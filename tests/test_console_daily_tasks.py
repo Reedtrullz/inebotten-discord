@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from cal_system.event_schema import Clock
 from cal_system.reminder_manager import ReminderManager
 from features.poll_manager import PollManager
 from memory.user_memory import UserMemory
@@ -9,9 +11,15 @@ from core.request_context import RequestContext, request_scope
 from tests.test_console_calendar_workspace import workspace, http_request, API_KEY, ACTOR, SCOPE
 
 
+PINNED_NOW = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+
+
 @pytest.fixture
 async def daily(workspace, tmp_path):
     server, calendar, actor = workspace
+    # Pin wall time so the fixed October 2026 dates below stay in the future;
+    # with the real clock, reminder plans for 25.10.2026 became None after that date.
+    calendar.clock = Clock(wall=lambda: PINNED_NOW, monotonic=calendar.clock.monotonic)
     reminders = ReminderManager(tmp_path / 'reminders.json', access_policy=calendar.access_policy, clock=calendar.clock)
     polls = PollManager(tmp_path / 'polls.json')
     memory = UserMemory(tmp_path / 'memory.json')
