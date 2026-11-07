@@ -10,4 +10,4 @@ python-dotenv==1.2.4
 
 # Keep contract/domain fixtures runnable from the hash-locked bot profile.
 pytest==9.1.1
-pytest-asyncio==1.4.0
+pytest-asyncio==1.4.1.post1
