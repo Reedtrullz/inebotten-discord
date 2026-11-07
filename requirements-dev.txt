@@ -2,7 +2,7 @@
 -r requirements.txt
 -r requirements/optional-google.in
 
-flake8>=7.3.0
+flake8>=7.5.0
 pylint>=4.1.3
 pytest>=9.1.1
 pytest-asyncio>=1.4.0
