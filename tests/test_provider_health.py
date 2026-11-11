@@ -345,3 +345,20 @@ async def test_old_or_future_catalogue_probe_is_unverified(monkeypatch):
         result = await state_collector.collect_provider_readiness(monitor, now=NOW)
         assert result['components']['provider']['transport_status'] == 'unverified'
         assert result['components']['provider']['model_discovery_status'] == 'unverified'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('snapshot,expected', [({}, 'unavailable'), ({'status': 'degraded'}, 'degraded')])
+async def test_supplied_persistence_preserves_empty_and_degraded_meaning(tmp_path, monkeypatch, snapshot, expected):
+    # Given a healthy real local document and a distinct supplied snapshot.
+    (tmp_path / 'birthdays.json').write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(state_collector, 'hermes_discord_data_path', lambda name: tmp_path / name)
+    before = dict(snapshot)
+
+    # When readiness is composed with the supplied persistence observation.
+    result = await state_collector.collect_provider_readiness(
+        _monitor(), bridge_health={'status': 'disabled'}, now=NOW, persistence=snapshot)
+
+    # Then it retains that observation without replacing or mutating it.
+    assert result['components']['store']['status'] == expected
+    assert snapshot == before

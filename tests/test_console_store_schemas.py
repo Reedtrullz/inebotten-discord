@@ -43,6 +43,33 @@ def test_console_displays_supported_stores_without_false_health_failure(
     assert path.read_bytes() == raw
 
 
+@pytest.mark.asyncio
+async def test_composed_status_reads_each_persistence_document_once(isolated_data, monkeypatch):
+    from types import SimpleNamespace
+
+    # Given a real document read by persistence probes, independent of list reads.
+    path = isolated_data / 'birthdays.json'
+    path.write_text('{}', encoding='utf-8')
+    reads = []
+    original_open = type(path).open
+
+    def track_open(target, *args, **kwargs):
+        if target == path:
+            reads.append(target)
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(type(path), 'open', track_open)
+    monitor = SimpleNamespace(client=SimpleNamespace(
+        user=SimpleNamespace(id=42), guilds=[], config=SimpleNamespace(AI_PROVIDER='openrouter')))
+
+    # When the dashboard composes status and readiness.
+    result = await state_collector.StateCollector(monitor).collect_all()
+
+    # Then one actual document read supplies both views of the same response.
+    assert result['status']['persistence']['status'] != 'degraded'
+    assert len(reads) == 1
+
+
 @pytest.mark.parametrize('name,current,document', STORES)
 @pytest.mark.parametrize('invalid', ['future-schema', 'invalid-shape', 'invalid-json'])
 def test_console_preserves_and_reports_unsupported_or_corrupt_stores(

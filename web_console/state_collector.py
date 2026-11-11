@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -444,9 +445,11 @@ def _collect_scheduler_readiness(
     )
 
 
-def _collect_store_readiness(*, now: datetime) -> dict[str, Any]:
+def _collect_store_readiness(
+    *, now: datetime, persistence: Mapping[str, str | int | float | bool] | None = None
+) -> dict[str, Any]:
     checked_at = now.isoformat()
-    store = _collect_persistence_health()
+    store = _collect_persistence_health() if persistence is None else persistence
     status = str(store.get("status", "unavailable")).lower()
     if status in {"ok", "healthy", "ready"}:
         return _health_component(
@@ -578,6 +581,7 @@ async def collect_provider_readiness(
     *,
     bridge_health: dict[str, Any] | None = None,
     now: datetime | None = None,
+    persistence: Mapping[str, str | int | float | bool] | None = None,
 ) -> dict[str, Any]:
     """Build redacted readiness from configuration and observed outcomes only."""
     checked = _utc_now(now)
@@ -614,7 +618,7 @@ async def collect_provider_readiness(
     calendar_sync = _collect_calendar_sync_health(monitor, now=checked)
     google_calendar = dict(calendar_sync)
     scheduler = _collect_scheduler_readiness(monitor, now=checked)
-    store = _collect_store_readiness(now=checked)
+    store = _collect_store_readiness(now=checked, persistence=persistence)
     components = {
         "provider": provider,
         "bridge": bridge,
@@ -1195,10 +1199,13 @@ class StateCollector:
 
     async def collect_all(self, *, actor=None) -> dict[str, Any]:
         bridge = await collect_bridge_health(self.monitor)
+        status = collect_bot_status(self.monitor)
         return {
-            "status": collect_bot_status(self.monitor),
+            "status": status,
             "bridge": bridge,
-            "readiness": await collect_provider_readiness(self.monitor, bridge_health=bridge),
+            "readiness": await collect_provider_readiness(
+                self.monitor, bridge_health=bridge, persistence=status.get("persistence")
+            ),
             "calendar": collect_calendar_data(self.monitor, actor=actor),
             "polls": collect_poll_data(self.monitor, actor=actor),
             "rate_limits": collect_rate_limits(self.monitor),
