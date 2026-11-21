@@ -10,9 +10,9 @@ anyio==4.15.1 \
     # via
     #   browserbase
     #   httpx
-browserbase==1.26.0 \
-    --hash=sha256:024eddd630a00ccbd422c7e4aea660f9285a6ac49f6a0d510c2d668ba0b2ce51 \
-    --hash=sha256:3d2363bcec8ab990da4a0be01081bb1a5200ec448e0e0b30ecf263a4e8e1e9ff
+browserbase==1.28.0 \
+    --hash=sha256:ac71db53dbf1475ce022ac5ebfdb65b7f32fc44f89d8e0494466b21cc3241aab \
+    --hash=sha256:fdd2bca0d7b36d7c01235e29c974bd568a3b8e634d7dea3d2b97bcdf8375b0d3
     # via -r requirements/optional-browser.in
 certifi==2026.7.22 \
     --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
